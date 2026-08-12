@@ -1,0 +1,285 @@
+//! Finding markdown files, without ever blocking a frame.
+//!
+//! NO RATATUI — `scripts/check-discipline.sh` rule 6.
+//!
+//! # Measured 2026-08-10
+//!
+//! `ignore::WalkBuilder` over `~/Documents` — 109,857 files, 6,352 directories,
+//! warm page cache — found every `.md` in **6 ms** parallel with `.gitignore`
+//! on, 10 ms single-threaded, 16 ms with `.gitignore` off. Honouring
+//! `.gitignore` is not a cost: it prunes `.git`, `node_modules` and `target`
+//! before descending, and is most of the speedup. `find` over the same tree
+//! takes 63 ms, which is why that figure does not apply here.
+//!
+//! **Cold page cache, spinning disks and network mounts are not measured.**
+//! That is what the cache is for; do not delete it on the strength of 6 ms.
+
+use std::fmt::Write as _;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, SystemTime};
+
+/// One discovered markdown file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub mtime: SystemTime,
+}
+
+/// What a background walk reports.
+#[derive(Debug)]
+pub enum Msg {
+    Found(Entry),
+    /// Always sent when the walk ends, so the caller can drop the indicator.
+    Done {
+        unreadable: usize,
+    },
+}
+
+fn builder(root: &Path) -> ignore::WalkBuilder {
+    let mut b = ignore::WalkBuilder::new(root);
+    b.git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        // Honour `.gitignore` even outside a git repository. `ignore` defaults
+        // to requiring one, which means a plain directory with a `.gitignore`
+        // gets walked in full — surprising, and it loses most of the pruning
+        // that makes the walk fast. `fd` exposes the same switch as
+        // `--no-require-git`.
+        .require_git(false)
+        .hidden(true);
+    b
+}
+
+fn is_markdown(p: &Path) -> bool {
+    p.extension().is_some_and(|x| x == "md" || x == "markdown")
+}
+
+fn entry_of(p: &Path) -> Entry {
+    let mtime = std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    Entry {
+        path: p.to_path_buf(),
+        mtime,
+    }
+}
+
+/// Walk synchronously, returning the entries and a count of unreadable paths.
+///
+/// For tests and the non-interactive path only — **never call this from the
+/// paint path.**
+#[must_use]
+pub fn walk_blocking(root: &Path) -> (Vec<Entry>, usize) {
+    let mut out = Vec::new();
+    let mut unreadable = 0usize;
+    for res in builder(root).build() {
+        match res {
+            Ok(e) if e.file_type().is_some_and(|t| t.is_file()) && is_markdown(e.path()) => {
+                out.push(entry_of(e.path()));
+            }
+            Ok(_) => {}
+            Err(_) => unreadable += 1,
+        }
+    }
+    (out, unreadable)
+}
+
+/// Start a background walk. Returns immediately.
+///
+/// The receiver yields entries as they are found and always ends with
+/// [`Msg::Done`], so the UI can drop its indicator on any outcome.
+#[must_use]
+pub fn spawn(root: &Path) -> Receiver<Msg> {
+    let (tx, rx) = mpsc::channel();
+    let root = root.to_path_buf();
+    std::thread::spawn(move || {
+        let mut unreadable = 0usize;
+        for res in builder(&root).build() {
+            match res {
+                Ok(e) if e.file_type().is_some_and(|t| t.is_file()) && is_markdown(e.path()) => {
+                    // A send error means the UI dropped the receiver — the user
+                    // moved on. Stop walking rather than finish into the void.
+                    if tx.send(Msg::Found(entry_of(e.path()))).is_err() {
+                        return;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => unreadable += 1,
+            }
+        }
+        let _ = tx.send(Msg::Done { unreadable });
+    });
+    rx
+}
+
+/// `$XDG_CACHE_HOME/carrel`, else `~/.cache/carrel`.
+#[must_use]
+pub fn cache_dir() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(x).join("carrel"));
+    }
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(|h| PathBuf::from(h).join(".cache").join("carrel"))
+}
+
+/// One cache file per root, named by a hash of the root path.
+fn cache_name(root: &Path) -> String {
+    let mut h = DefaultHasher::new();
+    root.hash(&mut h);
+    format!("index-{:016x}", h.finish())
+}
+
+#[must_use]
+pub fn load_cache(root: &Path) -> Vec<Entry> {
+    cache_dir()
+        .map(|d| load_cache_in(&d, root))
+        .unwrap_or_default()
+}
+
+pub fn save_cache(root: &Path, entries: &[Entry]) {
+    if let Some(d) = cache_dir() {
+        save_cache_in(&d, root, entries);
+    }
+}
+
+/// `<mtime seconds>\t<path>` per line.
+///
+/// A malformed line is skipped and a corrupt file is simply no cache. **The
+/// cache is a hint, never truth** — the live walk is what decides what exists.
+#[must_use]
+pub fn load_cache_in(dir: &Path, root: &Path) -> Vec<Entry> {
+    let Ok(text) = std::fs::read_to_string(dir.join(cache_name(root))) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| {
+            let (secs, path) = l.split_once('\t')?;
+            let secs: u64 = secs.parse().ok()?;
+            Some(Entry {
+                path: PathBuf::from(path),
+                mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+            })
+        })
+        .collect()
+}
+
+pub fn save_cache_in(dir: &Path, root: &Path, entries: &[Entry]) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let mut text = String::with_capacity(entries.len() * 64);
+    for e in entries {
+        let secs = e
+            .mtime
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let _ = writeln!(text, "{secs}\t{}", e.path.display());
+    }
+    // A failed cache write is not worth surfacing: the next run just rescans.
+    let _ = std::fs::write(dir.join(cache_name(root)), text);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Two `.md` files, one `.txt`, one inside a gitignored directory, one nested.
+    fn fixture() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("a.md"), "# a").unwrap();
+        fs::write(d.path().join("b.md"), "# b").unwrap();
+        fs::write(d.path().join("c.txt"), "not markdown").unwrap();
+        fs::write(d.path().join(".gitignore"), "skipped/\n").unwrap();
+        fs::create_dir(d.path().join("skipped")).unwrap();
+        fs::write(d.path().join("skipped").join("d.md"), "# d").unwrap();
+        fs::create_dir(d.path().join("sub")).unwrap();
+        fs::write(d.path().join("sub").join("e.md"), "# e").unwrap();
+        d
+    }
+
+    fn names(entries: &[Entry]) -> Vec<String> {
+        let mut v: Vec<String> = entries
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn finds_markdown_and_nothing_else() {
+        let d = fixture();
+        let (entries, _) = walk_blocking(d.path());
+        assert_eq!(names(&entries), vec!["a.md", "b.md", "e.md"]);
+    }
+
+    #[test]
+    fn honours_gitignore() {
+        let d = fixture();
+        let (entries, _) = walk_blocking(d.path());
+        assert!(
+            !names(&entries).contains(&"d.md".to_string()),
+            "an ignored directory must not be walked",
+        );
+    }
+
+    #[test]
+    fn a_missing_root_yields_nothing_rather_than_panicking() {
+        let (entries, _) = walk_blocking(Path::new("/nonexistent/xyzzy"));
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn the_background_walk_finds_the_same_files() {
+        let d = fixture();
+        let rx = spawn(d.path());
+        let mut found = Vec::new();
+        let mut done = false;
+        for msg in rx {
+            match msg {
+                Msg::Found(e) => found.push(e),
+                Msg::Done { .. } => done = true,
+            }
+        }
+        assert!(done, "the walk must always report completion");
+        assert_eq!(names(&found), vec!["a.md", "b.md", "e.md"]);
+    }
+
+    #[test]
+    fn the_cache_round_trips() {
+        let d = tempfile::tempdir().unwrap();
+        let root = Path::new("/some/root");
+        assert!(load_cache_in(d.path(), root).is_empty());
+
+        let entries = vec![Entry {
+            path: PathBuf::from("/some/root/a.md"),
+            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        }];
+        save_cache_in(d.path(), root, &entries);
+        assert_eq!(load_cache_in(d.path(), root), entries);
+    }
+
+    #[test]
+    fn different_roots_do_not_share_a_cache() {
+        let d = tempfile::tempdir().unwrap();
+        let e = vec![Entry {
+            path: PathBuf::from("/a/x.md"),
+            mtime: SystemTime::UNIX_EPOCH,
+        }];
+        save_cache_in(d.path(), Path::new("/a"), &e);
+        assert!(load_cache_in(d.path(), Path::new("/b")).is_empty());
+    }
+
+    #[test]
+    fn a_corrupt_cache_is_no_cache_rather_than_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        let root = Path::new("/some/root");
+        save_cache_in(d.path(), root, &[]);
+        fs::write(d.path().join(cache_name(root)), "\u{0}not a cache\nnope").unwrap();
+        assert!(load_cache_in(d.path(), root).is_empty());
+    }
+}

@@ -1,0 +1,2345 @@
+//! Reader state and the one pure transition over it.
+//!
+//! **NO RATATUI** — `scripts/check-discipline.sh` rule 6. [`update`] is a pure
+//! state transition, so every behavioural test runs with no terminal and a GTK
+//! frontend reuses this file verbatim. That is discipline #4 made real rather
+//! than aspirational.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use carrel_core::{BlockIdx, DocByte, Document, LinkId, Matches, search};
+
+use crate::action::{Action, Direction, Edge, SearchKey, Span, Where};
+use crate::home::{Home, HomeMode};
+use crate::layout::Layout;
+use crate::scan::Entry;
+use crate::view::ViewState;
+
+/// What the event loop must do after a transition.
+///
+/// The `App` never draws and never exits; it only reports what is now true.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Idle,
+    Redraw,
+    Quit,
+}
+
+#[derive(Debug)]
+pub enum Mode {
+    Normal,
+    /// The search prompt is open. `saved` is the anchor to restore on cancel.
+    Search {
+        input: String,
+        dir: Direction,
+        saved: u32,
+    },
+}
+
+/// The outline picker's transient state: what has been typed, and which row
+/// of the FILTERED list is selected. See [`App::outline_matches`].
+#[derive(Debug, Default)]
+pub struct Outline {
+    pub filter: String,
+    pub selected: usize,
+}
+
+/// Which screen is in front of the reader.
+///
+/// The reader's own state (`doc`, `layout`, `view`) always exists; on the home
+/// screen it simply holds an empty document, so no reader invariant ever sees a
+/// half-initialised value.
+#[derive(Debug)]
+pub enum Screen {
+    /// Boxed: `Home` carries the entry list, so an unboxed variant would make
+    /// every `App` pay for it even while reading.
+    Home(Box<Home>),
+    Reader,
+}
+
+#[derive(Debug)]
+pub struct App {
+    pub screen: Screen,
+    pub doc: Document,
+    pub matches: Option<Matches>,
+    pub layout: Layout,
+    pub view: ViewState,
+    pub mode: Mode,
+    pub path: String,
+    /// The open file on disk, for resolving relative links. `None` until a
+    /// real file is opened.
+    pub file: Option<PathBuf>,
+    /// Where we came from: `(file, anchor)` pairs. `Ctrl-O` pops.
+    pub history: Vec<(PathBuf, u32)>,
+    /// The link `Tab` has selected, if any.
+    pub selected_link: Option<LinkId>,
+    /// Pixel dimensions of decoded images, by block. Plain numbers — the
+    /// protocol state lives with the painter, never here.
+    pub image_dims: HashMap<BlockIdx, (u32, u32)>,
+    /// Wikilink targets resolved to files, rebuilt at every `open_path`.
+    /// Only resolved links appear; a missing key means "no note by that
+    /// name" as of open time. Plain data — render reads it for `file://`
+    /// OSC 8 wrappers.
+    pub wiki: HashMap<LinkId, PathBuf>,
+    /// Rendered mermaid box art by block, streamed in like image dims. Art
+    /// is presentation-shaped but width-INDEPENDENT (fixed-width text), so
+    /// it may live in state; a block with no entry paints as source.
+    pub diagram_art: HashMap<BlockIdx, Vec<String>>,
+    /// `m` flips every mermaid block between art and source, like `t` for
+    /// tables.
+    pub show_diagrams: bool,
+    /// The terminal's cell size in pixels, set once at startup by the
+    /// frontend. `(8, 16)` is the conservative guess when detection fails.
+    pub font_px: (u16, u16),
+    /// A one-shot status-bar note; cleared by the next action.
+    pub note: Option<String>,
+    /// Where the picker persists its choice. `None` — the constructor
+    /// default — persists nothing, so unit tests can drive `update` freely.
+    /// The BINARY sets this at startup; forgetting that shows up in the pty
+    /// smoke, not as a stomped developer config. (A home.rs test once wrote
+    /// `root = /tmp/.tmpXXXXXX` into the real config on every test run.)
+    pub config_dir: Option<std::path::PathBuf>,
+    /// Where reading positions persist. Same contract as `config_dir`:
+    /// `None` in every constructor, set by the BINARY at startup, so no test
+    /// can ever write the real state file.
+    pub state_dir: Option<std::path::PathBuf>,
+    /// When `false` (the default), an overflowing table lays out as cards
+    /// instead of wrapping in place. `t` flips this. See
+    /// [`Action::TableToggle`].
+    pub wrap_tables: bool,
+    /// The lamplight hint footer is showing. `H` and a click on the lamp
+    /// toggle it; persisted through `config_dir` so the choice sticks.
+    pub hints: bool,
+    /// `Some(scroll)` while the help overlay is up. Presentation-free state:
+    /// the sheet's row offset, clamped by the painter against its content.
+    pub help: Option<u16>,
+    /// `Some` while the outline picker is up. The heading list itself is
+    /// DERIVED from `doc` at every use — nothing here can go stale.
+    pub outline: Option<Outline>,
+    /// The mouse selection, in doc bytes — the same currency as a search
+    /// match, so reflow and resize cannot invalidate it.
+    pub selection: Option<std::ops::Range<u32>>,
+    /// The cluster the current drag started on. `None` when no drag is live.
+    pub sel_anchor: Option<(u32, u32)>,
+    /// One-shot clipboard outbox: the state machine fills it, the event loop
+    /// drains it into an OSC 52 escape. The state layer never does I/O.
+    pub clipboard: Option<String>,
+    /// The home screen this document was opened from, if any. `q` restores
+    /// it — entries, filter, and scroll intact — instead of quitting.
+    pub home_stash: Option<Box<Home>>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Reader page margins, in cells: the text is inset from the terminal edges
+/// so the page reads like a page (field note). These live inside
+/// [`App::text_size`] — the ONE function paint geometry and layout width are
+/// both derived from — so wrapping and painting cannot disagree about them.
+/// The scrollbar keeps the true right edge and the status bar the full width;
+/// margins belong to the text alone.
+pub const PAD_LEFT: u16 = 2;
+pub const PAD_RIGHT: u16 = 2;
+pub const PAD_TOP: u16 = 1;
+pub const PAD_BOTTOM: u16 = 1;
+
+impl App {
+    /// The text area: one column reserved for the scrollbar, one row for the
+    /// status line.
+    ///
+    /// `render.rs` **must** derive its rects from this, or layout and paint
+    /// disagree about how much room the text has and wrapping goes wrong.
+    #[must_use]
+    pub const fn text_size(cols: u16, rows: u16, footer: bool) -> (u16, u16) {
+        // Status row always; the lamplight hint row only while showing.
+        let chrome = if footer { 2 } else { 1 };
+        (
+            cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT),
+            rows.saturating_sub(chrome + PAD_TOP + PAD_BOTTOM),
+        )
+    }
+
+    #[must_use]
+    pub fn new(path: String, doc: Document, cols: u16, rows: u16) -> Self {
+        let (w, _) = Self::text_size(cols, rows, true);
+        let layout = Layout::new(&doc, w.max(1));
+        Self {
+            screen: Screen::Reader,
+            doc,
+            matches: None,
+            layout,
+            view: ViewState::new(),
+            mode: Mode::Normal,
+            path,
+            file: None,
+            history: Vec::new(),
+            selected_link: None,
+            image_dims: HashMap::new(),
+            wiki: HashMap::new(),
+            diagram_art: HashMap::new(),
+            show_diagrams: true,
+            font_px: (8, 16),
+            note: None,
+            config_dir: None,
+            state_dir: None,
+            wrap_tables: false,
+            hints: true,
+            help: None,
+            outline: None,
+            selection: None,
+            sel_anchor: None,
+            clipboard: None,
+            home_stash: None,
+            cols,
+            rows,
+        }
+    }
+
+    /// Start on the home screen. `cached` is painted immediately; the caller
+    /// starts the live walk.
+    #[must_use]
+    pub fn new_home(root: PathBuf, cached: Vec<Entry>, cols: u16, rows: u16) -> Self {
+        let mut app = Self::new(String::new(), Document::parse(""), cols, rows);
+        app.screen = Screen::Home(Box::new(Home::new(root, cached)));
+        app
+    }
+
+    #[must_use]
+    pub fn is_home(&self) -> bool {
+        matches!(self.screen, Screen::Home(_))
+    }
+
+    #[must_use]
+    pub fn home(&self) -> Option<&Home> {
+        match &self.screen {
+            Screen::Home(h) => Some(h),
+            Screen::Reader => None,
+        }
+    }
+
+    /// Put a one-shot note where the CURRENT screen's status bar reads it.
+    ///
+    /// The reader paints `App::note`; the home screen paints `Home::note`.
+    /// A note written to the wrong one is invisible — which is exactly how
+    /// the theme name failed to appear when cycling on the home screen.
+    pub fn set_note(&mut self, note: String) {
+        if let Some(h) = self.home_mut() {
+            h.note = Some(note);
+        } else {
+            self.note = Some(note);
+        }
+    }
+
+    pub fn home_mut(&mut self) -> Option<&mut Home> {
+        match &mut self.screen {
+            Screen::Home(h) => Some(h),
+            Screen::Reader => None,
+        }
+    }
+
+    /// Persist the current reading position — anchor 0 clears the entry.
+    /// Quietly does nothing without a state dir (tests) or a file (home).
+    fn save_position(&self) {
+        if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
+            let _ = crate::state::save_position_in(dir, file, self.view.anchor);
+        }
+    }
+
+    /// Load a document and switch to the reader.
+    ///
+    /// Neutral about history — the caller decides whether this navigation is
+    /// worth remembering, so `Back` itself can reuse it without double-pushing.
+    /// A home screen left behind is stashed so `q` can restore it whole.
+    /// It saves the outgoing file's reading position and restores the
+    /// incoming one — callers that reposition afterwards (history anchors,
+    /// fragment jumps) run later and simply win.
+    pub fn open_path(&mut self, path: &Path) -> std::io::Result<()> {
+        self.save_position();
+        check_document_size(path)?;
+        let src = std::fs::read_to_string(path)?;
+        self.doc = Document::parse(&src);
+        self.matches = None;
+        self.mode = Mode::Normal;
+        self.selected_link = None;
+        self.view = ViewState::new();
+        self.layout = Layout::new(&self.doc, self.text_w());
+        self.path = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        self.file = Some(path.to_path_buf());
+        self.image_dims.clear();
+        self.diagram_art.clear();
+        if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
+            self.home_stash = Some(h);
+        }
+        self.resolve_wikilinks();
+        self.restore_position();
+        Ok(())
+    }
+
+    /// Re-read the open file in place: same document identity, new content.
+    ///
+    /// What survives, and why it can: the anchor is a doc byte, so an append
+    /// — the agent-writing-a-log case — moves nothing at all, and a rewrite
+    /// clamps; the search re-runs from the pattern `Matches` kept for
+    /// exactly this; history and the stashed home screen are untouched. The
+    /// selection clears — its bytes indexed the old text. On error (a
+    /// vanished file) the last good parse stays on screen; the caller notes.
+    pub fn reload(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.file.clone() else {
+            return Ok(());
+        };
+        check_document_size(&path)?;
+        let src = std::fs::read_to_string(&path)?;
+        self.doc = Document::parse(&src);
+        self.layout = Layout::new(&self.doc, self.text_w());
+        self.image_dims.clear();
+        self.diagram_art.clear();
+        self.selection = None;
+        self.sel_anchor = None;
+        self.selected_link = None;
+        let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        self.view.anchor = self.view.anchor.min(last);
+        self.view.restore(&self.doc, &self.layout, self.text_h());
+        if let Some(old) = self.matches.take() {
+            let mut m = search(&self.doc, &old.pattern, old.flexible_ws);
+            m.current = old
+                .current
+                .map(|i| i.min(m.ranges.len().saturating_sub(1)))
+                .filter(|_| !m.ranges.is_empty());
+            self.matches = Some(m);
+        }
+        if let Some(o) = self.outline.as_mut() {
+            o.selected = 0; // re-clamped against the new headings on use
+        }
+        self.resolve_wikilinks();
+        self.note = Some("reloaded".into());
+        Ok(())
+    }
+
+    /// Resume the saved reading position for the open file, silently, with a
+    /// note. Called by `open_path` — and by the binary for a direct
+    /// `carrel FILE` open, which builds its `App` without `open_path`.
+    pub fn restore_position(&mut self) {
+        if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref())
+            && let Some(saved) = crate::state::load_position_in(dir, file)
+            && saved > 0
+        {
+            let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
+            self.view.anchor = saved.min(last);
+            self.view.restore(&self.doc, &self.layout, self.text_h());
+            self.note = Some("resumed — gg for top".into());
+        }
+    }
+
+    /// Resolve every `[[wikilink]]` target once per document. One directory
+    /// listing plus an in-memory index scan per unique target — cheap, and it
+    /// gives the painter a synchronous answer for `file://` hyperlinks.
+    fn resolve_wikilinks(&mut self) {
+        self.wiki.clear();
+        let Some(dir) = self.file.as_deref().and_then(Path::parent) else {
+            return;
+        };
+        let index = self
+            .home_stash
+            .as_deref()
+            .map_or(&[][..], |h| h.entries.as_slice());
+        for i in 0..self.doc.links.len() {
+            let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
+            if !self.doc.is_wikilink(id) {
+                continue;
+            }
+            let target = &self.doc.links[i];
+            let bare = target.split('#').next().unwrap_or("");
+            if bare.is_empty() {
+                continue; // [[#Heading]] — in-document, nothing to resolve
+            }
+            if let Some(p) = crate::wiki::resolve(bare, dir, index) {
+                self.wiki.insert(id, p);
+            }
+        }
+    }
+
+    /// Every heading, in reading order, as layout blocks. Derived, never
+    /// stored — a heading list cannot go stale because it never exists
+    /// between frames.
+    #[must_use]
+    pub fn headings(&self) -> Vec<BlockIdx> {
+        (0..self.doc.block_count())
+            .map(|i| BlockIdx(u32::try_from(i).unwrap_or(u32::MAX)))
+            .filter(|b| {
+                matches!(
+                    self.doc.node_for_block(*b).kind,
+                    carrel_core::NodeKind::Heading { .. }
+                )
+            })
+            .collect()
+    }
+
+    /// Headings surviving the outline filter — case-insensitive substring,
+    /// the same rule as the home screen's `refilter`, so the two pickers
+    /// feel like one.
+    #[must_use]
+    pub fn outline_matches(&self) -> Vec<BlockIdx> {
+        let needle = self
+            .outline
+            .as_ref()
+            .map(|o| o.filter.to_lowercase())
+            .unwrap_or_default();
+        self.headings()
+            .into_iter()
+            .filter(|b| {
+                if needle.is_empty() {
+                    return true;
+                }
+                let n = self.doc.node_for_block(*b);
+                self.doc.text[n.doc.start as usize..n.doc.end as usize]
+                    .to_lowercase()
+                    .contains(&needle)
+            })
+            .collect()
+    }
+
+    /// Doc position of a link's first visible run, for revealing it.
+    fn link_pos(&self, id: LinkId) -> Option<u32> {
+        self.doc
+            .nodes
+            .iter()
+            .flat_map(|n| n.inlines.iter())
+            .find(|i| i.link == Some(id))
+            .map(|i| i.doc.start)
+    }
+
+    #[must_use]
+    pub fn text_w(&self) -> u16 {
+        Self::text_size(self.cols, self.rows, self.hints).0.max(1)
+    }
+
+    #[must_use]
+    pub fn text_h(&self) -> u16 {
+        Self::text_size(self.cols, self.rows, self.hints).1.max(1)
+    }
+
+    #[must_use]
+    pub fn searching(&self) -> bool {
+        matches!(self.mode, Mode::Search { .. })
+    }
+
+    /// §3.5: rebuild the derived layer, then restore position from the anchor.
+    pub fn on_resize(&mut self, cols: u16, rows: u16) {
+        self.cols = cols;
+        self.rows = rows;
+        self.relayout();
+    }
+
+    /// Rebuild layout — including image row-heights recomputed from stored
+    /// dimensions at the current width — and restore the reading position.
+    ///
+    /// **Image dimension arrival is just another reflow.** The anchor
+    /// machinery that keeps a resize stable keeps this stable too; nothing
+    /// about it is a special case.
+    pub fn relayout(&mut self) {
+        let w = self.text_w();
+        let mut image_rows: HashMap<BlockIdx, u32> = self
+            .image_dims
+            .iter()
+            .map(|(b, px)| {
+                let indent = self.doc.node_for_block(*b).indent;
+                let avail = w.saturating_sub(indent).max(1);
+                (*b, crate::images::rows_for_dims(*px, self.font_px, avail))
+            })
+            .collect();
+        // A rendered diagram is, layout-wise, an image whose rows happen to
+        // be text: same height-override channel, same reflow machinery.
+        if self.show_diagrams {
+            for (b, art) in &self.diagram_art {
+                image_rows.insert(*b, u32::try_from(art.len()).unwrap_or(u32::MAX));
+            }
+        }
+        self.layout = Layout::with_images(&self.doc, w, image_rows, self.wrap_tables);
+        self.view.restore(&self.doc, &self.layout, self.text_h());
+        // Matches and `matches.current` are untouched. That is the whole point.
+    }
+
+    fn rerun_search(&mut self) {
+        let Mode::Search { input, .. } = &self.mode else {
+            return;
+        };
+        if input.is_empty() {
+            self.matches = None;
+            return;
+        }
+        // `flexible_ws` is on: someone searching a phrase they can SEE must
+        // match across the author's hard-wrapped source line.
+        self.matches = Some(search(&self.doc, input, true));
+    }
+}
+
+/// Refuse documents whose byte offsets cannot fit the position type.
+///
+/// Every position in this system is a `u32` byte offset **by design**
+/// (architecture.md (private notes repo) §1.3); a ≥ 4 GiB file would silently truncate
+/// every offset and corrupt search, layout, and provenance. Refusing loudly
+/// beats corrupting quietly — and a 4 GiB "markdown file" is not a document,
+/// it is a mistake.
+pub fn check_document_size(path: &Path) -> std::io::Result<()> {
+    let len = std::fs::metadata(path)?.len();
+    if len >= u64::from(u32::MAX) {
+        return Err(std::io::Error::other(format!(
+            "file is {len} bytes; carrel documents are limited to 4 GiB \
+             because positions are 32-bit byte offsets",
+        )));
+    }
+    Ok(())
+}
+
+/// The one transition. Pure state, no drawing and no terminal.
+///
+/// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
+/// file it is opening. Everything else is arithmetic over state.
+pub fn update(app: &mut App, action: Action) -> Outcome {
+    // The lamp switch works from ANY state — hiding the hints must never
+    // require first backing out of whatever you were doing.
+    if let Action::HintsToggle = action {
+        app.hints = !app.hints;
+        if let Some(dir) = app.config_dir.as_deref() {
+            let _ = crate::config::save_hints_in(dir, app.hints);
+        }
+        app.relayout(); // the reader's text height changes with the row
+        return Outcome::Redraw;
+    }
+    // The help overlay owns the keyboard while it is up: scroll scrolls the
+    // sheet, dismiss-shaped actions close it, everything else is inert — a
+    // stray keystroke must not navigate the document underneath.
+    if let Some(scroll) = app.help {
+        return match action {
+            Action::HelpToggle | Action::Dismiss | Action::CloseFile => {
+                app.help = None;
+                Outcome::Redraw
+            }
+            Action::Scroll(_, n) => {
+                app.help = Some(if n < 0 {
+                    scroll.saturating_sub(u16::try_from(n.unsigned_abs()).unwrap_or(u16::MAX))
+                } else {
+                    scroll.saturating_add(u16::try_from(n.unsigned_abs()).unwrap_or(u16::MAX))
+                });
+                Outcome::Redraw
+            }
+            Action::GoToStart => {
+                app.help = Some(0);
+                Outcome::Redraw
+            }
+            Action::Quit => Outcome::Quit,
+            _ => Outcome::Idle,
+        };
+    }
+    // The outline picker owns the keyboard the same way (help wins when
+    // both would apply — it is bound in outline mode's key set as nothing,
+    // so the case cannot arise from keys, only from synthetic actions).
+    if app.outline.is_some() {
+        return outline_update(app, action);
+    }
+    if app.is_home() {
+        return home_update(app, action);
+    }
+    reader_update(app, action)
+}
+
+/// Transitions while the outline picker is up.
+fn outline_update(app: &mut App, action: Action) -> Outcome {
+    match action {
+        Action::OutlineToggle => {
+            app.outline = None;
+            Outcome::Redraw
+        }
+        Action::OutlineMove(n) => {
+            let last = app.outline_matches().len().saturating_sub(1);
+            if let Some(o) = app.outline.as_mut() {
+                o.selected = if n < 0 {
+                    o.selected.saturating_sub(n.unsigned_abs() as usize)
+                } else {
+                    o.selected.saturating_add(n.unsigned_abs() as usize)
+                }
+                .min(last);
+            }
+            Outcome::Redraw
+        }
+        Action::OutlineKey(k) => {
+            match k {
+                SearchKey::Char(c) => {
+                    if let Some(o) = app.outline.as_mut() {
+                        o.filter.push(c);
+                    }
+                }
+                SearchKey::Backspace => {
+                    if let Some(o) = app.outline.as_mut() {
+                        o.filter.pop();
+                    }
+                }
+                SearchKey::Accept => return outline_update(app, Action::OutlineJump),
+                // Two-stage escape, exactly like the home filter.
+                SearchKey::Cancel => {
+                    let empty = app.outline.as_ref().is_none_or(|o| o.filter.is_empty());
+                    if empty {
+                        app.outline = None;
+                    } else if let Some(o) = app.outline.as_mut() {
+                        o.filter.clear();
+                    }
+                    return Outcome::Redraw;
+                }
+            }
+            // The list shrank or grew: keep the selection on it.
+            let last = app.outline_matches().len().saturating_sub(1);
+            if let Some(o) = app.outline.as_mut() {
+                o.selected = o.selected.min(last);
+            }
+            Outcome::Redraw
+        }
+        Action::OutlineJump => {
+            let matches = app.outline_matches();
+            let Some(block) = app
+                .outline
+                .as_ref()
+                .and_then(|o| matches.get(o.selected).copied())
+            else {
+                return Outcome::Idle;
+            };
+            app.outline = None;
+            // A jump is a link follow in spirit: Ctrl-O comes back.
+            if let Some(here) = app.file.clone() {
+                app.history.push((here, app.view.anchor));
+            }
+            let row = app.layout.row_start(block);
+            let h = app.text_h();
+            app.view.scroll_to(&app.doc, &app.layout, row, h);
+            Outcome::Redraw
+        }
+        Action::Quit => Outcome::Quit,
+        _ => Outcome::Idle,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn home_update(app: &mut App, action: Action) -> Outcome {
+    match action {
+        Action::Quit => return Outcome::Quit,
+
+        Action::HomeOpen => {
+            // In content-search mode Enter opens the selected HIT, with the
+            // query as the live in-document search, landed on match one.
+            let search_query = app.home().and_then(|h| {
+                (h.mode == HomeMode::Search).then(|| {
+                    (
+                        h.hits.get(h.hit_selected).map(|hit| hit.path.clone()),
+                        h.query.clone(),
+                    )
+                })
+            });
+            if let Some((hit_path, query)) = search_query {
+                let Some(path) = hit_path else {
+                    return Outcome::Idle;
+                };
+                return match app.open_path(&path) {
+                    Ok(()) => {
+                        app.matches = Some(search(&app.doc, &query, true));
+                        return update(app, Action::MatchStep(1));
+                    }
+                    Err(e) => {
+                        if let Some(h) = app.home_mut() {
+                            h.note = Some(format!("cannot open {}: {e}", path.display()));
+                        }
+                        Outcome::Redraw
+                    }
+                };
+            }
+            let Some(path) = app
+                .home()
+                .and_then(|h| h.selected_path().map(Path::to_path_buf))
+            else {
+                return Outcome::Idle;
+            };
+            return match app.open_path(&path) {
+                Ok(()) => Outcome::Redraw,
+                // Staying on the home screen with a note beats dropping the
+                // user into an empty reader wondering what happened.
+                Err(e) => {
+                    if let Some(h) = app.home_mut() {
+                        h.note = Some(format!("cannot open {}: {e}", path.display()));
+                    }
+                    Outcome::Redraw
+                }
+            };
+        }
+
+        Action::PickerChoose => {
+            // Enter follows the HIGHLIGHT. The typed path only applies while
+            // `Other…` itself is highlighted — otherwise typing into Other…
+            // and then moving back up would leave Enter committing the
+            // abandoned text forever, with escape the only way out.
+            let Some(root) = app.home().and_then(|h| {
+                let p = &h.picker;
+                if p.selected < p.roots.len() {
+                    p.roots.get(p.selected).cloned()
+                } else {
+                    p.typed
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .map(PathBuf::from)
+                }
+            }) else {
+                return Outcome::Idle;
+            };
+            if !root.is_dir() {
+                if let Some(h) = app.home_mut() {
+                    h.note = Some(format!("not a directory: {}", root.display()));
+                }
+                return Outcome::Redraw;
+            }
+            // Persisting here is the whole point of the picker: it is how a
+            // choice becomes the default. A failed write is not worth blocking
+            // the user over — the choice still applies to this run. Tests run
+            // with no `config_dir`, so they can never write the real file.
+            let saved = match app.config_dir.as_deref() {
+                Some(dir) => crate::config::save_root_in(dir, &root),
+                None => Ok(()),
+            };
+            let cached = crate::scan::load_cache(&root);
+            if let Some(h) = app.home_mut() {
+                h.set_root(root, cached);
+                if let Err(e) = saved {
+                    h.note = Some(format!("could not save the default: {e}"));
+                }
+            }
+            return Outcome::Redraw;
+        }
+
+        Action::HelpToggle => {
+            app.help = Some(0);
+            return Outcome::Redraw;
+        }
+
+        Action::PickerOpen => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            if let Some(h) = app.home_mut() {
+                h.picker.roots = Home::candidate_roots(&cwd);
+                h.picker.selected = 0;
+                h.picker.typed = None;
+                h.mode = HomeMode::Picker;
+            }
+            return Outcome::Redraw;
+        }
+
+        _ => {}
+    }
+
+    let Some(h) = app.home_mut() else {
+        return Outcome::Idle;
+    };
+
+    match action {
+        Action::HomeSearchMode => {
+            h.mode = HomeMode::Search;
+            h.query.clear();
+            h.hits.clear();
+            h.hit_selected = 0;
+            h.grep_done = false;
+            Outcome::Redraw
+        }
+        Action::HomeMove(n) if h.mode == HomeMode::Search => {
+            let last = h.hits.len().saturating_sub(1);
+            h.hit_selected = if n < 0 {
+                h.hit_selected.saturating_sub(n.unsigned_abs() as usize)
+            } else {
+                h.hit_selected.saturating_add(n.unsigned_abs() as usize)
+            }
+            .min(last);
+            Outcome::Redraw
+        }
+        Action::HomeKey(k) if h.mode == HomeMode::Search => {
+            match k {
+                SearchKey::Char(c) => {
+                    h.query.push(c);
+                    h.hits.clear();
+                    h.hit_selected = 0;
+                    h.grep_done = false;
+                }
+                SearchKey::Backspace => {
+                    h.query.pop();
+                    h.hits.clear();
+                    h.hit_selected = 0;
+                    h.grep_done = false;
+                }
+                SearchKey::Accept => return Outcome::Idle,
+                // Two-stage escape, same as the filter.
+                SearchKey::Cancel => {
+                    if h.query.is_empty() {
+                        h.mode = HomeMode::Normal;
+                        h.hits.clear();
+                    } else {
+                        h.query.clear();
+                        h.hits.clear();
+                        h.hit_selected = 0;
+                    }
+                }
+            }
+            Outcome::Redraw
+        }
+        Action::HomeMove(n) => {
+            if h.mode == HomeMode::Picker {
+                let last = h.picker.roots.len();
+                h.picker.selected = if n < 0 {
+                    h.picker.selected.saturating_sub(n.unsigned_abs() as usize)
+                } else {
+                    h.picker
+                        .selected
+                        .saturating_add(n.unsigned_abs() as usize)
+                        .min(last)
+                };
+            } else {
+                h.move_by(n);
+            }
+            Outcome::Redraw
+        }
+        Action::HomeGo(Edge::First) => {
+            h.go_first();
+            Outcome::Redraw
+        }
+        Action::HomeGo(Edge::Last) => {
+            h.go_last();
+            Outcome::Redraw
+        }
+        // Cancelling the picker also lands here: it opens from the menu
+        // (`d` is a normal-mode key), so Esc returns to the menu — genuinely
+        // the same transition.
+        Action::HomeNormalMode | Action::PickerCancel => {
+            h.mode = HomeMode::Normal;
+            Outcome::Redraw
+        }
+        Action::HomeFilterMode => {
+            h.mode = HomeMode::Filter;
+            Outcome::Redraw
+        }
+        Action::HomeKey(k) => {
+            // In the picker, keystrokes belong to the picker alone. Typing
+            // edits the `Other…` path only while `Other…` is selected, and
+            // NOTHING may fall through to the filter hidden behind the
+            // overlay — that corruption was invisible until Esc.
+            let on_other = h.mode == HomeMode::Picker;
+            let other_selected = on_other && h.picker.selected == h.picker.roots.len();
+            match k {
+                SearchKey::Char(c) => {
+                    if other_selected {
+                        h.picker.typed.get_or_insert_with(String::new).push(c);
+                    } else if !on_other {
+                        h.filter.push(c);
+                        h.refilter();
+                    }
+                }
+                SearchKey::Backspace => {
+                    if other_selected {
+                        if let Some(t) = h.picker.typed.as_mut() {
+                            t.pop();
+                        }
+                    } else if !on_other {
+                        h.filter.pop();
+                        h.refilter();
+                    }
+                }
+                SearchKey::Accept => return Outcome::Idle,
+                SearchKey::Cancel => {
+                    // Two-stage escape: clear the filter first, change mode only
+                    // when there is nothing left to clear.
+                    if h.filter.is_empty() {
+                        h.mode = HomeMode::Normal;
+                    } else {
+                        h.filter.clear();
+                        h.refilter();
+                    }
+                }
+            }
+            Outcome::Redraw
+        }
+        // Reader-only actions cannot corrupt home state.
+        _ => Outcome::Idle,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn reader_update(app: &mut App, action: Action) -> Outcome {
+    let h = app.text_h();
+    // Notes are one-shot: whatever happens next replaces or clears them.
+    app.note = None;
+    match action {
+        Action::Quit => {
+            app.save_position();
+            Outcome::Quit
+        }
+
+        Action::CloseFile => close_file(app),
+
+        Action::ScrollTo(row) => {
+            app.view.scroll_to(&app.doc, &app.layout, row, h);
+            Outcome::Redraw
+        }
+
+        Action::Dismiss => {
+            app.selected_link = None;
+            app.selection = None;
+            app.sel_anchor = None;
+            Outcome::Redraw
+        }
+
+        Action::SelectAnchor(cluster) => {
+            app.selection = None;
+            app.sel_anchor = Some(cluster);
+            Outcome::Redraw
+        }
+        Action::SelectDrag(cluster) => {
+            let Some(anchor) = app.sel_anchor else {
+                return Outcome::Idle;
+            };
+            let start = anchor.0.min(cluster.0);
+            let end = anchor.1.max(cluster.1);
+            app.selection = Some(start..end);
+            Outcome::Redraw
+        }
+        Action::SelectRelease => {
+            app.sel_anchor = None;
+            copy_selection(app);
+            Outcome::Redraw
+        }
+        Action::SelectWord(byte) => {
+            app.selection = word_range_at(&app.doc.text, byte);
+            Outcome::Redraw
+        }
+        Action::SelectBlock(byte) => {
+            let node = app.doc.node_for_block(app.doc.block_at_doc(DocByte(byte)));
+            app.selection = (!node.doc.is_empty()).then(|| node.doc.clone());
+            Outcome::Redraw
+        }
+
+        Action::LinkStep(n) => link_step(app, n, h),
+
+        Action::LinkFollow => link_follow(app),
+
+        Action::Back => go_back(app, h),
+
+        Action::Scroll(span, n) => {
+            let step = match span {
+                Span::Line => 1,
+                Span::HalfPage => i32::from(h / 2).max(1),
+                Span::Page => i32::from(h).max(1),
+            };
+            app.view
+                .scroll_by(&app.doc, &app.layout, n.saturating_mul(step), h);
+            Outcome::Redraw
+        }
+
+        Action::GoToStart => {
+            app.view.scroll_to(&app.doc, &app.layout, 0, h);
+            Outcome::Redraw
+        }
+        Action::GoToEnd => {
+            app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
+            Outcome::Redraw
+        }
+        Action::GoToRow(r) => {
+            app.view.scroll_to(&app.doc, &app.layout, r, h);
+            Outcome::Redraw
+        }
+
+        Action::BlockStep(n) => {
+            let cur = app.layout.block_at_row(app.view.scroll_row).0;
+            let last = u32::try_from(app.doc.block_count().saturating_sub(1)).unwrap_or(u32::MAX);
+            let target = if n < 0 {
+                cur.saturating_sub(n.unsigned_abs())
+            } else {
+                cur.saturating_add(n.unsigned_abs()).min(last)
+            };
+            let row = app.layout.row_start(BlockIdx(target));
+            app.view.scroll_to(&app.doc, &app.layout, row, h);
+            Outcome::Redraw
+        }
+
+        Action::Recenter(at) => {
+            // Positions the CURRENT MATCH, not a cursor — a reader has none.
+            let Some(byte) = app
+                .matches
+                .as_ref()
+                .and_then(|m| m.current.and_then(|i| m.ranges.get(i)).map(|r| r.start))
+            else {
+                return Outcome::Idle;
+            };
+            app.view.reveal(&app.doc, &app.layout, byte, h, at);
+            Outcome::Redraw
+        }
+
+        Action::SearchOpen(dir) => {
+            app.mode = Mode::Search {
+                input: String::new(),
+                dir,
+                saved: app.view.anchor,
+            };
+            Outcome::Redraw
+        }
+
+        Action::SearchKey(k) => search_key(app, k, h),
+
+        Action::MatchStep(n) => {
+            let Some(m) = app.matches.as_mut() else {
+                return Outcome::Idle;
+            };
+            if m.ranges.is_empty() {
+                return Outcome::Idle;
+            }
+            let len = m.ranges.len();
+            let cur = match m.current {
+                Some(i) => {
+                    // rem_euclid keeps the step non-negative, so `N` at match 0
+                    // wraps to the end rather than underflowing.
+                    let span = i32::try_from(len).unwrap_or(i32::MAX);
+                    let step = usize::try_from(n.rem_euclid(span)).unwrap_or(0);
+                    // Say so when the cycle passes an end — vim's
+                    // "search hit BOTTOM", at reader volume.
+                    let wrapped = if n >= 0 {
+                        step != 0 && i + step >= len
+                    } else {
+                        let back = usize::try_from((-n).rem_euclid(span)).unwrap_or(0);
+                        back != 0 && i < back
+                    };
+                    if wrapped {
+                        app.note = Some("search wrapped".into());
+                    }
+                    (i + step) % len
+                }
+                // The first step lands ON the first match going forward and the
+                // last going backward, rather than stepping past one.
+                None => {
+                    if n >= 0 {
+                        0
+                    } else {
+                        len - 1
+                    }
+                }
+            };
+            m.current = Some(cur);
+            let byte = m.ranges[cur].start;
+            app.view
+                .reveal(&app.doc, &app.layout, byte, h, Where::Middle);
+            Outcome::Redraw
+        }
+
+        Action::HelpToggle => {
+            app.help = Some(0);
+            Outcome::Redraw
+        }
+
+        Action::OutlineToggle => {
+            let heads = app.headings();
+            if heads.is_empty() {
+                app.note = Some("no headings in this document".into());
+                return Outcome::Redraw;
+            }
+            // Pre-select the section being read: the last heading at or
+            // before the block containing the anchor.
+            let at = app.doc.block_at_doc(DocByte(app.view.anchor));
+            let selected = heads.iter().rposition(|b| *b <= at).unwrap_or(0);
+            app.outline = Some(Outline {
+                filter: String::new(),
+                selected,
+            });
+            Outcome::Redraw
+        }
+
+        Action::DiagramToggle => {
+            app.show_diagrams = !app.show_diagrams;
+            app.note = Some(
+                if app.show_diagrams {
+                    "diagrams: rendered"
+                } else {
+                    "diagrams: source"
+                }
+                .to_string(),
+            );
+            app.relayout();
+            Outcome::Redraw
+        }
+
+        Action::TableToggle => {
+            app.wrap_tables = !app.wrap_tables;
+            app.note = Some(
+                if app.wrap_tables {
+                    "tables: wrapped"
+                } else {
+                    "tables: cards"
+                }
+                .to_string(),
+            );
+            app.relayout();
+            Outcome::Redraw
+        }
+
+        // Home-only actions never reach the reader.
+        _ => Outcome::Idle,
+    }
+}
+
+/// Back to the library, if we came from it. Entries, filter, and selection
+/// are exactly as they were left; opened directly, `q` quits like a pager.
+fn close_file(app: &mut App) -> Outcome {
+    app.save_position();
+    let Some(h) = app.home_stash.take() else {
+        return Outcome::Quit;
+    };
+    app.screen = Screen::Home(h);
+    app.matches = None;
+    app.selected_link = None;
+    app.history.clear();
+    Outcome::Redraw
+}
+
+fn go_back(app: &mut App, h: u16) -> Outcome {
+    let Some((prev, anchor)) = app.history.pop() else {
+        return Outcome::Idle;
+    };
+    // A same-document entry (a fragment jump) restores the position without
+    // re-reading the file — nothing about the document changed.
+    if app.file.as_deref() == Some(prev.as_path()) {
+        app.view.anchor = anchor;
+        app.view.restore(&app.doc, &app.layout, h);
+        return Outcome::Redraw;
+    }
+    match app.open_path(&prev) {
+        Ok(()) => {
+            // The anchor is a doc byte, so the reading position returns
+            // through the same StableViewport path as a resize.
+            app.view.anchor = anchor;
+            app.view.restore(&app.doc, &app.layout, h);
+        }
+        Err(e) => {
+            app.note = Some(format!("cannot go back to {}: {e}", prev.display()));
+        }
+    }
+    Outcome::Redraw
+}
+
+fn link_step(app: &mut App, n: i32, h: u16) -> Outcome {
+    let Ok(len) = i64::try_from(app.doc.links.len()) else {
+        return Outcome::Idle;
+    };
+    if len == 0 {
+        return Outcome::Idle;
+    }
+    let cur = match app.selected_link {
+        Some(LinkId(i)) => (i64::from(i) + i64::from(n)).rem_euclid(len),
+        // The first step lands ON the first link forward, the last backward.
+        None => {
+            if n >= 0 {
+                0
+            } else {
+                len - 1
+            }
+        }
+    };
+    let id = LinkId(u32::try_from(cur).unwrap_or(0));
+    app.selected_link = Some(id);
+    if let Some(pos) = app.link_pos(id) {
+        app.view
+            .reveal(&app.doc, &app.layout, pos, h, Where::Middle);
+    }
+    Outcome::Redraw
+}
+
+fn link_follow(app: &mut App) -> Outcome {
+    let Some(id) = app.selected_link else {
+        return Outcome::Idle;
+    };
+    let url = app.doc.links[id.0 as usize].to_string();
+    // A wikilink's destination is a note name, resolved at open time — not a
+    // path relative to this file and never a URI.
+    if app.doc.is_wikilink(id) {
+        return wiki_follow(app, id, &url);
+    }
+    // External targets are the terminal's job via OSC 8. A reader does not
+    // spawn programs.
+    if url.contains("://") || url.starts_with("mailto:") {
+        app.note = Some(format!("external link — click or copy: {url}"));
+        return Outcome::Redraw;
+    }
+    let Some(here) = app.file.clone() else {
+        app.note = Some("no file context to resolve a relative link".into());
+        return Outcome::Redraw;
+    };
+    // `#section` jumps within this document; `notes.md#section` opens the
+    // file, then jumps. Fragments resolve through the core's GitHub-style
+    // slugs, so both frontends agree on where a link lands.
+    let (bare, frag) = match url.split_once('#') {
+        Some((b, f)) => (b, Some(f)),
+        None => (url.as_str(), None),
+    };
+    if bare.is_empty() {
+        let Some(frag) = frag.filter(|f| !f.is_empty()) else {
+            app.note = Some("nothing to follow".into());
+            return Outcome::Redraw;
+        };
+        let anchor = app.view.anchor;
+        if jump_to_fragment(app, frag) {
+            app.history.push((here, anchor));
+        }
+        return Outcome::Redraw;
+    }
+    let target = here.parent().unwrap_or(Path::new(".")).join(bare);
+    let anchor = app.view.anchor;
+    match app.open_path(&target) {
+        Ok(()) => {
+            app.history.push((here, anchor));
+            // A missing fragment in an opened file is not an error: you are
+            // in the right document, at the top, and the note says why.
+            if let Some(f) = frag.filter(|f| !f.is_empty()) {
+                jump_to_fragment(app, f);
+            }
+            Outcome::Redraw
+        }
+        Err(e) => {
+            app.note = Some(format!("cannot open {}: {e}", target.display()));
+            Outcome::Redraw
+        }
+    }
+}
+
+/// Fill the clipboard outbox from the current selection — or say why not.
+/// The 100 KiB cap respects terminal OSC length limits; a selection that
+/// large is a mis-drag, not a copy.
+fn copy_selection(app: &mut App) {
+    let Some(sel) = app.selection.clone() else {
+        return;
+    };
+    if sel.is_empty() {
+        return;
+    }
+    if sel.end - sel.start > 100_000 {
+        app.note = Some("selection too large to copy".into());
+        return;
+    }
+    let Some(text) = app.doc.text.get(sel.start as usize..sel.end as usize) else {
+        return;
+    };
+    app.note = Some(format!("copied {} chars", text.chars().count()));
+    app.clipboard = Some(text.to_string());
+}
+
+/// The alphanumeric/`_`/`-` run around `byte`, or `None` on a non-word cell.
+fn word_range_at(text: &str, byte: u32) -> Option<std::ops::Range<u32>> {
+    let mut at = byte as usize;
+    if at >= text.len() {
+        return None;
+    }
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    if !text[at..].chars().next().is_some_and(is_word) {
+        return None;
+    }
+    let end = at + text[at..].find(|c| !is_word(c)).unwrap_or(text.len() - at);
+    let start = text[..at].rfind(|c| !is_word(c)).map_or(0, |i| {
+        i + text[i..].chars().next().map_or(1, char::len_utf8)
+    });
+    Some(u32::try_from(start).unwrap_or(0)..u32::try_from(end).unwrap_or(u32::MAX))
+}
+
+/// Follow a `[[wikilink]]`: the file was resolved at open time, the fragment
+/// goes through the same slug jump as ordinary links.
+fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
+    let (bare, frag) = match url.split_once('#') {
+        Some((b, f)) => (b, Some(f)),
+        None => (url, None),
+    };
+    let Some(here) = app.file.clone() else {
+        app.note = Some("no file context to resolve a wikilink".into());
+        return Outcome::Redraw;
+    };
+    if bare.is_empty() {
+        // [[#Heading]] — an in-document jump.
+        let Some(frag) = frag.filter(|f| !f.is_empty()) else {
+            app.note = Some("nothing to follow".into());
+            return Outcome::Redraw;
+        };
+        let anchor = app.view.anchor;
+        if jump_to_wiki_fragment(app, frag) {
+            app.history.push((here, anchor));
+        }
+        return Outcome::Redraw;
+    }
+    let Some(target) = app.wiki.get(&id).cloned() else {
+        app.note = Some(format!("no note named '{bare}' here"));
+        return Outcome::Redraw;
+    };
+    let anchor = app.view.anchor;
+    match app.open_path(&target) {
+        Ok(()) => {
+            app.history.push((here, anchor));
+            if let Some(f) = frag.filter(|f| !f.is_empty()) {
+                jump_to_wiki_fragment(app, f);
+            }
+        }
+        Err(e) => {
+            app.note = Some(format!("cannot open {}: {e}", target.display()));
+        }
+    }
+    Outcome::Redraw
+}
+
+/// `[[Note#Some Heading]]` carries heading TEXT, not a slug (Obsidian's
+/// convention). Try it as written first — someone may write the slug — then
+/// slugged the same way the core slugs headings.
+fn jump_to_wiki_fragment(app: &mut App, frag: &str) -> bool {
+    if app.doc.fragment_target(frag).is_some() {
+        return jump_to_fragment(app, frag);
+    }
+    let slug: String = frag
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect();
+    jump_to_fragment(app, &slug)
+}
+
+/// Scroll the heading `#frag` names to the top of the view. `false` (with a
+/// note) when no heading matches.
+fn jump_to_fragment(app: &mut App, frag: &str) -> bool {
+    let Some(at) = app.doc.fragment_target(frag) else {
+        app.note = Some(format!("no such section: #{frag}"));
+        return false;
+    };
+    let row = app
+        .layout
+        .row_start(app.doc.block_at_doc(carrel_core::DocByte(at)));
+    let h = app.text_h();
+    app.view.scroll_to(&app.doc, &app.layout, row, h);
+    true
+}
+
+fn search_key(app: &mut App, k: SearchKey, h: u16) -> Outcome {
+    match k {
+        SearchKey::Char(c) => {
+            if let Mode::Search { input, .. } = &mut app.mode {
+                input.push(c);
+            }
+            app.rerun_search();
+        }
+        SearchKey::Backspace => {
+            if let Mode::Search { input, .. } = &mut app.mode {
+                input.pop();
+            }
+            app.rerun_search();
+        }
+        SearchKey::Accept => {
+            let Mode::Search { dir, .. } = &app.mode else {
+                return Outcome::Idle;
+            };
+            let dir = *dir;
+            app.mode = Mode::Normal;
+            if app.matches.as_ref().is_some_and(|m| !m.ranges.is_empty()) {
+                let step = if dir == Direction::Forward { 1 } else { -1 };
+                return update(app, Action::MatchStep(step));
+            }
+        }
+        SearchKey::Cancel => {
+            let Mode::Search { saved, .. } = &app.mode else {
+                return Outcome::Idle;
+            };
+            let saved = *saved;
+            app.mode = Mode::Normal;
+            app.matches = None;
+            app.view.anchor = saved;
+            app.view.restore(&app.doc, &app.layout, h);
+        }
+    }
+    Outcome::Redraw
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hints_toggle_flips_and_persists_only_into_the_injected_dir() {
+        let cfg = tempfile::tempdir().unwrap();
+        let mut a = App::new("t.md".into(), Document::parse("# T"), 40, 10);
+        assert!(a.hints, "on by default");
+        update(&mut a, Action::HintsToggle);
+        assert!(!a.hints);
+        // No config_dir — nothing persisted anywhere.
+        a.config_dir = Some(cfg.path().into());
+        update(&mut a, Action::HintsToggle);
+        assert!(a.hints);
+        assert_eq!(crate::config::load_hints_in(cfg.path()), Some(true));
+    }
+
+    const SRC: &str =
+        "# T\n\nalpha beta gamma delta epsilon zeta eta theta iota kappa\n\n- one\n- two\n";
+
+    /// 20x6 leaves a 19x5 text area — narrow and short enough that this
+    /// document actually scrolls, which several tests below depend on.
+    fn app() -> App {
+        App::new("t.md".into(), Document::parse(SRC), 20, 6)
+    }
+
+    #[test]
+    fn scrolling_moves_the_view_and_asks_for_a_redraw() {
+        let mut a = app();
+        assert_eq!(
+            update(&mut a, Action::Scroll(Span::Line, 2)),
+            Outcome::Redraw
+        );
+        assert_eq!(a.view.scroll_row, 2);
+    }
+
+    #[test]
+    fn go_to_end_lands_on_the_last_screenful() {
+        let mut a = app();
+        update(&mut a, Action::GoToEnd);
+        assert_eq!(a.view.scroll_row, a.layout.max_scroll(a.text_h()));
+    }
+
+    #[test]
+    fn quit_reports_quit() {
+        let mut a = app();
+        assert_eq!(update(&mut a, Action::Quit), Outcome::Quit);
+    }
+
+    #[test]
+    fn opening_search_enters_search_mode_and_remembers_where_we_were() {
+        let mut a = app();
+        update(&mut a, Action::Scroll(Span::Line, 2));
+        let before = a.view.anchor;
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        assert!(a.searching());
+        match &a.mode {
+            Mode::Search { saved, .. } => assert_eq!(*saved, before),
+            Mode::Normal => panic!("expected search mode"),
+        }
+    }
+
+    #[test]
+    fn search_runs_incrementally_on_every_keystroke() {
+        let mut a = app();
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('a')));
+        let after_a = a.matches.as_ref().expect("matches after one char").len();
+        assert!(after_a > 0);
+        update(&mut a, Action::SearchKey(SearchKey::Char('l')));
+        let after_al = a.matches.as_ref().unwrap().len();
+        assert!(after_al < after_a, "a longer needle must not match more");
+    }
+
+    #[test]
+    fn cancelling_a_search_discards_matches_and_restores_the_position() {
+        let mut a = app();
+        update(&mut a, Action::Scroll(Span::Line, 2));
+        let before = a.view.anchor;
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('t')));
+        update(&mut a, Action::SearchKey(SearchKey::Cancel));
+        assert!(a.matches.is_none());
+        assert!(!a.searching());
+        assert_eq!(a.view.anchor, before);
+    }
+
+    #[test]
+    fn accepting_a_search_keeps_the_matches() {
+        let mut a = app();
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('a')));
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        assert!(!a.searching());
+        assert!(a.matches.is_some());
+    }
+
+    #[test]
+    fn match_step_wraps_around_and_sets_the_current_index() {
+        let mut a = app();
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('a')));
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        let n = a.matches.as_ref().unwrap().len();
+        assert_eq!(
+            a.matches.as_ref().unwrap().current,
+            Some(0),
+            "accept lands on the first"
+        );
+        update(&mut a, Action::MatchStep(i32::try_from(n).unwrap()));
+        assert_eq!(a.matches.as_ref().unwrap().current, Some(0), "wraps");
+    }
+
+    #[test]
+    fn recenter_is_a_no_op_without_a_current_match() {
+        let mut a = app();
+        let before = a.view.scroll_row;
+        assert_eq!(
+            update(&mut a, Action::Recenter(Where::Middle)),
+            Outcome::Idle
+        );
+        assert_eq!(a.view.scroll_row, before);
+    }
+
+    #[test]
+    fn resize_rebuilds_layout_and_keeps_the_anchor() {
+        let mut a = app();
+        update(&mut a, Action::Scroll(Span::Line, 3));
+        let before = a.view.anchor;
+        a.on_resize(40, 6);
+        assert_eq!(a.layout.width(), a.text_w());
+        assert_eq!(a.view.anchor, before);
+    }
+
+    #[test]
+    fn t_toggles_tables_between_cards_and_wrapped_and_says_so() {
+        let wide = "| name | description |\n|---|---|\n\
+                    | alpha | a value easily long enough to overflow |\n";
+        let mut a = App::new("t.md".into(), Document::parse(wide), 30, 10);
+        let h_cards = a.layout.height(BlockIdx(0));
+        update(&mut a, Action::TableToggle);
+        assert!(a.wrap_tables);
+        assert_eq!(a.note.as_deref(), Some("tables: wrapped"));
+        assert_ne!(a.layout.height(BlockIdx(0)), h_cards, "relayout happened");
+        update(&mut a, Action::TableToggle);
+        assert!(!a.wrap_tables);
+        assert_eq!(a.note.as_deref(), Some("tables: cards"));
+        assert_eq!(a.layout.height(BlockIdx(0)), h_cards);
+    }
+
+    #[test]
+    fn a_resize_across_the_card_threshold_keeps_the_anchor_row_visible() {
+        // The teeth of the property: after flipping modes via resize, the top
+        // visible row still contains the anchor (StableViewport, spec §3).
+        // Mirrors `top_visible_row` in `tests/resize.rs`, adapted to the real
+        // accessors (`on_resize`, `view.scroll_row` as a field, `Action::Scroll`
+        // taking a `Span`).
+        let wide = "before paragraph\n\n| name | description |\n|---|---|\n\
+                    | alpha | long enough value to overflow narrow widths |\n\
+                    | beta | second row value also fairly long here |\n\n\
+                    after paragraph\n";
+        let mut a = App::new("t.md".into(), Document::parse(wide), 80, 8);
+        update(&mut a, Action::Scroll(Span::Line, 3)); // land inside the table
+        let anchor = a.view.anchor;
+        a.on_resize(34, 8); // crosses the threshold: aligned -> cards
+        let b = a.layout.block_at_row(a.view.scroll_row);
+        let mut rows = Vec::new();
+        a.layout.rows_for(&a.doc, b, &mut rows);
+        let sub = (a.view.scroll_row - a.layout.row_start(b)) as usize;
+        let r = &rows[sub];
+        assert!(
+            r.doc.start <= anchor && (anchor < r.doc.end || r.doc.is_empty()),
+            "top row {r:?} must contain anchor {anchor}"
+        );
+    }
+
+    #[test]
+    fn the_home_screen_opens_the_selected_file_into_the_reader() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("x.md");
+        std::fs::write(&f, "# hello\n\nbody text").unwrap();
+
+        let cached = vec![Entry {
+            path: f.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 40, 10);
+        assert!(a.is_home());
+
+        assert_eq!(update(&mut a, Action::HomeOpen), Outcome::Redraw);
+        assert!(!a.is_home(), "must be in the reader now");
+        assert!(a.doc.text.contains("hello"), "{}", a.doc.text);
+        assert_eq!(a.path, "x.md");
+    }
+
+    #[test]
+    fn opening_with_nothing_selected_stays_on_the_home_screen() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        assert_eq!(update(&mut a, Action::HomeOpen), Outcome::Idle);
+        assert!(a.is_home());
+    }
+
+    #[test]
+    fn opening_a_file_that_vanished_keeps_you_on_the_home_screen_with_a_note() {
+        let mut a = App::new_home(
+            "/tmp".into(),
+            vec![Entry {
+                path: PathBuf::from("/nonexistent/gone.md"),
+                mtime: std::time::SystemTime::UNIX_EPOCH,
+            }],
+            40,
+            10,
+        );
+        assert_eq!(update(&mut a, Action::HomeOpen), Outcome::Redraw);
+        assert!(a.is_home(), "must not drop into an empty reader");
+        assert!(a.home().unwrap().note.is_some());
+    }
+
+    #[test]
+    fn escape_clears_a_filter_before_it_changes_mode() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        update(&mut a, Action::HomeFilterMode);
+        update(&mut a, Action::HomeKey(SearchKey::Char('x')));
+        update(&mut a, Action::HomeKey(SearchKey::Cancel));
+        let h = a.home().unwrap();
+        assert!(h.filter.is_empty(), "first Esc clears the filter");
+        assert_eq!(h.mode, HomeMode::Filter, "and stays in filter mode");
+
+        update(&mut a, Action::HomeKey(SearchKey::Cancel));
+        assert_eq!(
+            a.home().unwrap().mode,
+            HomeMode::Normal,
+            "second Esc leaves"
+        );
+    }
+
+    #[test]
+    fn a_note_lands_on_the_status_bar_of_the_screen_the_user_is_looking_at() {
+        // The theme name was invisible when cycling on the home screen: the
+        // note went to App::note, but the home status bar paints Home::note.
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        a.set_note("theme: nord".into());
+        assert_eq!(a.home().unwrap().note.as_deref(), Some("theme: nord"));
+        assert_eq!(a.note, None, "not on the reader's bar");
+
+        let mut r = App::new("t.md".into(), Document::parse("x"), 40, 10);
+        r.set_note("theme: nord".into());
+        assert_eq!(r.note.as_deref(), Some("theme: nord"));
+    }
+
+    #[test]
+    fn cycling_past_the_last_match_says_the_search_wrapped() {
+        let mut a = App::new("t.md".into(), Document::parse("x a x a x"), 40, 6);
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('a')));
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        update(&mut a, Action::MatchStep(1)); // -> 2 of 2
+        assert_eq!(a.note, None, "no note mid-cycle");
+        update(&mut a, Action::MatchStep(1)); // -> 1 of 2, wrapped
+        assert_eq!(a.note.as_deref(), Some("search wrapped"));
+        update(&mut a, Action::MatchStep(-1)); // back to 2 of 2, wrapped again
+        assert_eq!(a.note.as_deref(), Some("search wrapped"));
+    }
+
+    #[test]
+    fn following_a_fragment_link_jumps_to_its_heading_and_back_returns() {
+        let src = "[go](#target-section)\n\n# Filler\n\npara\n\npara\n\npara\n\n# Target Section\n\nthe destination\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 40, 6);
+        a.file = Some(PathBuf::from("/tmp/t.md"));
+        update(&mut a, Action::LinkStep(1));
+        assert!(a.selected_link.is_some());
+        update(&mut a, Action::LinkFollow);
+
+        let at = a.doc.fragment_target("target-section").unwrap();
+        let block = a.doc.block_at_doc(carrel_core::DocByte(at));
+        assert_eq!(
+            a.view.scroll_row,
+            a.layout.row_start(block),
+            "the heading's row is the top of the view"
+        );
+        update(&mut a, Action::Back);
+        assert_eq!(a.view.scroll_row, 0, "Back returns to where you were");
+    }
+
+    #[test]
+    fn an_unknown_fragment_says_so_instead_of_jumping() {
+        let src = "[go](#nowhere)\n\nbody\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 40, 6);
+        a.file = Some(PathBuf::from("/tmp/t.md"));
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow);
+        assert_eq!(a.view.scroll_row, 0);
+        assert!(
+            a.note.as_deref().is_some_and(|n| n.contains("nowhere")),
+            "{:?}",
+            a.note
+        );
+    }
+
+    #[test]
+    fn reader_actions_are_ignored_on_the_home_screen() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        assert_eq!(update(&mut a, Action::Scroll(Span::Line, 1)), Outcome::Idle);
+        assert!(a.is_home());
+    }
+
+    #[test]
+    fn image_dimensions_arriving_is_just_another_reflow() {
+        let src = "alpha beta gamma delta epsilon zeta\n\n![pic](p.png)\n\nomega psi chi phi\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 20, 6);
+        update(&mut a, Action::Scroll(Span::Line, 2));
+        let anchor = a.view.anchor;
+        let before = a.layout.total_rows();
+
+        // Pixels arrive: 100×200 px at the default (8,16) font.
+        a.image_dims.insert(BlockIdx(1), (100, 200));
+        a.relayout();
+
+        assert_eq!(a.view.anchor, anchor, "the anchor is the authority");
+        assert_ne!(a.layout.total_rows(), before, "the image grew the document");
+        assert!(a.layout.height(BlockIdx(1)) > 1);
+    }
+
+    #[test]
+    fn reopening_a_file_resumes_where_you_left_off() {
+        let d = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let f = d.path().join("long.md");
+        std::fs::write(&f, SRC).unwrap();
+
+        let cached = vec![Entry {
+            path: f.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached.clone(), 20, 6);
+        a.state_dir = Some(state.path().to_path_buf());
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::Scroll(Span::Line, 3));
+        let anchor = a.view.anchor;
+        assert!(anchor > 0, "the doc must actually scroll");
+        assert_eq!(update(&mut a, Action::Quit), Outcome::Quit);
+
+        let mut b = App::new_home(d.path().into(), cached, 20, 6);
+        b.state_dir = Some(state.path().to_path_buf());
+        update(&mut b, Action::HomeOpen);
+        assert_eq!(b.view.anchor, anchor, "silent resume");
+        assert_eq!(b.note.as_deref(), Some("resumed — gg for top"));
+    }
+
+    #[test]
+    fn a_position_at_the_top_is_not_saved_and_clears_a_stale_one() {
+        let d = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let f = d.path().join("doc.md");
+        std::fs::write(&f, SRC).unwrap();
+        crate::state::save_position_in(state.path(), &f, 7).unwrap();
+
+        let cached = vec![Entry {
+            path: f.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 20, 6);
+        a.state_dir = Some(state.path().to_path_buf());
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::GoToStart); // read it, go back to the top
+        update(&mut a, Action::Quit);
+        assert_eq!(
+            crate::state::load_position_in(state.path(), &f),
+            None,
+            "top of file means no entry"
+        );
+    }
+
+    #[test]
+    fn a_saved_position_past_a_shrunken_file_clamps_instead_of_panicking() {
+        let d = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let f = d.path().join("doc.md");
+        std::fs::write(&f, "tiny\n").unwrap();
+        crate::state::save_position_in(state.path(), &f, 10_000).unwrap();
+
+        let cached = vec![Entry {
+            path: f.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 20, 6);
+        a.state_dir = Some(state.path().to_path_buf());
+        update(&mut a, Action::HomeOpen);
+        assert!((a.view.anchor as usize) < a.doc.text.len().max(1));
+    }
+
+    #[test]
+    fn without_a_state_dir_nothing_is_persisted() {
+        // Every constructor defaults to None — the tests/home.rs lesson.
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("doc.md");
+        std::fs::write(&f, SRC).unwrap();
+        let cached = vec![Entry {
+            path: f.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 20, 6);
+        assert_eq!(a.state_dir, None);
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::Scroll(Span::Line, 3));
+        update(&mut a, Action::Quit); // must not create any file anywhere
+    }
+
+    #[test]
+    fn following_a_link_away_saves_the_position_of_the_file_you_left() {
+        let d = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let target = d.path().join("target.md");
+        std::fs::write(&target, "# target\n\nbody\n").unwrap();
+        // The link sits at the BOTTOM: revealing it via Tab re-anchors the
+        // view deep into the document, so the position saved on follow is
+        // meaningfully nonzero. (A link at the top would re-anchor to 0 and
+        // the save would — correctly — clear the entry.)
+        let here = d.path().join("here.md");
+        std::fs::write(&here, format!("{SRC}\n\n[go](target.md)\n")).unwrap();
+
+        let cached = vec![Entry {
+            path: here.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 20, 6);
+        a.state_dir = Some(state.path().to_path_buf());
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::LinkStep(1)); // reveal re-anchors mid-document
+        let anchor = a.view.anchor;
+        assert!(anchor > 0, "revealing the bottom link must scroll");
+        update(&mut a, Action::LinkFollow);
+        assert_eq!(a.path, "target.md");
+        assert_eq!(
+            crate::state::load_position_in(state.path(), &here),
+            Some(anchor),
+        );
+    }
+
+    #[test]
+    fn following_a_wikilink_opens_the_sibling_note() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Reflow Layer.md"), "# reflow\n\ncontent\n").unwrap();
+        let here = d.path().join("here.md");
+        std::fs::write(&here, "see [[Reflow Layer]] for details\n").unwrap();
+
+        let cached = vec![Entry {
+            path: here.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 40, 10);
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow);
+        assert_eq!(a.path, "Reflow Layer.md");
+        assert!(a.doc.text.contains("content"));
+        update(&mut a, Action::Back);
+        assert_eq!(a.path, "here.md", "history works for wikilinks too");
+    }
+
+    #[test]
+    fn an_unresolved_wikilink_notes_and_stays_put() {
+        let d = tempfile::tempdir().unwrap();
+        let here = d.path().join("here.md");
+        std::fs::write(&here, "see [[No Such Note]]\n").unwrap();
+        let cached = vec![Entry {
+            path: here.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 40, 10);
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow);
+        assert_eq!(a.path, "here.md", "did not navigate");
+        assert_eq!(a.note.as_deref(), Some("no note named 'No Such Note' here"));
+    }
+
+    #[test]
+    fn a_wikilink_fragment_jumps_after_opening() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("Note.md"),
+            "# Filler\n\npara\n\npara\n\npara\n\n# Target Section\n\ndest\n",
+        )
+        .unwrap();
+        let here = d.path().join("here.md");
+        std::fs::write(&here, "see [[Note#Target Section]]\n").unwrap();
+        let cached = vec![Entry {
+            path: here.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 40, 6);
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow);
+        assert_eq!(a.path, "Note.md");
+        let at = a.doc.fragment_target("target-section").unwrap();
+        let block = a.doc.block_at_doc(carrel_core::DocByte(at));
+        assert_eq!(a.view.scroll_row, a.layout.row_start(block));
+    }
+
+    #[test]
+    fn help_opens_scrolls_and_closes_without_touching_the_document() {
+        let mut a = app();
+        update(&mut a, Action::Scroll(Span::Line, 2));
+        let (row, anchor) = (a.view.scroll_row, a.view.anchor);
+
+        assert_eq!(update(&mut a, Action::HelpToggle), Outcome::Redraw);
+        assert_eq!(a.help, Some(0));
+        update(&mut a, Action::Scroll(Span::Line, 3));
+        assert_eq!(a.help, Some(3), "j scrolls the sheet");
+        assert_eq!(a.view.scroll_row, row, "the document did not move");
+
+        update(&mut a, Action::HelpToggle);
+        assert_eq!(a.help, None);
+        assert_eq!((a.view.scroll_row, a.view.anchor), (row, anchor));
+    }
+
+    #[test]
+    fn q_and_esc_close_help_rather_than_acting_on_the_document() {
+        let mut a = app();
+        update(&mut a, Action::HelpToggle);
+        assert_eq!(
+            update(&mut a, Action::CloseFile),
+            Outcome::Redraw,
+            "q closes help, not the file"
+        );
+        assert_eq!(a.help, None);
+        assert!(!a.is_home(), "still reading");
+
+        update(&mut a, Action::HelpToggle);
+        update(&mut a, Action::Dismiss); // Esc
+        assert_eq!(a.help, None);
+    }
+
+    #[test]
+    fn other_keys_are_inert_while_help_is_up() {
+        let mut a = app();
+        update(&mut a, Action::HelpToggle);
+        assert_eq!(
+            update(&mut a, Action::SearchOpen(Direction::Forward)),
+            Outcome::Idle
+        );
+        assert!(!a.searching());
+        assert_eq!(update(&mut a, Action::LinkStep(1)), Outcome::Idle);
+        assert_eq!(a.selected_link, None);
+    }
+
+    #[test]
+    fn help_works_on_the_home_screen_too() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        assert_eq!(update(&mut a, Action::HelpToggle), Outcome::Redraw);
+        assert_eq!(a.help, Some(0));
+        update(&mut a, Action::HelpToggle);
+        assert_eq!(a.help, None);
+        assert!(a.is_home());
+    }
+
+    #[test]
+    fn drag_selection_grows_copies_on_release_and_notes_the_size() {
+        let mut a = app();
+        // SRC starts "# T\n\nalpha beta…"; heading text "T" is doc 0..1.
+        let alpha = a.doc.text.find("alpha").unwrap() as u32;
+        update(&mut a, Action::SelectAnchor((alpha, alpha + 1)));
+        assert_eq!(a.selection, None, "a press alone selects nothing");
+        update(&mut a, Action::SelectDrag((alpha + 4, alpha + 5)));
+        assert_eq!(a.selection, Some(alpha..alpha + 5), "grown to the pointer");
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(a.clipboard.as_deref(), Some("alpha"));
+        assert_eq!(a.note.as_deref(), Some("copied 5 chars"));
+        assert_eq!(
+            a.selection,
+            Some(alpha..alpha + 5),
+            "still painted after release"
+        );
+    }
+
+    #[test]
+    fn dragging_backwards_selects_the_same_range() {
+        let mut a = app();
+        let alpha = a.doc.text.find("alpha").unwrap() as u32;
+        update(&mut a, Action::SelectAnchor((alpha + 4, alpha + 5)));
+        update(&mut a, Action::SelectDrag((alpha, alpha + 1)));
+        assert_eq!(a.selection, Some(alpha..alpha + 5));
+    }
+
+    #[test]
+    fn a_new_press_replaces_the_selection_and_esc_clears_it() {
+        let mut a = app();
+        let alpha = a.doc.text.find("alpha").unwrap() as u32;
+        update(&mut a, Action::SelectAnchor((alpha, alpha + 1)));
+        update(&mut a, Action::SelectDrag((alpha + 4, alpha + 5)));
+        update(&mut a, Action::SelectRelease);
+        update(&mut a, Action::SelectAnchor((alpha, alpha + 1)));
+        assert_eq!(a.selection, None, "a new press replaces");
+        update(&mut a, Action::Dismiss);
+        update(&mut a, Action::SelectAnchor((alpha, alpha + 1)));
+        update(&mut a, Action::SelectDrag((alpha + 1, alpha + 2)));
+        update(&mut a, Action::Dismiss);
+        assert_eq!(a.selection, None, "Esc clears");
+    }
+
+    #[test]
+    fn double_click_selects_the_word_under_the_pointer() {
+        let mut a = app();
+        let beta = a.doc.text.find("beta").unwrap() as u32;
+        update(&mut a, Action::SelectWord(beta + 2));
+        assert_eq!(a.selection, Some(beta..beta + 4));
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(a.clipboard.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn triple_click_selects_the_whole_block() {
+        let code = "intro\n\n```rust\nfn main() {\n    body();\n}\n```\n";
+        let mut a = App::new("t.md".into(), Document::parse(code), 60, 20);
+        let body = a.doc.text.find("body").unwrap() as u32;
+        update(&mut a, Action::SelectBlock(body));
+        update(&mut a, Action::SelectRelease);
+        let copied = a.clipboard.as_deref().unwrap();
+        assert!(copied.contains("fn main()"), "{copied:?}");
+        assert!(copied.contains("body();"));
+        assert!(!copied.contains("intro"), "only the code block");
+    }
+
+    #[test]
+    fn the_selection_survives_a_resize_bit_for_bit() {
+        let mut a = app();
+        let alpha = a.doc.text.find("alpha").unwrap() as u32;
+        update(&mut a, Action::SelectAnchor((alpha, alpha + 1)));
+        update(&mut a, Action::SelectDrag((alpha + 4, alpha + 5)));
+        let sel = a.selection.clone();
+        a.on_resize(11, 6);
+        assert_eq!(a.selection, sel, "byte ranges do not reflow");
+    }
+
+    #[test]
+    fn an_oversize_selection_notes_instead_of_copying() {
+        let big = "x".repeat(200_000);
+        let mut a = App::new("t.md".into(), Document::parse(&big), 60, 20);
+        update(&mut a, Action::SelectBlock(5));
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(a.clipboard, None);
+        assert_eq!(a.note.as_deref(), Some("selection too large to copy"));
+    }
+
+    #[test]
+    fn selection_actions_are_ignored_on_the_home_screen() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        assert_eq!(update(&mut a, Action::SelectAnchor((0, 1))), Outcome::Idle);
+        assert_eq!(update(&mut a, Action::SelectRelease), Outcome::Idle);
+        assert_eq!(a.selection, None);
+    }
+
+    const HEADINGS: &str = "# One\n\nalpha beta gamma delta epsilon zeta\n\n\
+                            ## Two\n\ntext under two here\n\n# Three\n\nmore\n";
+
+    #[test]
+    fn o_opens_the_outline_preselecting_the_current_section() {
+        let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
+        // Scroll until the viewport top sits under "Two".
+        let two = a
+            .doc
+            .text
+            .find("## Two")
+            .map_or_else(|| a.doc.text.find("Two").unwrap() as u32, |b| b as u32);
+        let block = a.doc.block_at_doc(carrel_core::DocByte(two));
+        let row = a.layout.row_start(block) + 1;
+        update(&mut a, Action::GoToRow(row));
+        update(&mut a, Action::OutlineToggle);
+        let o = a.outline.as_ref().expect("outline open");
+        let heads = a.headings();
+        assert_eq!(heads.len(), 3);
+        assert_eq!(
+            heads[o.selected], block,
+            "pre-selected the section being read"
+        );
+    }
+
+    #[test]
+    fn the_outline_filter_narrows_and_enter_jumps_with_history() {
+        let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
+        update(&mut a, Action::OutlineToggle);
+        update(&mut a, Action::OutlineKey(SearchKey::Char('t')));
+        update(&mut a, Action::OutlineKey(SearchKey::Char('h')));
+        update(&mut a, Action::OutlineKey(SearchKey::Char('r')));
+        assert_eq!(a.outline_matches().len(), 1, "only Three matches 'thr'");
+        a.file = Some(PathBuf::from("/tmp/t.md"));
+        update(&mut a, Action::OutlineJump);
+        assert!(a.outline.is_none(), "jump closes the outline");
+        let three = a.doc.text.find("Three").unwrap() as u32;
+        let block = a.doc.block_at_doc(carrel_core::DocByte(three));
+        assert_eq!(a.view.scroll_row, a.layout.row_start(block));
+        update(&mut a, Action::Back);
+        assert_eq!(a.view.scroll_row, 0, "Ctrl-O returns");
+    }
+
+    #[test]
+    fn outline_escape_clears_the_filter_before_closing() {
+        let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
+        update(&mut a, Action::OutlineToggle);
+        update(&mut a, Action::OutlineKey(SearchKey::Char('x')));
+        update(&mut a, Action::OutlineKey(SearchKey::Cancel));
+        assert!(a.outline.as_ref().is_some_and(|o| o.filter.is_empty()));
+        update(&mut a, Action::OutlineKey(SearchKey::Cancel));
+        assert!(a.outline.is_none(), "second Esc closes");
+    }
+
+    #[test]
+    fn a_document_without_headings_notes_instead_of_opening() {
+        let mut a = App::new("t.md".into(), Document::parse("just prose\n"), 30, 6);
+        update(&mut a, Action::OutlineToggle);
+        assert!(a.outline.is_none());
+        assert_eq!(a.note.as_deref(), Some("no headings in this document"));
+    }
+
+    #[test]
+    fn the_overlays_are_mutually_exclusive() {
+        let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
+        update(&mut a, Action::HelpToggle);
+        assert_eq!(update(&mut a, Action::OutlineToggle), Outcome::Idle);
+        assert!(a.outline.is_none(), "help owns the keys");
+        update(&mut a, Action::HelpToggle); // close help
+        update(&mut a, Action::OutlineToggle);
+        assert_eq!(
+            update(&mut a, Action::SearchOpen(Direction::Forward)),
+            Outcome::Idle,
+            "outline owns the keys"
+        );
+        assert!(!a.searching());
+        assert_eq!(update(&mut a, Action::LinkStep(1)), Outcome::Idle);
+    }
+
+    #[test]
+    fn outline_move_clamps_to_the_filtered_list() {
+        let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
+        update(&mut a, Action::OutlineToggle);
+        update(&mut a, Action::OutlineMove(100));
+        assert_eq!(a.outline.as_ref().unwrap().selected, 2, "clamped to last");
+        update(&mut a, Action::OutlineMove(-100));
+        assert_eq!(a.outline.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn reload_after_an_append_keeps_the_anchor_bit_for_bit() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("live.md");
+        std::fs::write(&f, SRC).unwrap();
+        let mut a = App::new("live.md".into(), Document::parse(SRC), 20, 6);
+        a.file = Some(f.clone());
+        update(&mut a, Action::Scroll(Span::Line, 3));
+        let anchor = a.view.anchor;
+        let rows = a.layout.total_rows();
+
+        std::fs::write(&f, format!("{SRC}\nappended tail paragraph here\n")).unwrap();
+        a.reload().unwrap();
+        assert_eq!(a.view.anchor, anchor, "an append moves nothing");
+        assert!(a.layout.total_rows() > rows, "the document grew");
+        assert_eq!(a.note.as_deref(), Some("reloaded"));
+    }
+
+    #[test]
+    fn reload_after_a_truncation_clamps_instead_of_panicking() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("live.md");
+        std::fs::write(&f, SRC).unwrap();
+        let mut a = App::new("live.md".into(), Document::parse(SRC), 20, 7);
+        a.file = Some(f.clone());
+        update(&mut a, Action::GoToEnd);
+
+        std::fs::write(&f, "tiny\n").unwrap();
+        a.reload().unwrap();
+        assert!((a.view.anchor as usize) < a.doc.text.len().max(1));
+        assert_eq!(a.view.scroll_row, 0, "a tiny doc has one screenful");
+    }
+
+    #[test]
+    fn reload_reruns_the_search_and_clamps_the_current_index() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("live.md");
+        std::fs::write(&f, "needle one\n\nneedle two\n").unwrap();
+        let mut a = App::new(
+            "live.md".into(),
+            Document::parse("needle one\n\nneedle two\n"),
+            40,
+            8,
+        );
+        a.file = Some(f.clone());
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        for c in "needle".chars() {
+            update(&mut a, Action::SearchKey(SearchKey::Char(c)));
+        }
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        update(&mut a, Action::MatchStep(1)); // current = 1 of 2
+        assert_eq!(a.matches.as_ref().unwrap().current, Some(1));
+
+        std::fs::write(&f, "needle alone\n").unwrap();
+        a.reload().unwrap();
+        let m = a.matches.as_ref().unwrap();
+        assert_eq!(m.len(), 1, "the count follows the new text");
+        assert_eq!(m.current, Some(0), "current clamped into range");
+    }
+
+    #[test]
+    fn reload_clears_the_selection_and_a_vanished_file_keeps_the_doc() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("live.md");
+        std::fs::write(&f, SRC).unwrap();
+        let mut a = App::new("live.md".into(), Document::parse(SRC), 20, 6);
+        a.file = Some(f.clone());
+        update(&mut a, Action::SelectAnchor((0, 1)));
+        update(&mut a, Action::SelectDrag((4, 5)));
+        assert!(a.selection.is_some());
+
+        std::fs::write(&f, format!("{SRC}\nmore\n")).unwrap();
+        a.reload().unwrap();
+        assert_eq!(a.selection, None, "old bytes, old meaning");
+
+        std::fs::remove_file(&f).unwrap();
+        assert!(a.reload().is_err(), "vanished file reports the error");
+        assert!(!a.doc.text.is_empty(), "the last good copy stays");
+    }
+
+    #[test]
+    fn slash_enters_content_search_and_esc_backs_out_in_two_stages() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        update(&mut a, Action::HomeSearchMode);
+        assert_eq!(a.home().unwrap().mode, HomeMode::Search);
+        update(&mut a, Action::HomeKey(SearchKey::Char('x')));
+        assert_eq!(a.home().unwrap().query, "x");
+        update(&mut a, Action::HomeKey(SearchKey::Cancel));
+        let h = a.home().unwrap();
+        assert!(h.query.is_empty(), "first Esc clears the query");
+        assert_eq!(h.mode, HomeMode::Search);
+        update(&mut a, Action::HomeKey(SearchKey::Cancel));
+        assert_eq!(a.home().unwrap().mode, HomeMode::Normal, "second leaves");
+    }
+
+    #[test]
+    fn opening_a_search_hit_lands_on_the_first_match_with_n_ready() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("doc.md");
+        std::fs::write(
+            &f,
+            "# T\n\nfiller\n\nthe needle sits here\n\nneedle again\n",
+        )
+        .unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 8);
+        update(&mut a, Action::HomeSearchMode);
+        for c in "needle".chars() {
+            update(&mut a, Action::HomeKey(SearchKey::Char(c)));
+        }
+        // The loop normally streams these in; inject directly.
+        if let Some(h) = a.home_mut() {
+            h.hits.push(crate::grep::Hit {
+                path: f.clone(),
+                count: 2,
+                first_line: "the needle sits here".into(),
+            });
+        }
+        update(&mut a, Action::HomeOpen);
+        assert!(!a.is_home(), "opened the hit");
+        let m = a.matches.as_ref().expect("search is live");
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.current, Some(0), "landed on the first match");
+    }
+
+    #[test]
+    fn search_hits_selection_moves_and_clamps() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        update(&mut a, Action::HomeSearchMode);
+        if let Some(h) = a.home_mut() {
+            for i in 0..3 {
+                h.hits.push(crate::grep::Hit {
+                    path: PathBuf::from(format!("/x/{i}.md")),
+                    count: 1,
+                    first_line: String::new(),
+                });
+            }
+        }
+        update(&mut a, Action::HomeMove(10));
+        assert_eq!(a.home().unwrap().hit_selected, 2, "clamped to last hit");
+        update(&mut a, Action::HomeMove(-10));
+        assert_eq!(a.home().unwrap().hit_selected, 0);
+    }
+
+    #[test]
+    fn editing_the_query_resets_the_hits() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        update(&mut a, Action::HomeSearchMode);
+        if let Some(h) = a.home_mut() {
+            h.hits.push(crate::grep::Hit {
+                path: PathBuf::from("/x/stale.md"),
+                count: 1,
+                first_line: String::new(),
+            });
+        }
+        update(&mut a, Action::HomeKey(SearchKey::Char('q')));
+        assert!(
+            a.home().unwrap().hits.is_empty(),
+            "stale hits cleared on edit"
+        );
+    }
+
+    const MERMAID: &str = "intro paragraph\n\n```mermaid\ngraph TD\n a-->b\n```\n\ntail\n";
+
+    #[test]
+    fn diagram_art_arrival_is_just_another_reflow() {
+        let mut a = App::new("t.md".into(), Document::parse(MERMAID), 40, 8);
+        update(&mut a, Action::Scroll(Span::Line, 1));
+        let anchor = a.view.anchor;
+        let before = a.layout.total_rows();
+
+        a.diagram_art.insert(BlockIdx(1), vec!["┌─┐".into(); 12]);
+        a.relayout();
+
+        assert_eq!(a.view.anchor, anchor, "the anchor is the authority");
+        assert!(
+            a.layout.total_rows() > before,
+            "12 art rows grew a 2-line code block"
+        );
+    }
+
+    #[test]
+    fn m_toggles_diagrams_between_art_and_source() {
+        let mut a = App::new("t.md".into(), Document::parse(MERMAID), 40, 8);
+        a.diagram_art.insert(BlockIdx(1), vec!["┌─┐".into(); 12]);
+        a.relayout();
+        let with_art = a.layout.total_rows();
+
+        update(&mut a, Action::DiagramToggle);
+        assert!(!a.show_diagrams);
+        assert_eq!(a.note.as_deref(), Some("diagrams: source"));
+        assert!(a.layout.total_rows() < with_art, "source rows are shorter");
+
+        update(&mut a, Action::DiagramToggle);
+        assert!(a.show_diagrams);
+        assert_eq!(a.note.as_deref(), Some("diagrams: rendered"));
+        assert_eq!(a.layout.total_rows(), with_art);
+    }
+
+    #[test]
+    fn opening_another_file_clears_the_art() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("other.md");
+        std::fs::write(&f, "plain\n").unwrap();
+        let mut a = App::new("t.md".into(), Document::parse(MERMAID), 40, 8);
+        a.diagram_art.insert(BlockIdx(1), vec!["┌─┐".into(); 3]);
+        a.open_path(&f).unwrap();
+        assert!(a.diagram_art.is_empty(), "old blocks, old art");
+    }
+
+    #[test]
+    fn a_resize_leaves_the_match_set_and_current_index_untouched() {
+        let mut a = app();
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('a')));
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        let ranges = a.matches.as_ref().unwrap().ranges.clone();
+        let current = a.matches.as_ref().unwrap().current;
+
+        a.on_resize(11, 6);
+
+        assert_eq!(a.matches.as_ref().unwrap().ranges, ranges, "mdfried #52");
+        assert_eq!(a.matches.as_ref().unwrap().current, current);
+    }
+}

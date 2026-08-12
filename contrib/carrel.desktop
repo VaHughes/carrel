@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Carrel
+GenericName=Markdown Reader
+Comment=A quiet place to read your markdown
+Exec=carrel %F
+Terminal=true
+Icon=carrel
+Categories=Office;Viewer;
+MimeType=text/markdown;text/x-markdown;
+Keywords=markdown;reader;viewer;md;

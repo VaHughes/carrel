@@ -1,0 +1,47 @@
+[package]
+name        = "carrel"
+description = "A quiet place to read your markdown."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+readme.workspace       = true
+keywords   = ["markdown", "reader", "tui", "terminal", "viewer"]
+categories = ["command-line-utilities", "text-processing"]
+
+[lib]
+name = "carrel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "carrel"
+path = "src/main.rs"
+
+[dependencies]
+carrel-core = { path = "../carrel-core", version = "2026.8.12" }
+ignore.workspace        = true
+image.workspace         = true
+merman.workspace        = true
+ratatui.workspace       = true
+ratatui-image.workspace = true
+
+# Dev-only. The resize invariant holds over `scroll x width x height`, a space
+# no hand-written example set covers.
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies.criterion]
+workspace = true
+
+# End-to-end resize latency is benchmark item 2 in architecture.md (private notes repo) §6 —
+# the number that keeps the eager height pass honest under a real drag.
+[[bench]]
+name    = "resize"
+harness = false

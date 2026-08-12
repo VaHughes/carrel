@@ -1,0 +1,23 @@
+# dist (cargo-dist) release configuration — packaging spec §1.
+# Six unix targets; Windows joins after the Q19 minimum-viable port.
+# Homebrew tap installer joins once VaHughes/homebrew-tap exists (spec §2).
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+# Whether to install an updater program
+install-updater = false
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Extra files bundled into every archive — the desktop entry rides along so
+# distro packagers and manual installers get it without cloning the repo (Q21)
+include = ["contrib/carrel.desktop"]

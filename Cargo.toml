@@ -1,0 +1,103 @@
+[workspace]
+resolver = "3"
+members = ["crates/carrel-core", "crates/carrel"]
+
+[workspace.package]
+# CalVer spelled as semver (major = year, no leading zeros) — the scheme the
+# CHANGELOG documents. Bump to the release date when tagging; `dist` releases
+# ride `v{version}` tags. Packaging spec §3.
+version = "2026.8.12"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/VaHughes/carrel"
+homepage = "https://github.com/VaHughes/carrel"
+authors = ["Joshua Hughes"]
+readme = "README.md"
+
+[workspace.dependencies]
+# --- carrel-core ---
+# `default-features = false` drops getopts + the HTML renderer; we need neither.
+pulldown-cmark       = { version = "0.13.4", default-features = false }
+# Unicode 17.0 extended grapheme clusters. The unit all width and layout math uses.
+unicode-segmentation = "1.13"
+# PINNED EXACTLY. 0.2.x is correct for ZWJ/VS16/CJK, but a version bump silently
+# changes reflow. Helix pins =0.1.12 for the opposite reason (0.2 diverges from
+# what terminals actually do). See architecture.md (private notes repo) §5.
+unicode-width        = "=0.2.2"
+# UAX#14 break opportunities, reported as BYTE offsets — the same space as
+# pulldown-cmark's offsets, so no conversion is needed.
+unicode-linebreak    = "0.1.5"
+# In-memory search. `find_iter` yields byte ranges we map through the layout index.
+regex                = "1.13"
+# Mermaid → Unicode box art (wave F, Q24). PINNED EXACTLY, like unicode-width:
+# alpha-line churn (5 releases in 2 months) and stable 0.7.0's raster tier is
+# broken by an unpinned transitive dep — trust nothing but the tested version.
+# ascii feature ONLY: measured 2026-08-12, the png tier costs +19 MiB vs
+# ascii's +6.8 MiB, and the GUI gets raster free from WebKit. It shares our
+# exact unicode-width 0.2.2 pin. Maintainer decision in the wave-F spec.
+merman               = { version = "=0.8.0-alpha.5", default-features = false, features = ["ascii"] }
+# Syntax highlighting as SEMANTIC TOKENS — the core classifies scopes, the
+# frontends colour them. `regex-fancy` because `regex` is already linked
+# (+1.59 MiB, the project's largest cost), which makes the pure-Rust engine
+# nearly free and drops onig's C-toolchain breakage record (GCC 15, Fedora 42,
+# musl, wasm). Decided in idea.md §7.2 (notes repo): 0.8 ms load vs tree-sitter's
+# 37.9 ms per language.
+syntect              = { version = "5", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy"] }
+# Recursive scan honouring .gitignore. Supersedes walkdir; jwalk is archived.
+ignore               = "0.4.33"
+
+# --- dev only ---
+# Property tests for the reflow layer. Dev-dependency, so no binary-size cost.
+proptest             = "1"
+# Real directories for config and scan fixtures, with cleanup that survives a
+# panicking test.
+tempfile             = "3"
+# Benchmarks. `default-features = false` drops plotters and rayon, which are a
+# large build cost for reports we do not read; `cargo_bench_support` is what
+# makes `cargo bench` work at all.
+criterion            = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Image decoding for the TUI. Codecs pinned — `image`'s default set enables
+# every format and this project counts binary bytes. Caps applied at decode.
+image                = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# --- carrel (TUI) ---
+# Measured at +96 KiB over the core set. `layout-cache` is a default feature and
+# `default-features = false` silently disables it, so it is re-enabled explicitly.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
+# Kitty/sixel/halfblock image rendering. DEFAULT FEATURES OFF: the default set
+# drags in libchafa + pkg-config as a build requirement (a recorded gotcha,
+# reconfirmed against the v11 manifest). The non-default paths are pure Rust.
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+panic         = "abort"
+strip         = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code                   = "forbid"
+
+[workspace.lints.clippy]
+all           = { level = "warn", priority = -1 }
+pedantic      = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
+# Every position in this system is a u32 byte offset BY DESIGN — see
+# architecture.md (private notes repo) §1.3 and crates/carrel-core/src/position.rs. `len() as
+# u32` is therefore the idiom throughout, and the lint fires on essentially
+# every one of them. A document over 4 GiB would break the position type system
+# entirely, not merely these casts, so the lint is not actionable here.
+# `cast_possible_truncation` stays allowed; narrowing casts that are NOT
+# positions should use `u16::try_from(..)`, as the width code does.
+cast_possible_truncation = "allow"

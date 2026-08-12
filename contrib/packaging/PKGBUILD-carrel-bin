@@ -1,0 +1,24 @@
+# STAGED — cannot go live until the repo is public (the artifact URLs must exist).
+# AUR package: carrel-bin (repacks the static musl release artifact).
+# Maintainer: Joshua Hughes <hughes238@gmail.com>
+pkgname=carrel-bin
+pkgver=2026.8.12
+pkgrel=1
+pkgdesc="A quiet place to read your markdown — a terminal markdown reader (prebuilt)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/VaHughes/carrel"
+license=('MIT OR Apache-2.0')
+provides=('carrel')
+conflicts=('carrel')
+source_x86_64=("$url/releases/download/v$pkgver/carrel-x86_64-unknown-linux-musl.tar.xz")
+source_aarch64=("$url/releases/download/v$pkgver/carrel-aarch64-unknown-linux-musl.tar.xz")
+sha256sums_x86_64=('SKIP') # fill from the release's .sha256 at publish time
+sha256sums_aarch64=('SKIP')
+
+package() {
+  local dir="carrel-${CARCH}-unknown-linux-musl"
+  install -Dm755 "$dir/carrel" "$pkgdir/usr/bin/carrel"
+  install -Dm644 "$dir/contrib/carrel.desktop" "$pkgdir/usr/share/applications/carrel.desktop"
+  install -Dm644 "$dir/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 "$dir/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

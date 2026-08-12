@@ -1,0 +1,40 @@
+# STAGED — cannot go live until the repo is public (the source URL must exist).
+# AUR package: carrel (builds from the release source tarball).
+# Maintainer: Joshua Hughes <hughes238@gmail.com>
+pkgname=carrel
+pkgver=2026.8.12
+pkgrel=1
+pkgdesc="A quiet place to read your markdown — a terminal markdown reader"
+arch=('x86_64' 'aarch64')
+url="https://github.com/VaHughes/carrel"
+license=('MIT OR Apache-2.0')
+depends=('gcc-libs')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP') # fill from the release checksum at publish time
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo build --frozen --release -p carrel
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "target/release/carrel" "$pkgdir/usr/bin/carrel"
+  install -Dm644 contrib/carrel.desktop "$pkgdir/usr/share/applications/carrel.desktop"
+  install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

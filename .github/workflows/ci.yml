@@ -1,0 +1,51 @@
+# The same four gates that run locally before every commit, and nothing else.
+# The project has required "CI must run check-discipline.sh" since the first
+# commit; this is that requirement made real.
+#
+# The toolchain is PINNED, not `stable`: clippy runs with -D warnings, and a
+# moving stable grows new lints that would break CI on days nobody changed
+# anything. Bump the pin deliberately, together with the local toolchain.
+#
+# Release-artifact builds belong to the packaging cycle, not here.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      # Third-party actions pinned to commit SHAs: tags and branches are
+      # mutable refs, and a compromised action repo can rewrite them. The
+      # comment records the human-readable version each SHA corresponds to.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Toolchain (pinned)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08
+        with:
+          toolchain: "1.97"
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Clippy (zero warnings is the bar)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Benches still compile
+        run: cargo check --workspace --all-targets
+
+      - name: Architectural discipline
+        run: ./scripts/check-discipline.sh

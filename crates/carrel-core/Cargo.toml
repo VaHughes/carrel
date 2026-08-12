@@ -1,0 +1,49 @@
+[package]
+name        = "carrel-core"
+description = "Document model, search, and layout primitives for Carrel. No UI dependencies."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+readme.workspace       = true
+keywords   = ["markdown", "parser", "layout", "text"]
+categories = ["text-processing", "parser-implementations"]
+
+# ---------------------------------------------------------------------------
+# DISCIPLINE: this crate must never depend on a UI crate.
+#
+# No ratatui, no ratatui-core, no crossterm, no termion, no gtk4, no webkit6.
+# `scripts/check-discipline.sh` enforces this mechanically and CI runs it.
+#
+# The reason is documented at length in architecture.md (private notes repo) §0 and
+# idea.md §9.3 in the private notes repo. Short version: Helix's own architecture doc records that
+# its "frontend-agnostic" view layer became terminal-tied, and the symptom was
+# terminal types leaking into the shared crate. This is the guard against that.
+# ---------------------------------------------------------------------------
+[dependencies]
+pulldown-cmark.workspace       = true
+unicode-segmentation.workspace = true
+unicode-width.workspace        = true
+unicode-linebreak.workspace    = true
+regex.workspace                = true
+syntect.workspace              = true
+
+# Dev-only, so it has no effect on binary size. The reflow layer's invariants
+# (fit, order, coverage, height/row agreement, determinism, and search
+# surviving reflow) hold over `text × width`, a space far too large for
+# hand-written examples to cover.
+[dev-dependencies]
+proptest.workspace  = true
+criterion.workspace = true
+
+# `layout::wrap` throughput is benchmark item 1 in architecture.md (private notes repo) §6 —
+# the single number that decides whether the §4.3 estimate-then-refine fallback
+# ever needs to be written.
+[[bench]]
+name    = "wrap"
+harness = false
+
+[lints]
+workspace = true

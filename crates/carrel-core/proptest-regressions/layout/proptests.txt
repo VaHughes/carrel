@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+# PROVENANCE: this seed came from deliberately disabling `split_to_fit` to
+# confirm the invariants actually have teeth — not from a bug that ever
+# reached a commit. Kept because a word longer than a one-column viewport is
+# the case worth replaying forever.
+cc aed3e2422fd77a24af6844d86643548f4289b0f7b0d234ef3fb7889f98c0b267 # shrinks to t = "quick", width = 1

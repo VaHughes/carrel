@@ -1,0 +1,21 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local editor / tooling state
+.claude/settings.local.json
+CLAUDE.local.md
+.vscode/
+.idea/
+
+# Benchmark and profiling output
+/criterion
+perf.data*
+flamegraph.svg
+
+# The project instructions are private — canonical copy versioned in carrel-notes,
+# working copy stays here on disk for tool sessions.
+CLAUDE.md
+
+# Brainstorming-session scratch (visual companion server state)
+.superpowers/

@@ -1,0 +1,237 @@
+//! The one persisted setting: which directory the home screen scans.
+//!
+//! NO RATATUI — `scripts/check-discipline.sh` rule 6.
+//!
+//! # Why this is not TOML
+//!
+//! `serde` + `toml` costs roughly 300 KB to store one string, in a project that
+//! tracks `regex`'s 1.59 MB as its single largest binary cost. One
+//! `key = value` per line needs thirty lines and no dependency.
+//!
+//! **Migration trigger: past three or four keys, switch to TOML.** Hand-rolled
+//! config formats ossify — replace this before it grows a syntax.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+/// `$XDG_CONFIG_HOME/carrel`, else `~/.config/carrel`.
+#[must_use]
+pub fn config_dir() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(x).join("carrel"));
+    }
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(|h| PathBuf::from(h).join(".config").join("carrel"))
+}
+
+#[must_use]
+pub fn load_root() -> Option<PathBuf> {
+    load_root_in(&config_dir()?)
+}
+
+// There is deliberately no `save_root()` writing to the real directory: the
+// picker persists through `App::config_dir`, which is `None` under test. The
+// convenient wrapper was how `cargo test` once stomped the developer's real
+// config with a tempdir on every run.
+
+/// Read the saved root from an explicit config directory.
+///
+/// The `_in` variants exist so tests never touch environment variables or a
+/// real home directory. Never fails: a missing, unreadable or malformed file
+/// means "no saved root".
+#[must_use]
+pub fn load_root_in(dir: &Path) -> Option<PathBuf> {
+    parse(&std::fs::read_to_string(dir.join("config")).ok()?)
+}
+
+pub fn save_root_in(dir: &Path, root: &Path) -> std::io::Result<()> {
+    upsert_key_in(dir, "root", &root.display().to_string())
+}
+
+/// `key = value` per line. Unknown keys and `#` comments are ignored, so a
+/// newer version's file cannot break an older binary.
+fn parse(text: &str) -> Option<PathBuf> {
+    parse_key(text, "root").map(PathBuf::from)
+}
+
+fn parse_key(text: &str, key: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() == key {
+            let v = v.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Write or replace ONE key, preserving every other line.
+///
+/// With more than one key, "write only mine" done naively destroys the
+/// others — the original `save_root` rewrote the whole file. (Key count is
+/// now 3 — root, theme, hints — the top of the module-doc's stated TOML
+/// trigger zone; the format stays hand-rolled while every key is one flat
+/// string, and the trigger becomes real the moment one wants structure.)
+fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("config");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut out = String::new();
+    let mut written = false;
+    for line in existing.lines() {
+        let is_this_key = line
+            .trim()
+            .split_once('=')
+            .is_some_and(|(k, _)| k.trim() == key);
+        if is_this_key {
+            if !written {
+                let _ = writeln!(out, "{key} = {value}");
+                written = true;
+            }
+        } else if !line.trim().is_empty() {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !written {
+        let _ = writeln!(out, "{key} = {value}");
+    }
+    std::fs::write(path, out)
+}
+
+/// The saved theme name, if any.
+#[must_use]
+pub fn load_theme() -> Option<String> {
+    load_theme_in(&config_dir()?)
+}
+
+#[must_use]
+pub fn load_theme_in(dir: &Path) -> Option<String> {
+    parse_key(&std::fs::read_to_string(dir.join("config")).ok()?, "theme")
+}
+
+pub fn save_theme(name: &str) -> std::io::Result<()> {
+    let dir =
+        config_dir().ok_or_else(|| std::io::Error::other("no XDG_CONFIG_HOME and no HOME"))?;
+    upsert_key_in(&dir, "theme", name)
+}
+
+pub fn save_theme_in(dir: &Path, name: &str) -> std::io::Result<()> {
+    upsert_key_in(dir, "theme", name)
+}
+
+/// The saved hint-bar visibility. Absent means on.
+#[must_use]
+pub fn load_hints() -> Option<bool> {
+    load_hints_in(&config_dir()?)
+}
+
+#[must_use]
+pub fn load_hints_in(dir: &Path) -> Option<bool> {
+    parse_key(&std::fs::read_to_string(dir.join("config")).ok()?, "hints").map(|v| v != "false")
+}
+
+pub fn save_hints_in(dir: &Path, on: bool) -> std::io::Result<()> {
+    upsert_key_in(dir, "hints", if on { "true" } else { "false" })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hints_round_trip_and_default_on() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            load_hints_in(d.path()),
+            None,
+            "absent file: caller defaults on"
+        );
+        save_hints_in(d.path(), false).unwrap();
+        assert_eq!(load_hints_in(d.path()), Some(false));
+        save_hints_in(d.path(), true).unwrap();
+        assert_eq!(load_hints_in(d.path()), Some(true));
+    }
+
+    #[test]
+    fn hints_key_preserves_root_and_theme_lines() {
+        let d = tempfile::tempdir().unwrap();
+        save_root_in(d.path(), Path::new("/somewhere")).unwrap();
+        save_theme_in(d.path(), "paper").unwrap();
+        save_hints_in(d.path(), false).unwrap();
+        assert_eq!(load_root_in(d.path()), Some(PathBuf::from("/somewhere")));
+        assert_eq!(load_theme_in(d.path()), Some("paper".into()));
+    }
+
+    #[test]
+    fn parses_a_root_line() {
+        assert_eq!(parse("root = /tmp/x\n"), Some(PathBuf::from("/tmp/x")));
+    }
+
+    #[test]
+    fn tolerates_whitespace_and_missing_spaces() {
+        assert_eq!(parse("root=/tmp/x"), Some(PathBuf::from("/tmp/x")));
+        assert_eq!(
+            parse("  root   =   /tmp/x   "),
+            Some(PathBuf::from("/tmp/x"))
+        );
+    }
+
+    #[test]
+    fn ignores_unknown_keys_and_comments() {
+        // A newer version's file must not break an older binary.
+        let text = "# a comment\ntheme = dark\nroot = /tmp/x\nfuture_key = 3\n";
+        assert_eq!(parse(text), Some(PathBuf::from("/tmp/x")));
+    }
+
+    #[test]
+    fn malformed_input_yields_no_root_rather_than_an_error() {
+        assert_eq!(parse(""), None);
+        assert_eq!(parse("garbage"), None);
+        assert_eq!(parse("root ="), None);
+    }
+
+    #[test]
+    fn round_trips_through_a_real_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load_root_in(dir.path()), None, "nothing saved yet");
+        save_root_in(dir.path(), Path::new("/tmp/somewhere")).unwrap();
+        assert_eq!(
+            load_root_in(dir.path()),
+            Some(PathBuf::from("/tmp/somewhere"))
+        );
+    }
+
+    #[test]
+    fn saving_one_key_preserves_the_other() {
+        let dir = tempfile::tempdir().unwrap();
+        save_root_in(dir.path(), Path::new("/tmp/somewhere")).unwrap();
+        save_theme_in(dir.path(), "gruvbox-dark").unwrap();
+        assert_eq!(
+            load_root_in(dir.path()),
+            Some(PathBuf::from("/tmp/somewhere"))
+        );
+        assert_eq!(load_theme_in(dir.path()).as_deref(), Some("gruvbox-dark"));
+        // And the other direction: re-saving the root keeps the theme.
+        save_root_in(dir.path(), Path::new("/tmp/elsewhere")).unwrap();
+        assert_eq!(load_theme_in(dir.path()).as_deref(), Some("gruvbox-dark"));
+        assert_eq!(
+            load_root_in(dir.path()),
+            Some(PathBuf::from("/tmp/elsewhere"))
+        );
+    }
+
+    #[test]
+    fn a_missing_directory_is_not_an_error_on_load() {
+        assert_eq!(load_root_in(Path::new("/nonexistent/xyzzy")), None);
+    }
+}
