@@ -7,6 +7,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A demo in the README** — the home screen, filtering to a file, and reading it. Recorded
   with [VHS](https://github.com/charmbracelet/vhs) from [`contrib/demo.tape`](contrib/demo.tape),
   so it can be re-rendered whenever the interface changes.
+- **The README is explicit that the GUI does not exist yet.** "It ships in two forms" read as
+  though both were available; carrel is a terminal application today, the GUI is planned and
+  not written, and there is nothing GUI-shaped to download.
+- **Corrected a stale status note** that called code blocks, tables and images "placeholders" —
+  syntax highlighting, tables, images and mermaid diagrams have all shipped.
 
 ## 2026.8.12 — initial release
 

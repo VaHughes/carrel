@@ -14,7 +14,10 @@
 Carrel is a free and open-source markdown **reader**. Not an editor, not a workbench — a reading desk.
 It opens showing you the documents around you, renders them properly, and has a search that actually works.
 
-It ships in two forms from one shared core: a terminal version first, and a native GUI after.
+**Carrel is a terminal application today, and that is the only version that exists.** A native GTK4
+GUI is planned, and the codebase is deliberately built so one can be added without rewriting the
+core — but it is **not written yet**. There is no GUI build to download, no preview, and no date.
+Everything below installs the terminal reader.
 
 <div align="center">
 
@@ -23,8 +26,8 @@ It ships in two forms from one shared core: a terminal version first, and a nati
 </div>
 
 > **Status: early, but it runs.** `carrel` shows you what is around you to read; `carrel FILE` opens
-> a reader with vim motions, incremental search, and a resize that keeps your place. Code blocks,
-> tables and images are still placeholders. See [Roadmap](#roadmap).
+> a reader with vim motions, incremental search, and a resize that keeps your place. Syntax
+> highlighting, tables, images and mermaid diagrams all render. See [Roadmap](#roadmap).
 
 ### Privacy
 
@@ -46,7 +49,7 @@ Carrel targets what terminal markdown readers haven't shipped:
 | **Clickable links** | Real OSC 8 hyperlinks, with graceful degradation. |
 | **Correct emoji and wide characters** | Measured per grapheme cluster, never per codepoint. |
 | **Complete markdown** | CommonMark + GFM, footnotes, definition lists, tables, frontmatter. |
-| **A GUI, eventually** | So that people who don't use terminals can read markdown too. |
+| **A GUI, eventually** | Planned and designed for, **not yet built.** So that people who don't use terminals can read markdown too. |
 
 ## Install
 
@@ -101,9 +104,14 @@ Two crates, one seam.
 
 ```
 carrel-core/   document model, search, layout primitives.  NO UI DEPENDENCIES, EVER.
-carrel/        the terminal frontend (ratatui).
-               a GTK4 + WebKitGTK frontend will sit alongside it, not inside it.
+carrel/        the terminal frontend (ratatui).  the only frontend that exists today.
 ```
+
+A GTK4 + WebKitGTK frontend is intended to sit *alongside* `carrel/`, never inside it. None of it
+is written — what exists today is the discipline that keeps it possible: `carrel-core` has no UI
+dependency, emits semantic scopes rather than ANSI, and exposes no width-dependent type. Every
+project surveyed during research that planned a second frontend for "later" never got one, so
+those constraints are treated as load-bearing rather than aspirational.
 
 Everything follows from a single invariant:
 
@@ -139,7 +147,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Outline navigation, live reload, search inside every file
 - [x] Mermaid diagrams as Unicode box art
 - [ ] Packaging: `.deb`, `.rpm`, AUR, Homebrew, winget
-- [ ] The GUI: GTK4 shell + WebKitGTK content view
+- [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 
 ## Contributing
 
