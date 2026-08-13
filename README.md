@@ -16,6 +16,12 @@ It opens showing you the documents around you, renders them properly, and has a 
 
 It ships in two forms from one shared core: a terminal version first, and a native GUI after.
 
+<div align="center">
+
+<img src="assets/demo.gif" alt="Carrel listing the markdown files in a directory, filtering to README.md, and scrolling through it" width="800">
+
+</div>
+
 > **Status: early, but it runs.** `carrel` shows you what is around you to read; `carrel FILE` opens
 > a reader with vim motions, incremental search, and a resize that keeps your place. Code blocks,
 > tables and images are still placeholders. See [Roadmap](#roadmap).

@@ -2,6 +2,12 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## 2026.8.13
+
+- **A demo in the README** — the home screen, filtering to a file, and reading it. Recorded
+  with [VHS](https://github.com/charmbracelet/vhs) from [`contrib/demo.tape`](contrib/demo.tape),
+  so it can be re-rendered whenever the interface changes.
+
 ## 2026.8.12 — initial release
 
 A terminal markdown reader, from scratch:
