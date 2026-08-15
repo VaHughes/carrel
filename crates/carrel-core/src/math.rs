@@ -95,10 +95,15 @@ impl MathExpr {
     }
 
     /// Whether this needs parenthesising when it becomes an operand of an
-    /// inline solidus or caret. A single atom does not; a row does.
+    /// inline solidus or caret.
+    ///
+    /// A row does, obviously. **A fraction does too**: without parens
+    /// `\frac{\frac{a+b}{c}}{z}` flattens to `(a+b)/c/z`, which reads as a
+    /// different expression. A root, script or matrix does not — each already
+    /// carries its own visual grouping.
     #[must_use]
     pub fn is_compound(&self) -> bool {
-        matches!(self, MathExpr::Row(_))
+        matches!(self, MathExpr::Row(_) | MathExpr::Frac { .. })
     }
 }
 
