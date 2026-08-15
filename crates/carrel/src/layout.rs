@@ -38,10 +38,11 @@ pub struct Layout {
     /// `len() == block_count + 1`. Heights are differences of adjacent entries,
     /// so there is exactly one source of truth for a block's height.
     block_row_start: Vec<u32>,
-    /// Row-height overrides for image blocks whose pixels have arrived.
-    /// Plain numbers computed by the frontend from dims × font × width —
-    /// no protocol type comes anywhere near this file.
-    image_rows: HashMap<BlockIdx, u32>,
+    /// Row-height overrides for blocks whose height is NOT a function of
+    /// wrapped text: images whose pixels have arrived, rendered mermaid art,
+    /// and rendered math art. Plain numbers computed by the frontend — no
+    /// protocol type comes anywhere near this file.
+    block_rows: HashMap<BlockIdx, u32>,
     /// When `false` (the default), a table whose aligned form overflows
     /// `width` lays out as cards instead of wrapping in place. `t` in the
     /// reader flips `App::wrap_tables`, which is threaded through here on
@@ -67,7 +68,7 @@ impl Layout {
     pub fn with_images(
         doc: &Document,
         width: u16,
-        image_rows: HashMap<BlockIdx, u32>,
+        block_rows: HashMap<BlockIdx, u32>,
         wrap_tables: bool,
     ) -> Self {
         let mut block_row_start = Vec::with_capacity(doc.block_count() + 1);
@@ -75,7 +76,7 @@ impl Layout {
         block_row_start.push(0);
         for i in 0..doc.block_count() {
             let b = BlockIdx(i as u32);
-            let h = if let Some(rows) = image_rows.get(&b) {
+            let h = if let Some(rows) = block_rows.get(&b) {
                 (*rows).max(1)
             } else {
                 // The SAME functions the row pass uses, with a counting sink,
@@ -95,7 +96,7 @@ impl Layout {
         Self {
             width,
             block_row_start,
-            image_rows,
+            block_rows,
             wrap_tables,
         }
     }
@@ -151,7 +152,7 @@ impl Layout {
         if b.get() >= doc.block_count() {
             return;
         }
-        if let Some(rows) = self.image_rows.get(&b) {
+        if let Some(rows) = self.block_rows.get(&b) {
             // A ready image is N decoration rows. Their doc ranges are empty
             // at the node's start — which is exactly the §3.5 case the
             // anchor-restore fallback was built for.

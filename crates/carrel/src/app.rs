@@ -442,7 +442,7 @@ impl App {
     /// about it is a special case.
     pub fn relayout(&mut self) {
         let w = self.text_w();
-        let mut image_rows: HashMap<BlockIdx, u32> = self
+        let mut block_rows: HashMap<BlockIdx, u32> = self
             .image_dims
             .iter()
             .map(|(b, px)| {
@@ -455,10 +455,10 @@ impl App {
         // be text: same height-override channel, same reflow machinery.
         if self.show_diagrams {
             for (b, art) in &self.diagram_art {
-                image_rows.insert(*b, u32::try_from(art.len()).unwrap_or(u32::MAX));
+                block_rows.insert(*b, u32::try_from(art.len()).unwrap_or(u32::MAX));
             }
         }
-        self.layout = Layout::with_images(&self.doc, w, image_rows, self.wrap_tables);
+        self.layout = Layout::with_images(&self.doc, w, block_rows, self.wrap_tables);
         self.view.restore(&self.doc, &self.layout, self.text_h());
         // Matches and `matches.current` are untouched. That is the whole point.
     }
