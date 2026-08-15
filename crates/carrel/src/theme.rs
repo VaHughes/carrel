@@ -652,6 +652,14 @@ pub fn inline(scope: carrel_core::Style) -> Style {
     if scope.contains(carrel_core::Style::LINK) {
         s = s.fg(p.link).add_modifier(Modifier::UNDERLINED);
     }
+    // No terminal has real raised or lowered text, and the reflow layer cannot
+    // give a run a different baseline. DIM is the one signal that survives
+    // everywhere and still reads as "this is not the main line".
+    if scope.contains(carrel_core::Style::SUPERSCRIPT)
+        || scope.contains(carrel_core::Style::SUBSCRIPT)
+    {
+        s = s.add_modifier(Modifier::DIM);
+    }
     tinted(s)
 }
 

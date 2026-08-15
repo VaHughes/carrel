@@ -53,6 +53,8 @@ impl Style {
     pub const CODE: Self = Self(1 << 2);
     pub const STRIKETHROUGH: Self = Self(1 << 3);
     pub const LINK: Self = Self(1 << 4);
+    pub const SUPERSCRIPT: Self = Self(1 << 5);
+    pub const SUBSCRIPT: Self = Self(1 << 6);
 
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
@@ -126,6 +128,11 @@ pub enum NodeKind {
         /// offsets are width-independent — same standing as `cols`.
         cell_starts: Box<[u32]>,
     },
+    /// The term line of a definition list.
+    DefTerm,
+    /// A definition body, indented under its [`NodeKind::DefTerm`]. The `:`
+    /// marker is consumed by the parser, never rendered as prose.
+    DefDetails,
     /// A YAML (`---`) or TOML (`+++`) frontmatter block.
     ///
     /// The doc text is the **raw body**, so the metadata is searchable and no
@@ -660,6 +667,9 @@ impl<'a> Builder<'a> {
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_SMART_PUNCTUATION
             | Options::ENABLE_WIKILINKS
+            | Options::ENABLE_DEFINITION_LIST
+            | Options::ENABLE_SUPERSCRIPT
+            | Options::ENABLE_SUBSCRIPT
             | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
             | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
     }
@@ -1033,6 +1043,23 @@ impl<'a> Builder<'a> {
                     }
                 }
 
+                // A definition list is a container in pulldown-cmark, but the
+                // term and the details are the layout-atomic leaves, so only
+                // the leaves open blocks.
+                Event::Start(Tag::DefinitionList) | Event::End(TagEnd::DefinitionList) => {}
+                Event::Start(Tag::DefinitionListTitle) => {
+                    self.open_block(NodeKind::DefTerm, &src);
+                }
+                Event::End(TagEnd::DefinitionListTitle) => self.close_block(src.end),
+                Event::Start(Tag::DefinitionListDefinition) => {
+                    self.indent = self.indent.saturating_add(2);
+                    self.open_block(NodeKind::DefDetails, &src);
+                }
+                Event::End(TagEnd::DefinitionListDefinition) => {
+                    self.close_block(src.end);
+                    self.indent = self.indent.saturating_sub(2);
+                }
+
                 // Frontmatter. The body is pushed verbatim like any other text;
                 // `key_col` is computed at close from the lines actually
                 // captured, because the width is a property of the whole block.
@@ -1110,6 +1137,14 @@ impl<'a> Builder<'a> {
                 }
 
                 // --- inline style ---
+                Event::Start(Tag::Superscript) => {
+                    self.style = self.style.insert(Style::SUPERSCRIPT);
+                }
+                Event::End(TagEnd::Superscript) => {
+                    self.style = self.style.remove(Style::SUPERSCRIPT);
+                }
+                Event::Start(Tag::Subscript) => self.style = self.style.insert(Style::SUBSCRIPT),
+                Event::End(TagEnd::Subscript) => self.style = self.style.remove(Style::SUBSCRIPT),
                 Event::Start(Tag::Emphasis) => self.style = self.style.insert(Style::EMPHASIS),
                 Event::End(TagEnd::Emphasis) => self.style = self.style.remove(Style::EMPHASIS),
                 Event::Start(Tag::Strong) => self.style = self.style.insert(Style::STRONG),
@@ -1935,5 +1970,72 @@ mod tests {
             doc.node_for_block(BlockIdx(0)).kind,
             NodeKind::Metadata { .. }
         ));
+    }
+
+    // --- definition lists (Q16, 2026-08-15) ---
+
+    #[test]
+    fn a_definition_list_is_a_term_block_and_an_indented_details_block() {
+        let doc = Document::parse("Term\n: the definition\n");
+        let term = doc.node_for_block(BlockIdx(0));
+        let details = doc.node_for_block(BlockIdx(1));
+        assert!(
+            matches!(term.kind, NodeKind::DefTerm),
+            "got {:?}",
+            term.kind
+        );
+        assert!(
+            matches!(details.kind, NodeKind::DefDetails),
+            "got {:?}",
+            details.kind
+        );
+        assert_eq!(
+            &doc.text[term.doc.start as usize..term.doc.end as usize],
+            "Term"
+        );
+        assert!(details.indent >= 2, "the definition hangs under its term");
+        assert!(
+            !doc.text.contains(" : "),
+            "the `:` marker is consumed, not rendered as prose: {:?}",
+            doc.text
+        );
+    }
+
+    // --- super/subscript (Q16, 2026-08-15) ---
+
+    /// **Upstream limitation, verified 2026-08-15 against pulldown-cmark
+    /// 0.13.4:** the delimiters are only recognised at a word boundary.
+    /// `^2^` and `x ^2^ y` parse; `x^2^` and `H~2~O` — the forms people
+    /// actually write — do not, and stay literal text. Recorded in the
+    /// conformance table rather than worked around here.
+    #[test]
+    fn superscript_and_subscript_are_style_runs_not_literal_markers() {
+        let doc = Document::parse("E = mc ^2^ and log ~2~ n\n");
+        assert!(
+            !doc.text.contains('^') && !doc.text.contains('~'),
+            "markers are consumed: {:?}",
+            doc.text
+        );
+        let node = doc.node_for_block(BlockIdx(0));
+        let sup = node
+            .inlines
+            .iter()
+            .find(|i| i.style.contains(Style::SUPERSCRIPT))
+            .expect("a superscript run exists");
+        assert_eq!(&doc.text[sup.doc.start as usize..sup.doc.end as usize], "2");
+        assert!(
+            node.inlines
+                .iter()
+                .any(|i| i.style.contains(Style::SUBSCRIPT)),
+            "a subscript run exists"
+        );
+    }
+
+    #[test]
+    fn an_attached_caret_stays_literal_because_upstream_does_not_parse_it() {
+        // Pins the KNOWN gap so a pulldown-cmark bump that fixes it shows up
+        // as a failing test rather than a silent behaviour change.
+        let doc = Document::parse("x^2^\n");
+        assert!(doc.text.contains("x^2^"), "still literal: {:?}", doc.text);
     }
 }
