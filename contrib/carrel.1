@@ -1,0 +1,113 @@
+.TH CARREL 1 "2026-08-15" "carrel" "User Commands"
+.SH NAME
+carrel \- a quiet place to read your markdown
+.SH SYNOPSIS
+.B carrel
+.RI [ DIR ]
+.br
+.B carrel
+.I FILE
+.RI [ PATTERN ]
+.br
+.B carrel \-\-plain
+.IR FILE " [" WIDTH ]
+.br
+.B carrel \-\-help
+.br
+.B carrel \-\-version
+.SH DESCRIPTION
+.B carrel
+is a markdown reader \(em not an editor, not a workbench, a reading desk.
+.PP
+Run with no arguments it lists the markdown files around you, newest first,
+with type\-to\-filter and a directory picker. Given a
+.I FILE
+it opens a reader with vim motions, incremental search that survives reflow and
+terminal resize, syntax highlighting, tables, images, and mermaid diagrams.
+.PP
+Given a
+.I FILE
+and a
+.IR PATTERN ,
+it prints matching lines and exits.
+.SH OPTIONS
+.TP
+.B \-\-plain
+Render the document as linear plain text on stdout, for screen readers and for
+pipes. A bare pipe selects this automatically, so
+.B carrel doc.md | less
+does the right thing. Output is ASCII\-safe and contains no escape bytes.
+.TP
+.B \-\-version ", " \-V
+Print the version and exit.
+.TP
+.B \-\-help ", " \-h
+Print usage and exit.
+.SH KEYS
+.SS Reader
+.TP
+.BR j ", " k ", " \(ua ", " \(da
+Scroll by a line.
+.TP
+.BR gg ", " G
+Jump to the start or the end.
+.TP
+.B /
+Search. Matches survive reflow and resize by construction.
+.TP
+.BR n ", " N
+Next and previous match.
+.TP
+.B o
+Outline picker.
+.TP
+.B t
+Toggle wide tables between card view and wrapping in place.
+.TP
+.B m
+Toggle rendered blocks \(em diagrams and math \(em between art and source.
+.TP
+.B T
+Cycle themes.
+.TP
+.BR h ", " F1
+Help.
+.TP
+.B H
+Fold the hint footer.
+.TP
+.B q
+Quit.
+.SS Home screen
+.TP
+.B i
+Filter by name; type to narrow, escape to leave.
+.TP
+.B /
+Search inside every file; enter opens at the match.
+.TP
+.B d
+Choose a directory.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+Honoured: colours off, weight and emphasis kept.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/carrel
+Theme, chosen root directory, and footer preference.
+.TP
+.I $XDG_STATE_HOME/carrel
+Reading positions, so a document reopens where you left it.
+.TP
+.I $XDG_CACHE_HOME/carrel
+The file index: paths and modification times, nothing else.
+.SH PRIVACY
+carrel reads only the directory you point it at and sends nothing anywhere.
+Remote images in documents are never fetched; they render as their alt text.
+.SH SEE ALSO
+Project home:
+.UR https://github.com/VaHughes/carrel
+.UE
+.SH LICENSE
+MIT OR Apache\-2.0, at your option.

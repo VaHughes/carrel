@@ -27,6 +27,10 @@ cargo build --release -p carrel
 %install
 install -Dm755 target/release/carrel %{buildroot}%{_bindir}/carrel
 install -Dm644 contrib/carrel.desktop %{buildroot}%{_datadir}/applications/carrel.desktop
+install -Dm644 contrib/carrel.1 %{buildroot}%{_mandir}/man1/carrel.1
+install -Dm644 contrib/completions/carrel.bash %{buildroot}%{_datadir}/bash-completion/completions/carrel
+install -Dm644 contrib/completions/carrel.zsh %{buildroot}%{_datadir}/zsh/site-functions/_carrel
+install -Dm644 contrib/completions/carrel.fish %{buildroot}%{_datadir}/fish/vendor_completions.d/carrel.fish
 install -Dm644 LICENSE-MIT %{buildroot}%{_datadir}/licenses/%{name}/LICENSE-MIT
 install -Dm644 LICENSE-APACHE %{buildroot}%{_datadir}/licenses/%{name}/LICENSE-APACHE
 
@@ -36,6 +40,10 @@ cargo test --workspace
 %files
 %{_bindir}/carrel
 %{_datadir}/applications/carrel.desktop
+%{_mandir}/man1/carrel.1*
+%{_datadir}/bash-completion/completions/carrel
+%{_datadir}/zsh/site-functions/_carrel
+%{_datadir}/fish/vendor_completions.d/carrel.fish
 %license LICENSE-MIT LICENSE-APACHE
 %doc README.md CHANGELOG.md
 

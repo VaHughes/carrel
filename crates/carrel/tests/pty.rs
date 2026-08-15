@@ -96,3 +96,72 @@ fn the_home_screen_survives_a_pty_round_trip_too() {
         "the wordmark (splash or collapsed) must paint"
     );
 }
+
+// --- CLI surface (2026-08-15) ---
+
+#[test]
+fn version_flag_prints_the_version_and_exits_zero() {
+    for flag in ["--version", "-V"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_carrel"))
+            .arg(flag)
+            .output()
+            .expect("run carrel");
+        assert!(
+            out.status.success(),
+            "{flag} must exit 0, got {:?}",
+            out.status
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "{flag} prints the version, got {text:?}"
+        );
+    }
+}
+
+/// The completions and the man page name every flag by hand. If a flag is
+/// added to USAGE and not to them they rot silently, so assert the sets match.
+#[test]
+fn completions_and_man_page_cover_every_flag_in_usage() {
+    let main_rs = std::fs::read_to_string("src/main.rs").expect("main.rs");
+    let usage = main_rs
+        .split("const USAGE: &str = \"\\\n")
+        .nth(1)
+        .and_then(|s| s.split("\";").next())
+        .expect("USAGE literal");
+    let flags: std::collections::BTreeSet<String> = usage
+        .split_whitespace()
+        .filter(|w| w.starts_with("--") && w.len() > 2)
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                .to_string()
+        })
+        .collect();
+    assert!(
+        flags.contains("--version") && flags.contains("--plain") && flags.contains("--help"),
+        "the scraper found the real flag set, got {flags:?}"
+    );
+    for shell in ["bash", "zsh", "fish"] {
+        let path = format!("../../contrib/completions/carrel.{shell}");
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        for flag in &flags {
+            // fish declares long options bare: `complete -l help`, no dashes.
+            let bare = flag.trim_start_matches('-');
+            let found = if shell == "fish" {
+                src.contains(&format!("-l {bare}"))
+            } else {
+                src.contains(flag)
+            };
+            assert!(found, "{shell} completion is missing {flag}");
+        }
+    }
+    let man = std::fs::read_to_string("../../contrib/carrel.1").expect("man page");
+    for flag in &flags {
+        // roff escapes the leading dashes as `\-\-`.
+        let escaped = flag.replace('-', "\\-");
+        assert!(
+            man.contains(flag) || man.contains(&escaped),
+            "man page is missing {flag}"
+        );
+    }
+}

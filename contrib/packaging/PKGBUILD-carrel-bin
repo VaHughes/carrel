@@ -19,6 +19,10 @@ package() {
   local dir="carrel-${CARCH}-unknown-linux-musl"
   install -Dm755 "$dir/carrel" "$pkgdir/usr/bin/carrel"
   install -Dm644 "$dir/contrib/carrel.desktop" "$pkgdir/usr/share/applications/carrel.desktop"
+  install -Dm644 "$dir/contrib/carrel.1" "$pkgdir/usr/share/man/man1/carrel.1"
+  install -Dm644 "$dir/contrib/completions/carrel.bash" "$pkgdir/usr/share/bash-completion/completions/carrel"
+  install -Dm644 "$dir/contrib/completions/carrel.zsh" "$pkgdir/usr/share/zsh/site-functions/_carrel"
+  install -Dm644 "$dir/contrib/completions/carrel.fish" "$pkgdir/usr/share/fish/vendor_completions.d/carrel.fish"
   install -Dm644 "$dir/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
   install -Dm644 "$dir/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
 }

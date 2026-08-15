@@ -37,6 +37,7 @@ USAGE:
     carrel --plain <FILE> [W]    the document as plain text (screen readers,
                                  pipes; a bare pipe does this by default)
     carrel --help
+    carrel --version
 
     NO_COLOR is honoured: colours off, weight and emphasis kept.
 
@@ -73,6 +74,10 @@ fn main() -> ExitCode {
         [] => open_home(None),
         [a] if a == "-h" || a == "--help" => {
             print!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        [a] if a == "-V" || a == "--version" => {
+            println!("carrel {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
