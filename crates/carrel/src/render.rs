@@ -20,7 +20,7 @@
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
-use carrel_core::{BlockIdx, NodeKind, Row, RowKind, cols_for_doc_range};
+use carrel_core::{BlockIdx, NodeKind, Row, RowKind, cols_for_doc_range, display_width};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -254,6 +254,79 @@ fn paint_help(frame: &mut Frame, app: &App) {
     }
 }
 
+/// Paint a frontmatter block as a card, returning the next free row.
+///
+/// The `╭ │ ╰` rule is DECORATION and is not in the text — the same standing
+/// the table `│` separators have. It sits in the two-cell gutter the node's
+/// `indent` already reserved at parse, so values wrap inside the card rather
+/// than under the rule.
+fn paint_metadata_card(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: BlockIdx,
+    key_col: u16,
+    skip: u32,
+    mut y: u16,
+) -> u16 {
+    let node = app.doc.node_for_block(block);
+    let body = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
+    let text_lines: Vec<&str> = body.lines().collect();
+    let last = text_lines.len().saturating_sub(1);
+    let avail = usize::from(area.width.saturating_sub(node.indent));
+    let text_x = area.x + node.indent;
+
+    for (i, line) in text_lines
+        .iter()
+        .enumerate()
+        .skip(usize::try_from(skip).unwrap_or(usize::MAX))
+    {
+        if y >= area.bottom() {
+            break;
+        }
+        let rule = if i == 0 {
+            '╭'
+        } else if i == last {
+            '╰'
+        } else {
+            '│'
+        };
+        let buf = frame.buffer_mut();
+        buf.set_stringn(area.x, y, rule.to_string(), 1, crate::theme::dim());
+        match line.split_once(':').or_else(|| line.split_once('=')) {
+            // Only a flush line is a key line; an indented one is a nested
+            // value, a list item, or a block scalar, and prints raw.
+            Some((key, val)) if !line.starts_with([' ', '\t', '#', '-']) => {
+                let key = key.trim_end();
+                let key_w = display_width(key);
+                buf.set_stringn(text_x, y, key, avail, crate::theme::meta_key());
+                let val_x = text_x
+                    .saturating_add(key_w)
+                    .saturating_add(key_col.saturating_sub(key_w) + 1);
+                if val_x < area.right() {
+                    buf.set_stringn(
+                        val_x,
+                        y,
+                        val.trim_start(),
+                        usize::from(area.right() - val_x),
+                        crate::theme::meta_value(),
+                    );
+                }
+            }
+            _ => {
+                buf.set_stringn(text_x, y, *line, avail, crate::theme::meta_value());
+            }
+        }
+        y += 1;
+    }
+
+    // Consume the block's remaining layout rows, spacing included.
+    let painted = u32::try_from(text_lines.len()).unwrap_or(u32::MAX);
+    let trailing = app.layout.height(block).saturating_sub(painted.max(skip));
+    y.saturating_add(u16::try_from(trailing).unwrap_or(u16::MAX))
+        .min(area.bottom())
+}
+
 fn paint_rows(
     frame: &mut Frame,
     app: &App,
@@ -299,6 +372,17 @@ fn paint_rows(
             y = y
                 .saturating_add(u16::try_from(trailing).unwrap_or(u16::MAX))
                 .min(area.bottom());
+            skip = 0;
+            block = BlockIdx(block.0 + 1);
+            continue;
+        }
+
+        // Frontmatter paints as a card: a left rule in the gutter the node's
+        // `indent` already reserved, the key padded to `key_col`, then the
+        // value. The `╭ │ ╰` glyphs are DECORATION and are not in the text —
+        // the same standing the table `│` separators have.
+        if let NodeKind::Metadata { key_col } = app.doc.node_for_block(block).kind {
+            y = paint_metadata_card(frame, app, area, block, key_col, skip, y);
             skip = 0;
             block = BlockIdx(block.0 + 1);
             continue;

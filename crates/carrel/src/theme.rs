@@ -754,6 +754,23 @@ pub fn dim() -> Style {
     tinted(Style::default().fg(active().dim))
 }
 
+/// A frontmatter key. Bold against the value, but still dim against the
+/// body — metadata is context, not content.
+#[must_use]
+pub fn meta_key() -> Style {
+    tinted(
+        Style::default()
+            .fg(active().dim)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+/// A frontmatter value.
+#[must_use]
+pub fn meta_value() -> Style {
+    tinted(Style::default().fg(active().dim))
+}
+
 /// The selected row in a list.
 #[must_use]
 pub fn selected() -> Style {

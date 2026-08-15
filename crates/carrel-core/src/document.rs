@@ -1037,6 +1037,10 @@ impl<'a> Builder<'a> {
                 // `key_col` is computed at close from the lines actually
                 // captured, because the width is a property of the whole block.
                 Event::Start(Tag::MetadataBlock(_)) => {
+                    // Reserve the card's gutter in the MODEL, not at paint:
+                    // `indent` is width-independent, so layout wraps long
+                    // values inside the card instead of under its rule.
+                    self.indent = self.indent.saturating_add(2);
                     self.open_block(NodeKind::Metadata { key_col: 0 }, &src);
                 }
                 Event::End(TagEnd::MetadataBlock(_)) => {
@@ -1049,6 +1053,7 @@ impl<'a> Builder<'a> {
                         }
                     }
                     self.close_block(src.end);
+                    self.indent = self.indent.saturating_sub(2);
                 }
 
                 Event::Start(Tag::Heading { level, .. }) => {
