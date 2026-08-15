@@ -48,7 +48,7 @@ Carrel targets what terminal markdown readers haven't shipped:
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
 | **Clickable links** | Real OSC 8 hyperlinks, with graceful degradation. |
 | **Correct emoji and wide characters** | Measured per grapheme cluster, never per codepoint. |
-| **Complete markdown** | CommonMark + GFM, footnotes, definition lists, tables, frontmatter. |
+| **Complete markdown** | CommonMark + GFM, footnotes, tables, definition lists, frontmatter, and LaTeX math as terminal box art. Every claim here is [a test](crates/carrel/tests/conformance.rs). |
 | **A GUI, eventually** | Planned and designed for, **not yet built.** So that people who don't use terminals can read markdown too. |
 
 ## Install
@@ -146,6 +146,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Mouse selection that copies clean text (drag, double-click word, triple-click block)
 - [x] Outline navigation, live reload, search inside every file
 - [x] Mermaid diagrams as Unicode box art
+- [x] Frontmatter cards, definition lists, LaTeX math as box art, a conformance suite
 - [ ] Packaging: `.deb`, `.rpm`, AUR, Homebrew, winget
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 

@@ -2,6 +2,25 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## 2026.8.15
+
+- **Frontmatter renders as a card instead of a heading.** A file starting with
+  `---` / `title: …` / `---` used to show an `<h2>` full of YAML — the first thing on
+  screen for every Obsidian, Hugo, Jekyll, Zola and Quartz note. It now renders as a quiet
+  metadata card with the keys aligned, and stays searchable. TOML (`+++`) too.
+- **LaTeX math.** Display math (`$$…$$`) renders as box art — stacked fractions, roots with
+  overbars, big operators with their limits, matrices inside stretched brackets. Inline math
+  (`$…$`) renders in place, so `$E = mc^2$` reads as `E = mc²`. Anything too wide, or that
+  will not parse, falls back to the LaTeX source rather than showing you a broken equation.
+- **`m` now toggles math as well as diagrams** between rendered art and source.
+- **Definition lists**, **superscript and subscript**, and **bare `www.` links** now render.
+- **`carrel --version`** works. It used to exit 1 trying to open a file called `--version`.
+- **A man page and shell completions** for bash, zsh and fish, in `contrib/`, installed by
+  the AUR and RPM packaging.
+- **A conformance suite** — `crates/carrel/tests/corpus/conformance.md` and its 15
+  assertions — covering every construct carrel supports *and* every one it deliberately does
+  not, so the README's claims are tests rather than promises.
+
 ## 2026.8.13
 
 - **A demo in the README** — the home screen, filtering to a file, and reading it. Recorded

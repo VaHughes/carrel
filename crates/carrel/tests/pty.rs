@@ -165,3 +165,42 @@ fn completions_and_man_page_cover_every_flag_in_usage() {
         );
     }
 }
+
+/// The whole conformance corpus through a real terminal.
+///
+/// The unit tests reach the renderer directly; this proves the binary can
+/// open a document containing every construct at once — frontmatter, tables,
+/// alerts, math art, wikilinks — and still leave the alternate screen. A
+/// stuck terminal is the worst bug a TUI can ship.
+#[test]
+fn the_conformance_corpus_survives_a_pty_round_trip() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        "tests/corpus/conformance.md",
+        d.path().join("conformance.md"),
+    )
+    .expect("copy corpus");
+
+    let raw = pty_run("conformance.md", "q", d.path());
+
+    assert!(
+        raw.contains("\x1b[?1049h"),
+        "must ENTER the alternate screen"
+    );
+    assert!(
+        raw.contains("\x1b[?1049l"),
+        "must LEAVE the alternate screen"
+    );
+    assert!(
+        raw.contains("Conformance"),
+        "the corpus must actually paint"
+    );
+    assert!(
+        raw.contains('╭'),
+        "the frontmatter card paints on the first screen"
+    );
+}
