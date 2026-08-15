@@ -74,6 +74,58 @@ impl Style {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LinkId(pub u32);
 
+/// GFM extended autolinks for bare `www.` runs.
+///
+/// Absent upstream in pulldown-cmark, so hand-rolled to the GFM rules that
+/// actually matter: the run ends at whitespace or `<`; trailing `?!.,:*_~` are
+/// trimmed; and a trailing `)` is trimmed **only** when the parens are
+/// unbalanced, so `www.example.com/a_(b)` keeps its closing paren while
+/// `(www.example.com)` does not.
+///
+/// Returns byte ranges into `text` paired with the URL to register. The scheme
+/// is `http://` per GFM — carrel does not guess at transport.
+fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
+    const TRAIL: &[char] = &['?', '!', '.', ',', ':', '*', '_', '~'];
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find("www.") {
+        let start = i + rel;
+        // Must begin at a boundary, or `youwww.example.com` would linkify.
+        let at_boundary = start == 0
+            || matches!(
+                bytes[start - 1],
+                b' ' | b'\t' | b'\n' | b'*' | b'_' | b'(' | b'~'
+            );
+        let mut end = start;
+        while end < bytes.len() && !matches!(bytes[end], b' ' | b'\t' | b'\n' | b'<') {
+            end += 1;
+        }
+        if at_boundary {
+            let mut run = &text[start..end];
+            loop {
+                let cut = run.trim_end_matches(TRAIL);
+                let cut =
+                    if cut.ends_with(')') && cut.matches('(').count() < cut.matches(')').count() {
+                        &cut[..cut.len() - 1]
+                    } else {
+                        cut
+                    };
+                if cut.len() == run.len() {
+                    break;
+                }
+                run = cut;
+            }
+            // `www.` alone is not a host; there must be a dot after it.
+            if run.len() > 4 && run[4..].contains('.') {
+                out.push((start..start + run.len(), format!("http://{run}")));
+            }
+        }
+        i = end.max(start + 4);
+    }
+    out
+}
+
 /// A styled run over [`Document::text`].
 #[derive(Clone, Debug)]
 pub struct Inline {
@@ -649,6 +701,49 @@ impl<'a> Builder<'a> {
     /// raw continuation line under its parent. A *reader* must never fail on
     /// exotic YAML; the worst outcome here is an unaligned line, not a lost
     /// document.
+    /// Push text, turning bare `www.` runs into links on the way.
+    ///
+    /// Skipped entirely inside an explicit link (`current_link` is set) — a
+    /// `[label](url)` whose label happens to contain `www.` must not sprout a
+    /// second, nested destination.
+    fn push_linkified(&mut self, t: &str, src: Range<usize>) {
+        if self.current_link.is_some() {
+            self.push(t, src, ProvKind::Verbatim);
+            return;
+        }
+        let hits = extended_autolinks(t);
+        if hits.is_empty() {
+            self.push(t, src, ProvKind::Verbatim);
+            return;
+        }
+        let mut cursor = 0usize;
+        for (range, url) in hits {
+            if range.start > cursor {
+                // The prefix's source range is unknowable byte-for-byte once
+                // we split, so it is Substituted, not Verbatim — the same rule
+                // entity decoding already follows.
+                self.push(&t[cursor..range.start], src.clone(), ProvKind::Substituted);
+            }
+            let id = LinkId(self.links.len() as u32);
+            // Raw, exactly like the explicit-link path above: control
+            // characters are stripped at OSC 8 collection, which is the one
+            // place that policy lives.
+            self.links.push(url.into_boxed_str());
+            self.wiki.push(false);
+            let prev_link = self.current_link;
+            let prev_style = self.style;
+            self.current_link = Some(id);
+            self.style = self.style.insert(Style::LINK);
+            self.push(&t[range.clone()], src.clone(), ProvKind::Substituted);
+            self.current_link = prev_link;
+            self.style = prev_style;
+            cursor = range.end;
+        }
+        if cursor < t.len() {
+            self.push(&t[cursor..], src, ProvKind::Substituted);
+        }
+    }
+
     fn meta_key_col(body: &str) -> u16 {
         body.lines()
             .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
@@ -1193,7 +1288,7 @@ impl<'a> Builder<'a> {
                 Event::End(TagEnd::Image) => self.in_image = false,
 
                 // --- text ---
-                Event::Text(t) => self.push(&t, src, ProvKind::Verbatim),
+                Event::Text(t) => self.push_linkified(&t, src),
                 Event::Code(t) => {
                     // Backticks are delimiters, so the src range is longer than
                     // the text: Substituted, not Verbatim.
@@ -2037,5 +2132,48 @@ mod tests {
         // as a failing test rather than a silent behaviour change.
         let doc = Document::parse("x^2^\n");
         assert!(doc.text.contains("x^2^"), "still literal: {:?}", doc.text);
+    }
+
+    // --- GFM extended autolinks (Q16, 2026-08-15) ---
+
+    #[test]
+    fn bare_www_becomes_a_link_and_trailing_punctuation_stays_out_of_it() {
+        let doc = Document::parse("Visit www.example.com, then stop.\n");
+        let node = doc.node_for_block(BlockIdx(0));
+        let link = node
+            .inlines
+            .iter()
+            .find(|i| i.link.is_some())
+            .expect("a link run exists");
+        assert_eq!(
+            &doc.text[link.doc.start as usize..link.doc.end as usize],
+            "www.example.com",
+            "the trailing comma is not part of the link"
+        );
+        let LinkId(i) = link.link.expect("link id");
+        assert_eq!(&*doc.links[i as usize], "http://www.example.com");
+    }
+
+    #[test]
+    fn autolink_scanner_trims_only_unbalanced_trailing_parens() {
+        let hits = extended_autolinks("see (www.example.com/a_(b)) end");
+        assert_eq!(hits.len(), 1, "one hit: {hits:?}");
+        assert_eq!(
+            &"see (www.example.com/a_(b)) end"[hits[0].0.clone()],
+            "www.example.com/a_(b)"
+        );
+    }
+
+    #[test]
+    fn a_bare_www_with_no_host_is_not_a_link() {
+        assert!(extended_autolinks("www. alone").is_empty());
+    }
+
+    #[test]
+    fn www_inside_an_existing_link_is_not_relinkified() {
+        let doc = Document::parse("[label](https://x.test) and www.example.com\n");
+        let n = doc.node_for_block(BlockIdx(0));
+        let count = n.inlines.iter().filter(|i| i.link.is_some()).count();
+        assert_eq!(count, 2, "one explicit, one autolinked -- not three");
     }
 }
