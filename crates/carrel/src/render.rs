@@ -254,6 +254,51 @@ fn paint_help(frame: &mut Frame, app: &App) {
     }
 }
 
+/// Paint a math block's art, returning the next free row, or `None` when this
+/// block is not rendered math and should fall through to the ordinary paths.
+fn paint_math(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: BlockIdx,
+    skip: u32,
+    mut y: u16,
+) -> Option<u16> {
+    let node = app.doc.node_for_block(block);
+    let avail = area.width.saturating_sub(node.indent);
+    let form = app.math_form(block, avail);
+    if form == crate::app::MathForm::Source {
+        return None;
+    }
+    let art = app.math_art.get(&block)?;
+    let chosen = if form == crate::app::MathForm::Display {
+        &art.display
+    } else {
+        &art.inline
+    };
+    let x = area.x + node.indent.min(area.width.saturating_sub(1));
+    let w = usize::from(avail);
+    for line in chosen
+        .rows
+        .iter()
+        .skip(usize::try_from(skip).unwrap_or(usize::MAX))
+    {
+        if y >= area.bottom() {
+            break;
+        }
+        frame
+            .buffer_mut()
+            .set_stringn(x, y, line, w, crate::theme::marker());
+        y += 1;
+    }
+    let len = u32::try_from(chosen.rows.len()).unwrap_or(u32::MAX);
+    let trailing = app.layout.height(block).saturating_sub(len.max(skip));
+    Some(
+        y.saturating_add(u16::try_from(trailing).unwrap_or(u16::MAX))
+            .min(area.bottom()),
+    )
+}
+
 /// Paint a frontmatter block as a card, returning the next free row.
 ///
 /// The `╭ │ ╰` rule is DECORATION and is not in the text — the same standing
@@ -372,6 +417,17 @@ fn paint_rows(
             y = y
                 .saturating_add(u16::try_from(trailing).unwrap_or(u16::MAX))
                 .min(area.bottom());
+            skip = 0;
+            block = BlockIdx(block.0 + 1);
+            continue;
+        }
+
+        // Rendered math paints its art lines, line-skipped on partial scroll
+        // exactly like a diagram. Which form is chosen is `App::math_form`'s
+        // call, and paint MUST ask it rather than deciding independently, or
+        // height and paint disagree about how many rows this block occupies.
+        if let Some(next_y) = paint_math(frame, app, area, block, skip, y) {
+            y = next_y;
             skip = 0;
             block = BlockIdx(block.0 + 1);
             continue;

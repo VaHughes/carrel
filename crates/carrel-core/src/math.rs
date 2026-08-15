@@ -425,3 +425,149 @@ mod tests {
         assert!(parse(r"\nosuchcommand").is_none(), "unknown command");
     }
 }
+
+/// The one-row rendering of an expression, as a plain string.
+///
+/// This is a **text transformation, not layout**: it takes no width, produces
+/// no cells and no rows, and so belongs in the core beside entity decoding and
+/// smart punctuation rather than in a frontend. That matters because inline
+/// math has to enter `Document::text` — the display text is authoritative, and
+/// painting glyphs that differ from it would desynchronise wrapping, selection
+/// and search all at once.
+///
+/// Scripts prefer their Unicode forms (`x²`, `aᵢ`) and fall back to `^`/`_`
+/// with parentheses where precedence demands them.
+#[must_use]
+pub fn inline_text(expr: &MathExpr) -> String {
+    match expr {
+        MathExpr::Sym { text, class } => {
+            if matches!(class, MathClass::BinaryOp | MathClass::Relation) && !text.is_empty() {
+                format!(" {text} ")
+            } else {
+                text.to_string()
+            }
+        }
+        MathExpr::Row(parts) => parts.iter().map(inline_text).collect(),
+        MathExpr::Frac { num, den } => {
+            format!("{}/{}", grouped(num), grouped(den))
+        }
+        MathExpr::Sqrt { radicand, index } => {
+            let idx = index.as_deref().map(inline_text).unwrap_or_default();
+            format!("{idx}\u{221a}{}", grouped(radicand))
+        }
+        MathExpr::Script { base, sub, sup, .. } => {
+            let mut out = inline_text(base);
+            if let Some(s) = sub {
+                if let Some(u) = unicode_script(s, SUBS) {
+                    out.push_str(&u);
+                } else {
+                    out.push('_');
+                    out.push_str(&grouped(s));
+                }
+            }
+            if let Some(s) = sup {
+                if let Some(u) = unicode_script(s, SUPERS) {
+                    out.push_str(&u);
+                } else {
+                    out.push('^');
+                    out.push_str(&grouped(s));
+                }
+            }
+            out
+        }
+        MathExpr::Matrix { rows, delim } => {
+            let body = rows
+                .iter()
+                .map(|r| r.iter().map(inline_text).collect::<Vec<_>>().join(" "))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let (l, r) = match delim {
+                MatrixDelim::None => ("", ""),
+                MatrixDelim::Paren => ("(", ")"),
+                MatrixDelim::Bracket => ("[", "]"),
+                MatrixDelim::Brace => ("{", "}"),
+            };
+            format!("{l}{body}{r}")
+        }
+    }
+}
+
+/// An operand, parenthesised when flattening would change what it means.
+fn grouped(expr: &MathExpr) -> String {
+    let text = inline_text(expr).trim().to_string();
+    if expr.is_compound() {
+        format!("({text})")
+    } else {
+        text
+    }
+}
+
+const SUPERS: [(char, char); 14] = [
+    ('0', '\u{2070}'),
+    ('1', '\u{b9}'),
+    ('2', '\u{b2}'),
+    ('3', '\u{b3}'),
+    ('4', '\u{2074}'),
+    ('5', '\u{2075}'),
+    ('6', '\u{2076}'),
+    ('7', '\u{2077}'),
+    ('8', '\u{2078}'),
+    ('9', '\u{2079}'),
+    ('+', '\u{207a}'),
+    ('-', '\u{207b}'),
+    ('n', '\u{207f}'),
+    ('i', '\u{2071}'),
+];
+
+const SUBS: [(char, char); 14] = [
+    ('0', '\u{2080}'),
+    ('1', '\u{2081}'),
+    ('2', '\u{2082}'),
+    ('3', '\u{2083}'),
+    ('4', '\u{2084}'),
+    ('5', '\u{2085}'),
+    ('6', '\u{2086}'),
+    ('7', '\u{2087}'),
+    ('8', '\u{2088}'),
+    ('9', '\u{2089}'),
+    ('+', '\u{208a}'),
+    ('-', '\u{208b}'),
+    ('n', '\u{2099}'),
+    ('i', '\u{1d62}'),
+];
+
+/// The Unicode raised or lowered form, if EVERY character has one. `None` the
+/// moment one does not — a half-translated script reads worse than `^(n+1)`.
+fn unicode_script(expr: &MathExpr, table: [(char, char); 14]) -> Option<String> {
+    let MathExpr::Sym { text, .. } = expr else {
+        return None;
+    };
+    let mut out = String::new();
+    for ch in text.trim().chars() {
+        out.push(table.iter().find(|(from, _)| *from == ch)?.1);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+
+    #[test]
+    fn a_simple_script_becomes_its_unicode_form() {
+        let e = parse("E = mc^2").expect("parse");
+        assert_eq!(inline_text(&e), "E = mc\u{b2}");
+    }
+
+    #[test]
+    fn a_compound_script_falls_back_to_a_caret_with_parens() {
+        let e = parse("x^{n+1}").expect("parse");
+        assert_eq!(inline_text(&e), "x^(n + 1)");
+    }
+
+    #[test]
+    fn a_nested_fraction_keeps_its_grouping() {
+        let e = parse(r"\frac{\frac{a+b}{c}}{z}").expect("parse");
+        assert_eq!(inline_text(&e), "((a + b)/c)/z");
+    }
+}

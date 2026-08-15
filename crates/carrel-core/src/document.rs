@@ -1298,17 +1298,40 @@ impl<'a> Builder<'a> {
                 // Math: the SOURCE is the doc text. Delimiters are consumed
                 // by the parser, so this is Substituted, not Verbatim.
                 Event::DisplayMath(t) => {
-                    self.open_block(NodeKind::Math, &src);
+                    // `$$…$$` arrives inside a Paragraph. Opening a block here
+                    // would close that paragraph while it is still empty and
+                    // leave a stray blank line above every equation, so reuse
+                    // the empty paragraph instead — the same move a loose list
+                    // item makes with its own node.
+                    let reuse = self.open.as_ref().is_some_and(|o| {
+                        matches!(o.kind, NodeKind::Paragraph)
+                            && o.doc_start as usize == self.text.len()
+                    });
+                    if reuse {
+                        if let Some(o) = self.open.as_mut() {
+                            o.kind = NodeKind::Math;
+                        }
+                    } else {
+                        self.open_block(NodeKind::Math, &src);
+                    }
                     let prev = self.style;
                     self.style = self.style.insert(Style::MATH);
                     self.push(&t, src.clone(), ProvKind::Substituted);
                     self.style = prev;
                     self.close_block(src.end);
                 }
+                // Inline math enters space 2 ALREADY RENDERED (`x^2` becomes
+                // `x²`), because the display text is authoritative: painting
+                // glyphs that differ from it would desynchronise wrapping,
+                // selection and search at once. The same standing entity
+                // decoding and smart punctuation already have — which is
+                // exactly why `Prov` exists. Unparseable math keeps its source.
                 Event::InlineMath(t) => {
+                    let rendered = crate::math::parse(&t)
+                        .map_or_else(|| t.to_string(), |e| crate::math::inline_text(&e));
                     let prev = self.style;
                     self.style = self.style.insert(Style::MATH);
-                    self.push(&t, src, ProvKind::Substituted);
+                    self.push(&rendered, src, ProvKind::Substituted);
                     self.style = prev;
                 }
                 Event::Text(t) => self.push_linkified(&t, src),

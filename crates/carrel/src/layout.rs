@@ -157,7 +157,17 @@ impl Layout {
             // at the node's start — which is exactly the §3.5 case the
             // anchor-restore fallback was built for.
             let node = doc.node_for_block(b);
-            debug_assert!(matches!(node.kind, NodeKind::Image { .. }));
+            // The kinds whose height is NOT a function of wrapped text: an
+            // image's pixels, a mermaid code block's art, and a math block's
+            // art. Anything else carrying an override is a caller bug.
+            debug_assert!(
+                matches!(
+                    node.kind,
+                    NodeKind::Image { .. } | NodeKind::CodeBlock { .. } | NodeKind::Math
+                ),
+                "height override on a text block: {:?}",
+                node.kind
+            );
             for _ in 0..(*rows).max(1) {
                 out.push(Row {
                     block: b,

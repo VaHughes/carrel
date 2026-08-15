@@ -30,6 +30,22 @@ fn frame(src: &str, cols: u16, rows: u16) -> String {
         .join("\n")
 }
 
+/// The real `--plain` contract (Q17): no escape bytes and no box drawing.
+///
+/// NOT "pure ASCII" — space 2 legitimately holds non-ASCII content, and has
+/// since smart punctuation shipped: `"x"` is already U+201C/U+201D. The policy
+/// is about what plain output ADDS, not what the document contains.
+fn assert_plain_safe(out: &str) {
+    assert!(
+        !out.contains('\u{1b}'),
+        "plain output never contains an escape byte:\n{out}"
+    );
+    assert!(
+        !out.chars().any(|c| ('\u{2500}'..='\u{257f}').contains(&c)),
+        "plain output never contains box drawing:\n{out}"
+    );
+}
+
 #[test]
 fn the_frontmatter_card_shows_keys_aligned_in_a_gutter() {
     let out = frame(
@@ -79,5 +95,5 @@ fn plain_mode_renders_frontmatter_as_ascii_key_value_lines() {
         out.contains("title: My Note"),
         "keys and values survive:\n{out}"
     );
-    assert!(out.is_ascii(), "plain mode is ASCII-safe (Q17):\n{out}");
+    assert_plain_safe(&out);
 }

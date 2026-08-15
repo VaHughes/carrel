@@ -146,6 +146,13 @@ fn pick(b: &MathBox, i: usize, ascent: usize) -> String {
 /// docs for why that matters.
 #[must_use]
 pub fn lay_out(expr: &MathExpr, mode: Mode) -> MathBox {
+    // The one-row form is a text transformation with no width input, so it
+    // lives in the core beside entity decoding — one implementation, shared
+    // with the parser, which is what lets inline math enter `Document::text`
+    // already rendered.
+    if mode == Mode::Inline {
+        return MathBox::sym(&carrel_core::math::inline_text(expr));
+    }
     match expr {
         MathExpr::Sym { text, class } => {
             // A binary operator or relation breathes; an ordinary atom does

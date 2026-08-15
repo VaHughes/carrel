@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use carrel_core::{BlockIdx, DocByte, Document, LinkId, Matches, search};
+use carrel_core::{BlockIdx, DocByte, Document, LinkId, Matches, NodeKind, search};
 
 use crate::action::{Action, Direction, Edge, SearchKey, Span, Where};
 use crate::home::{Home, HomeMode};
 use crate::layout::Layout;
+use crate::math_art::{self, MathBox};
 use crate::scan::Entry;
 use crate::view::ViewState;
 
@@ -58,6 +59,28 @@ pub enum Screen {
     Reader,
 }
 
+/// Both laid-out forms of one math block.
+///
+/// Pure functions of the expression and therefore **width-independent**: a
+/// resize selects between them, it never recomputes them.
+#[derive(Clone, Debug)]
+pub struct MathArt {
+    pub display: MathBox,
+    pub inline: MathBox,
+}
+
+/// Which rendering a math block gets at a given width. See [`App::math_form`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MathForm {
+    /// Full 2D box art.
+    Display,
+    /// The single-row form, when the art is wider than the viewport.
+    Inline,
+    /// The literal LaTeX source: unparseable, too wide even inline, or the
+    /// user pressed the rendered-blocks toggle.
+    Source,
+}
+
 #[derive(Debug)]
 pub struct App {
     pub screen: Screen,
@@ -86,6 +109,11 @@ pub struct App {
     /// is presentation-shaped but width-INDEPENDENT (fixed-width text), so
     /// it may live in state; a block with no entry paints as source.
     pub diagram_art: HashMap<BlockIdx, Vec<String>>,
+    /// Laid-out math art by block, both forms, computed ONCE per document.
+    /// A `MathExpr` has no width input, so a resize chooses between the forms
+    /// (see [`App::math_form`]) and never recomputes them. A block absent from
+    /// this map failed to parse and renders as its literal LaTeX source.
+    pub math_art: HashMap<BlockIdx, MathArt>,
     /// `m` flips every mermaid block between art and source, like `t` for
     /// tables.
     pub show_diagrams: bool,
@@ -163,7 +191,7 @@ impl App {
     pub fn new(path: String, doc: Document, cols: u16, rows: u16) -> Self {
         let (w, _) = Self::text_size(cols, rows, true);
         let layout = Layout::new(&doc, w.max(1));
-        Self {
+        let mut app = Self {
             screen: Screen::Reader,
             doc,
             matches: None,
@@ -177,6 +205,7 @@ impl App {
             image_dims: HashMap::new(),
             wiki: HashMap::new(),
             diagram_art: HashMap::new(),
+            math_art: HashMap::new(),
             show_diagrams: true,
             font_px: (8, 16),
             note: None,
@@ -192,7 +221,13 @@ impl App {
             home_stash: None,
             cols,
             rows,
-        }
+        };
+        // Math art is pure computation over the document -- no config, no
+        // filesystem -- so the constructor may do it, and every entry point
+        // (new, open_path, reload) then has art without a special case.
+        app.rebuild_math_art();
+        app.relayout();
+        app
     }
 
     /// Start on the home screen. `cached` is painted immediately; the caller
@@ -271,6 +306,7 @@ impl App {
         self.file = Some(path.to_path_buf());
         self.image_dims.clear();
         self.diagram_art.clear();
+        self.rebuild_math_art();
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -297,6 +333,7 @@ impl App {
         self.layout = Layout::new(&self.doc, self.text_w());
         self.image_dims.clear();
         self.diagram_art.clear();
+        self.rebuild_math_art();
         self.selection = None;
         self.sel_anchor = None;
         self.selected_link = None;
@@ -437,6 +474,69 @@ impl App {
     /// Rebuild layout — including image row-heights recomputed from stored
     /// dimensions at the current width — and restore the reading position.
     ///
+    /// Lay out every math block in the document, both forms, once.
+    ///
+    /// A block whose LaTeX will not parse is simply absent from the map, which
+    /// is the literal-source fallback: a reader must never show a parse error
+    /// where the document expected an equation.
+    fn rebuild_math_art(&mut self) {
+        self.math_art.clear();
+        for i in 0..self.doc.block_count() {
+            let b = BlockIdx(i as u32);
+            let node = self.doc.node_for_block(b);
+            if !matches!(node.kind, NodeKind::Math) {
+                continue;
+            }
+            let src = &self.doc.text[node.doc.start as usize..node.doc.end as usize];
+            let Some(expr) = carrel_core::math::parse(src) else {
+                continue;
+            };
+            self.math_art.insert(
+                b,
+                MathArt {
+                    display: math_art::lay_out(&expr, math_art::Mode::Display),
+                    inline: math_art::lay_out(&expr, math_art::Mode::Inline),
+                },
+            );
+        }
+    }
+
+    /// Which form of a math block fits `avail` display columns.
+    ///
+    /// The ladder, in order: display art -> the inline single-row form -> the
+    /// literal LaTeX source. Nothing is ever clipped into nonsense, and the
+    /// fallback is a designed outcome rather than an error path.
+    #[must_use]
+    pub fn math_form(&self, block: BlockIdx, avail: u16) -> MathForm {
+        let Some(art) = self.math_art.get(&block) else {
+            return MathForm::Source;
+        };
+        if !self.show_diagrams {
+            return MathForm::Source;
+        }
+        if art.display.width <= avail {
+            MathForm::Display
+        } else if art.inline.width <= avail {
+            MathForm::Inline
+        } else {
+            MathForm::Source
+        }
+    }
+
+    /// Row count for a math block, or `None` when it renders as source and so
+    /// takes its height from ordinary text wrapping.
+    ///
+    /// Paint MUST read `math_form` too, or height and paint disagree -- the
+    /// same reason `with_images` runs the row pass's own functions.
+    fn math_rows(&self, block: BlockIdx, avail: u16) -> Option<u32> {
+        let art = self.math_art.get(&block)?;
+        match self.math_form(block, avail) {
+            MathForm::Display => Some(u32::try_from(art.display.rows.len()).unwrap_or(u32::MAX)),
+            MathForm::Inline => Some(1),
+            MathForm::Source => None,
+        }
+    }
+
     /// **Image dimension arrival is just another reflow.** The anchor
     /// machinery that keeps a resize stable keeps this stable too; nothing
     /// about it is a special case.
@@ -456,6 +556,15 @@ impl App {
         if self.show_diagrams {
             for (b, art) in &self.diagram_art {
                 block_rows.insert(*b, u32::try_from(art.len()).unwrap_or(u32::MAX));
+            }
+            // Math art rides the same channel. Which FORM is chosen depends on
+            // the width, but neither form is recomputed here -- see math_form.
+            for b in self.math_art.keys() {
+                let indent = self.doc.node_for_block(*b).indent;
+                let avail = w.saturating_sub(indent);
+                if let Some(rows) = self.math_rows(*b, avail) {
+                    block_rows.insert(*b, rows);
+                }
             }
         }
         self.layout = Layout::with_images(&self.doc, w, block_rows, self.wrap_tables);
