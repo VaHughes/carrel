@@ -126,6 +126,18 @@ pub enum NodeKind {
         /// offsets are width-independent — same standing as `cols`.
         cell_starts: Box<[u32]>,
     },
+    /// A YAML (`---`) or TOML (`+++`) frontmatter block.
+    ///
+    /// The doc text is the **raw body**, so the metadata is searchable and no
+    /// byte is discarded. Splitting it into keys and values is the frontend's
+    /// paint-time job, exactly like the table `│` separators — and deliberately
+    /// NOT a YAML parse, because a *reader* must never fail on exotic YAML.
+    Metadata {
+        /// Max-content display width of the key column, capped at 16 cells.
+        /// **Width-independent** — a property of the text alone, so it has the
+        /// same standing here as `Table::cols` and `Node::indent`.
+        key_col: u16,
+    },
     /// A paragraph that contains **only** an image — the figure pattern. The
     /// node's doc text is the alt text, so the placeholder stays searchable.
     /// Pixels, dimensions, and protocols are the frontend's problem entirely:
@@ -622,6 +634,24 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Max-content display width of a frontmatter key column, capped at 16.
+    ///
+    /// Deliberately **not** a YAML parse: split each line at its first `:` (or
+    /// `=` for TOML). A line that does not split — a nested map, a list item, a
+    /// block scalar, a comment — contributes nothing, because it renders as a
+    /// raw continuation line under its parent. A *reader* must never fail on
+    /// exotic YAML; the worst outcome here is an unaligned line, not a lost
+    /// document.
+    fn meta_key_col(body: &str) -> u16 {
+        body.lines()
+            .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
+            .filter_map(|l| l.split_once(':').or_else(|| l.split_once('=')))
+            .map(|(k, _)| display_width(k.trim_end()))
+            .max()
+            .unwrap_or(0)
+            .min(16)
+    }
+
     fn opts() -> Options {
         Options::ENABLE_TABLES
             | Options::ENABLE_GFM
@@ -630,6 +660,8 @@ impl<'a> Builder<'a> {
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_SMART_PUNCTUATION
             | Options::ENABLE_WIKILINKS
+            | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+            | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
     }
 
     /// Append display text and record its provenance.
@@ -999,6 +1031,24 @@ impl<'a> Builder<'a> {
                     if !self.open_is_item() {
                         self.close_block(src.end);
                     }
+                }
+
+                // Frontmatter. The body is pushed verbatim like any other text;
+                // `key_col` is computed at close from the lines actually
+                // captured, because the width is a property of the whole block.
+                Event::Start(Tag::MetadataBlock(_)) => {
+                    self.open_block(NodeKind::Metadata { key_col: 0 }, &src);
+                }
+                Event::End(TagEnd::MetadataBlock(_)) => {
+                    // Compute before taking the mutable borrow of `open`:
+                    // `self.text` and `self.open` cannot both be borrowed.
+                    if let Some(start) = self.open.as_ref().map(|o| o.doc_start) {
+                        let key_col = Self::meta_key_col(&self.text[start as usize..]);
+                        if let Some(o) = self.open.as_mut() {
+                            o.kind = NodeKind::Metadata { key_col };
+                        }
+                    }
+                    self.close_block(src.end);
                 }
 
                 Event::Start(Tag::Heading { level, .. }) => {
@@ -1840,5 +1890,45 @@ mod tests {
         let d = Document::parse("read [[secret-file|the docs]] now");
         assert_eq!(crate::search(&d, "the docs", true).len(), 1);
         assert_eq!(crate::search(&d, "secret-file", true).len(), 0);
+    }
+
+    // --- frontmatter (Q16, 2026-08-15) ---
+
+    #[test]
+    fn yaml_frontmatter_becomes_a_metadata_block_not_a_heading() {
+        let doc = Document::parse("---\ntitle: My Note\ntags: [a, b]\n---\n\n# Heading\n");
+        let first = doc.node_for_block(BlockIdx(0));
+        assert!(
+            matches!(first.kind, NodeKind::Metadata { .. }),
+            "frontmatter must not parse as a heading; got {:?}",
+            first.kind
+        );
+        let body = &doc.text[first.doc.start as usize..first.doc.end as usize];
+        assert!(
+            body.contains("title"),
+            "frontmatter text is retained: {body:?}"
+        );
+        assert!(
+            body.contains("My Note"),
+            "values are retained too: {body:?}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_key_col_is_the_widest_key_capped_at_sixteen() {
+        let doc = Document::parse("---\na: 1\nlonger_key: 2\n---\n");
+        let NodeKind::Metadata { key_col } = doc.node_for_block(BlockIdx(0)).kind else {
+            panic!("expected a metadata block");
+        };
+        assert_eq!(key_col, 10, "`longer_key` is 10 cells wide");
+    }
+
+    #[test]
+    fn toml_frontmatter_is_a_metadata_block_too() {
+        let doc = Document::parse("+++\ntitle = \"My Note\"\n+++\n\ntext\n");
+        assert!(matches!(
+            doc.node_for_block(BlockIdx(0)).kind,
+            NodeKind::Metadata { .. }
+        ));
     }
 }
