@@ -394,7 +394,7 @@ fn paint_rows(
         // block's wrapped source — properly line-skipped on partial scroll,
         // which text can do and pixels cannot. Wider-than-viewport art
         // right-clips like a wide code line.
-        if app.show_diagrams
+        if app.show_rendered
             && let Some(art) = app.diagram_art.get(&block)
         {
             let node = app.doc.node_for_block(block);
@@ -1732,7 +1732,7 @@ mod tests {
         assert!(text.contains("ARTBOX"), "art painted:\n{text}");
         assert!(!text.contains("graph TD"), "source hidden:\n{text}");
 
-        crate::app::update(&mut app, Action::DiagramToggle);
+        crate::app::update(&mut app, Action::RenderedToggle);
         let buf = buffer_of(&app, 40, 12);
         let text: String = (0..12).map(|y| line(&buf, y) + "\n").collect();
         assert!(!text.contains("ARTBOX"), "art hidden after m:\n{text}");

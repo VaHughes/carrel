@@ -109,7 +109,7 @@ pub enum Action {
     SelectBlock(u32),
     /// `m`: flip every mermaid block between rendered box art and source,
     /// like `t` for tables.
-    DiagramToggle,
+    RenderedToggle,
     /// `o`: open the outline picker (or close it, when open).
     OutlineToggle,
     /// Move the outline selection through the FILTERED list. Saturates.

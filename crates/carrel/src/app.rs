@@ -114,9 +114,10 @@ pub struct App {
     /// (see [`App::math_form`]) and never recomputes them. A block absent from
     /// this map failed to parse and renders as its literal LaTeX source.
     pub math_art: HashMap<BlockIdx, MathArt>,
-    /// `m` flips every mermaid block between art and source, like `t` for
+    /// `m` flips every RENDERED block -- mermaid diagrams and math alike --
+    /// between art and source, like `t` for
     /// tables.
-    pub show_diagrams: bool,
+    pub show_rendered: bool,
     /// The terminal's cell size in pixels, set once at startup by the
     /// frontend. `(8, 16)` is the conservative guess when detection fails.
     pub font_px: (u16, u16),
@@ -206,7 +207,7 @@ impl App {
             wiki: HashMap::new(),
             diagram_art: HashMap::new(),
             math_art: HashMap::new(),
-            show_diagrams: true,
+            show_rendered: true,
             font_px: (8, 16),
             note: None,
             config_dir: None,
@@ -511,7 +512,7 @@ impl App {
         let Some(art) = self.math_art.get(&block) else {
             return MathForm::Source;
         };
-        if !self.show_diagrams {
+        if !self.show_rendered {
             return MathForm::Source;
         }
         if art.display.width <= avail {
@@ -553,7 +554,7 @@ impl App {
             .collect();
         // A rendered diagram is, layout-wise, an image whose rows happen to
         // be text: same height-override channel, same reflow machinery.
-        if self.show_diagrams {
+        if self.show_rendered {
             for (b, art) in &self.diagram_art {
                 block_rows.insert(*b, u32::try_from(art.len()).unwrap_or(u32::MAX));
             }
@@ -1163,13 +1164,13 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
-        Action::DiagramToggle => {
-            app.show_diagrams = !app.show_diagrams;
+        Action::RenderedToggle => {
+            app.show_rendered = !app.show_rendered;
             app.note = Some(
-                if app.show_diagrams {
-                    "diagrams: rendered"
+                if app.show_rendered {
+                    "rendered: art"
                 } else {
-                    "diagrams: source"
+                    "rendered: source"
                 }
                 .to_string(),
             );
@@ -2409,21 +2410,47 @@ mod tests {
     }
 
     #[test]
-    fn m_toggles_diagrams_between_art_and_source() {
+    fn m_toggles_rendered_blocks_between_art_and_source() {
         let mut a = App::new("t.md".into(), Document::parse(MERMAID), 40, 8);
         a.diagram_art.insert(BlockIdx(1), vec!["┌─┐".into(); 12]);
         a.relayout();
         let with_art = a.layout.total_rows();
 
-        update(&mut a, Action::DiagramToggle);
-        assert!(!a.show_diagrams);
-        assert_eq!(a.note.as_deref(), Some("diagrams: source"));
+        update(&mut a, Action::RenderedToggle);
+        assert!(!a.show_rendered);
+        assert_eq!(a.note.as_deref(), Some("rendered: source"));
         assert!(a.layout.total_rows() < with_art, "source rows are shorter");
 
-        update(&mut a, Action::DiagramToggle);
-        assert!(a.show_diagrams);
-        assert_eq!(a.note.as_deref(), Some("diagrams: rendered"));
+        update(&mut a, Action::RenderedToggle);
+        assert!(a.show_rendered);
+        assert_eq!(a.note.as_deref(), Some("rendered: art"));
         assert_eq!(a.layout.total_rows(), with_art);
+    }
+
+    /// `m` widened to cover math, so it must actually move math too -- the
+    /// mermaid half passing is not evidence for the math half.
+    #[test]
+    fn m_also_flips_math_between_art_and_source() {
+        let mut a = App::new(
+            "t.md".into(),
+            Document::parse("$$\\frac{a+b}{c}$$\n"),
+            40,
+            12,
+        );
+        let b = *a.math_art.keys().next().expect("math art");
+        assert_eq!(a.math_form(b, 40), MathForm::Display);
+        let with_art = a.layout.height(b);
+
+        update(&mut a, Action::RenderedToggle);
+        assert_eq!(a.math_form(b, 40), MathForm::Source, "m reaches math");
+        assert!(
+            a.layout.height(b) < with_art,
+            "the source form is one wrapped line, shorter than three art rows"
+        );
+
+        update(&mut a, Action::RenderedToggle);
+        assert_eq!(a.math_form(b, 40), MathForm::Display);
+        assert_eq!(a.layout.height(b), with_art);
     }
 
     #[test]
