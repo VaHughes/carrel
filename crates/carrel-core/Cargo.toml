@@ -29,6 +29,7 @@ unicode-width.workspace        = true
 unicode-linebreak.workspace    = true
 regex.workspace                = true
 syntect.workspace              = true
+pulldown-latex = { version = "=0.8.0", default-features = false }
 
 # Dev-only, so it has no effect on binary size. The reflow layer's invariants
 # (fit, order, coverage, height/row agreement, determinism, and search

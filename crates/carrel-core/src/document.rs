@@ -55,6 +55,7 @@ impl Style {
     pub const LINK: Self = Self(1 << 4);
     pub const SUPERSCRIPT: Self = Self(1 << 5);
     pub const SUBSCRIPT: Self = Self(1 << 6);
+    pub const MATH: Self = Self(1 << 7);
 
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
@@ -180,6 +181,11 @@ pub enum NodeKind {
         /// offsets are width-independent — same standing as `cols`.
         cell_starts: Box<[u32]>,
     },
+    /// A display math block (`$$…$$`). The doc text is the **LaTeX source**,
+    /// so math is searchable and no byte is discarded; turning it into art is
+    /// the frontend's job entirely, because a box layout is cells and cells
+    /// must never enter this crate.
+    Math,
     /// The term line of a definition list.
     DefTerm,
     /// A definition body, indented under its [`NodeKind::DefTerm`]. The `:`
@@ -762,6 +768,7 @@ impl<'a> Builder<'a> {
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_SMART_PUNCTUATION
             | Options::ENABLE_WIKILINKS
+            | Options::ENABLE_MATH
             | Options::ENABLE_DEFINITION_LIST
             | Options::ENABLE_SUPERSCRIPT
             | Options::ENABLE_SUBSCRIPT
@@ -1288,6 +1295,22 @@ impl<'a> Builder<'a> {
                 Event::End(TagEnd::Image) => self.in_image = false,
 
                 // --- text ---
+                // Math: the SOURCE is the doc text. Delimiters are consumed
+                // by the parser, so this is Substituted, not Verbatim.
+                Event::DisplayMath(t) => {
+                    self.open_block(NodeKind::Math, &src);
+                    let prev = self.style;
+                    self.style = self.style.insert(Style::MATH);
+                    self.push(&t, src.clone(), ProvKind::Substituted);
+                    self.style = prev;
+                    self.close_block(src.end);
+                }
+                Event::InlineMath(t) => {
+                    let prev = self.style;
+                    self.style = self.style.insert(Style::MATH);
+                    self.push(&t, src, ProvKind::Substituted);
+                    self.style = prev;
+                }
                 Event::Text(t) => self.push_linkified(&t, src),
                 Event::Code(t) => {
                     // Backticks are delimiters, so the src range is longer than
@@ -1353,8 +1376,10 @@ impl<'a> Builder<'a> {
                             p.task = Some(done);
                         }
                     }
-                }
-                _ => {}
+                } // No catch-all on purpose. Every `Event` variant is now
+                  // handled, so a pulldown-cmark bump that adds one fails to
+                  // COMPILE rather than silently dropping the new construct —
+                  // the same drift-guard instinct as the help tables.
             }
         }
         // pulldown always closes what it opens, but a buffered table that

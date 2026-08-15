@@ -37,6 +37,7 @@
 pub mod document;
 pub mod highlight;
 pub mod layout;
+pub mod math;
 pub mod position;
 pub mod search;
 
@@ -48,6 +49,7 @@ pub use layout::{
     CHUNK_BYTES, CONTINUATION_COLS, Row, RowKind, WidthFn, chunk_count, cluster_at_col,
     cluster_width, cols_for_doc_range, display_width, wrap, wrap_chunk, wrap_range,
 };
+pub use math::{MathClass, MathExpr, MatrixDelim};
 pub use position::{Affinity, BlockIdx, DocByte, NodeId, SrcByte};
 /// Re-exported so a frontend can hold what [`content_pattern`] returns
 /// without its own `regex` dependency line.
