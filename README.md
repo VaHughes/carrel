@@ -45,6 +45,7 @@ Carrel targets what terminal markdown readers haven't shipped:
 | | |
 |---|---|
 | **Search that survives reflow and resize** | No shipping tool does this. It is the headline feature and the hardest part. |
+| **A comfortable measure** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
 | **Clickable links** | Real OSC 8 hyperlinks, with graceful degradation. |
 | **Correct emoji and wide characters** | Measured per grapheme cluster, never per codepoint. |
@@ -86,6 +87,25 @@ xdg-mime default carrel.desktop text/markdown
 
 Windows support is planned (the port is scoped and small); until it lands, no Windows binaries
 are published rather than shipping ones that half-work.
+
+## Configuration
+
+Optional. Carrel writes `$XDG_CONFIG_HOME/carrel/config` (or `~/.config/carrel/config`) itself
+when you change a setting in the app, and you can edit it by hand. One `key = value` per line;
+unknown keys and `#` comments are ignored.
+
+| Key | Default | What it does |
+|---|---|---|
+| `max_width` | `90` | The reading measure: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
+| `theme` | `terminal` | Palette name — the default inherits your terminal's own colours. `T` cycles all 17 in the app and saves your choice. |
+| `hints` | `true` | The lamplight hint row along the bottom. `H` toggles it. |
+| `root` | — | The directory the home screen lists. `d` picks one in the app. |
+
+```ini
+# ~/.config/carrel/config
+max_width = 72
+theme = paper
+```
 
 ## Build from source
 

@@ -2,6 +2,16 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **A comfortable reading measure.** Prose now wraps at 90 columns and centres on the page
+  instead of stretching across the whole terminal — past roughly ninety characters the eye
+  loses its place on the return sweep. **Tables, code blocks, images and diagrams are
+  unaffected** and still use the full width, so nothing that fits today starts wrapping or
+  turning into cards. Terminals at or under 90 columns of text look exactly as they did.
+  Configurable as `max_width` in the config file; `max_width = 0` turns it off.
+- **The config file is documented** in the README for the first time, with all four keys.
+
 ## 2026.8.16
 
 - **Frontmatter renders as a card instead of a heading.** A file starting with

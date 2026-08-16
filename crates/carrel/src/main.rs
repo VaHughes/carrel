@@ -431,36 +431,12 @@ impl Clicks {
     }
 }
 
-/// The `(start, end)` doc bytes of the grapheme cluster under a pointer cell,
-/// or `None` outside the text area / off the end of the content. The one
-/// place pixels become bytes — everything downstream is doc space.
+/// The `(start, end)` doc bytes of the grapheme cluster under a pointer cell.
+///
+/// Lives on `App` now — it is pure state logic with no terminal in it, so it
+/// belongs where a test can reach it and the GTK frontend can reuse it.
 fn doc_span_at(app: &App, col: u16, row: u16) -> Option<(u32, u32)> {
-    use carrel::app::{PAD_LEFT, PAD_TOP};
-    if row < PAD_TOP || row >= PAD_TOP + app.text_h() {
-        return None;
-    }
-    if col < PAD_LEFT || col >= PAD_LEFT + app.text_w() {
-        return None;
-    }
-    let vrow = app.view.scroll_row + u32::from(row - PAD_TOP);
-    let block = app.layout.block_at_row(vrow);
-    if block.get() >= app.doc.block_count() {
-        return None;
-    }
-    let mut rows = Vec::new();
-    app.layout.rows_for(&app.doc, block, &mut rows);
-    let sub = usize::try_from(vrow.saturating_sub(app.layout.row_start(block))).ok()?;
-    let r = rows.get(sub)?;
-    if r.doc.is_empty() {
-        return None;
-    }
-    let text = app.doc.text.get(r.doc.start as usize..r.doc.end as usize)?;
-    Some(carrel_core::cluster_at_col(
-        text,
-        r.doc.start,
-        r.indent,
-        col - PAD_LEFT,
-    ))
+    app.doc_span_at(col, row)
 }
 
 /// Copy to the system clipboard via OSC 52. Terminals without it ignore the
@@ -522,6 +498,9 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
     app.config_dir = config::config_dir();
     app.state_dir = carrel::state::state_dir();
     app.hints = config::load_hints().unwrap_or(true);
+    // The reading measure. Absent means the default; an explicit 0 means off.
+    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    app.on_resize(app.cols, app.rows);
     // A direct open builds the App by hand rather than via open_path, so the
     // saved reading position needs restoring explicitly. Its note outranks
     // the theme note — the theme is only news when it failed to load.
@@ -725,6 +704,9 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     app.config_dir = config::config_dir();
     app.state_dir = carrel::state::state_dir();
     app.hints = config::load_hints().unwrap_or(true);
+    // The reading measure. Absent means the default; an explicit 0 means off.
+    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    app.on_resize(app.cols, app.rows);
     if let Some(n) = note
         && let Some(h) = app.home_mut()
     {

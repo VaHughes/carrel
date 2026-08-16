@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use carrel_core::{BlockIdx, DocByte, Document, LinkId, Matches, NodeKind, search};
 
 use crate::action::{Action, Direction, Edge, SearchKey, Span, Where};
+use crate::config;
 use crate::home::{Home, HomeMode};
 use crate::layout::Layout;
 use crate::math_art::{self, MathBox};
@@ -159,6 +160,11 @@ pub struct App {
     pub home_stash: Option<Box<Home>>,
     pub cols: u16,
     pub rows: u16,
+    /// The reading measure in columns; `0` is off (full bleed). Constructors
+    /// carry [`config::DEFAULT_MEASURE`] and `main.rs` alone reads the config
+    /// file — the same contract as `config_dir` and `state_dir`, and for the
+    /// same reason: a test must never be able to reach the real config.
+    pub max_width: u16,
 }
 
 /// Reader page margins, in cells: the text is inset from the terminal edges
@@ -172,26 +178,59 @@ pub const PAD_RIGHT: u16 = 2;
 pub const PAD_TOP: u16 = 1;
 pub const PAD_BOTTOM: u16 = 1;
 
+/// The prose budget inside a given bleed budget. `max_width == 0` means the
+/// measure is off, which must reproduce the pre-measure geometry exactly.
+const fn measure_of(bleed: u16, max_width: u16) -> u16 {
+    if max_width == 0 || bleed < max_width {
+        bleed
+    } else {
+        max_width
+    }
+}
+
 impl App {
-    /// The text area: one column reserved for the scrollbar, one row for the
-    /// status line.
+    /// The text area: `(prose width, bleed width, height)`. One column is
+    /// reserved for the scrollbar and one row for the status line.
+    ///
+    /// **Two budgets, both derived.** Prose wraps at the first — the reading
+    /// measure — while a block whose content has an intrinsic width of its own
+    /// (table, code, math, image) may use the second. Neither is stored: both
+    /// are pure functions of `(cols, max_width)`, recomputed on every resize,
+    /// so the one authoritative coordinate space is undisturbed and a search
+    /// hit found at 200 columns is the same byte at 90.
     ///
     /// `render.rs` **must** derive its rects from this, or layout and paint
     /// disagree about how much room the text has and wrapping goes wrong.
     #[must_use]
-    pub const fn text_size(cols: u16, rows: u16, footer: bool) -> (u16, u16) {
+    pub const fn text_size(cols: u16, rows: u16, footer: bool, max_width: u16) -> (u16, u16, u16) {
         // Status row always; the lamplight hint row only while showing.
         let chrome = if footer { 2 } else { 1 };
+        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT);
         (
-            cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT),
+            measure_of(bleed, max_width),
+            bleed,
             rows.saturating_sub(chrome + PAD_TOP + PAD_BOTTOM),
         )
     }
 
+    /// The prose column's left edge, in absolute terminal cells.
+    ///
+    /// [`PAD_LEFT`] is the *minimum* margin, not the left edge: past the
+    /// measure the margin grows to absorb the excess, so the text stays
+    /// centred on the full area's axis instead of hugging the left wall.
+    ///
+    /// Hit-testing and paint both come through here. If they ever stop doing
+    /// so, a click lands on the wrong byte and no frame test will notice.
+    #[must_use]
+    pub const fn text_x(cols: u16, max_width: u16) -> u16 {
+        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT);
+        PAD_LEFT + (bleed - measure_of(bleed, max_width)) / 2
+    }
+
     #[must_use]
     pub fn new(path: String, doc: Document, cols: u16, rows: u16) -> Self {
-        let (w, _) = Self::text_size(cols, rows, true);
-        let layout = Layout::new(&doc, w.max(1));
+        let (w, bleed, _) = Self::text_size(cols, rows, true, config::DEFAULT_MEASURE);
+        let layout = Layout::with_measure(&doc, bleed.max(1), w.max(1), HashMap::new(), false);
         let mut app = Self {
             screen: Screen::Reader,
             doc,
@@ -222,6 +261,7 @@ impl App {
             home_stash: None,
             cols,
             rows,
+            max_width: config::DEFAULT_MEASURE,
         };
         // Math art is pure computation over the document -- no config, no
         // filesystem -- so the constructor may do it, and every entry point
@@ -298,7 +338,13 @@ impl App {
         self.mode = Mode::Normal;
         self.selected_link = None;
         self.view = ViewState::new();
-        self.layout = Layout::new(&self.doc, self.text_w());
+        self.layout = Layout::with_measure(
+            &self.doc,
+            self.bleed_w(),
+            self.text_w(),
+            HashMap::new(),
+            false,
+        );
         self.path = path
             .file_name()
             .unwrap_or_default()
@@ -331,7 +377,13 @@ impl App {
         check_document_size(&path)?;
         let src = std::fs::read_to_string(&path)?;
         self.doc = Document::parse(&src);
-        self.layout = Layout::new(&self.doc, self.text_w());
+        self.layout = Layout::with_measure(
+            &self.doc,
+            self.bleed_w(),
+            self.text_w(),
+            HashMap::new(),
+            false,
+        );
         self.image_dims.clear();
         self.diagram_art.clear();
         self.rebuild_math_art();
@@ -450,14 +502,75 @@ impl App {
             .map(|i| i.doc.start)
     }
 
+    /// The prose budget — what a paragraph wraps at.
     #[must_use]
     pub fn text_w(&self) -> u16 {
-        Self::text_size(self.cols, self.rows, self.hints).0.max(1)
+        Self::text_size(self.cols, self.rows, self.hints, self.max_width)
+            .0
+            .max(1)
+    }
+
+    /// The bleed budget — what a table, code block, image or math block may
+    /// use. Equal to [`Self::text_w`] whenever the measure is not binding.
+    #[must_use]
+    pub fn bleed_w(&self) -> u16 {
+        Self::text_size(self.cols, self.rows, self.hints, self.max_width)
+            .1
+            .max(1)
     }
 
     #[must_use]
     pub fn text_h(&self) -> u16 {
-        Self::text_size(self.cols, self.rows, self.hints).1.max(1)
+        Self::text_size(self.cols, self.rows, self.hints, self.max_width)
+            .2
+            .max(1)
+    }
+
+    /// The prose column's left edge for this app's geometry.
+    #[must_use]
+    pub fn text_x_now(&self) -> u16 {
+        Self::text_x(self.cols, self.max_width)
+    }
+
+    /// The `(start, end)` doc bytes of the grapheme cluster under a pointer
+    /// cell, or `None` outside the text area / off the end of the content.
+    ///
+    /// **The one place a screen position becomes a byte** — everything
+    /// downstream is doc space, which is what lets a selection survive a
+    /// resize. It hit-tests against [`Self::text_x_now`], the same function
+    /// `render.rs` paints from; if the two ever diverge, every click lands on
+    /// the wrong byte and no frame test can see it.
+    #[must_use]
+    pub fn doc_span_at(&self, col: u16, row: u16) -> Option<(u32, u32)> {
+        let text_x = self.text_x_now();
+        if row < PAD_TOP || row >= PAD_TOP + self.text_h() {
+            return None;
+        }
+        if col < text_x || col >= text_x + self.text_w() {
+            return None;
+        }
+        let vrow = self.view.scroll_row + u32::from(row - PAD_TOP);
+        let block = self.layout.block_at_row(vrow);
+        if block.get() >= self.doc.block_count() {
+            return None;
+        }
+        let mut rows = Vec::new();
+        self.layout.rows_for(&self.doc, block, &mut rows);
+        let sub = usize::try_from(vrow.saturating_sub(self.layout.row_start(block))).ok()?;
+        let r = rows.get(sub)?;
+        if r.doc.is_empty() {
+            return None;
+        }
+        let text = self
+            .doc
+            .text
+            .get(r.doc.start as usize..r.doc.end as usize)?;
+        Some(carrel_core::cluster_at_col(
+            text,
+            r.doc.start,
+            r.indent,
+            col - text_x,
+        ))
     }
 
     #[must_use]
@@ -542,7 +655,10 @@ impl App {
     /// machinery that keeps a resize stable keeps this stable too; nothing
     /// about it is a special case.
     pub fn relayout(&mut self) {
-        let w = self.text_w();
+        // Images, diagrams and math art are *bleed* kinds — their width is
+        // intrinsic to the content, not to the reading measure — so they size
+        // against the full budget. Prose alone binds to the measure.
+        let w = self.bleed_w();
         let mut block_rows: HashMap<BlockIdx, u32> = self
             .image_dims
             .iter()
@@ -568,7 +684,8 @@ impl App {
                 }
             }
         }
-        self.layout = Layout::with_images(&self.doc, w, block_rows, self.wrap_tables);
+        self.layout =
+            Layout::with_measure(&self.doc, w, self.text_w(), block_rows, self.wrap_tables);
         self.view.restore(&self.doc, &self.layout, self.text_h());
         // Matches and `matches.current` are untouched. That is the whole point.
     }

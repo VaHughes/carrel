@@ -34,7 +34,14 @@ pub const BOTTOM_MARGIN: u32 = 2;
 /// Block heights at one width, as a prefix sum.
 #[derive(Debug)]
 pub struct Layout {
+    /// The **bleed** budget: the full text area. Blocks whose content has an
+    /// intrinsic width of its own — tables, code, math, images — wrap here.
     width: u16,
+    /// The **prose** budget: the reading measure. Paragraphs, headings, list
+    /// items, definitions, the metadata card and rules wrap here instead.
+    /// Equal to `width` whenever the measure is not binding, which is every
+    /// terminal narrower than it and every configuration with it turned off.
+    measure: u16,
     /// `len() == block_count + 1`. Heights are differences of adjacent entries,
     /// so there is exactly one source of truth for a block's height.
     block_row_start: Vec<u32>,
@@ -71,6 +78,23 @@ impl Layout {
         block_rows: HashMap<BlockIdx, u32>,
         wrap_tables: bool,
     ) -> Self {
+        Self::with_measure(doc, width, width, block_rows, wrap_tables)
+    }
+
+    /// Lay out with a prose budget distinct from the bleed budget.
+    ///
+    /// `measure` is what prose wraps at; `width` is what a table, code block,
+    /// image or math block may use. Passing the same value for both is the
+    /// pre-measure behaviour exactly, which is what [`Self::with_images`] does
+    /// and why every existing caller keeps meaning what it meant.
+    #[must_use]
+    pub fn with_measure(
+        doc: &Document,
+        width: u16,
+        measure: u16,
+        block_rows: HashMap<BlockIdx, u32>,
+        wrap_tables: bool,
+    ) -> Self {
         let mut block_row_start = Vec::with_capacity(doc.block_count() + 1);
         let mut acc = 0u32;
         block_row_start.push(0);
@@ -82,10 +106,14 @@ impl Layout {
                 // The SAME functions the row pass uses, with a counting sink,
                 // so the height pass and the row pass cannot disagree.
                 let node = doc.node_for_block(b);
+                let bw = block_width(&node.kind, width, measure);
+                // The card threshold tests the BLEED width, not the measure:
+                // a table that fits the terminal must not start transposing
+                // into cards merely because prose beside it got narrower.
                 if !wrap_tables && table_overflows(node, width) {
                     card_rows(doc, b, width, |_| {})
                 } else {
-                    wrap(doc, b, width, &cluster_width, |_| {})
+                    wrap(doc, b, bw, &cluster_width, |_| {})
                 }
             };
             acc = acc
@@ -95,10 +123,23 @@ impl Layout {
         }
         Self {
             width,
+            measure,
             block_row_start,
             block_rows,
             wrap_tables,
         }
+    }
+
+    /// The reading measure this layout wrapped prose at.
+    #[must_use]
+    pub fn measure(&self) -> u16 {
+        self.measure
+    }
+
+    /// The wrap budget for one block, by kind.
+    #[must_use]
+    pub fn block_width(&self, kind: &NodeKind) -> u16 {
+        block_width(kind, self.width, self.measure)
     }
 
     #[must_use]
@@ -178,10 +219,13 @@ impl Layout {
             }
         } else {
             let node = doc.node_for_block(b);
+            // The SAME budget the height pass used, or the two disagree and
+            // the eager height pass stops predicting the paint.
+            let bw = self.block_width(&node.kind);
             if !self.wrap_tables && table_overflows(node, self.width) {
                 card_rows(doc, b, self.width, |r| out.push(r));
             } else {
-                wrap(doc, b, self.width, &cluster_width, |r| out.push(r));
+                wrap(doc, b, bw, &cluster_width, |r| out.push(r));
             }
         }
         // The spacing row. Anchored (empty) at the block's START so the
@@ -246,6 +290,38 @@ fn gap_after(doc: &Document, b: BlockIdx) -> u32 {
 /// §3 of the card-view spec: does this table's aligned form exceed `width`?
 /// Decided fresh per layout — never stored.
 #[must_use]
+/// The wrap budget for a block: the measure for prose, the bleed for anything
+/// whose content has an intrinsic width of its own.
+///
+/// **The match is exhaustive on purpose**, exactly like the event match in
+/// `document.rs`: a new `NodeKind` must be classified deliberately, and a
+/// pulldown-cmark bump that adds one should fail to COMPILE rather than
+/// silently binding a new construct to the wrong budget.
+fn block_width(kind: &NodeKind, bleed: u16, measure: u16) -> u16 {
+    match kind {
+        // Intrinsic width: a table is as wide as its columns, code as wide as
+        // its longest line, art as wide as it was drawn. Narrowing these for
+        // the sake of the measure would not improve reading, it would only
+        // wrap or card content that fits.
+        NodeKind::CodeBlock { .. }
+        | NodeKind::Table { .. }
+        | NodeKind::Math
+        | NodeKind::Image { .. } => bleed,
+        // Prose, and the containers that hold it.
+        NodeKind::Root
+        | NodeKind::List { .. }
+        | NodeKind::BlockQuote
+        | NodeKind::Item
+        | NodeKind::Paragraph
+        | NodeKind::Heading { .. }
+        | NodeKind::AlertLabel { .. }
+        | NodeKind::DefTerm
+        | NodeKind::DefDetails
+        | NodeKind::Metadata { .. }
+        | NodeKind::Rule => measure,
+    }
+}
+
 pub fn table_overflows(node: &Node, width: u16) -> bool {
     let NodeKind::Table { cols, .. } = &node.kind else {
         return false;

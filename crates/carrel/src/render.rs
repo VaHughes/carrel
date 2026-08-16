@@ -108,8 +108,13 @@ pub fn draw_full(
 
     // Derived from the SAME function the layout width came from, or paint and
     // wrapping would disagree about how much room the text has.
-    let (tw, th) = App::text_size(area.width, area.height, app.hints);
-    let text = Rect::new(crate::app::PAD_LEFT, crate::app::PAD_TOP, tw, th);
+    let (_tw, bw, th) = App::text_size(area.width, area.height, app.hints, app.max_width);
+    // The FULL text area, not the measure column: `paint_rows` gives each
+    // block its own column inside it, so a table may be wider than prose
+    // without being clipped. Prose lands at `text_x`, the same function
+    // `doc_span_at` hit-tests against, so a click cannot resolve to a
+    // different byte than the one under the pointer.
+    let text = Rect::new(crate::app::PAD_LEFT, crate::app::PAD_TOP, bw, th);
     // The bar keeps the true right edge but aligns its track with the text
     // rows, so thumb geometry and the drag hit-test share one coordinate.
     let bar = Rect::new(area.width.saturating_sub(1), crate::app::PAD_TOP, 1, th);
@@ -372,24 +377,65 @@ fn paint_metadata_card(
         .min(area.bottom())
 }
 
+/// Where a block's own column starts, and how wide it is, inside the full
+/// text area.
+///
+/// Prose sits in the fixed measure column so consecutive paragraphs line up.
+/// A block with an intrinsic width of its own may be wider than that; a table
+/// centres on the page axis by its aligned width, and anything else keeps the
+/// prose column's left edge and simply extends right. Code is deliberately in
+/// the second group: centring it by its longest line would make consecutive
+/// blocks jitter horizontally, which reads worse than the asymmetry.
+fn block_area(app: &App, node: &carrel_core::Node, full: Rect) -> Rect {
+    let prose_x = app.text_x_now();
+    let budget = app.layout.block_width(&node.kind);
+    if budget <= app.text_w() {
+        // Bound to the measure: the fixed column.
+        return Rect::new(prose_x, full.y, budget.min(full.width), full.height);
+    }
+    // A bleed kind. Centre a table by the width it actually occupies.
+    let x = match &node.kind {
+        NodeKind::Table { cols, .. } if !cols.is_empty() => {
+            let aligned = cols.iter().map(|&c| u32::from(c)).sum::<u32>()
+                + 3 * (cols.len() as u32 - 1)
+                + u32::from(node.indent);
+            let aligned = u16::try_from(aligned).unwrap_or(u16::MAX).min(full.width);
+            if aligned > app.text_w() {
+                full.x + (full.width - aligned) / 2
+            } else {
+                prose_x
+            }
+        }
+        _ => prose_x,
+    };
+    // Never run off the right edge, and never start left of the text area.
+    let x = x.max(full.x).min(full.right().saturating_sub(1));
+    Rect::new(x, full.y, full.right() - x, full.height)
+}
+
 fn paint_rows(
     frame: &mut Frame,
     app: &App,
-    area: Rect,
+    full: Rect,
     links: &mut Vec<OscLink>,
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) {
     // One buffer for the whole frame: after the first block this allocates
     // nothing. There is no row cache — see layout.rs.
     let mut rows: Vec<Row> = Vec::new();
-    let mut y = area.y;
+    let mut y = full.y;
     let mut block = app.layout.block_at_row(app.view.scroll_row);
     let mut skip = app
         .view
         .scroll_row
         .saturating_sub(app.layout.row_start(block));
 
-    while y < area.bottom() && block.get() < app.doc.block_count() {
+    while y < full.bottom() && block.get() < app.doc.block_count() {
+        // Each block paints into ITS OWN column — prose in the measure, a
+        // wide table across the page. Shadowing `area` here means every
+        // painter below sees the block's geometry and none of them has to
+        // know the measure exists.
+        let area = block_area(app, app.doc.node_for_block(block), full);
         // A rendered mermaid diagram paints its art lines instead of the
         // block's wrapped source — properly line-skipped on partial scroll,
         // which text can do and pixels cannot. Wider-than-viewport art
@@ -2190,7 +2236,7 @@ mod tests {
         // The thumb's bottom cell is the bar's bottom cell. The bar keeps
         // the true right edge and its track aligns with the text rows.
         let bar_x = 30 - 1;
-        let th = App::text_size(30, 10, true).1;
+        let th = App::text_size(30, 10, true, crate::config::DEFAULT_MEASURE).2;
         let (top_y, bottom_y) = (crate::app::PAD_TOP, crate::app::PAD_TOP + th - 1);
         assert_eq!(
             buf[(bar_x, bottom_y)].symbol(),
