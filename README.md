@@ -61,6 +61,13 @@ curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/VaHughes/carrel/releases/latest/download/carrel-installer.sh | sh
 ```
 
+**Fedora** (43 and 44, x86_64 and aarch64):
+
+```bash
+sudo dnf copr enable vahughes/carrel
+sudo dnf install carrel
+```
+
 **Cargo** (any platform with a Rust toolchain), or prebuilt via
 [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall):
 
@@ -71,7 +78,9 @@ cargo binstall carrel       # fetches the release binary
 
 Prebuilt archives for every target are on the
 [releases page](https://github.com/VaHughes/carrel/releases). AUR (`carrel`, `carrel-bin`)
-and a Fedora COPR are next; distribution is a first-class goal, not an afterthought — the
+is prepared but waiting on Arch: AUR account registration is closed while the Arch team
+handles an ongoing supply-chain campaign against the repository. Distribution is a
+first-class goal, not an afterthought — the
 research was blunt about why: the best-featured terminal markdown renderer in existence today
 has **69 stars**, because nobody can find it. In this niche, packaging beats code.
 

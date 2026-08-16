@@ -20,6 +20,54 @@ sha256sum src.tar.gz
 
 For `carrel-bin`, the per-artifact sums are published as `.sha256` files on the release.
 
+## COPR — the command that actually works
+
+**Live since 2026-08-16:** <https://copr.fedorainfracloud.org/coprs/vahughes/carrel/> —
+Fedora 43 and 44, x86_64 and aarch64. Users install with:
+
+```bash
+sudo dnf copr enable vahughes/carrel
+sudo dnf install carrel
+```
+
+Publishing a new version, from a machine with no Fedora tooling at all:
+
+```bash
+pipx install copr-cli                      # token lives in ~/.config/copr, chmod 600
+copr-cli buildscm carrel \
+  --clone-url https://github.com/VaHughes/carrel \
+  --commit main \
+  --spec contrib/packaging/carrel.spec \
+  --type git --method rpkg \
+  --enable-net on
+```
+
+Three things the earlier draft of this file got wrong, each found the hard way:
+
+1. **`copr-cli build <project> <spec>` does not work** — `build` wants an `.src.rpm`, which
+   needs `rpmbuild` locally. **`buildscm` is the one to use**: COPR clones the repo and builds
+   the SRPM itself, so no Fedora tooling is needed on the dev machine.
+2. **`--enable-net on` is required.** COPR builds have no network by default and `cargo build`
+   must fetch the dependency tree. (The Fedora-proper answer is vendoring every crate into the
+   source tarball; that is a much larger change and is not done.)
+3. **Never pass `--repo` to `copr-cli create` meaning "homepage".** `--repo` adds an extra DNF
+   *package* repository to every build root — pointing it at the GitHub URL made all four
+   chroots fail trying to fetch repo metadata from GitHub before compiling anything. Clear it
+   with `copr-cli modify carrel --repo ""`.
+
+Also note **`--commit` must point at a revision whose spec has the right `Version:`.** Building
+`v2026.8.16` produced a `2026.8.12` package, because the spec was stamped on `main` after that
+tag was cut. Building `main` is correct: the spec's `Source0` still points at the *tagged*
+release tarball, so the package is built from a release even though the recipe came from the
+branch.
+
+Verify a build without any RPM tooling by reading the repo metadata:
+
+```bash
+REPO=https://download.copr.fedorainfracloud.org/results/vahughes/carrel/fedora-43-x86_64
+curl -sL "$REPO/repodata/repomd.xml"   # find the filelists.xml href, then zcat it
+```
+
 ## `.SRCINFO`
 
 `SRCINFO-carrel` is a hand-written `.SRCINFO` for the source package, because
