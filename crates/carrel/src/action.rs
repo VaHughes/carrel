@@ -143,6 +143,9 @@ pub enum Action {
     /// `/` on the home screen: content search across every scanned file.
     HomeSearchMode,
     PickerOpen,
+    /// Put the picker's highlight on an absolute entry — a mouse click.
+    /// `roots.len()` is the `Other…` row. Clamped by the receiver.
+    PickerSelect(usize),
     PickerChoose,
     PickerCancel,
 }

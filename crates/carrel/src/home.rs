@@ -43,6 +43,35 @@ pub const fn list_geometry(cols: u16, rows: u16, hints: bool) -> (u16, u16) {
     (top, bottom.saturating_sub(top))
 }
 
+/// The directory picker overlay's box: `(x, y, width, height)`.
+///
+/// Same contract as [`list_geometry`] and for the same reason — paint centres
+/// the box, and [`Home::picker_row_at`] has to invert exactly that centring to
+/// turn a click into a directory. `rows` here is the number of entries the
+/// picker will show, which is the candidate roots plus the `Other…` line.
+#[must_use]
+pub const fn picker_geometry(cols: u16, screen_rows: u16, entries: u16) -> (u16, u16, u16, u16) {
+    let width = clamp_u16(cols.saturating_sub(8), 10, 60);
+    let height = min_u16(entries.saturating_add(2), screen_rows);
+    let x = (cols.saturating_sub(width)) / 2;
+    let y = (screen_rows.saturating_sub(height)) / 2;
+    (x, y, width, height)
+}
+
+const fn min_u16(a: u16, b: u16) -> u16 {
+    if a < b { a } else { b }
+}
+
+const fn clamp_u16(v: u16, lo: u16, hi: u16) -> u16 {
+    if v < lo {
+        lo
+    } else if v > hi {
+        hi
+    } else {
+        v
+    }
+}
+
 /// Telescope's model: the screen opens filtering, `Esc` drops to vim keys.
 ///
 /// A picker has to behave like a picker — typing filters — and a vim user
@@ -224,6 +253,31 @@ impl Home {
             let i = first + offset;
             (i < self.filtered.len()).then_some(i)
         }
+    }
+
+    /// How many rows the picker lists: the candidate roots plus `Other…`.
+    #[must_use]
+    pub fn picker_entries(&self) -> usize {
+        self.picker.roots.len() + 1
+    }
+
+    /// Which picker entry the pointer is over. `roots.len()` means `Other…`.
+    ///
+    /// The inverse of [`picker_geometry`], which paint also uses. A click on
+    /// the title row or the box border is not an entry.
+    #[must_use]
+    pub fn picker_row_at(&self, col: u16, row: u16, cols: u16, screen_rows: u16) -> Option<usize> {
+        let entries = u16::try_from(self.picker_entries()).unwrap_or(u16::MAX);
+        let (bx, by, width, height) = picker_geometry(cols, screen_rows, entries);
+        if col < bx || col >= bx.saturating_add(width) {
+            return None;
+        }
+        // Row `by` is the "choose a directory" title; entries start beneath it.
+        if row <= by || row >= by.saturating_add(height) {
+            return None;
+        }
+        let i = usize::from(row - by - 1);
+        (i < self.picker_entries()).then_some(i)
     }
 
     /// Put the selection on an absolute index, clamped to the list.
@@ -445,6 +499,36 @@ mod tests {
         assert_eq!(
             h.selected, 2,
             "the file selection is untouched in search mode"
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_picker_lands_on_the_row_under_it() {
+        let mut h = home();
+        h.mode = HomeMode::Picker;
+        h.picker.roots = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        let (cols, rows) = (80u16, 24u16);
+        let entries = u16::try_from(h.picker_entries()).unwrap();
+        let (x, y, w, _) = picker_geometry(cols, rows, entries);
+
+        assert_eq!(h.picker_row_at(x + 1, y, cols, rows), None, "the title row");
+        assert_eq!(h.picker_row_at(x + 1, y + 1, cols, rows), Some(0));
+        assert_eq!(h.picker_row_at(x + 1, y + 2, cols, rows), Some(1));
+        assert_eq!(
+            h.picker_row_at(x + 1, y + 3, cols, rows),
+            Some(2),
+            "the Other… row is the last entry"
+        );
+        assert_eq!(h.picker_row_at(x + 1, y + 4, cols, rows), None, "past it");
+        assert_eq!(
+            h.picker_row_at(x - 1, y + 1, cols, rows),
+            None,
+            "left of the box"
+        );
+        assert_eq!(
+            h.picker_row_at(x + w, y + 1, cols, rows),
+            None,
+            "right of the box"
         );
     }
 

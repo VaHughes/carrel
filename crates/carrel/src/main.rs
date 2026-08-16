@@ -978,8 +978,19 @@ fn home_mouse_action(
         // A click on a file row: first press selects, second opens — the
         // file-manager idiom, and forgiving of a misclick. The row → index
         // mapping is `Home::row_at`, the inverse of the paint's own geometry.
+        //
+        // While the directory picker is up it owns the pointer, exactly as it
+        // owns the keyboard; the list underneath must not take clicks through
+        // the overlay.
         MouseEventKind::Down(MouseButton::Left) => {
             let home = app.home()?;
+            if home.mode == carrel::home::HomeMode::Picker {
+                let i = home.picker_row_at(m.column, m.row, app.cols, app.rows)?;
+                return Some(match clicks.press(m.column, m.row) {
+                    1 => Action::PickerSelect(i),
+                    _ => Action::PickerChoose,
+                });
+            }
             let i = home.row_at(m.row, app.cols, app.rows, app.hints)?;
             match clicks.press(m.column, m.row) {
                 1 => Some(Action::HomeSelect(i)),

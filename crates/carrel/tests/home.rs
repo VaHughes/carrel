@@ -427,3 +427,46 @@ fn clicking_a_row_resolves_to_the_file_painted_on_it() {
         );
     }
 }
+
+/// Same round trip for the directory picker overlay: whatever path is painted
+/// on a row, clicking that row must resolve to that entry.
+#[test]
+fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.md"), "# a").unwrap();
+    let (cached, _) = scan::walk_blocking(d.path());
+    let (cols, rows) = (80u16, 24u16);
+    let mut app = App::new_home(d.path().into(), cached, cols, rows);
+    update(&mut app, Action::PickerOpen);
+
+    let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+    t.draw(|f| carrel::render::draw(f, &app)).unwrap();
+    let buf = t.backend().buffer().clone();
+
+    let home = app.home().unwrap();
+    let mut checked = 0;
+    for row in 0..rows {
+        let Some(i) = home.picker_row_at(cols / 2, row, cols, rows) else {
+            continue;
+        };
+        let painted: String = (0..cols).map(|c| buf[(c, row)].symbol()).collect();
+        let expected = match home.picker.roots.get(i) {
+            Some(p) => p.display().to_string(),
+            None => "Other…".to_string(), // the last row
+        };
+        assert!(
+            painted.contains(&expected),
+            "row {row}: click resolves to {expected:?} but the row paints {:?}",
+            painted.trim()
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        home.picker_entries(),
+        "every picker row should be hittable"
+    );
+}

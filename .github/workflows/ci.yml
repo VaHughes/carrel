@@ -49,3 +49,12 @@ jobs:
 
       - name: Architectural discipline
         run: ./scripts/check-discipline.sh
+
+      # Nothing else builds the packaging recipes, so a recipe that installs a
+      # file the release archive does not contain fails for the first time on
+      # a USER's machine. That happened: carrel-bin named five files `include`
+      # never shipped. This is the static half of the check; the release
+      # runbook runs the same script against the real artifact before
+      # publishing a binary package.
+      - name: Packaging recipes match what ships
+        run: ./scripts/check-packaging.sh

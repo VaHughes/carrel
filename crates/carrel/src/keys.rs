@@ -827,6 +827,7 @@ mod tests {
                 // help table's mouse group, not as key bindings.)
                 A::SearchKey(_)
                 | A::HomeSelect(_)
+                | A::PickerSelect(_)
                 | A::HomeKey(_)
                 | A::OutlineKey(_)
                 | A::OutlineMove(_)

@@ -977,7 +977,13 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             "q quit"
         };
-        format!("{pct}% · T theme · {exit}")
+        // "how much is left" is the question a reader actually has; the
+        // percentage answers "where am I". Both, when there is time worth
+        // mentioning — `minutes_left` stays quiet under a minute.
+        match app.minutes_left() {
+            Some(m) => format!("{pct}% · {m} min left · T theme · {exit}"),
+            None => format!("{pct}% · T theme · {exit}"),
+        }
     };
 
     let buf = frame.buffer_mut();
@@ -1334,15 +1340,11 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect) {
 }
 
 fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
-    let rows = u16::try_from(home.picker.roots.len() + 1).unwrap_or(1);
-    let width = area.width.saturating_sub(8).clamp(10, 60);
-    let height = (rows + 2).min(area.height);
-    let bx = Rect::new(
-        area.x + (area.width.saturating_sub(width)) / 2,
-        area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    );
+    // Geometry from `home::picker_geometry`, which `Home::picker_row_at`
+    // inverts to turn a click into a directory. One derivation, both ways.
+    let entries = u16::try_from(home.picker_entries()).unwrap_or(u16::MAX);
+    let (px, py, width, height) = crate::home::picker_geometry(area.width, area.height, entries);
+    let bx = Rect::new(area.x + px, area.y + py, width, height);
     let w = width;
 
     let buf = frame.buffer_mut();

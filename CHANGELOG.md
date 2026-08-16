@@ -16,6 +16,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **Click a file on the home screen.** One click selects, a double click opens — the list
   looked clickable and silently wasn't. Clicking a search result works too, including its
   dimmed context line, and opens the file at the first match.
+- **The directory picker is clickable too** — click to highlight, double click to choose.
+  Clicking a file worked but the `d` overlay didn't, which was a gap the previous change
+  created.
+- **Time remaining.** The status bar now says how long is left to read alongside the
+  percentage — an estimate at 200 words per minute, quiet under a minute and at the end.
 - **Esc now clears search highlights.** After running a search and pressing Enter, Esc cleared
   the mouse selection and the selected link but left the match highlights on screen, with no
   way to get rid of them except running another search. It does not move you — accepting a

@@ -160,6 +160,9 @@ pub struct App {
     pub home_stash: Option<Box<Home>>,
     pub cols: u16,
     pub rows: u16,
+    /// Words in the document, counted once when it is parsed — a per-frame
+    /// count would be O(n) on every keystroke. Feeds [`Self::minutes_left`].
+    pub words: usize,
     /// The reading measure in columns; `0` is off (full bleed). Constructors
     /// carry [`config::DEFAULT_MEASURE`] and `main.rs` alone reads the config
     /// file — the same contract as `config_dir` and `state_dir`, and for the
@@ -177,6 +180,23 @@ pub const PAD_LEFT: u16 = 2;
 pub const PAD_RIGHT: u16 = 2;
 pub const PAD_TOP: u16 = 1;
 pub const PAD_BOTTOM: u16 = 1;
+
+/// Words per minute assumed for the reading estimate.
+///
+/// 200 is the conservative end of the usual adult prose range (200–250) and is
+/// deliberately not tunable: the number is an *estimate offered to a reader*,
+/// not a measurement, and a config key would imply a precision it does not
+/// have. Code blocks and tables read slower than prose, so a code-heavy
+/// document will over-estimate; that is accepted.
+pub const READING_WPM: usize = 200;
+
+/// Whitespace-separated runs in the display text.
+///
+/// Space 2 is already flattened and decorations are paint-time, so this counts
+/// what is actually on screen — no markup, no table separators, no quote bars.
+fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
+}
 
 /// The prose budget inside a given bleed budget. `max_width == 0` means the
 /// measure is off, which must reproduce the pre-measure geometry exactly.
@@ -261,12 +281,14 @@ impl App {
             home_stash: None,
             cols,
             rows,
+            words: 0,
             max_width: config::DEFAULT_MEASURE,
         };
         // Math art is pure computation over the document -- no config, no
         // filesystem -- so the constructor may do it, and every entry point
         // (new, open_path, reload) then has art without a special case.
         app.rebuild_math_art();
+        app.words = word_count(&app.doc.text);
         app.relayout();
         app
     }
@@ -354,6 +376,7 @@ impl App {
         self.image_dims.clear();
         self.diagram_art.clear();
         self.rebuild_math_art();
+        self.words = word_count(&self.doc.text);
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -387,6 +410,7 @@ impl App {
         self.image_dims.clear();
         self.diagram_art.clear();
         self.rebuild_math_art();
+        self.words = word_count(&self.doc.text);
         self.selection = None;
         self.sel_anchor = None;
         self.selected_link = None;
@@ -524,6 +548,24 @@ impl App {
         Self::text_size(self.cols, self.rows, self.hints, self.max_width)
             .2
             .max(1)
+    }
+
+    /// Estimated minutes of reading left, or `None` when saying so is noise.
+    ///
+    /// Derived from the same scroll fraction the percentage uses, so the two
+    /// can never disagree about how far in you are. Suppressed below a minute
+    /// and at the end of the document: "0 min left" tells a reader nothing,
+    /// and a reading desk should be quiet when it has nothing to add.
+    #[must_use]
+    pub fn minutes_left(&self) -> Option<usize> {
+        let max = self.layout.max_scroll(self.text_h());
+        if max == 0 || self.words == 0 {
+            return None;
+        }
+        let read = f64::from(self.view.scroll_row.min(max)) / f64::from(max);
+        #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+        let left = ((self.words as f64) * (1.0 - read) / (READING_WPM as f64)).round() as usize;
+        (left >= 1).then_some(left)
     }
 
     /// The prose column's left edge for this app's geometry.
@@ -900,6 +942,14 @@ fn home_update(app: &mut App, action: Action) -> Outcome {
             };
         }
 
+        // A click in the picker. Clamped, so an index from a frame that has
+        // since changed can never point past `Other…`.
+        Action::PickerSelect(i) => {
+            if let Some(h) = app.home_mut() {
+                h.picker.selected = i.min(h.picker.roots.len());
+            }
+            return Outcome::Redraw;
+        }
         Action::PickerChoose => {
             // Enter follows the HIGHLIGHT. The typed path only applies while
             // `Other…` itself is highlighted — otherwise typing into Other…
@@ -1701,6 +1751,44 @@ mod tests {
         update(&mut a, Action::SearchKey(SearchKey::Accept));
         assert!(!a.searching());
         assert!(a.matches.is_some());
+    }
+
+    #[test]
+    fn a_short_document_says_nothing_about_time() {
+        let a = app();
+        assert_eq!(
+            a.minutes_left(),
+            None,
+            "under a minute, or nothing to scroll: stay quiet"
+        );
+    }
+
+    #[test]
+    fn a_long_document_estimates_and_counts_down_as_you_read() {
+        // 4,000 words at 200 wpm is about twenty minutes.
+        let body = "word ".repeat(4_000);
+        let mut a = App::new("t.md".into(), Document::parse(&body), 80, 24);
+        a.on_resize(80, 24);
+        assert_eq!(a.words, 4_000);
+        let start = a.minutes_left().expect("a long document has time left");
+        assert!(
+            (18..=22).contains(&start),
+            "expected about 20 minutes, got {start}"
+        );
+
+        update(&mut a, Action::GoToEnd);
+        assert_eq!(a.minutes_left(), None, "at the end there is nothing left");
+    }
+
+    #[test]
+    fn the_estimate_is_derived_from_the_same_scroll_the_percentage_uses() {
+        let body = "word ".repeat(4_000);
+        let mut a = App::new("t.md".into(), Document::parse(&body), 80, 24);
+        a.on_resize(80, 24);
+        let before = a.minutes_left().unwrap();
+        update(&mut a, Action::Scroll(Span::Page, 5));
+        let after = a.minutes_left().unwrap();
+        assert!(after < before, "scrolling forward must reduce the estimate");
     }
 
     #[test]
