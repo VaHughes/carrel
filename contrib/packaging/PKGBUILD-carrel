@@ -1,8 +1,7 @@
-# STAGED — cannot go live until the repo is public (the source URL must exist).
 # AUR package: carrel (builds from the release source tarball).
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel
-pkgver=2026.8.12
+pkgver=2026.8.16
 pkgrel=1
 pkgdesc="A quiet place to read your markdown — a terminal markdown reader"
 arch=('x86_64' 'aarch64')
@@ -11,7 +10,7 @@ license=('MIT OR Apache-2.0')
 depends=('gcc-libs')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP') # fill from the release checksum at publish time
+sha256sums=('40aac7e1d1a79869a9661a80988ef8221a20aee3ecd4e493e4a23bc0da545d82')
 
 prepare() {
   cd "$pkgname-$pkgver"

@@ -1,8 +1,7 @@
-# STAGED — cannot go live until the repo is public (the source URL must exist).
 # Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.8.12
+Version:        2026.8.16
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -48,5 +47,9 @@ cargo test --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Sun Aug 16 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.16-1
+- Frontmatter as a metadata card, LaTeX math, definition lists, --version,
+  man page and shell completions, and the Q16 conformance suite.
+
 * Wed Aug 12 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.12-1
-- Initial package (staged pre-launch).
+- Initial package.

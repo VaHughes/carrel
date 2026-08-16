@@ -19,5 +19,16 @@ install-updater = false
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Extra files bundled into every archive — the desktop entry rides along so
-# distro packagers and manual installers get it without cloning the repo (Q21)
-include = ["contrib/carrel.desktop"]
+# distro packagers and manual installers get it without cloning the repo (Q21),
+# and so do the man page and completions, because `carrel-bin` on the AUR
+# installs them FROM THE ARCHIVE and cannot reach into the repo. Leaving them
+# out made that package unbuildable and the release notes wrong (2026-08-16).
+# NOTE: dist FLATTENS these to the archive root — `contrib/carrel.1` arrives as
+# `carrel.1`. Packaging recipes must use the flat names.
+include = [
+    "contrib/carrel.desktop",
+    "contrib/carrel.1",
+    "contrib/completions/carrel.bash",
+    "contrib/completions/carrel.zsh",
+    "contrib/completions/carrel.fish",
+]
