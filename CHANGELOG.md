@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## 2026.8.15
+## 2026.8.16
 
 - **Frontmatter renders as a card instead of a heading.** A file starting with
   `---` / `title: …` / `---` used to show an `<h2>` full of YAML — the first thing on
@@ -20,9 +20,6 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A conformance suite** — `crates/carrel/tests/corpus/conformance.md` and its 15
   assertions — covering every construct carrel supports *and* every one it deliberately does
   not, so the README's claims are tests rather than promises.
-
-## 2026.8.13
-
 - **A demo in the README** — the home screen, filtering to a file, and reading it. Recorded
   with [VHS](https://github.com/charmbracelet/vhs) from [`contrib/demo.tape`](contrib/demo.tape),
   so it can be re-rendered whenever the interface changes.
