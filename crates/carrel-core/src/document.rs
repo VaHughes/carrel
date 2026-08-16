@@ -1216,8 +1216,12 @@ impl<'a> Builder<'a> {
                     self.close_block(src.end);
                 }
                 // Cell and row separators are display structure, not content.
-                // TODO(layout): tables are a single atomic block for now; real
-                // column measurement and the too-wide strategy are research Q15.
+                // A table stays ONE block on purpose: `cols` carries the
+                // max-content width per column and `cell_starts` every cell's
+                // first byte, both width-independent, which is what lets the
+                // frontend re-chunk into card view at the recorded boundaries
+                // without re-wrapping. (Q15, answered — card view shipped
+                // 2026-08-11; this was a TODO pointing at it as open work.)
                 Event::End(TagEnd::TableCell) => {
                     if let Some(t) = self.table.as_mut() {
                         let cell = std::mem::take(&mut t.cell);

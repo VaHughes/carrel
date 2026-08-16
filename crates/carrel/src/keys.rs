@@ -264,7 +264,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("Tab Shift-Tab", "select next / previous link"),
     ("Enter", "follow the selected link"),
     ("Ctrl-O", "back"),
-    ("Esc", "clear selection"),
+    ("Esc", "clear selection & search"),
     ("§", "view"),
     ("o", "outline: jump to a section"),
     ("t", "tables: cards / wrapped"),

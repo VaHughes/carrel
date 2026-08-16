@@ -11,6 +11,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   turning into cards. Terminals at or under 90 columns of text look exactly as they did.
   Configurable as `max_width` in the config file; `max_width = 0` turns it off.
 - **The config file is documented** in the README for the first time, with all four keys.
+- **Esc now clears search highlights.** After running a search and pressing Enter, Esc cleared
+  the mouse selection and the selected link but left the match highlights on screen, with no
+  way to get rid of them except running another search. It does not move you — accepting a
+  search took you somewhere on purpose, so clearing the highlights is not an undo.
 
 ## 2026.8.16
 

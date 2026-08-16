@@ -1116,6 +1116,12 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.selected_link = None;
             app.selection = None;
             app.sel_anchor = None;
+            // …and the highlights an ACCEPTED search left behind. Cancelling
+            // mid-typing goes through `SearchKey::Cancel`, which also restores
+            // the pre-search position; this does not, and must not — accepting
+            // a search moved the reader somewhere on purpose, so clearing the
+            // highlights afterwards is not an undo.
+            app.matches = None;
             Outcome::Redraw
         }
 
@@ -1689,6 +1695,48 @@ mod tests {
         update(&mut a, Action::SearchKey(SearchKey::Accept));
         assert!(!a.searching());
         assert!(a.matches.is_some());
+    }
+
+    #[test]
+    fn esc_clears_the_highlights_left_by_an_accepted_search() {
+        // Reported 2026-08-16: search, press Enter, then Esc — and the
+        // highlights stay on screen with no way to clear them but running
+        // another search. `Dismiss` cleared the selection and the link and
+        // never touched `matches`.
+        let mut a = app();
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('a')));
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        assert!(a.matches.is_some(), "precondition: a search landed");
+
+        update(&mut a, Action::Dismiss);
+        assert!(a.matches.is_none(), "Esc must clear the search highlights");
+    }
+
+    #[test]
+    fn esc_after_a_search_does_not_yank_the_view_back() {
+        // The difference from cancelling mid-typing: accepting a search MOVED
+        // you somewhere on purpose. Clearing the highlights afterwards must
+        // not undo that navigation — only `SearchKey::Cancel` restores.
+        let mut a = app();
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        update(&mut a, Action::SearchKey(SearchKey::Char('a')));
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        let landed = a.view.anchor;
+        let row = a.view.scroll_row;
+
+        update(&mut a, Action::Dismiss);
+        assert_eq!(a.view.anchor, landed, "Esc must not move the reader");
+        assert_eq!(a.view.scroll_row, row);
+    }
+
+    #[test]
+    fn esc_with_nothing_to_clear_is_harmless() {
+        let mut a = app();
+        let row = a.view.scroll_row;
+        assert_eq!(update(&mut a, Action::Dismiss), Outcome::Redraw);
+        assert!(a.matches.is_none());
+        assert_eq!(a.view.scroll_row, row);
     }
 
     #[test]
