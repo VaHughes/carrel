@@ -144,6 +144,42 @@ pub fn save_hints_in(dir: &Path, on: bool) -> std::io::Result<()> {
     upsert_key_in(dir, "hints", if on { "true" } else { "false" })
 }
 
+/// The default reading measure, in columns.
+///
+/// Typographic practice puts the comfortable measure at roughly 45–90
+/// characters; past that the eye loses the line return. 90 is the top of that
+/// range, chosen so the default changes as little as possible while still
+/// fixing the 200-column paragraph — a terminal at or under 90 usable columns
+/// sees no difference at all.
+pub const DEFAULT_MEASURE: u16 = 90;
+
+/// Below this a "measure" is not a reading experience, it is a typo in a
+/// config file. Clamp rather than obey.
+pub const MIN_MEASURE: u16 = 20;
+
+/// The saved reading measure. `Some(0)` means explicitly OFF — full bleed,
+/// the pre-measure behaviour — while `None` means absent, and the caller uses
+/// [`DEFAULT_MEASURE`]. The two are deliberately different.
+#[must_use]
+pub fn load_max_width() -> Option<u16> {
+    load_max_width_in(&config_dir()?)
+}
+
+#[must_use]
+pub fn load_max_width_in(dir: &Path) -> Option<u16> {
+    let raw: u16 = parse_key(
+        &std::fs::read_to_string(dir.join("config")).ok()?,
+        "max_width",
+    )?
+    .parse()
+    .ok()?;
+    Some(if raw == 0 { 0 } else { raw.max(MIN_MEASURE) })
+}
+
+pub fn save_max_width_in(dir: &Path, w: u16) -> std::io::Result<()> {
+    upsert_key_in(dir, "max_width", &w.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +196,49 @@ mod tests {
         assert_eq!(load_hints_in(d.path()), Some(false));
         save_hints_in(d.path(), true).unwrap();
         assert_eq!(load_hints_in(d.path()), Some(true));
+    }
+
+    #[test]
+    fn max_width_round_trips_through_the_config_file() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            load_max_width_in(d.path()),
+            None,
+            "absent: caller uses DEFAULT_MEASURE"
+        );
+        save_max_width_in(d.path(), 72).unwrap();
+        assert_eq!(load_max_width_in(d.path()), Some(72));
+    }
+
+    #[test]
+    fn zero_is_preserved_because_it_means_off_not_absent() {
+        let d = tempfile::tempdir().unwrap();
+        save_max_width_in(d.path(), 0).unwrap();
+        assert_eq!(load_max_width_in(d.path()), Some(0));
+    }
+
+    #[test]
+    fn an_absurdly_narrow_measure_clamps_to_the_floor() {
+        let d = tempfile::tempdir().unwrap();
+        save_max_width_in(d.path(), 3).unwrap();
+        assert_eq!(load_max_width_in(d.path()), Some(MIN_MEASURE));
+    }
+
+    #[test]
+    fn garbage_reads_as_absent_rather_than_failing() {
+        let d = tempfile::tempdir().unwrap();
+        upsert_key_in(d.path(), "max_width", "wide please").unwrap();
+        assert_eq!(load_max_width_in(d.path()), None);
+    }
+
+    #[test]
+    fn max_width_preserves_the_other_keys() {
+        let d = tempfile::tempdir().unwrap();
+        save_root_in(d.path(), Path::new("/somewhere")).unwrap();
+        save_theme_in(d.path(), "paper").unwrap();
+        save_max_width_in(d.path(), 72).unwrap();
+        assert_eq!(load_root_in(d.path()), Some(PathBuf::from("/somewhere")));
+        assert_eq!(load_theme_in(d.path()), Some("paper".into()));
     }
 
     #[test]
