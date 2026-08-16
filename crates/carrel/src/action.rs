@@ -128,6 +128,10 @@ pub enum Action {
     // --- home screen ---
     /// Move the selection. Signed; saturates.
     HomeMove(i32),
+    /// Put the selection on an absolute list index — what a mouse click
+    /// produces. Clamped by the receiver, so a stale index is harmless.
+    /// In search mode it indexes the hits rather than the files.
+    HomeSelect(usize),
     HomeGo(Edge),
     /// Open the selected file in the reader.
     HomeOpen,

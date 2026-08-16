@@ -8,6 +8,41 @@ use std::path::{Path, PathBuf};
 
 use crate::scan::Entry;
 
+/// Width of the lamp splash, and the smallest terminal that gets it.
+///
+/// These live here rather than in `render.rs` because the *geometry* they
+/// decide is shared: paint draws the list under the banner, and hit-testing
+/// has to know where that list starts. See [`list_geometry`].
+pub const SPLASH_W: u16 = 19;
+pub const BANNER_MIN_COLS: u16 = SPLASH_W + 6;
+pub const BANNER_MIN_ROWS: u16 = 17;
+
+/// The file list's `(top row, height)` inside a terminal of this size.
+///
+/// **The ONE derivation of the home screen's list geometry.** `render.rs`
+/// builds its `Rect` from this and [`Home::row_at`] inverts it; if either ever
+/// computes the offsets itself, clicks land on the wrong file and no frame
+/// test can tell — the same trap `App::text_x` exists to close on the reader
+/// side.
+///
+/// Above the list: the banner (or a one-line wordmark on a small terminal)
+/// and the active-root line. Below it: the status row, plus the lamplight
+/// hint row while it shows.
+#[must_use]
+pub const fn list_geometry(cols: u16, rows: u16, hints: bool) -> (u16, u16) {
+    // Banner: lamp row, 3 shade rows, desk, then the tagline and a blank.
+    // Small terminal: just the wordmark. Both are followed by the root line.
+    let header = if cols >= BANNER_MIN_COLS && rows >= BANNER_MIN_ROWS {
+        7
+    } else {
+        1
+    };
+    let top = header + 1;
+    let chrome = if hints { 2 } else { 1 };
+    let bottom = rows.saturating_sub(chrome);
+    (top, bottom.saturating_sub(top))
+}
+
 /// Telescope's model: the screen opens filtering, `Esc` drops to vim keys.
 ///
 /// A picker has to behave like a picker — typing filters — and a vim user
@@ -161,6 +196,47 @@ impl Home {
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
 
+    /// Which list index the pointer is over, or `None` off the list.
+    ///
+    /// **The inverse of the paint**, and it must stay that way: both this and
+    /// `render.rs` take their window from [`list_geometry`], because a hit-test
+    /// that re-derives the geometry drifts from the paint and every click lands
+    /// on the wrong row — a failure no frame test can see.
+    ///
+    /// In [`HomeMode::Search`] a hit occupies TWO rows (the name and its dimmed
+    /// context line), so a click on either one selects that hit.
+    #[must_use]
+    pub fn row_at(&self, row: u16, cols: u16, rows: u16, hints: bool) -> Option<usize> {
+        let (top, height) = list_geometry(cols, rows, hints);
+        if height == 0 || row < top || row >= top.saturating_add(height) {
+            return None;
+        }
+        let offset = usize::from(row - top);
+        let h = usize::from(height);
+        if self.mode == HomeMode::Search {
+            let per = 2;
+            let visible = (h / per).max(1);
+            let first = self.hit_selected.saturating_sub(visible.saturating_sub(1));
+            let i = first + offset / per;
+            (i < self.hits.len()).then_some(i)
+        } else {
+            let first = self.selected.saturating_sub(h.saturating_sub(1));
+            let i = first + offset;
+            (i < self.filtered.len()).then_some(i)
+        }
+    }
+
+    /// Put the selection on an absolute index, clamped to the list.
+    pub fn select(&mut self, i: usize) {
+        if self.mode == HomeMode::Search {
+            if !self.hits.is_empty() {
+                self.hit_selected = i.min(self.hits.len() - 1);
+            }
+        } else if !self.filtered.is_empty() {
+            self.selected = i.min(self.filtered.len() - 1);
+        }
+    }
+
     /// Move the selection. Saturates rather than wrapping.
     pub fn move_by(&mut self, delta: i32) {
         if self.filtered.is_empty() {
@@ -253,6 +329,123 @@ mod tests {
             PathBuf::from("/root"),
             vec![e("alpha.md", 10), e("beta.md", 30), e("docs/gamma.md", 20)],
         )
+    }
+
+    // --- click-to-open geometry ---
+
+    /// A terminal big enough for the banner, with the hint row showing.
+    const BIG: (u16, u16, bool) = (100, 40, true);
+
+    #[test]
+    fn the_list_starts_under_the_banner_and_stops_above_the_chrome() {
+        let (top, h) = list_geometry(100, 40, true);
+        assert_eq!(top, 8, "7 banner rows + the root line");
+        assert_eq!(h, 40 - 2 - 8, "status + hint row below");
+        // Hiding the hints gives the list one more row.
+        assert_eq!(list_geometry(100, 40, false).1, h + 1);
+        // Too small for the banner: just the wordmark and the root line.
+        assert_eq!(list_geometry(40, 10, true).0, 2);
+    }
+
+    #[test]
+    fn a_click_on_the_first_row_selects_the_first_file() {
+        let h = home();
+        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2);
+        assert_eq!(h.row_at(top, BIG.0, BIG.1, BIG.2), Some(0));
+        assert_eq!(h.row_at(top + 1, BIG.0, BIG.1, BIG.2), Some(1));
+        assert_eq!(h.row_at(top + 2, BIG.0, BIG.1, BIG.2), Some(2));
+    }
+
+    #[test]
+    fn clicks_off_the_list_are_not_hits() {
+        let h = home();
+        let (top, height) = list_geometry(BIG.0, BIG.1, BIG.2);
+        assert_eq!(h.row_at(top - 1, BIG.0, BIG.1, BIG.2), None, "the banner");
+        assert_eq!(
+            h.row_at(top + height, BIG.0, BIG.1, BIG.2),
+            None,
+            "the status row"
+        );
+        assert_eq!(
+            h.row_at(top + 3, BIG.0, BIG.1, BIG.2),
+            None,
+            "past the last of three files"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_has_nothing_to_click() {
+        let mut h = home();
+        h.filter = "no-such-file".into();
+        h.refilter();
+        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2);
+        assert_eq!(h.row_at(top, BIG.0, BIG.1, BIG.2), None);
+    }
+
+    #[test]
+    fn a_scrolled_window_maps_rows_to_the_files_actually_shown() {
+        // A list taller than the viewport: paint windows around the selection,
+        // and the hit-test has to follow it rather than assuming row 0 == item 0.
+        let many: Vec<Entry> = (0..50).map(|i| e(&format!("f{i}.md"), i)).collect();
+        let mut h = Home::new(PathBuf::from("/root"), many);
+        let (cols, rows, hints) = (100u16, 14u16, true);
+        let (top, height) = list_geometry(cols, rows, hints);
+        h.selected = h.filtered.len() - 1; // scrolled to the bottom
+        let first = h.selected - (usize::from(height) - 1);
+        assert_eq!(h.row_at(top, cols, rows, hints), Some(first));
+        assert_eq!(
+            h.row_at(top + height - 1, cols, rows, hints),
+            Some(h.selected),
+            "the last row is the selected one when scrolled to the end"
+        );
+    }
+
+    #[test]
+    fn in_search_mode_a_hit_owns_two_rows() {
+        let mut h = home();
+        h.mode = HomeMode::Search;
+        h.hits = vec![
+            crate::grep::Hit {
+                path: PathBuf::from("/root/alpha.md"),
+                count: 2,
+                first_line: "a".into(),
+            },
+            crate::grep::Hit {
+                path: PathBuf::from("/root/beta.md"),
+                count: 1,
+                first_line: "b".into(),
+            },
+        ];
+        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2);
+        assert_eq!(h.row_at(top, BIG.0, BIG.1, BIG.2), Some(0), "name row");
+        assert_eq!(
+            h.row_at(top + 1, BIG.0, BIG.1, BIG.2),
+            Some(0),
+            "its context line selects the SAME hit"
+        );
+        assert_eq!(h.row_at(top + 2, BIG.0, BIG.1, BIG.2), Some(1));
+        assert_eq!(h.row_at(top + 4, BIG.0, BIG.1, BIG.2), None, "past the end");
+    }
+
+    #[test]
+    fn select_clamps_and_respects_the_mode() {
+        let mut h = home();
+        h.select(2);
+        assert_eq!(h.selected, 2);
+        h.select(99);
+        assert_eq!(h.selected, 2, "clamped to the last file");
+        h.mode = HomeMode::Search;
+        h.hits = vec![crate::grep::Hit {
+            path: PathBuf::from("/root/alpha.md"),
+            count: 1,
+            first_line: String::new(),
+        }];
+        h.select(0);
+        assert_eq!(h.hit_selected, 0);
+        assert_eq!(
+            h.selected, 2,
+            "the file selection is untouched in search mode"
+        );
     }
 
     #[test]

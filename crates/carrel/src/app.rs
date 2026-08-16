@@ -975,6 +975,12 @@ fn home_update(app: &mut App, action: Action) -> Outcome {
             h.grep_done = false;
             Outcome::Redraw
         }
+        // A click. `Home::select` clamps and routes by mode, so an index from
+        // a frame that has since changed cannot put the selection out of range.
+        Action::HomeSelect(i) => {
+            h.select(i);
+            Outcome::Redraw
+        }
         Action::HomeMove(n) if h.mode == HomeMode::Search => {
             let last = h.hits.len().saturating_sub(1);
             h.hit_selected = if n < 0 {

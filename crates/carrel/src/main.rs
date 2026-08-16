@@ -975,6 +975,18 @@ fn home_mouse_action(
         MouseEventKind::Down(MouseButton::Left) if m.row + 1 == app.rows && m.column < 3 => {
             Some(Action::HintsToggle)
         }
+        // A click on a file row: first press selects, second opens — the
+        // file-manager idiom, and forgiving of a misclick. The row → index
+        // mapping is `Home::row_at`, the inverse of the paint's own geometry.
+        MouseEventKind::Down(MouseButton::Left) => {
+            let home = app.home()?;
+            let i = home.row_at(m.row, app.cols, app.rows, app.hints)?;
+            match clicks.press(m.column, m.row) {
+                1 => Some(Action::HomeSelect(i)),
+                // The first press of the pair already selected it.
+                _ => Some(Action::HomeOpen),
+            }
+        }
         _ => None,
     }
 }

@@ -1103,14 +1103,13 @@ const SPLASH_POOL: &str = "░░░░░░░░░░░░░░░░░";
 /// The desk the lamp stands on — a carrel is a desk, so the post gets one.
 /// `┷` joins the light post to a heavy tabletop; the width is the splash's.
 const SPLASH_DESK: &str = "┷━━━━━━━━━━━━━━━━━━";
-/// Wall (2) + pool (17). Measured with `carrel_core::display_width`, and
-/// asserted in the tests.
-const SPLASH_W: u16 = 19;
 const TAGLINE: &str = "a quiet place to read your markdown";
-/// Below this the wordmark is dropped so the list always gets room. Derived
-/// from the wordmark's own width plus a margin, so the two cannot drift.
-const BANNER_MIN_COLS: u16 = SPLASH_W + 6;
-const BANNER_MIN_ROWS: u16 = 17;
+
+// Splash width (wall 2 + pool 17, measured with `display_width` and asserted
+// in the tests) and the smallest terminal that earns the banner now live in
+// `home.rs`, because `home::list_geometry` needs them to say where the file
+// list starts — and hit-testing inverts that same function.
+use crate::home::{BANNER_MIN_COLS, BANNER_MIN_ROWS, SPLASH_W};
 
 fn draw_home(frame: &mut Frame, app: &App, home: &Home) {
     let area = frame.area();
@@ -1153,10 +1152,18 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home) {
         y += 1;
     }
 
-    // Chrome at the bottom: status, then the lamplight row while it shows.
+    // The list rect comes from `home::list_geometry`, NOT from the `y` this
+    // function happened to paint to — because `Home::row_at` inverts that same
+    // function to turn a click into a file. Two derivations would drift and
+    // every click would land on the wrong row.
+    let (list_top, list_h) = crate::home::list_geometry(area.width, area.height, app.hints);
+    debug_assert_eq!(
+        y, list_top,
+        "the header painted to row {y} but list_geometry says {list_top}"
+    );
     let chrome = if app.hints { 2 } else { 1 };
     let list_bottom = area.bottom().saturating_sub(chrome);
-    let list = Rect::new(area.x, y, area.width, list_bottom.saturating_sub(y));
+    let list = Rect::new(area.x, list_top, area.width, list_h);
     if home.mode == HomeMode::Search {
         paint_hits(frame, home, list);
     } else {

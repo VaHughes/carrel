@@ -287,6 +287,11 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("Ctrl-N Ctrl-P", "move"),
     ("gg G Home End", "first / last"),
     ("Enter", "open"),
+    // Prose, not a binding — the mouse rows are documented the same way the
+    // reader's drag/double-click gestures are, and the honesty test skips
+    // them because there is no key to press.
+    ("click", "select a file"),
+    ("double-click", "open it"),
     ("§", "finding"),
     ("i", "filter names: type to narrow"),
     ("/", "search inside files"),
@@ -821,6 +826,7 @@ mod tests {
                 // (The mouse gestures ARE documented — as prose rows in the
                 // help table's mouse group, not as key bindings.)
                 A::SearchKey(_)
+                | A::HomeSelect(_)
                 | A::HomeKey(_)
                 | A::OutlineKey(_)
                 | A::OutlineMove(_)

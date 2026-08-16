@@ -13,6 +13,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **The config file is documented** in the README for the first time, with all four keys.
 - **Fedora packages.** `dnf copr enable vahughes/carrel && dnf install carrel` — Fedora 43 and
   44, x86_64 and aarch64, with the man page and shell completions installed.
+- **Click a file on the home screen.** One click selects, a double click opens — the list
+  looked clickable and silently wasn't. Clicking a search result works too, including its
+  dimmed context line, and opens the file at the first match.
 - **Esc now clears search highlights.** After running a search and pressing Enter, Esc cleared
   the mouse selection and the selected link but left the match highlights on screen, with no
   way to get rid of them except running another search. It does not move you — accepting a

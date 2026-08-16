@@ -374,3 +374,56 @@ mod close_file {
         assert_eq!(update(&mut app, Action::CloseFile), Outcome::Quit);
     }
 }
+
+/// The guard that makes click-to-open trustworthy: whatever file name is
+/// painted on a row, clicking that row must resolve to that same file.
+///
+/// A frame test alone cannot see a one-row offset, and neither can a unit
+/// test of the geometry — only the round trip can. Verified to fail on a
+/// deliberate off-by-one before being trusted.
+#[test]
+fn clicking_a_row_resolves_to_the_file_painted_on_it() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let d = tempfile::tempdir().unwrap();
+    for n in ["alpha.md", "beta.md", "gamma.md", "delta.md"] {
+        std::fs::write(d.path().join(n), "# x").unwrap();
+    }
+    let (cached, _) = scan::walk_blocking(d.path());
+
+    // Both a banner-sized terminal and one too small for it, because the
+    // list's top row differs between them.
+    for (cols, rows) in [(100u16, 40u16), (40, 12)] {
+        let app = App::new_home(d.path().into(), cached.clone(), cols, rows);
+        let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        t.draw(|f| carrel::render::draw(f, &app)).unwrap();
+        let buf = t.backend().buffer().clone();
+
+        let home = app.home().unwrap();
+        let mut checked = 0;
+        for row in 0..rows {
+            let Some(i) = home.row_at(row, cols, rows, app.hints) else {
+                continue;
+            };
+            let painted: String = (0..cols).map(|c| buf[(c, row)].symbol()).collect();
+            let expected = home.entries[home.filtered[i]]
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            assert!(
+                painted.contains(&expected),
+                "{cols}x{rows} row {row}: click resolves to {expected:?} \
+                 but the row paints {:?}",
+                painted.trim()
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 4,
+            "{cols}x{rows}: every file row should be hittable"
+        );
+    }
+}
