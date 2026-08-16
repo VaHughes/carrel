@@ -1,4 +1,4 @@
-# The same four gates that run locally before every commit, and nothing else.
+# The same five gates that run locally before every commit, and nothing else.
 # The project has required "CI must run check-discipline.sh" since the first
 # commit; this is that requirement made real.
 #

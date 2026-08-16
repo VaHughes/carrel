@@ -24,6 +24,8 @@ with type\-to\-filter and a directory picker. Given a
 .I FILE
 it opens a reader with vim motions, incremental search that survives reflow and
 terminal resize, syntax highlighting, tables, images, and mermaid diagrams.
+Prose is set to a comfortable measure and centred rather than stretched across a
+wide terminal; tables, code and diagrams still use the full width.
 .PP
 Given a
 .I FILE
@@ -76,6 +78,9 @@ Help.
 .B H
 Fold the hint footer.
 .TP
+.B Esc
+Clear the selection, the selected link, and any search highlights.
+.TP
 .B q
 Quit.
 .SS Home screen
@@ -88,6 +93,10 @@ Search inside every file; enter opens at the match.
 .TP
 .B d
 Choose a directory.
+.TP
+.B Mouse
+Click a file to select it, double\-click to open it. The same works in the
+directory picker, and on the results of a file search.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
@@ -95,7 +104,9 @@ Honoured: colours off, weight and emphasis kept.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/carrel
-Theme, chosen root directory, and footer preference.
+Theme, chosen root directory, footer preference, and
+.BR max_width ,
+the reading measure in columns (default 90; 0 turns it off).
 .TP
 .I $XDG_STATE_HOME/carrel
 Reading positions, so a document reopens where you left it.

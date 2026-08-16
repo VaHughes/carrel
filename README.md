@@ -176,7 +176,10 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Outline navigation, live reload, search inside every file
 - [x] Mermaid diagrams as Unicode box art
 - [x] Frontmatter cards, definition lists, LaTeX math as box art, a conformance suite
-- [ ] Packaging: `.deb`, `.rpm`, AUR, Homebrew, winget
+- [x] The reading desk begins: a 90-column measure with centred prose, a time-remaining
+      estimate, and a home screen you can click
+- [x] Packaging: Fedora COPR, the shell installer, crates.io
+- [ ] Packaging, remaining: AUR (blocked on Arch), Homebrew, `.deb`, winget
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 
 ## Contributing

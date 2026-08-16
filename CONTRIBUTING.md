@@ -20,13 +20,14 @@ before a human has to.
 
 ## The gates
 
-CI runs exactly what local development runs. All four must be green:
+CI runs exactly what local development runs. All five must be green:
 
 ```bash
 cargo test --workspace                             # every test
 cargo clippy --workspace --all-targets             # ZERO warnings is the bar
 cargo fmt --all --check
 ./scripts/check-discipline.sh                      # the architectural guard
+./scripts/check-packaging.sh                       # recipes name files that ship
 ```
 
 ## How changes happen here
