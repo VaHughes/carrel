@@ -16,12 +16,16 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 
 fn frame(cols: u16, rows: u16) -> Buffer {
-    let app = App::new(
+    let mut app = App::new(
         "t.md".into(),
         Document::parse("# Title\n\nbody text\n"),
         cols,
         rows,
     );
+    // Classic geometry: this test reads fixed cells; the breadcrumb band
+    // has its own tests.
+    app.breadcrumb = false;
+    app.on_resize(cols, rows);
     let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     t.draw(|f| carrel::render::draw(f, &app)).unwrap();
     t.backend().buffer().clone()

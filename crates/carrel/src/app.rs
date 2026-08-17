@@ -101,6 +101,14 @@ pub struct App {
     /// A stdin stream is still arriving. Presentation only: the footer lamp
     /// and the path label read it; nothing else may.
     pub streaming: bool,
+    /// The breadcrumb band is wanted (config/`B`). Whether it actually shows
+    /// also needs [`Self::band`] — a document with no headings reserves no
+    /// rows for a band that would be permanently blank.
+    pub breadcrumb: bool,
+    /// Cached at parse like `words`: does the document have any heading at
+    /// all? Height must be stable while reading, so this is a per-document
+    /// fact, not a per-frame scan.
+    has_headings: bool,
     /// The accumulated piped document, retained so `Ctrl-O` can come back to
     /// it after following a link out — a pipe has no path to re-read.
     pub piped: Option<String>,
@@ -232,15 +240,44 @@ impl App {
     /// `render.rs` **must** derive its rects from this, or layout and paint
     /// disagree about how much room the text has and wrapping goes wrong.
     #[must_use]
-    pub const fn text_size(cols: u16, rows: u16, footer: bool, max_width: u16) -> (u16, u16, u16) {
+    pub const fn text_size(
+        cols: u16,
+        rows: u16,
+        footer: bool,
+        band: bool,
+        max_width: u16,
+    ) -> (u16, u16, u16) {
         // Status row always; the lamplight hint row only while showing.
         let chrome = if footer { 2 } else { 1 };
         let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT);
         (
             measure_of(bleed, max_width),
             bleed,
-            rows.saturating_sub(chrome + PAD_TOP + PAD_BOTTOM),
+            rows.saturating_sub(chrome + Self::top_chrome(band) + PAD_BOTTOM),
         )
+    }
+
+    /// Rows above the text: the breadcrumb band (crumb + rule) or the plain
+    /// pad. The vertical twin of the margin logic in [`Self::text_x`].
+    #[must_use]
+    pub const fn top_chrome(band: bool) -> u16 {
+        if band { 2 } else { PAD_TOP }
+    }
+
+    /// The band shows only when wanted AND the document has headings.
+    #[must_use]
+    pub const fn band(&self) -> bool {
+        self.breadcrumb && self.has_headings
+    }
+
+    /// The text area's top row, in absolute terminal cells.
+    ///
+    /// Paint and hit-testing both come through here, exactly like
+    /// [`Self::text_x`] — if they ever stop, a click lands one row off and
+    /// no frame test will notice.
+    #[must_use]
+    pub const fn text_y(&self) -> u16 {
+        Self::top_chrome(self.band())
     }
 
     /// The prose column's left edge, in absolute terminal cells.
@@ -259,7 +296,12 @@ impl App {
 
     #[must_use]
     pub fn new(path: String, doc: Document, cols: u16, rows: u16) -> Self {
-        let (w, bleed, _) = Self::text_size(cols, rows, true, config::DEFAULT_MEASURE);
+        let has_headings = doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
+        let (w, bleed, _) =
+            Self::text_size(cols, rows, true, has_headings, config::DEFAULT_MEASURE);
         let layout = Layout::with_measure(&doc, bleed.max(1), w.max(1), HashMap::new(), false);
         let mut app = Self {
             screen: Screen::Reader,
@@ -272,6 +314,8 @@ impl App {
             file: None,
             streaming: false,
             piped: None,
+            breadcrumb: true,
+            has_headings,
             history: Vec::new(),
             selected_link: None,
             image_dims: HashMap::new(),
@@ -389,6 +433,11 @@ impl App {
         self.diagram_art.clear();
         self.rebuild_math_art();
         self.words = word_count(&self.doc.text);
+        self.has_headings = self
+            .doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -432,6 +481,11 @@ impl App {
         self.diagram_art.clear();
         self.rebuild_math_art();
         self.words = word_count(&self.doc.text);
+        self.has_headings = self
+            .doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
         self.selection = None;
         self.sel_anchor = None;
         self.selected_link = None;
@@ -557,25 +611,43 @@ impl App {
     /// The prose budget — what a paragraph wraps at.
     #[must_use]
     pub fn text_w(&self) -> u16 {
-        Self::text_size(self.cols, self.rows, self.hints, self.max_width)
-            .0
-            .max(1)
+        Self::text_size(
+            self.cols,
+            self.rows,
+            self.hints,
+            self.band(),
+            self.max_width,
+        )
+        .0
+        .max(1)
     }
 
     /// The bleed budget — what a table, code block, image or math block may
     /// use. Equal to [`Self::text_w`] whenever the measure is not binding.
     #[must_use]
     pub fn bleed_w(&self) -> u16 {
-        Self::text_size(self.cols, self.rows, self.hints, self.max_width)
-            .1
-            .max(1)
+        Self::text_size(
+            self.cols,
+            self.rows,
+            self.hints,
+            self.band(),
+            self.max_width,
+        )
+        .1
+        .max(1)
     }
 
     #[must_use]
     pub fn text_h(&self) -> u16 {
-        Self::text_size(self.cols, self.rows, self.hints, self.max_width)
-            .2
-            .max(1)
+        Self::text_size(
+            self.cols,
+            self.rows,
+            self.hints,
+            self.band(),
+            self.max_width,
+        )
+        .2
+        .max(1)
     }
 
     /// Estimated minutes of reading left, or `None` when saying so is noise.
@@ -613,13 +685,14 @@ impl App {
     #[must_use]
     pub fn doc_span_at(&self, col: u16, row: u16) -> Option<(u32, u32)> {
         let text_x = self.text_x_now();
-        if row < PAD_TOP || row >= PAD_TOP + self.text_h() {
+        let top = self.text_y();
+        if row < top || row >= top + self.text_h() {
             return None;
         }
         if col < text_x || col >= text_x + self.text_w() {
             return None;
         }
-        let vrow = self.view.scroll_row + u32::from(row - PAD_TOP);
+        let vrow = self.view.scroll_row + u32::from(row - top);
         let block = self.layout.block_at_row(vrow);
         if block.get() >= self.doc.block_count() {
             return None;
@@ -2548,6 +2621,45 @@ mod tests {
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
         assert_eq!(a.note.as_deref(), Some("reloaded"));
+    }
+
+    #[test]
+    fn the_band_costs_one_text_row_and_moves_the_top_edge() {
+        let with_headings = Document::parse("# H\n\nbody\n");
+        let a = App::new("x.md".into(), with_headings, 40, 12);
+        assert!(a.band(), "breadcrumb defaults on and headings exist");
+        assert_eq!(a.text_y(), 2, "crumb row + rule row");
+
+        let plain = Document::parse("no headings here\n");
+        let b = App::new("x.md".into(), plain, 40, 12);
+        assert!(!b.band(), "no headings, no band");
+        assert_eq!(b.text_y(), PAD_TOP);
+        assert_eq!(
+            a.text_h() + 1,
+            b.text_h(),
+            "the band replaces the pad row and adds one more"
+        );
+    }
+
+    #[test]
+    fn clicks_map_through_the_top_edge_in_both_band_states() {
+        // Same document, band toggled: the first text row must hit the same
+        // byte both ways. A one-row offset here is invisible to frame tests.
+        let mut a = App::new("x.md".into(), Document::parse("# H\n\nabcdef\n"), 40, 12);
+        let x = a.text_x_now();
+        let with_band = a.doc_span_at(x, a.text_y());
+        assert!(with_band.is_some(), "first text row hits content");
+        a.breadcrumb = false;
+        let without = a.doc_span_at(x, a.text_y());
+        assert_eq!(
+            with_band, without,
+            "the same first visible cluster, either chrome"
+        );
+        assert_eq!(
+            a.doc_span_at(x, 0),
+            None,
+            "the crumb row itself is not text"
+        );
     }
 
     #[test]

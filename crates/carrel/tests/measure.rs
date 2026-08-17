@@ -37,7 +37,7 @@ fn frame(app: &App, cols: u16, rows: u16) -> Buffer {
 #[test]
 fn a_narrow_terminal_is_untouched_by_the_measure() {
     // 80 columns: usable text is 80 - 1 scrollbar - 2 - 2 = 75, under 90.
-    let (prose, bleed, _) = App::text_size(80, 24, true, DEFAULT_MEASURE);
+    let (prose, bleed, _) = App::text_size(80, 24, true, false, DEFAULT_MEASURE);
     assert_eq!(prose, 75);
     assert_eq!(prose, bleed, "under the measure the two budgets agree");
     assert_eq!(
@@ -49,7 +49,7 @@ fn a_narrow_terminal_is_untouched_by_the_measure() {
 
 #[test]
 fn a_wide_terminal_pins_prose_to_the_measure_and_centres_it() {
-    let (prose, bleed, _) = App::text_size(200, 24, true, DEFAULT_MEASURE);
+    let (prose, bleed, _) = App::text_size(200, 24, true, false, DEFAULT_MEASURE);
     assert_eq!(prose, 90);
     assert_eq!(bleed, 195, "200 - 1 scrollbar - 2 - 2");
     // PAD_LEFT + (195 - 90) / 2 = 2 + 52
@@ -58,7 +58,7 @@ fn a_wide_terminal_pins_prose_to_the_measure_and_centres_it() {
 
 #[test]
 fn zero_reproduces_the_pre_measure_geometry_exactly() {
-    let (prose, bleed, h) = App::text_size(200, 24, true, 0);
+    let (prose, bleed, h) = App::text_size(200, 24, true, false, 0);
     assert_eq!((prose, bleed), (195, 195));
     assert_eq!(h, 20, "24 - 2 chrome - 1 top - 1 bottom");
     assert_eq!(App::text_x(200, 0), 2, "the old left edge, unmoved");
@@ -66,7 +66,7 @@ fn zero_reproduces_the_pre_measure_geometry_exactly() {
 
 #[test]
 fn a_terminal_narrower_than_its_own_chrome_does_not_underflow() {
-    let (prose, bleed, h) = App::text_size(1, 1, true, DEFAULT_MEASURE);
+    let (prose, bleed, h) = App::text_size(1, 1, true, false, DEFAULT_MEASURE);
     assert_eq!((prose, bleed, h), (0, 0, 0));
     assert_eq!(App::text_x(1, DEFAULT_MEASURE), 2);
 }

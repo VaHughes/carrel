@@ -108,16 +108,23 @@ pub fn draw_full(
 
     // Derived from the SAME function the layout width came from, or paint and
     // wrapping would disagree about how much room the text has.
-    let (_tw, bw, th) = App::text_size(area.width, area.height, app.hints, app.max_width);
+    let (_tw, bw, th) = App::text_size(
+        area.width,
+        area.height,
+        app.hints,
+        app.band(),
+        app.max_width,
+    );
     // The FULL text area, not the measure column: `paint_rows` gives each
     // block its own column inside it, so a table may be wider than prose
     // without being clipped. Prose lands at `text_x`, the same function
-    // `doc_span_at` hit-tests against, so a click cannot resolve to a
+    // `doc_span_at` hit-tests against — and the top edge comes through
+    // `text_y` for exactly the same reason, so a click cannot resolve to a
     // different byte than the one under the pointer.
-    let text = Rect::new(crate::app::PAD_LEFT, crate::app::PAD_TOP, bw, th);
+    let text = Rect::new(crate::app::PAD_LEFT, app.text_y(), bw, th);
     // The bar keeps the true right edge but aligns its track with the text
     // rows, so thumb geometry and the drag hit-test share one coordinate.
-    let bar = Rect::new(area.width.saturating_sub(1), crate::app::PAD_TOP, 1, th);
+    let bar = Rect::new(area.width.saturating_sub(1), app.text_y(), 1, th);
     let status_y = area.height.saturating_sub(if app.hints { 2 } else { 1 });
     let status = Rect::new(0, status_y, area.width, 1);
 
@@ -1409,7 +1416,11 @@ mod tests {
     }
 
     fn frame_of(src: &str, cols: u16, rows: u16) -> Buffer {
-        let app = App::new("t.md".into(), Document::parse(src), cols, rows);
+        let mut app = App::new("t.md".into(), Document::parse(src), cols, rows);
+        // These tests exercise text painting in classic geometry; the
+        // breadcrumb band has its own tests with explicit offsets.
+        app.breadcrumb = false;
+        app.on_resize(cols, rows);
         buffer_of(&app, cols, rows)
     }
 
@@ -2245,8 +2256,8 @@ mod tests {
         // The thumb's bottom cell is the bar's bottom cell. The bar keeps
         // the true right edge and its track aligns with the text rows.
         let bar_x = 30 - 1;
-        let th = App::text_size(30, 10, true, crate::config::DEFAULT_MEASURE).2;
-        let (top_y, bottom_y) = (crate::app::PAD_TOP, crate::app::PAD_TOP + th - 1);
+        let th = App::text_size(30, 10, true, app.band(), crate::config::DEFAULT_MEASURE).2;
+        let (top_y, bottom_y) = (app.text_y(), app.text_y() + th - 1);
         assert_eq!(
             buf[(bar_x, bottom_y)].symbol(),
             "█",

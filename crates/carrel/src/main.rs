@@ -1011,8 +1011,10 @@ fn mouse_action(
     let text_h = app.text_h();
     let total = app.layout.total_rows();
     let max_scroll = app.layout.max_scroll(text_h);
-    // The bar's track starts PAD_TOP rows down; pointer rows map into it.
-    let bar_y = |row: u16| row.saturating_sub(carrel::app::PAD_TOP);
+    // The bar's track starts at the text's top edge; pointer rows map into
+    // it through the same accessor paint uses.
+    let top = app.text_y();
+    let bar_y = move |row: u16| row.saturating_sub(top);
 
     match m.kind {
         MouseEventKind::ScrollDown => Some(Action::Scroll(Span::Line, 3)),
