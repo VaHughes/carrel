@@ -1,13 +1,14 @@
 # Packaging templates
 
-**`carrel` (AUR) and `carrel.spec` (COPR) are stamped for v2026.8.16 and ready to publish.**
-They build from the GitHub **source** tarball, which carries `contrib/` and `Cargo.lock`.
+**All recipes are stamped for v2026.8.17.** `carrel` (AUR) and `carrel.spec` (COPR) build
+from the GitHub **source** tarball, which carries `contrib/` and `Cargo.lock`. `carrel-bin`
+(AUR, prebuilt) is no longer blocked: v2026.8.17 is the first release whose archives carry
+the man page and completions it installs. Note that **dist flattens `include` paths to the
+archive root**: `contrib/carrel.1` arrives as `carrel.1`. AUR publishing itself still waits
+on Arch reopening account registration.
 
-**`carrel-bin` is blocked** until a release is built with the widened `include` list in
-`dist-workspace.toml`. It installs the man page and completions *from the release archive*,
-and those were not in it — `include` shipped only `carrel.desktop`. Verified against the real
-v2026.8.16 artifact, which would have failed the build. Note that **dist flattens `include`
-paths to the archive root**: `contrib/carrel.1` arrives as `carrel.1`.
+**`carrel-package.nix`** is the nixpkgs by-name package, ready except for its two hashes,
+which need a machine with nix — the fill-in steps are in the file's header comment.
 
 ## Checksums
 
@@ -60,6 +61,12 @@ Also note **`--commit` must point at a revision whose spec has the right `Versio
 tag was cut. Building `main` is correct: the spec's `Source0` still points at the *tagged*
 release tarball, so the package is built from a release even though the recipe came from the
 branch.
+
+The flip side (2026-08-17): **the source is tag-frozen**, so a fix pushed to `main` after
+tagging never reaches the build. If it must ship, carry it as a `Patch0` file next to the
+spec (rpkg packs local sources from the spec's directory), bump `Release:`, and drop the
+patch at the next release — keeping its hunks to files unchanged since the tag, dry-run
+verified against the extracted tag tarball.
 
 Verify a build without any RPM tooling by reading the repo metadata:
 

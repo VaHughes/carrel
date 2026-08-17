@@ -13,6 +13,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   to show as much of the path as fits. The test now pins that contract, long
   path included. The COPR spec carries the fix as a patch on the v2026.8.17
   tarball (release 2), to be dropped at the next release.
+- **Homebrew tap wired up.** `dist` now generates a Homebrew formula and pushes it
+  to [`VaHughes/homebrew-tap`](https://github.com/VaHughes/homebrew-tap) at release
+  time; the first formula publishes with the next tagged release. Until then the
+  tap exists but is empty.
+- **A nixpkgs package, prepared.** `contrib/packaging/carrel-package.nix` is the
+  by-name package ready for a nixpkgs PR, minus the two hashes that need a machine
+  with nix to compute.
 
 ## 2026.8.17
 
