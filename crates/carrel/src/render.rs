@@ -131,6 +131,7 @@ pub fn draw_full(
     paint_rows(frame, app, text, links, images);
     paint_scrollbar(frame, app, bar);
     paint_status(frame, app, status);
+    paint_breadcrumb(frame, app, text);
     if app.hints {
         paint_footer(
             frame,
@@ -1346,6 +1347,35 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect) {
     }
 }
 
+/// The breadcrumb band: the section path on row 0, a rule on row 1. Only
+/// when [`App::band`] — the same predicate that reserved the rows, so paint
+/// and geometry cannot disagree. The crumb aligns with the prose column
+/// (`text_x`) and fits the measure; the rule spans the full text area, the
+/// wide edge, because it separates chrome from content.
+fn paint_breadcrumb(frame: &mut Frame, app: &App, text: Rect) {
+    let Some(crumb) = crate::breadcrumb::of(app, app.text_w()) else {
+        return;
+    };
+    let buf = frame.buffer_mut();
+    let rule: String = "─".repeat(text.width as usize);
+    buf.set_stringn(text.x, 1, &rule, text.width as usize, theme::dim());
+    if crumb.segments.is_empty() {
+        return;
+    }
+    let mut line = String::new();
+    if crumb.elided {
+        line.push_str(crate::breadcrumb::ELLIPSIS);
+    }
+    for (i, (_, t)) in crumb.segments.iter().enumerate() {
+        if i > 0 {
+            line.push_str(crate::breadcrumb::SEP);
+        }
+        line.push_str(t);
+    }
+    let x = app.text_x_now();
+    buf.set_stringn(x, 0, &line, app.text_w() as usize, theme::dim());
+}
+
 fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
     // Geometry from `home::picker_geometry`, which `Home::picker_row_at`
     // inverts to turn a click into a directory. One derivation, both ways.
@@ -1413,6 +1443,44 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
         t.draw(|f| draw(f, app)).unwrap();
         t.backend().buffer().clone()
+    }
+
+    #[test]
+    fn the_breadcrumb_band_paints_the_path_and_a_rule() {
+        let src = "# Top\n\nintro\n\n## Mid\n\nbody one\n\nbody two\n\nbody three\n";
+        let mut app = App::new("t.md".into(), Document::parse(src), 40, 8);
+        // Scroll until "body two" is the top visible content.
+        while {
+            let b = app.layout.block_at_row(app.view.scroll_row);
+            let n = app.doc.node_for_block(b);
+            !app.doc.text[n.doc.start as usize..n.doc.end as usize].starts_with("body two")
+        } {
+            crate::app::update(
+                &mut app,
+                crate::action::Action::Scroll(crate::action::Span::Line, 1),
+            );
+        }
+        let buf = buffer_of(&app, 40, 8);
+        assert!(
+            line(&buf, 0).contains("Top ▸ Mid"),
+            "crumb row: {:?}",
+            line(&buf, 0)
+        );
+        assert!(
+            line(&buf, 1).contains("───"),
+            "rule row: {:?}",
+            line(&buf, 1)
+        );
+        assert!(
+            !line(&buf, 1).contains("body"),
+            "the rule row carries no text"
+        );
+
+        // Band off: classic geometry, blank top margin.
+        app.breadcrumb = false;
+        app.on_resize(40, 8);
+        let buf = buffer_of(&app, 40, 8);
+        assert_eq!(line(&buf, 0), "", "top margin back to blank");
     }
 
     fn frame_of(src: &str, cols: u16, rows: u16) -> Buffer {
