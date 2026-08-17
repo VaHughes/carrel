@@ -197,6 +197,7 @@ The rules that keep the second frontend possible are enforced mechanically:
       estimate, and a home screen you can click
 - [x] stdin/pager mode — pipe in, stream as it arrives, keep your place
 - [x] A sticky heading breadcrumb: the enclosing sections, pinned while you scroll
+- [x] Section folding — `za`/`zM`/`zR` and click-a-heading; search always unfolds its target
 - [x] Packaging: Fedora COPR, the shell installer, crates.io
 - [ ] Packaging, remaining: AUR (blocked on Arch), Homebrew, `.deb`, winget
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**

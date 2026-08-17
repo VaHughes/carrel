@@ -4,6 +4,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Section folding.** `za` folds the section you're in behind its heading; `zM` folds
+  everything — the document becomes its own table of contents — and `zR` opens it all
+  back up. Clicking a heading toggles its fold too. A folded heading wears a dim `▸`
+  and a trailing `…`; everything inside it, nested sections included, takes no rows.
+  **A fold never hides anything from search**: matches inside folded sections still
+  count, and jumping to one — or following a link, an outline entry, or a `#fragment` —
+  unfolds its way there. Esc does not unfold; folds are deliberate.
 - **A sticky heading breadcrumb.** Scroll deep into a long document and the enclosing
   sections stay pinned atop the page — `The Book ▸ Chapter One ▸ Detail` — with a rule
   under them, so "where am I" always has an answer. Too narrow a terminal drops the
