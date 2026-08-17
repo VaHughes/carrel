@@ -124,6 +124,7 @@ unknown keys and `#` comments are ignored.
 | `max_width` | `90` | The reading measure: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
 | `theme` | `terminal` | Palette name — the default inherits your terminal's own colours. `T` cycles all 17 in the app and saves your choice. |
 | `hints` | `true` | The lamplight hint row along the bottom. `H` toggles it. |
+| `breadcrumb` | `true` | The section path pinned atop the page while you scroll — `The Book ▸ Chapter ▸ Detail` — with a rule under it. `B` toggles it. Documents with no headings never show one. |
 | `root` | — | The directory the home screen lists. `d` picks one in the app. |
 
 ```ini
@@ -195,6 +196,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] The reading desk begins: a 90-column measure with centred prose, a time-remaining
       estimate, and a home screen you can click
 - [x] stdin/pager mode — pipe in, stream as it arrives, keep your place
+- [x] A sticky heading breadcrumb: the enclosing sections, pinned while you scroll
 - [x] Packaging: Fedora COPR, the shell installer, crates.io
 - [ ] Packaging, remaining: AUR (blocked on Arch), Homebrew, `.deb`, winget
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**

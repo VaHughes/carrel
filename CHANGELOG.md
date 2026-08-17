@@ -4,6 +4,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A sticky heading breadcrumb.** Scroll deep into a long document and the enclosing
+  sections stay pinned atop the page — `The Book ▸ Chapter One ▸ Detail` — with a rule
+  under them, so "where am I" always has an answer. Too narrow a terminal drops the
+  outermost sections first behind an ellipsis; the heading itself is never shown doubled
+  when it is already the top visible line; documents with no headings never show a band
+  at all. `B` toggles it live and the choice persists (`breadcrumb` in the config,
+  default on).
 - **Groundwork for the breadcrumb and section folding**: the core can now answer "which
   sections enclose this position" and "where does this section end" — derived from heading
   levels on demand, so both future features will agree on what a section is. No visible
