@@ -50,6 +50,107 @@ fn script_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// Like [`pty_run`], but the whole shell command inside the pty is given —
+/// so a document pipe can feed the binary while keys arrive via the pty
+/// (crossterm falls back to `/dev/tty` when stdin is not a terminal).
+fn pty_run_cmd(cmd_in_pty: &str, keys: &str, delay: &str, dir: &Path) -> String {
+    let out = dir.join("pty-capture");
+    let cfg = dir.join("cfg");
+    let state = dir.join("state");
+    let cmd = format!(
+        "( sleep {delay}; printf '{keys}' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' \
+         script -qec 'stty rows 20 cols 76; {cmd_in_pty}' '{}' >/dev/null 2>&1",
+        cfg.display(),
+        state.display(),
+        out.display(),
+    );
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(dir)
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    std::fs::read_to_string(&out).unwrap_or_default()
+}
+
+#[test]
+fn a_piped_document_enters_the_tui_and_leaves_it() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let cap = pty_run_cmd(
+        &format!("sh -c \"printf \\\"# Piped\\n\\nhello stream\\n\\\" | {bin}\""),
+        "q",
+        "1",
+        d.path(),
+    );
+    assert!(cap.contains("\u{1b}[?1049h"), "enters the alternate screen");
+    assert!(cap.contains("\u{1b}[?1049l"), "and leaves it");
+    assert!(cap.contains("Piped"), "renders the piped heading");
+    assert!(cap.contains("(stdin"), "the label says where it came from");
+}
+
+#[test]
+fn a_slow_producer_streams_into_a_live_reader() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let cap = pty_run_cmd(
+        &format!(
+            "sh -c \"( printf \\\"# One\\n\\n\\\"; sleep 2; printf \\\"two arrived\\n\\\" ) | {bin}\""
+        ),
+        "q",
+        "3",
+        d.path(),
+    );
+    assert!(cap.contains("One"), "the first chunk painted");
+    assert!(
+        cap.contains("two arrived"),
+        "the second chunk landed in the live reader"
+    );
+    assert!(cap.contains("\u{1b}[?1049l"), "and it exits cleanly");
+}
+
+#[test]
+fn dash_on_a_terminal_refuses_with_a_note() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    // stdin IS the pty here: `carrel -` must refuse rather than wait on a
+    // pipe that is really a keyboard. The pty merges stderr into the
+    // capture, and `script` propagates nothing useful, so the exit code is
+    // echoed into the stream instead of asserted on the harness.
+    let out = d.path().join("cap");
+    let cmd = format!(
+        "XDG_CONFIG_HOME='{0}' XDG_STATE_HOME='{0}' \
+         script -qec 'stty rows 20 cols 76; {bin} - ; echo RC=$?' '{1}' >/dev/null 2>&1",
+        d.path().display(),
+        out.display(),
+    );
+    Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .status()
+        .expect("sh runs");
+    let cap = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(
+        cap.contains("stdin is a terminal"),
+        "the refusal names the reason: {cap}"
+    );
+    assert!(cap.contains("RC=1"), "and exits nonzero: {cap}");
+}
+
 #[test]
 fn the_reader_enters_the_alternate_screen_paints_and_leaves() {
     if !script_available() {
