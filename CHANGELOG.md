@@ -7,6 +7,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - Packaging recipes stamped for 2026.8.17: the COPR spec, the AUR PKGBUILDs and
   `.SRCINFO`, with `carrel-bin` checksums filled from the real release artifacts —
   the first archives that ship the man page and completions.
+- A picker test no longer fails when the build directory is deeper than the
+  overlay is wide (found by the COPR builder's `/builddir/...` tree): the test
+  asserted every painted path in full, where the painter's actual contract is
+  to show as much of the path as fits. The test now pins that contract, long
+  path included.
 
 ## 2026.8.17
 
