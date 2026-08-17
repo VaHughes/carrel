@@ -55,6 +55,11 @@ pub fn of(app: &App) -> Footer {
     if app.matches.is_some() {
         return f('●', "matches", keys::HINT_MATCHES);
     }
+    // Ambient, not a mode: every mode above outranks it, and the keys are
+    // the ordinary reading set — only the lamp says content is arriving.
+    if app.streaming {
+        return f('◉', "streaming", keys::HINT_READING);
+    }
     f('●', "reading", keys::HINT_READING)
 }
 
@@ -67,6 +72,24 @@ mod tests {
 
     fn reader() -> App {
         App::new("t.md".into(), Document::parse("# T\n\nneedle body"), 40, 12)
+    }
+
+    #[test]
+    fn a_streaming_document_says_so_until_eof() {
+        let mut a = reader();
+        a.streaming = true;
+        let f = of(&a);
+        assert_eq!((f.bulb, f.word), ('◉', "streaming"));
+        assert_eq!(f.hints, keys::HINT_READING, "same keys, different weather");
+
+        // A mode still outranks the ambient stream…
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        assert_eq!(of(&a).word, "searching");
+        update(&mut a, Action::SearchKey(SearchKey::Cancel));
+
+        // …and EOF hands the lamp back to reading.
+        a.streaming = false;
+        assert_eq!(of(&a).word, "reading");
     }
 
     #[test]
