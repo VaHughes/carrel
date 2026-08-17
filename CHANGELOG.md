@@ -20,6 +20,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A nixpkgs package, prepared.** `contrib/packaging/carrel-package.nix` is the
   by-name package ready for a nixpkgs PR, minus the two hashes that need a machine
   with nix to compute.
+- **README claims audited against the field.** Ten shipping terminal markdown
+  readers were driven through the same resize-and-reflow search test carrel passes.
+  One other reader keeps its matches intact, so "no shipping tool does this" was an
+  overclaim and now reads "most readers lose or shift matches"; a stale star count
+  became a hedge that won't age.
 
 ## 2026.8.17
 

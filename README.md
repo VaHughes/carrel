@@ -40,11 +40,11 @@ under `$XDG_CACHE_HOME/carrel` and holds file paths and modification times, noth
 
 ## Why
 
-Carrel targets what terminal markdown readers haven't shipped:
+Carrel targets what terminal markdown readers mostly haven't shipped:
 
 | | |
 |---|---|
-| **Search that survives reflow and resize** | No shipping tool does this. It is the headline feature and the hardest part. |
+| **Search that survives reflow and resize** | Matches are byte offsets into the document, so the match set is bit-for-bit identical at any width and a highlight follows its text across a rewrap. Most readers lose or shift matches when the window resizes; carrel can't, by construction. The headline feature and the hardest part. |
 | **A comfortable measure** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
 | **Clickable links** | Real OSC 8 hyperlinks, with graceful degradation. |
@@ -81,8 +81,9 @@ Prebuilt archives for every target are on the
 is prepared but waiting on Arch: AUR account registration is closed while the Arch team
 handles an ongoing supply-chain campaign against the repository. Distribution is a
 first-class goal, not an afterthought — the
-research was blunt about why: the best-featured terminal markdown renderer in existence today
-has **69 stars**, because nobody can find it. In this niche, packaging beats code.
+research was blunt about why: one of the best-featured terminal markdown renderers in
+existence has **under a hundred stars**, because nobody can find it. In this niche,
+packaging beats code.
 
 **Open `.md` files from your file manager** (optional, Linux): install
 [`contrib/carrel.desktop`](contrib/carrel.desktop) (it is also inside every release archive)
