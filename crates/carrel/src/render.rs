@@ -439,6 +439,13 @@ fn paint_rows(
         .saturating_sub(app.layout.row_start(block));
 
     while y < full.bottom() && block.get() < app.doc.block_count() {
+        // A folded-away block owns zero rows; it is not on the page. The
+        // layout already excluded it from every row computation — paint
+        // must walk past it or it would draw rows the layout never counted.
+        if app.layout.height(block) == 0 {
+            block = BlockIdx(block.0 + 1);
+            continue;
+        }
         // Each block paints into ITS OWN column — prose in the measure, a
         // wide table across the page. Shadowing `area` here means every
         // painter below sees the block's geometry and none of them has to
@@ -524,12 +531,34 @@ fn paint_rows(
         }
 
         app.layout.rows_for(&app.doc, block, &mut rows);
+        let first_y = y;
         for row in rows.iter().skip(skip as usize) {
             if y >= area.bottom() {
                 break;
             }
             paint_row(frame, app, block, row, area, y, links);
             y += 1;
+        }
+        // A folded heading wears its state: a gutter marker and a trailing
+        // ellipsis. Decoration only — neither is in the text, so search and
+        // selection never see them.
+        let node = app.doc.node_for_block(block);
+        if skip == 0
+            && y > first_y
+            && matches!(node.kind, NodeKind::Heading { .. })
+            && app.folded.contains(&node.id)
+        {
+            let buf = frame.buffer_mut();
+            buf.set_stringn(area.x.saturating_sub(2), first_y, "▸", 1, theme::dim());
+            let text = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
+            let after = area
+                .x
+                .saturating_add(node.indent)
+                .saturating_add(carrel_core::display_width(text))
+                .saturating_add(1);
+            if after < area.right() {
+                buf.set_stringn(after, first_y, "…", 1, theme::dim());
+            }
         }
         skip = 0;
         block = BlockIdx(block.0 + 1);
@@ -1443,6 +1472,32 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
         t.draw(|f| draw(f, app)).unwrap();
         t.backend().buffer().clone()
+    }
+
+    #[test]
+    fn a_folded_section_paints_its_marked_heading_and_none_of_its_body() {
+        let src = "# Alpha\n\nalpha body\n\n# Beta\n\nbeta body\n";
+        let mut app = App::new("t.md".into(), Document::parse(src), 40, 10);
+        app.breadcrumb = false;
+        let alpha = app
+            .doc
+            .nodes
+            .iter()
+            .find(|n| {
+                matches!(n.kind, NodeKind::Heading { .. })
+                    && &app.doc.text[n.doc.start as usize..n.doc.end as usize] == "Alpha"
+            })
+            .map(|n| n.id)
+            .unwrap();
+        app.folded.insert(alpha);
+        app.on_resize(40, 10);
+        let buf = buffer_of(&app, 40, 10);
+        let all: String = (0..10).map(|y| line(&buf, y) + "\n").collect();
+        assert!(all.contains("Alpha"), "{all}");
+        assert!(!all.contains("alpha body"), "folded body absent: {all}");
+        assert!(all.contains("beta body"), "the open section still paints");
+        assert!(all.contains('▸'), "the fold marker shows: {all}");
+        assert!(all.contains('…'), "and the suffix: {all}");
     }
 
     #[test]

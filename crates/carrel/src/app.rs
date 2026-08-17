@@ -1433,7 +1433,24 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
         Action::SelectRelease => {
-            app.sel_anchor = None;
+            let pressed = app.sel_anchor.take();
+            // A completed click — press and release with no drag, so no
+            // selection formed — on a heading toggles its fold. A fold
+            // marker looks clickable; the home list taught us what happens
+            // when things look clickable and are not.
+            if app.selection.is_none()
+                && let Some((byte, _)) = pressed
+            {
+                let node = app.doc.node_for_block(app.doc.block_at_doc(DocByte(byte)));
+                if matches!(node.kind, carrel_core::NodeKind::Heading { .. }) {
+                    let id = node.id;
+                    if !app.folded.remove(&id) {
+                        app.folded.insert(id);
+                    }
+                    app.after_fold_change();
+                    return Outcome::Redraw;
+                }
+            }
             copy_selection(app);
             Outcome::Redraw
         }
@@ -2845,6 +2862,40 @@ mod tests {
         a.reload_from(FOLD_SRC);
         assert!(a.folded.is_empty(), "a reload's ids indexed the old parse");
         assert_eq!(a.layout.total_rows(), all);
+    }
+
+    #[test]
+    fn a_completed_click_on_a_heading_toggles_its_fold() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        let alpha = heading_id(&a, "Alpha");
+        let at = a.doc.nodes[alpha.0 as usize].doc.start;
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        assert!(a.folded.contains(&alpha), "click folds");
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        assert!(!a.folded.contains(&alpha), "click again unfolds");
+    }
+
+    #[test]
+    fn a_drag_from_a_heading_still_selects_and_never_folds() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        let alpha = heading_id(&a, "Alpha");
+        let at = a.doc.nodes[alpha.0 as usize].doc.start;
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectDrag((at + 3, at + 4)));
+        update(&mut a, Action::SelectRelease);
+        assert!(a.selection.is_none() || a.folded.is_empty());
+        assert!(a.folded.is_empty(), "a drag is a selection, not a fold");
+    }
+
+    #[test]
+    fn a_click_on_plain_text_still_folds_nothing() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        let at = u32::try_from(a.doc.text.find("alpha one").unwrap()).unwrap();
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        assert!(a.folded.is_empty());
     }
 
     #[test]
