@@ -149,10 +149,21 @@ fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
     run_stdin_or_fallback()
 }
 
-/// The streaming TUI arrives in the next commit; until then a piped
-/// document with a terminal renders plain, which is correct if austere.
+/// The streaming TUI, or — where no tty can be opened at all (a truly
+/// detached environment) — the plain fallback, so the spin-at-EOF failure
+/// mode from the gotchas stays impossible: we never enter the event loop
+/// without a working tty source.
 fn run_stdin_or_fallback() -> ExitCode {
-    print_plain_stdin(80)
+    let rx = carrel::stream::spawn();
+    if let Ok(()) = run_stdin(&rx) {
+        ExitCode::SUCCESS
+    } else {
+        // The reader thread owns stdin now; collect through its channel
+        // — it reads to EOF regardless, so this is the whole document.
+        let src: String = rx.iter().collect();
+        print!("{}", carrel::plain::render(&Document::parse(&src), 80));
+        ExitCode::SUCCESS
+    }
 }
 
 /// `--plain -`: piped input as linear text at a width.
@@ -555,9 +566,9 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
 
     // Protocol + font detection queries the terminal, so it must happen
     // before the alternate screen swallows the replies.
-    let mut images = Images::detect();
+    let images = Images::detect();
 
-    let mut terminal = ratatui::init();
+    let terminal = ratatui::init();
     let _guard = TerminalGuard::engage_mouse();
 
     let size = terminal.size()?;
@@ -579,6 +590,18 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
     // saved reading position needs restoring explicitly. Its note outranks
     // the theme note — the theme is only news when it failed to load.
     app.restore_position();
+    run_loop(terminal, app, images, None)
+}
+
+/// The reader's event loop, shared by the file entry (`run`) and the piped
+/// entry (`run_stdin`). `stream` is the stdin channel when the document is
+/// arriving live; `None` for a file.
+fn run_loop(
+    mut terminal: ratatui::DefaultTerminal,
+    mut app: App,
+    mut images: Images,
+    mut stream: Option<&Receiver<String>>,
+) -> std::io::Result<()> {
     let mut keys = Keys::new();
 
     let mut pending: Option<(u16, u16)> = None;
@@ -643,6 +666,7 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
         }
 
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
+        poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
 
         if deadline.is_some_and(|d| Instant::now() >= d)
             && let Some((w, h)) = pending.take()
@@ -652,6 +676,81 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Drain the stdin channel: one re-parse per wake no matter how many chunks
+/// arrived, and only while the piped document is the one on screen — after
+/// following a link out, the text keeps accumulating in `app.piped` and the
+/// `Ctrl-O` return re-parses it. Disconnect is EOF and flips the label.
+fn poll_stream(
+    stream: &mut Option<&Receiver<String>>,
+    app: &mut App,
+    images: &mut Images,
+    diagrams: &mut Diagrams,
+) {
+    use std::sync::mpsc::TryRecvError;
+    let Some(rx) = *stream else { return };
+    let mut buf = app.piped.take().unwrap_or_default();
+    let mut grew = false;
+    let mut done = false;
+    loop {
+        match rx.try_recv() {
+            Ok(chunk) => {
+                if buf.len() + chunk.len() >= u32::MAX as usize {
+                    app.set_note("stdin exceeds 4 GiB; showing what fits".into());
+                    done = true;
+                    break;
+                }
+                buf.push_str(&chunk);
+                grew = true;
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                done = true;
+                break;
+            }
+        }
+    }
+    if grew && app.file.is_none() {
+        app.reload_from(&buf);
+        images.for_file = None;
+        diagrams.for_file = None;
+    }
+    app.piped = Some(buf);
+    if done {
+        app.streaming = false;
+        if app.file.is_none() {
+            app.path = "(stdin)".into();
+        }
+        *stream = None;
+    }
+}
+
+/// The piped-document reader: the TUI opens immediately and content streams
+/// in. Keys arrive through `/dev/tty` — crossterm's own fallback when stdin
+/// is not a terminal — so this fails cleanly where no tty exists.
+fn run_stdin(rx: &Receiver<String>) -> std::io::Result<()> {
+    let theme_note = startup_theme();
+    let images = Images::detect();
+    let terminal = ratatui::try_init()?;
+    let _guard = TerminalGuard::engage_mouse();
+
+    let size = terminal.size()?;
+    let mut app = App::new(
+        "(stdin — streaming…)".into(),
+        Document::parse(""),
+        size.width,
+        size.height,
+    );
+    app.streaming = true;
+    app.piped = Some(String::new());
+    app.note = theme_note;
+    app.config_dir = config::config_dir();
+    // No state_dir: a pathless document has no position to resume or save.
+    app.hints = config::load_hints().unwrap_or(true);
+    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    app.on_resize(app.cols, app.rows);
+    run_loop(terminal, app, images, Some(rx))
 }
 
 /// One reload check per wake: on change, re-parse in place and restart the
