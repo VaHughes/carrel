@@ -11,7 +11,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   overlay is wide (found by the COPR builder's `/builddir/...` tree): the test
   asserted every painted path in full, where the painter's actual contract is
   to show as much of the path as fits. The test now pins that contract, long
-  path included.
+  path included. The COPR spec carries the fix as a patch on the v2026.8.17
+  tarball (release 2), to be dropped at the next release.
 
 ## 2026.8.17
 
