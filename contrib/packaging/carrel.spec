@@ -1,7 +1,7 @@
 # Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.8.16
+Version:        2026.8.17
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -47,6 +47,11 @@ cargo test --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Mon Aug 17 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.17-1
+- A 90-column reading measure with full-bleed tables and code, clickable
+  home list and directory picker, time remaining in the status bar, and
+  Esc clears accepted-search highlights.
+
 * Sun Aug 16 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.16-1
 - Frontmatter as a metadata card, LaTeX math, definition lists, --version,
   man page and shell completions, and the Q16 conformance suite.

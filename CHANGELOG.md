@@ -2,6 +2,12 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- Packaging recipes stamped for 2026.8.17: the COPR spec, the AUR PKGBUILDs and
+  `.SRCINFO`, with `carrel-bin` checksums filled from the real release artifacts —
+  the first archives that ship the man page and completions.
+
 ## 2026.8.17
 
 - **A comfortable reading measure.** Prose now wraps at 90 columns and centres on the page

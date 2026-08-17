@@ -1,10 +1,10 @@
-# BLOCKED until a release is built with the widened dist include list: the
-# man page and completions were not in the v2026.8.16 archive. The other two
-# recipes build from the SOURCE tarball and are unaffected.
 # AUR package: carrel-bin (repacks the static musl release artifact).
+# The v2026.8.17 archive is the first built with the widened dist include
+# list (man page + completions present — verified against the real artifact).
+# Publishing still waits on AUR account registration reopening.
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel-bin
-pkgver=2026.8.12
+pkgver=2026.8.17
 pkgrel=1
 pkgdesc="A quiet place to read your markdown — a terminal markdown reader (prebuilt)"
 arch=('x86_64' 'aarch64')
@@ -14,13 +14,13 @@ provides=('carrel')
 conflicts=('carrel')
 source_x86_64=("$url/releases/download/v$pkgver/carrel-x86_64-unknown-linux-musl.tar.xz")
 source_aarch64=("$url/releases/download/v$pkgver/carrel-aarch64-unknown-linux-musl.tar.xz")
-sha256sums_x86_64=('SKIP') # fill from the release's .sha256 at publish time
-sha256sums_aarch64=('SKIP')
+sha256sums_x86_64=('4c979059f118cfa136394528a679d41433cfc9ea33083b3969467a7ce5051e65')
+sha256sums_aarch64=('62079b174f36b8b4c722ed29a3890115c7bacb42feb0d1167be99be73fe3a153')
 
 # dist FLATTENS every `include` entry to the archive root: `contrib/carrel.1`
-# arrives as `carrel.1`. Verified against the real v2026.8.16 artifact — the
-# earlier `$dir/contrib/...` paths did not exist and would have failed the
-# build. Requires a release built with the widened include list.
+# arrives as `carrel.1`. The flat paths below were verified against the real
+# v2026.8.17 artifact — the earlier `$dir/contrib/...` paths did not exist
+# and would have failed the build.
 package() {
   local dir="carrel-${CARCH}-unknown-linux-musl"
   install -Dm755 "$dir/carrel" "$pkgdir/usr/bin/carrel"
