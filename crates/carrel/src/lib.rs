@@ -13,6 +13,7 @@
 
 pub mod action;
 pub mod app;
+pub mod breadcrumb;
 pub mod config;
 pub mod diagrams;
 pub mod footer;
