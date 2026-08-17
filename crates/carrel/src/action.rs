@@ -93,6 +93,14 @@ pub enum Action {
     /// `B`: show / hide the breadcrumb band. Persisted like the hints.
     /// Only a document with headings paints one either way.
     BreadcrumbToggle,
+    /// `za`: fold or unfold the innermost section at the top of the view —
+    /// the same byte the breadcrumb derives from, so the two agree on
+    /// "current section".
+    FoldToggle,
+    /// `zM`: fold every section — the document as its own table of contents.
+    FoldAll,
+    /// `zR`: open everything back up.
+    UnfoldAll,
     /// Mouse press in the text area: the `(start, end)` doc bytes of the
     /// grapheme cluster under the pointer. Replaces any existing selection;
     /// selects nothing until the pointer moves. The frontend converts

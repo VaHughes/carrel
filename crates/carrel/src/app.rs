@@ -112,6 +112,10 @@ pub struct App {
     /// The accumulated piped document, retained so `Ctrl-O` can come back to
     /// it after following a link out — a pipe has no path to re-read.
     pub piped: Option<String>,
+    /// Folded heading ids. Doc-space and width-independent, so fold state
+    /// cannot be invalidated by reflow, by construction. Cleared on reload —
+    /// the ids indexed the old parse (the selection precedent).
+    pub folded: std::collections::HashSet<carrel_core::NodeId>,
     /// Where we came from: `(file, anchor)` pairs. `Ctrl-O` pops.
     pub history: Vec<(PathBuf, u32)>,
     /// The link `Tab` has selected, if any.
@@ -316,6 +320,7 @@ impl App {
             piped: None,
             breadcrumb: true,
             has_headings,
+            folded: std::collections::HashSet::new(),
             history: Vec::new(),
             selected_link: None,
             image_dims: HashMap::new(),
@@ -438,6 +443,7 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
+        self.folded.clear();
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -486,6 +492,7 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
+        self.folded.clear();
         self.selection = None;
         self.sel_anchor = None;
         self.selected_link = None;
@@ -514,6 +521,93 @@ impl App {
             .as_deref()
             .and_then(Path::parent)
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    }
+
+    /// The blocks a fold hides: everything strictly inside a folded
+    /// heading's span, nested headings included. Derived per call from
+    /// `folded` × the section index — never stored.
+    fn hidden_blocks(&self) -> std::collections::HashSet<BlockIdx> {
+        if self.folded.is_empty() {
+            return std::collections::HashSet::new();
+        }
+        let spans: Vec<(u32, u32)> = self
+            .folded
+            .iter()
+            .map(|&id| {
+                let n = &self.doc.nodes[id.0 as usize];
+                (n.doc.end, self.doc.section_end(id))
+            })
+            .collect();
+        (0..self.doc.block_count())
+            .map(|i| BlockIdx(i as u32))
+            .filter(|&b| {
+                let start = self.doc.node_for_block(b).doc.start;
+                spans.iter().any(|&(from, to)| start > from && start < to)
+            })
+            .collect()
+    }
+
+    /// Unfold every folded section that hides `byte`. Returns whether
+    /// anything changed. A byte inside a folded heading's own text is
+    /// visible already, so the heading itself does not count.
+    fn unfold_to(&mut self, byte: u32) -> bool {
+        let mut changed = false;
+        for id in self.doc.section_path(byte) {
+            if byte > self.doc.nodes[id.0 as usize].doc.end && self.folded.remove(&id) {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// The one gate every byte-targeted jump goes through: **anything that
+    /// reveals a byte unfolds its way there** — search, outline, links,
+    /// fragments, back. A fold must never make a destination unreachable.
+    pub fn reveal_byte(&mut self, byte: u32, h: u16, at: crate::action::Where) {
+        if self.unfold_to(byte) {
+            self.relayout();
+        }
+        self.view.reveal(&self.doc, &self.layout, byte, h, at);
+    }
+
+    /// Re-derive the page after `folded` changed: if the anchor's block is
+    /// now hidden, the reader is "at" the folded heading — pull the anchor
+    /// to it before restoring, or restore would land on an arbitrary
+    /// neighbour of a row that no longer exists.
+    fn after_fold_change(&mut self) {
+        self.relayout();
+        let b = self
+            .doc
+            .block_at_doc(carrel_core::DocByte(self.view.anchor));
+        if self.layout.height(b) == 0 {
+            let anchor = self.view.anchor;
+            if let Some(&id) = self
+                .doc
+                .section_path(anchor)
+                .iter()
+                .rev()
+                .find(|id| self.folded.contains(id))
+            {
+                self.view.anchor = self.doc.nodes[id.0 as usize].doc.start;
+            }
+            let h = self.text_h();
+            self.view.restore(&self.doc, &self.layout, h);
+        }
+    }
+
+    /// `za`'s target: the innermost section for the top-visible byte — the
+    /// breadcrumb's own byte, except a heading at the top of the view
+    /// targets itself (the breadcrumb pops it; a fold should grab it).
+    fn fold_target(&self) -> Option<carrel_core::NodeId> {
+        let b = self.layout.block_at_row(self.view.scroll_row);
+        if b.get() >= self.doc.block_count() {
+            return None;
+        }
+        let node = self.doc.node_for_block(b);
+        if matches!(node.kind, carrel_core::NodeKind::Heading { .. }) {
+            return Some(node.id);
+        }
+        self.doc.section_path(node.doc.start).last().copied()
     }
 
     /// Resume the saved reading position for the open file, silently, with a
@@ -827,8 +921,14 @@ impl App {
                 }
             }
         }
-        self.layout =
-            Layout::with_measure(&self.doc, w, self.text_w(), block_rows, self.wrap_tables);
+        self.layout = Layout::with_hidden(
+            &self.doc,
+            w,
+            self.text_w(),
+            block_rows,
+            self.wrap_tables,
+            &self.hidden_blocks(),
+        );
         self.view.restore(&self.doc, &self.layout, self.text_h());
         // Matches and `matches.current` are untouched. That is the whole point.
     }
@@ -989,9 +1089,9 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
             if let Some(here) = app.file.clone() {
                 app.history.push((here, app.view.anchor));
             }
-            let row = app.layout.row_start(block);
+            let byte = app.doc.node_for_block(block).doc.start;
             let h = app.text_h();
-            app.view.scroll_to(&app.doc, &app.layout, row, h);
+            app.reveal_byte(byte, h, Where::Top);
             Outcome::Redraw
         }
         Action::Quit => Outcome::Quit,
@@ -1277,6 +1377,34 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        Action::FoldToggle => {
+            let Some(id) = app.fold_target() else {
+                app.note = Some("no section here to fold".into());
+                return Outcome::Redraw;
+            };
+            if !app.folded.remove(&id) {
+                app.folded.insert(id);
+            }
+            app.after_fold_change();
+            Outcome::Redraw
+        }
+        Action::FoldAll => {
+            app.folded = app
+                .doc
+                .nodes
+                .iter()
+                .filter(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }))
+                .map(|n| n.id)
+                .collect();
+            app.after_fold_change();
+            Outcome::Redraw
+        }
+        Action::UnfoldAll => {
+            app.folded.clear();
+            app.after_fold_change();
+            Outcome::Redraw
+        }
+
         Action::Dismiss => {
             app.selected_link = None;
             app.selection = None;
@@ -1371,7 +1499,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             else {
                 return Outcome::Idle;
             };
-            app.view.reveal(&app.doc, &app.layout, byte, h, at);
+            app.reveal_byte(byte, h, at);
             Outcome::Redraw
         }
 
@@ -1425,8 +1553,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             };
             m.current = Some(cur);
             let byte = m.ranges[cur].start;
-            app.view
-                .reveal(&app.doc, &app.layout, byte, h, Where::Middle);
+            app.reveal_byte(byte, h, Where::Middle);
             Outcome::Redraw
         }
 
@@ -1506,6 +1633,9 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
     // A same-document entry (a fragment jump) restores the position without
     // re-reading the file — nothing about the document changed.
     if app.file.as_deref() == Some(prev.as_path()) {
+        if app.unfold_to(anchor) {
+            app.relayout();
+        }
         app.view.anchor = anchor;
         app.view.restore(&app.doc, &app.layout, h);
         return Outcome::Redraw;
@@ -1564,8 +1694,7 @@ fn link_step(app: &mut App, n: i32, h: u16) -> Outcome {
     let id = LinkId(u32::try_from(cur).unwrap_or(0));
     app.selected_link = Some(id);
     if let Some(pos) = app.link_pos(id) {
-        app.view
-            .reveal(&app.doc, &app.layout, pos, h, Where::Middle);
+        app.reveal_byte(pos, h, Where::Middle);
     }
     Outcome::Redraw
 }
@@ -1736,11 +1865,8 @@ fn jump_to_fragment(app: &mut App, frag: &str) -> bool {
         app.note = Some(format!("no such section: #{frag}"));
         return false;
     };
-    let row = app
-        .layout
-        .row_start(app.doc.block_at_doc(carrel_core::DocByte(at)));
     let h = app.text_h();
-    app.view.scroll_to(&app.doc, &app.layout, row, h);
+    app.reveal_byte(at, h, Where::Top);
     true
 }
 
@@ -2629,6 +2755,109 @@ mod tests {
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
         assert_eq!(a.note.as_deref(), Some("reloaded"));
+    }
+
+    const FOLD_SRC: &str = "\
+# Alpha\n\nalpha one\n\nalpha two\n\n## Nested\n\nnested body\n\n# Beta\n\nbeta body with needle\n";
+
+    fn heading_id(a: &App, name: &str) -> carrel_core::NodeId {
+        a.doc
+            .nodes
+            .iter()
+            .find(|n| {
+                matches!(n.kind, carrel_core::NodeKind::Heading { .. })
+                    && &a.doc.text[n.doc.start as usize..n.doc.end as usize] == name
+            })
+            .map(|n| n.id)
+            .expect("heading")
+    }
+
+    #[test]
+    fn folding_a_section_hides_its_rows_but_keeps_the_heading() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        let all = a.layout.total_rows();
+        let alpha = heading_id(&a, "Alpha");
+        a.folded.insert(alpha);
+        a.relayout();
+        assert!(a.layout.total_rows() < all, "the section's rows are gone");
+        let hb = a.doc.block_at_doc(carrel_core::DocByte(
+            a.doc.nodes[alpha.0 as usize].doc.start,
+        ));
+        assert!(a.layout.height(hb) > 0, "the folded heading stays visible");
+        // Nested's heading is inside Alpha's span: hidden along with it.
+        let nested = heading_id(&a, "Nested");
+        let nb = a.doc.block_at_doc(carrel_core::DocByte(
+            a.doc.nodes[nested.0 as usize].doc.start,
+        ));
+        assert_eq!(a.layout.height(nb), 0, "a nested heading folds away too");
+    }
+
+    #[test]
+    fn folding_the_current_section_pulls_the_anchor_to_the_heading() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 6);
+        let at = u32::try_from(a.doc.text.find("alpha two").unwrap()).unwrap();
+        a.reveal_byte(at, 6, Where::Top);
+        update(&mut a, Action::FoldToggle);
+        let alpha = heading_id(&a, "Alpha");
+        assert!(a.folded.contains(&alpha), "za folded the enclosing section");
+        assert_eq!(
+            a.view.anchor, a.doc.nodes[alpha.0 as usize].doc.start,
+            "the anchor now sits on the heading"
+        );
+    }
+
+    #[test]
+    fn a_search_jump_unfolds_its_way_into_a_folded_section() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        update(&mut a, Action::FoldAll);
+        assert!(!a.folded.is_empty());
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        for c in "needle".chars() {
+            update(&mut a, Action::SearchKey(SearchKey::Char(c)));
+        }
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        let m = a.matches.as_ref().expect("matches live");
+        let byte = m.ranges[m.current.unwrap()].start;
+        let b = a.doc.block_at_doc(carrel_core::DocByte(byte));
+        assert!(
+            a.layout.height(b) > 0,
+            "the jump unfolded the match's section"
+        );
+        let beta = heading_id(&a, "Beta");
+        assert!(!a.folded.contains(&beta), "Beta opened");
+        let alpha = heading_id(&a, "Alpha");
+        assert!(
+            a.folded.contains(&alpha),
+            "Alpha stays folded — not its path"
+        );
+    }
+
+    #[test]
+    fn unfold_all_restores_every_row_and_reload_clears_folds() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        let all = a.layout.total_rows();
+        update(&mut a, Action::FoldAll);
+        assert!(a.layout.total_rows() < all);
+        update(&mut a, Action::UnfoldAll);
+        assert_eq!(a.layout.total_rows(), all);
+
+        update(&mut a, Action::FoldAll);
+        a.reload_from(FOLD_SRC);
+        assert!(a.folded.is_empty(), "a reload's ids indexed the old parse");
+        assert_eq!(a.layout.total_rows(), all);
+    }
+
+    #[test]
+    fn za_outside_any_section_notes_instead_of_folding() {
+        let mut a = App::new(
+            "f.md".into(),
+            Document::parse("plain text, no headings anywhere\n"),
+            40,
+            6,
+        );
+        update(&mut a, Action::FoldToggle);
+        assert!(a.folded.is_empty());
+        assert!(a.note.is_some(), "the note says why nothing happened");
     }
 
     #[test]
