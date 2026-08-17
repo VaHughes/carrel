@@ -9,8 +9,14 @@ carrel \- a quiet place to read your markdown
 .I FILE
 .RI [ PATTERN ]
 .br
+.B cmd | carrel
+.RB [ \- " [" PATTERN ]]
+.br
 .B carrel \-\-plain
 .IR FILE " [" WIDTH ]
+.br
+.B carrel \-\-plain \-
+.RI [ WIDTH ]
 .br
 .B carrel \-\-help
 .br
@@ -32,6 +38,14 @@ Given a
 and a
 .IR PATTERN ,
 it prints matching lines and exits.
+.PP
+Piped input opens the reader too:
+.B git show HEAD:README.md | carrel
+streams the document in as it arrives, so a slow producer paints
+immediately and your position and search matches hold while content lands.
+.B carrel \-
+forces stdin mode; with stdout also piped the document renders as plain
+text instead, so pipelines pass through.
 .SH OPTIONS
 .TP
 .B \-\-plain

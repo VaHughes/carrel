@@ -34,8 +34,11 @@ USAGE:
     carrel <DIR>                 the home screen, rooted at DIR
     carrel <FILE>                read a document
     carrel <FILE> <PATTERN>      print search results and exit
+    cmd | carrel                 read the pipe, streaming as it arrives
+    cmd | carrel - <PATTERN>     print search results for the pipe and exit
     carrel --plain <FILE> [W]    the document as plain text (screen readers,
                                  pipes; a bare pipe does this by default)
+    carrel --plain - [W]         piped input as plain text
     carrel --help
     carrel --version
 
@@ -71,6 +74,7 @@ fn main() -> ExitCode {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
+        [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
         [a] if a == "-h" || a == "--help" => {
             print!("{USAGE}");
@@ -80,7 +84,11 @@ fn main() -> ExitCode {
             println!("carrel {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        [a] if a == "-" => open_stdin(None, true),
+        [a, pattern] if a == "-" => open_stdin(Some(pattern), true),
         [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
+        [flag, a] if flag == "--plain" && a == "-" => print_plain_stdin(80),
+        [flag, a, w] if flag == "--plain" && a == "-" => print_plain_stdin(w.parse().unwrap_or(80)),
         [flag, file] if flag == "--plain" => print_plain(Path::new(file), 80),
         [flag, file, w] if flag == "--plain" => {
             let width = w.parse().unwrap_or(80);
@@ -90,6 +98,72 @@ fn main() -> ExitCode {
         [file, pattern] => open(Path::new(file), Some(pattern)),
         _ => {
             eprint!("{USAGE}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Read all of stdin, refusing at the 32-bit position ceiling exactly as
+/// `check_document_size` does for files.
+fn read_stdin_capped() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut src = String::new();
+    std::io::stdin()
+        .lock()
+        .take(u64::from(u32::MAX))
+        .read_to_string(&mut src)?;
+    if src.len() >= u32::MAX as usize {
+        return Err(std::io::Error::other(
+            "stdin exceeds 4 GiB; carrel positions are 32-bit byte offsets",
+        ));
+    }
+    Ok(src)
+}
+
+/// A document arriving on a pipe. `forced` is `carrel -`.
+fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
+    if std::io::stdin().is_terminal() {
+        debug_assert!(forced);
+        let _ = forced;
+        eprintln!("carrel: stdin is a terminal; pipe a document in or pass a file");
+        return ExitCode::FAILURE;
+    }
+    // A pattern means the non-interactive report, exactly as it does for
+    // files — stdout's tty-ness notwithstanding.
+    if let Some(p) = pattern {
+        return match read_stdin_capped() {
+            Ok(src) => {
+                report(Path::new("(stdin)"), &src, p);
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("carrel: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if !std::io::stdout().is_terminal() {
+        // Both ends piped: the Q17 rule — a pipe wants the document.
+        return print_plain_stdin(80);
+    }
+    run_stdin_or_fallback()
+}
+
+/// The streaming TUI arrives in the next commit; until then a piped
+/// document with a terminal renders plain, which is correct if austere.
+fn run_stdin_or_fallback() -> ExitCode {
+    print_plain_stdin(80)
+}
+
+/// `--plain -`: piped input as linear text at a width.
+fn print_plain_stdin(width: u16) -> ExitCode {
+    match read_stdin_capped() {
+        Ok(src) => {
+            print!("{}", carrel::plain::render(&Document::parse(&src), width));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("carrel: {e}");
             ExitCode::FAILURE
         }
     }
