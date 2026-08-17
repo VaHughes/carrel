@@ -26,6 +26,7 @@ pub mod plain;
 pub mod render;
 pub mod scan;
 pub mod state;
+pub mod stream;
 pub mod theme;
 pub mod view;
 pub mod wiki;
