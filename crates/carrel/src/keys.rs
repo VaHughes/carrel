@@ -55,6 +55,9 @@ impl Keys {
                 KeyCode::Char('z') => Some(Action::Recenter(Where::Middle)),
                 KeyCode::Char('t') => Some(Action::Recenter(Where::Top)),
                 KeyCode::Char('b') => Some(Action::Recenter(Where::Bottom)),
+                KeyCode::Char('a') => Some(Action::FoldToggle),
+                KeyCode::Char('M') => Some(Action::FoldAll),
+                KeyCode::Char('R') => Some(Action::UnfoldAll),
                 _ => None,
             };
         }
@@ -268,6 +271,8 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("Esc", "clear selection & search"),
     ("§", "view"),
     ("o", "outline: jump to a section"),
+    ("za", "fold / unfold this section"),
+    ("zM zR", "fold all / open all"),
     ("t", "tables: cards / wrapped"),
     ("m", "diagrams & math: art / source"),
     ("T", "cycle themes"),
@@ -579,6 +584,22 @@ mod tests {
         assert_eq!(
             m.map_home(code(KeyCode::Up), HomeMode::Picker, true),
             Some(Action::HomeMove(-1)),
+        );
+    }
+
+    #[test]
+    fn the_z_prefix_folds_za_zm_zr() {
+        let mut m = Keys::new();
+        assert_eq!(m.map(k('z'), false), None, "z waits");
+        assert_eq!(m.map(k('a'), false), Some(Action::FoldToggle));
+        m.map(k('z'), false);
+        assert_eq!(m.map(k('M'), false), Some(Action::FoldAll));
+        m.map(k('z'), false);
+        assert_eq!(m.map(k('R'), false), Some(Action::UnfoldAll));
+        assert_eq!(
+            m.map(k('a'), false),
+            None,
+            "a alone is nothing — the prefix was consumed"
         );
     }
 
