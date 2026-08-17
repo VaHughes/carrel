@@ -90,6 +90,9 @@ pub enum Action {
     /// `H`, or a click on the lamp: show / hide the lamplight hint footer.
     /// Persisted, so the choice survives relaunch.
     HintsToggle,
+    /// `B`: show / hide the breadcrumb band. Persisted like the hints.
+    /// Only a document with headings paints one either way.
+    BreadcrumbToggle,
     /// Mouse press in the text area: the `(start, end)` doc bytes of the
     /// grapheme cluster under the pointer. Replaces any existing selection;
     /// selects nothing until the pointer moves. The frontend converts

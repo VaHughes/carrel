@@ -83,6 +83,7 @@ impl Keys {
             KeyCode::Char('q') => Some(Action::CloseFile),
             KeyCode::Char('h') | KeyCode::F(1) => Some(Action::HelpToggle),
             KeyCode::Char('H') => Some(Action::HintsToggle),
+            KeyCode::Char('B') => Some(Action::BreadcrumbToggle),
             KeyCode::Char('m') => Some(Action::RenderedToggle),
 
             KeyCode::Char('j') | KeyCode::Down => Some(Action::Scroll(Span::Line, self.take())),
@@ -272,6 +273,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("T", "cycle themes"),
     ("h F1", "this help"),
     ("H", "hide / show the key hints"),
+    ("B", "hide / show the breadcrumb"),
     ("q", "close file (or quit)"),
     ("Q Ctrl-C", "quit"),
     ("§", "mouse"),
@@ -581,6 +583,17 @@ mod tests {
     }
 
     #[test]
+    fn capital_b_toggles_the_breadcrumb_in_the_reader_only() {
+        let mut m = Keys::new();
+        assert_eq!(m.map(k('B'), false), Some(Action::BreadcrumbToggle));
+        assert_eq!(
+            m.map(k('B'), true),
+            Some(Action::SearchKey(SearchKey::Char('B'))),
+            "while typing a search, B is a letter"
+        );
+    }
+
+    #[test]
     fn capital_h_toggles_hints_but_still_types_where_typing_goes_elsewhere() {
         let mut m = Keys::new();
         assert_eq!(m.map(k('H'), false), Some(Action::HintsToggle));
@@ -815,6 +828,7 @@ mod tests {
                 A::RenderedToggle => "m",
                 A::HelpToggle => "h F1",
                 A::HintsToggle => "H",
+                A::BreadcrumbToggle => "B",
                 A::OutlineToggle => "o",
                 A::Quit => "Q",
                 A::HomeMove(_) => "j k",

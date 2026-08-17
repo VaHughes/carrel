@@ -583,6 +583,7 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
     app.config_dir = config::config_dir();
     app.state_dir = carrel::state::state_dir();
     app.hints = config::load_hints().unwrap_or(true);
+    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
     app.on_resize(app.cols, app.rows);
@@ -748,6 +749,7 @@ fn run_stdin(rx: &Receiver<String>) -> std::io::Result<()> {
     app.config_dir = config::config_dir();
     // No state_dir: a pathless document has no position to resume or save.
     app.hints = config::load_hints().unwrap_or(true);
+    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
     app.on_resize(app.cols, app.rows);
     run_loop(terminal, app, images, Some(rx))
@@ -877,6 +879,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     app.config_dir = config::config_dir();
     app.state_dir = carrel::state::state_dir();
     app.hints = config::load_hints().unwrap_or(true);
+    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
     app.on_resize(app.cols, app.rows);

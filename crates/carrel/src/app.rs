@@ -880,6 +880,14 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.relayout(); // the reader's text height changes with the row
         return Outcome::Redraw;
     }
+    if let Action::BreadcrumbToggle = action {
+        app.breadcrumb = !app.breadcrumb;
+        if let Some(dir) = app.config_dir.as_deref() {
+            let _ = crate::config::save_breadcrumb_in(dir, app.breadcrumb);
+        }
+        app.relayout(); // the band's rows come from / return to the text
+        return Outcome::Redraw;
+    }
     // The help overlay owns the keyboard while it is up: scroll scrolls the
     // sheet, dismiss-shaped actions close it, everything else is inert — a
     // stray keystroke must not navigate the document underneath.
@@ -2621,6 +2629,25 @@ mod tests {
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
         assert_eq!(a.note.as_deref(), Some("reloaded"));
+    }
+
+    #[test]
+    fn toggling_the_breadcrumb_relayouts_and_persists_only_when_injected() {
+        let cfg = tempfile::tempdir().unwrap();
+        let mut a = App::new("x.md".into(), Document::parse("# H\n\nbody\n"), 40, 12);
+        a.config_dir = Some(cfg.path().into());
+        let tall = a.text_h();
+        update(&mut a, Action::BreadcrumbToggle);
+        assert!(!a.breadcrumb);
+        assert_eq!(a.text_h(), tall + 1, "the band's row comes back to text");
+        assert_eq!(
+            crate::config::load_breadcrumb_in(cfg.path()),
+            Some(false),
+            "the choice persists into the injected dir"
+        );
+        update(&mut a, Action::BreadcrumbToggle);
+        assert_eq!(a.text_h(), tall);
+        assert_eq!(crate::config::load_breadcrumb_in(cfg.path()), Some(true));
     }
 
     #[test]

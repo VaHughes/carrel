@@ -78,7 +78,7 @@ fn parse_key(text: &str, key: &str) -> Option<String> {
 ///
 /// With more than one key, "write only mine" done naively destroys the
 /// others — the original `save_root` rewrote the whole file. (Key count is
-/// now 3 — root, theme, hints — the top of the module-doc's stated TOML
+/// now five — root, theme, hints, `max_width`, breadcrumb — the top of the module-doc's stated TOML
 /// trigger zone; the format stays hand-rolled while every key is one flat
 /// string, and the trigger becomes real the moment one wants structure.)
 fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
@@ -144,6 +144,25 @@ pub fn save_hints_in(dir: &Path, on: bool) -> std::io::Result<()> {
     upsert_key_in(dir, "hints", if on { "true" } else { "false" })
 }
 
+/// The saved breadcrumb-band visibility. Absent means on.
+#[must_use]
+pub fn load_breadcrumb() -> Option<bool> {
+    load_breadcrumb_in(&config_dir()?)
+}
+
+#[must_use]
+pub fn load_breadcrumb_in(dir: &Path) -> Option<bool> {
+    parse_key(
+        &std::fs::read_to_string(dir.join("config")).ok()?,
+        "breadcrumb",
+    )
+    .map(|v| v != "false")
+}
+
+pub fn save_breadcrumb_in(dir: &Path, on: bool) -> std::io::Result<()> {
+    upsert_key_in(dir, "breadcrumb", if on { "true" } else { "false" })
+}
+
 /// The default reading measure, in columns.
 ///
 /// Typographic practice puts the comfortable measure at roughly 45–90
@@ -183,6 +202,20 @@ pub fn save_max_width_in(dir: &Path, w: u16) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breadcrumb_round_trip_and_default_on() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            load_breadcrumb_in(d.path()),
+            None,
+            "absent file: caller defaults on"
+        );
+        save_breadcrumb_in(d.path(), false).unwrap();
+        assert_eq!(load_breadcrumb_in(d.path()), Some(false));
+        save_breadcrumb_in(d.path(), true).unwrap();
+        assert_eq!(load_breadcrumb_in(d.path()), Some(true));
+    }
 
     #[test]
     fn hints_round_trip_and_default_on() {
