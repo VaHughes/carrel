@@ -98,6 +98,21 @@ xdg-mime default carrel.desktop text/markdown
 Windows support is planned (the port is scoped and small); until it lands, no Windows binaries
 are published rather than shipping ones that half-work.
 
+## Pipe into it
+
+Carrel is a pager for markdown:
+
+```bash
+gh pr view 128 | carrel
+git show HEAD:README.md | carrel
+an-agent --stream | carrel     # content appears as it arrives
+```
+
+`carrel -` forces stdin mode, and `cmd | carrel - pattern` prints a match report. Piping
+*out* still produces plain text, so `cmd | carrel | grep` behaves. While a producer is
+still writing, the reader is already open — and your position and search matches hold as
+content arrives, because positions never depend on the screen.
+
 ## Configuration
 
 Optional. Carrel writes `$XDG_CONFIG_HOME/carrel/config` (or `~/.config/carrel/config`) itself
@@ -179,6 +194,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Frontmatter cards, definition lists, LaTeX math as box art, a conformance suite
 - [x] The reading desk begins: a 90-column measure with centred prose, a time-remaining
       estimate, and a home screen you can click
+- [x] stdin/pager mode — pipe in, stream as it arrives, keep your place
 - [x] Packaging: Fedora COPR, the shell installer, crates.io
 - [ ] Packaging, remaining: AUR (blocked on Arch), Homebrew, `.deb`, winget
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**

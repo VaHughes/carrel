@@ -4,6 +4,16 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Pipe into it.** `gh pr view | carrel`, `git show HEAD:README.md | carrel` — a piped
+  document opens the reader, and it **streams**: a slow producer (an agent writing as it
+  thinks) paints immediately, content appends as it arrives, and your reading position and
+  search matches hold while it does, because positions never depend on the screen. The
+  footer lamp says `streaming` until the pipe closes. `carrel -` forces stdin mode,
+  `cmd | carrel - pattern` prints the match report, `carrel --plain - [W]` renders piped
+  input as plain text, and piping *out* still yields plain text so pipelines pass through.
+  Following a link out of a piped document and pressing `Ctrl-O` comes back to it, from
+  memory — a pipe has no path to re-read.
+
 - Packaging recipes stamped for 2026.8.17: the COPR spec, the AUR PKGBUILDs and
   `.SRCINFO`, with `carrel-bin` checksums filled from the real release artifacts —
   the first archives that ship the man page and completions.
