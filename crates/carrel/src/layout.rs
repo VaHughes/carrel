@@ -95,12 +95,43 @@ impl Layout {
         block_rows: HashMap<BlockIdx, u32>,
         wrap_tables: bool,
     ) -> Self {
+        Self::with_hidden(
+            doc,
+            width,
+            measure,
+            block_rows,
+            wrap_tables,
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    /// Lay out with some blocks folded away entirely.
+    ///
+    /// A hidden block contributes **zero rows and zero gap** — it is not on
+    /// the page. The set is derived by the caller (`App::relayout`, from the
+    /// folded headings × the section index); this file only honours it, so
+    /// its arithmetic stays testable against hand-built sets. Note
+    /// [`Self::block_at_row`]'s partition arithmetic skips zero-height
+    /// blocks natively: their row start equals the next block's, so the
+    /// search passes over them.
+    #[must_use]
+    pub fn with_hidden(
+        doc: &Document,
+        width: u16,
+        measure: u16,
+        block_rows: HashMap<BlockIdx, u32>,
+        wrap_tables: bool,
+        hidden: &std::collections::HashSet<BlockIdx>,
+    ) -> Self {
         let mut block_row_start = Vec::with_capacity(doc.block_count() + 1);
         let mut acc = 0u32;
         block_row_start.push(0);
         for i in 0..doc.block_count() {
             let b = BlockIdx(i as u32);
-            let h = if let Some(rows) = block_rows.get(&b) {
+            let h = if hidden.contains(&b) {
+                block_row_start.push(acc);
+                continue;
+            } else if let Some(rows) = block_rows.get(&b) {
                 (*rows).max(1)
             } else {
                 // The SAME functions the row pass uses, with a counting sink,
@@ -484,6 +515,45 @@ mod tests {
     use super::*;
 
     const SRC: &str = "# Title\n\nalpha beta gamma delta epsilon\n\n- one\n- two\n";
+
+    const SECTIONS: &str = "\
+# A\n\nalpha body one\n\nalpha body two\n\n# B\n\nbeta body\n";
+
+    fn hidden_of(ids: &[usize]) -> std::collections::HashSet<BlockIdx> {
+        ids.iter().map(|&i| BlockIdx(i as u32)).collect()
+    }
+
+    #[test]
+    fn a_hidden_block_costs_zero_rows_and_zero_gap() {
+        let doc = Document::parse(SECTIONS);
+        let all = Layout::with_measure(&doc, 40, 40, HashMap::new(), false);
+        // Hide blocks 1 and 2 (A's two paragraphs).
+        let hidden = hidden_of(&[1, 2]);
+        let folded = Layout::with_hidden(&doc, 40, 40, HashMap::new(), false, &hidden);
+        assert_eq!(folded.height(BlockIdx(1)), 0);
+        assert_eq!(folded.height(BlockIdx(2)), 0);
+        assert!(folded.total_rows() < all.total_rows());
+        // `height()` is gap-inclusive (differences of row starts), so hiding
+        // must save exactly the hidden blocks' heights — content AND gaps.
+        // A surviving gap would make the saving smaller than the heights.
+        let paras: u32 = [1u32, 2].iter().map(|&i| all.height(BlockIdx(i))).sum();
+        assert_eq!(
+            all.total_rows() - folded.total_rows(),
+            paras,
+            "hidden blocks vanish gap and all"
+        );
+    }
+
+    #[test]
+    fn block_at_row_never_returns_a_hidden_block() {
+        let doc = Document::parse(SECTIONS);
+        let hidden = hidden_of(&[1, 2]);
+        let l = Layout::with_hidden(&doc, 40, 40, HashMap::new(), false, &hidden);
+        for row in 0..l.total_rows() {
+            let b = l.block_at_row(row);
+            assert!(l.height(b) > 0, "row {row} resolved to hidden block {b:?}");
+        }
+    }
 
     #[test]
     fn row_starts_are_a_prefix_sum_and_total_agrees() {
