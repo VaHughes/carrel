@@ -410,6 +410,57 @@ impl Document {
         None
     }
 
+    /// The headings enclosing doc byte `at`, outermost first — the derived
+    /// section index (spec: section-index design, notes repo). Empty before
+    /// the first heading. Levels along the path strictly increase but are
+    /// not necessarily consecutive: a document that skips H2 gets the path
+    /// it wrote. Section structure is **by level only** — a heading inside a
+    /// blockquote or list participates exactly like any other, which is what
+    /// every outline tool does.
+    ///
+    /// Derived per call, never stored, like the outline it feeds: one walk
+    /// over the headings, a stack where level *k* pops everything ≥ *k*.
+    #[must_use]
+    pub fn section_path(&self, at: u32) -> Vec<NodeId> {
+        let mut stack: Vec<(u8, NodeId)> = Vec::new();
+        for node in &self.nodes {
+            let NodeKind::Heading { level } = node.kind else {
+                continue;
+            };
+            if node.doc.start > at {
+                break;
+            }
+            while stack.last().is_some_and(|&(l, _)| l >= level) {
+                stack.pop();
+            }
+            stack.push((level, node.id));
+        }
+        stack.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Where `heading`'s section ends: the `doc.start` of the next heading
+    /// with level ≤ its own, else `text.len()`. The fold span — defined in
+    /// the same place as [`Self::section_path`] so a breadcrumb and a fold
+    /// can never disagree about what a section is.
+    #[must_use]
+    pub fn section_end(&self, heading: NodeId) -> u32 {
+        let node = &self.nodes[heading.0 as usize];
+        debug_assert!(
+            matches!(node.kind, NodeKind::Heading { .. }),
+            "section_end takes a heading"
+        );
+        let NodeKind::Heading { level } = node.kind else {
+            return u32::try_from(self.text.len()).unwrap_or(u32::MAX);
+        };
+        self.nodes[heading.0 as usize + 1..]
+            .iter()
+            .find_map(|n| match n.kind {
+                NodeKind::Heading { level: l } if l <= level => Some(n.doc.start),
+                _ => None,
+            })
+            .unwrap_or_else(|| u32::try_from(self.text.len()).unwrap_or(u32::MAX))
+    }
+
     /// The node for a block index.
     #[must_use]
     pub fn node_for_block(&self, b: BlockIdx) -> &Node {
@@ -1005,7 +1056,11 @@ impl<'a> Builder<'a> {
 
         self.nodes.push(Node {
             id,
-            parent: None, // container linkage is a later pass; see TODO below
+            // Container linkage waits for its real consumer, the GUI's HTML
+            // emitter (<ul>/<blockquote> nesting). Section ancestry never
+            // needed it: headings are flat siblings, and `section_path` /
+            // `section_end` derive the section tree from levels alone.
+            parent: None,
             children: 0..0,
             kind,
             alert: o.alert,
@@ -1504,6 +1559,103 @@ fn coalesce(mut v: Vec<Inline>) -> Vec<Inline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A document with nesting, a skipped level, and a sibling return:
+    /// H1 "Top" → H2 "Mid" → H4 "Deep" (skips H3) → H2 "Next".
+    const SECTIONED: &str = "\
+# Top\n\nintro\n\n## Mid\n\nmid body\n\n#### Deep\n\ndeep body\n\n## Next\n\ntail\n";
+
+    fn heading_named(d: &Document, name: &str) -> NodeId {
+        d.nodes
+            .iter()
+            .find(|n| {
+                matches!(n.kind, NodeKind::Heading { .. })
+                    && &d.text[n.doc.start as usize..n.doc.end as usize] == name
+            })
+            .map(|n| n.id)
+            .expect("heading exists")
+    }
+
+    fn path_names(d: &Document, at: u32) -> Vec<String> {
+        d.section_path(at)
+            .into_iter()
+            .map(|id| {
+                let n = &d.nodes[id.0 as usize];
+                d.text[n.doc.start as usize..n.doc.end as usize].to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_section_path_stacks_enclosing_headings_outermost_first() {
+        let d = Document::parse(SECTIONED);
+        let deep = heading_named(&d, "Deep");
+        let inside_deep = d.nodes[deep.0 as usize].doc.end + 2;
+        assert_eq!(path_names(&d, inside_deep), ["Top", "Mid", "Deep"]);
+    }
+
+    #[test]
+    fn a_sibling_heading_pops_back_to_its_own_level() {
+        let d = Document::parse(SECTIONED);
+        let next = heading_named(&d, "Next");
+        let in_next = d.nodes[next.0 as usize].doc.end + 2;
+        assert_eq!(path_names(&d, in_next), ["Top", "Next"]);
+    }
+
+    #[test]
+    fn before_the_first_heading_the_path_is_empty() {
+        let d = Document::parse("plain text first\n\n# Then a heading\n");
+        assert_eq!(d.section_path(0), vec![]);
+    }
+
+    #[test]
+    fn a_byte_at_a_headings_start_is_inside_its_section() {
+        let d = Document::parse(SECTIONED);
+        let mid = heading_named(&d, "Mid");
+        let at = d.nodes[mid.0 as usize].doc.start;
+        assert_eq!(path_names(&d, at), ["Top", "Mid"]);
+    }
+
+    #[test]
+    fn path_levels_strictly_increase_at_every_byte() {
+        let d = Document::parse(SECTIONED);
+        for at in 0..=u32::try_from(d.text.len()).unwrap() {
+            let levels: Vec<u8> = d
+                .section_path(at)
+                .into_iter()
+                .map(|id| match d.nodes[id.0 as usize].kind {
+                    NodeKind::Heading { level } => level,
+                    _ => unreachable!("paths hold only headings"),
+                })
+                .collect();
+            assert!(
+                levels.windows(2).all(|w| w[0] < w[1]),
+                "at {at}: {levels:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sections_end_is_the_next_same_or_higher_heading() {
+        let d = Document::parse(SECTIONED);
+        let mid = heading_named(&d, "Mid");
+        let next = heading_named(&d, "Next");
+        assert_eq!(
+            d.section_end(mid),
+            d.nodes[next.0 as usize].doc.start,
+            "Mid's section ends where Next begins — Deep did not close it"
+        );
+    }
+
+    #[test]
+    fn the_last_section_runs_to_the_end_of_the_text() {
+        let d = Document::parse(SECTIONED);
+        let top = heading_named(&d, "Top");
+        let next = heading_named(&d, "Next");
+        let len = u32::try_from(d.text.len()).unwrap();
+        assert_eq!(d.section_end(top), len, "nothing outranks an H1 here");
+        assert_eq!(d.section_end(next), len);
+    }
 
     #[test]
     fn delimiters_are_not_in_display_text() {

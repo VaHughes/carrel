@@ -227,3 +227,35 @@ fn the_whole_corpus_renders_without_panicking_at_every_plausible_width() {
         assert!(!out.is_empty(), "width {w} produced nothing");
     }
 }
+
+#[test]
+fn the_section_index_holds_over_the_whole_corpus() {
+    use carrel_core::NodeKind;
+    let d = doc();
+    // Every byte yields a path without panicking, and its levels strictly
+    // increase — the corpus has real nesting to exercise this.
+    let len = u32::try_from(d.text.len()).unwrap();
+    for at in (0..=len).step_by(7) {
+        let levels: Vec<u8> = d
+            .section_path(at)
+            .into_iter()
+            .map(|id| match d.nodes[id.0 as usize].kind {
+                NodeKind::Heading { level } => level,
+                _ => unreachable!("paths hold only headings"),
+            })
+            .collect();
+        assert!(
+            levels.windows(2).all(|w| w[0] < w[1]),
+            "at {at}: {levels:?}"
+        );
+    }
+    // Every heading's section contains at least the heading itself.
+    for n in &d.nodes {
+        if matches!(n.kind, NodeKind::Heading { .. }) {
+            assert!(
+                d.section_end(n.id) >= n.doc.end,
+                "a section cannot end before its own heading"
+            );
+        }
+    }
+}

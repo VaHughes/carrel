@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Groundwork for the breadcrumb and section folding**: the core can now answer "which
+  sections enclose this position" and "where does this section end" — derived from heading
+  levels on demand, so both future features will agree on what a section is. No visible
+  change yet.
 - **Pipe into it.** `gh pr view | carrel`, `git show HEAD:README.md | carrel` — a piped
   document opens the reader, and it **streams**: a slow producer (an agent writing as it
   thinks) paints immediately, content appends as it arrives, and your reading position and
