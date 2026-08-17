@@ -82,6 +82,9 @@ pub enum MathForm {
     Source,
 }
 
+// Four independent on/off facts (rendered blocks, card view, hints,
+// streaming) are four bools; an enum would invent states that cannot occur.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct App {
     pub screen: Screen,
@@ -92,8 +95,15 @@ pub struct App {
     pub mode: Mode,
     pub path: String,
     /// The open file on disk, for resolving relative links. `None` until a
-    /// real file is opened.
+    /// real file is opened — and `None` for a piped document, which is what
+    /// keeps the reloader and position persistence inert in pager mode.
     pub file: Option<PathBuf>,
+    /// A stdin stream is still arriving. Presentation only: the footer lamp
+    /// and the path label read it; nothing else may.
+    pub streaming: bool,
+    /// The accumulated piped document, retained so `Ctrl-O` can come back to
+    /// it after following a link out — a pipe has no path to re-read.
+    pub piped: Option<String>,
     /// Where we came from: `(file, anchor)` pairs. `Ctrl-O` pops.
     pub history: Vec<(PathBuf, u32)>,
     /// The link `Tab` has selected, if any.
@@ -260,6 +270,8 @@ impl App {
             mode: Mode::Normal,
             path,
             file: None,
+            streaming: false,
+            piped: None,
             history: Vec::new(),
             selected_link: None,
             image_dims: HashMap::new(),
@@ -399,7 +411,16 @@ impl App {
         };
         check_document_size(&path)?;
         let src = std::fs::read_to_string(&path)?;
-        self.doc = Document::parse(&src);
+        self.reload_from(&src);
+        self.note = Some("reloaded".into());
+        Ok(())
+    }
+
+    /// The body of [`Self::reload`], for a document that has no file to
+    /// re-read — a piped stream re-parses through here on every append.
+    /// Sets no note: one reload is an event, a stream of them is weather.
+    pub fn reload_from(&mut self, src: &str) {
+        self.doc = Document::parse(src);
         self.layout = Layout::with_measure(
             &self.doc,
             self.bleed_w(),
@@ -429,8 +450,16 @@ impl App {
             o.selected = 0; // re-clamped against the new headings on use
         }
         self.resolve_wikilinks();
-        self.note = Some("reloaded".into());
-        Ok(())
+    }
+
+    /// The directory links resolve against: the document's own, or the
+    /// working directory for a pathless (piped) document — `git show |
+    /// carrel` run inside a repo makes its relative links work.
+    fn doc_dir(&self) -> PathBuf {
+        self.file
+            .as_deref()
+            .and_then(Path::parent)
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
     }
 
     /// Resume the saved reading position for the open file, silently, with a
@@ -453,9 +482,8 @@ impl App {
     /// gives the painter a synchronous answer for `file://` hyperlinks.
     fn resolve_wikilinks(&mut self) {
         self.wiki.clear();
-        let Some(dir) = self.file.as_deref().and_then(Path::parent) else {
-            return;
-        };
+        let dir = self.doc_dir();
+        let dir = dir.as_path();
         let index = self
             .home_stash
             .as_deref()
@@ -1401,6 +1429,25 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
         app.view.restore(&app.doc, &app.layout, h);
         return Outcome::Redraw;
     }
+    // Back to a piped document: no file to re-read, but the text was
+    // retained for exactly this. Re-parse from memory and become pathless
+    // again; the label follows whether the stream is still arriving.
+    if prev == Path::new("(stdin)")
+        && let Some(src) = app.piped.take()
+    {
+        app.save_position();
+        app.file = None;
+        app.reload_from(&src);
+        app.piped = Some(src);
+        app.path = if app.streaming {
+            "(stdin — streaming…)".into()
+        } else {
+            "(stdin)".into()
+        };
+        app.view.anchor = anchor;
+        app.view.restore(&app.doc, &app.layout, h);
+        return Outcome::Redraw;
+    }
     match app.open_path(&prev) {
         Ok(()) => {
             // The anchor is a doc byte, so the reading position returns
@@ -1458,10 +1505,10 @@ fn link_follow(app: &mut App) -> Outcome {
         app.note = Some(format!("external link — click or copy: {url}"));
         return Outcome::Redraw;
     }
-    let Some(here) = app.file.clone() else {
-        app.note = Some("no file context to resolve a relative link".into());
-        return Outcome::Redraw;
-    };
+    // A piped document has no path; the sentinel's parent is the empty
+    // path, so relative targets resolve against the working directory, and
+    // `go_back` recognises it to return to the retained text.
+    let here = app.file.clone().unwrap_or_else(|| PathBuf::from("(stdin)"));
     // `#section` jumps within this document; `notes.md#section` opens the
     // file, then jumps. Fragments resolve through the core's GitHub-style
     // slugs, so both frontends agree on where a link lands.
@@ -2501,6 +2548,64 @@ mod tests {
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
         assert_eq!(a.note.as_deref(), Some("reloaded"));
+    }
+
+    #[test]
+    fn reload_from_appends_without_touching_the_anchor() {
+        let mut a = App::new("(stdin)".into(), Document::parse(SRC), 20, 6);
+        update(&mut a, Action::Scroll(Span::Line, 3));
+        let anchor = a.view.anchor;
+        let rows = a.layout.total_rows();
+        a.reload_from(&format!("{SRC}\nappended tail paragraph here\n"));
+        assert_eq!(a.view.anchor, anchor, "an append moves nothing");
+        assert!(a.layout.total_rows() > rows, "the document grew");
+        assert_eq!(a.note, None, "a streamed chunk is not a 'reloaded' event");
+    }
+
+    #[test]
+    fn reload_from_keeps_matches_live_across_an_append() {
+        let mut a = App::new("(stdin)".into(), Document::parse("needle one\n"), 40, 8);
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        for c in "needle".chars() {
+            update(&mut a, Action::SearchKey(SearchKey::Char(c)));
+        }
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        assert_eq!(a.matches.as_ref().unwrap().len(), 1);
+        a.reload_from("needle one\n\nand a second needle\n");
+        assert_eq!(
+            a.matches.as_ref().unwrap().len(),
+            2,
+            "the appended hit is found"
+        );
+    }
+
+    #[test]
+    fn a_pathless_document_resolves_links_from_the_working_directory() {
+        let mut a = App::new("(stdin)".into(), Document::parse("x"), 20, 6);
+        assert_eq!(a.doc_dir(), Path::new("."), "no file means the cwd");
+        a.file = Some(PathBuf::from("/tmp/notes/n.md"));
+        assert_eq!(a.doc_dir(), Path::new("/tmp/notes"));
+    }
+
+    #[test]
+    fn following_a_link_out_of_a_piped_document_and_back_again() {
+        let d = tempfile::tempdir().unwrap();
+        let t = d.path().join("t.md");
+        std::fs::write(&t, "# Target doc\n").unwrap();
+        let src = format!("intro\n\n[go]({})\n", t.display());
+        let mut a = App::new("(stdin)".into(), Document::parse(&src), 40, 8);
+        a.piped = Some(src.clone());
+
+        update(&mut a, Action::LinkStep(1)); // select the only link
+        assert!(a.selected_link.is_some());
+        update(&mut a, Action::LinkFollow);
+        assert!(a.doc.text.contains("Target doc"), "the link opened");
+        assert_eq!(a.file.as_deref(), Some(t.as_path()));
+
+        update(&mut a, Action::Back);
+        assert!(a.doc.text.contains("intro"), "the piped text came back");
+        assert_eq!(a.file, None, "and it is pathless again");
+        assert_eq!(a.path, "(stdin)");
     }
 
     #[test]
