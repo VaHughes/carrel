@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.8.17
 
 - **A comfortable reading measure.** Prose now wraps at 90 columns and centres on the page
   instead of stretching across the whole terminal — past roughly ninety characters the eye

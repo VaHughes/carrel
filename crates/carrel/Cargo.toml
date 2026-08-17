@@ -21,7 +21,7 @@ name = "carrel"
 path = "src/main.rs"
 
 [dependencies]
-carrel-core = { path = "../carrel-core", version = "2026.8.16" }
+carrel-core = { path = "../carrel-core", version = "2026.8.17" }
 ignore.workspace        = true
 image.workspace         = true
 merman.workspace        = true
