@@ -11,15 +11,18 @@ members = ["cargo:."]
 cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
-# The installers to generate for each app. The homebrew formula publishes to
-# the tap below at release time; the publish job needs a HOMEBREW_TAP_TOKEN
-# repo secret (a PAT with write access to the tap) or the job fails, so the
-# secret must exist before the next tag.
+# The installers to generate for each app. The homebrew formula is BUILT here
+# (it rides the release as `carrel.rb`) but is NOT pushed to the tap by CI: the
+# publish job would need a HOMEBREW_TAP_TOKEN repo secret with write access to
+# the tap, and without it the job fails and blocks `announce`. Until that secret
+# exists, the formula is committed to `VaHughes/homebrew-tap` by hand from the
+# release artifact — see RELEASING.md step 10. Re-add "homebrew" to publish-jobs
+# (and regenerate release.yml) the moment the secret is set.
 installers = ["shell", "homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "VaHughes/homebrew-tap"
 # Publish jobs to run in CI
-publish-jobs = ["homebrew"]
+publish-jobs = []
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
 # Whether to install an updater program

@@ -61,6 +61,12 @@ curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/VaHughes/carrel/releases/latest/download/carrel-installer.sh | sh
 ```
 
+**Homebrew** (macOS and Linux):
+
+```bash
+brew install VaHughes/tap/carrel
+```
+
 **Fedora** (43 and 44, x86_64 and aarch64):
 
 ```bash
@@ -198,8 +204,8 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] stdin/pager mode — pipe in, stream as it arrives, keep your place
 - [x] A sticky heading breadcrumb: the enclosing sections, pinned while you scroll
 - [x] Section folding — `za`/`zM`/`zR` and click-a-heading; search always unfolds its target
-- [x] Packaging: Fedora COPR, the shell installer, crates.io
-- [ ] Packaging, remaining: AUR (blocked on Arch), Homebrew, `.deb`, winget
+- [x] Packaging: Homebrew, Fedora COPR, the shell installer, crates.io
+- [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`, winget
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 
 ## Contributing
