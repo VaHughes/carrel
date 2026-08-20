@@ -43,8 +43,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   tarball (release 2), to be dropped at the next release.
 - **Install with Homebrew.** Every release now builds a Homebrew formula and ships
   it as `carrel.rb` alongside the binaries; it lands in
-  [`VaHughes/homebrew-tap`](https://github.com/VaHughes/homebrew-tap), so
-  `brew install VaHughes/tap/carrel` works on macOS and Linux.
+  [`VaHughes/homebrew-tap`](https://github.com/VaHughes/homebrew-tap):
+  `brew install VaHughes/tap/carrel`, on macOS and Linux.
 - **A nixpkgs package, prepared.** `contrib/packaging/carrel-package.nix` is the
   by-name package ready for a nixpkgs PR, minus the two hashes that need a machine
   with nix to compute.
