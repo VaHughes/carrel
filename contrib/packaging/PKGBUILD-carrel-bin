@@ -1,10 +1,12 @@
 # AUR package: carrel-bin (repacks the static musl release artifact).
-# The v2026.8.17 archive is the first built with the widened dist include
-# list (man page + completions present — verified against the real artifact).
+# BUILD-TESTED 2026-08-20 against the real v2026.8.20 artifact: `makepkg -f`
+# produces a package carrying all eight installed files and a binary that
+# reports `carrel 2026.8.20`. (The docs long said recipes could not be
+# build-tested here; that was the old Mint machine — this one is Arch.)
 # Publishing still waits on AUR account registration reopening.
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel-bin
-pkgver=2026.8.17
+pkgver=2026.8.20
 pkgrel=1
 pkgdesc="A quiet place to read your markdown — a terminal markdown reader (prebuilt)"
 arch=('x86_64' 'aarch64')
@@ -14,8 +16,8 @@ provides=('carrel')
 conflicts=('carrel')
 source_x86_64=("$url/releases/download/v$pkgver/carrel-x86_64-unknown-linux-musl.tar.xz")
 source_aarch64=("$url/releases/download/v$pkgver/carrel-aarch64-unknown-linux-musl.tar.xz")
-sha256sums_x86_64=('4c979059f118cfa136394528a679d41433cfc9ea33083b3969467a7ce5051e65')
-sha256sums_aarch64=('62079b174f36b8b4c722ed29a3890115c7bacb42feb0d1167be99be73fe3a153')
+sha256sums_x86_64=('8a9fbe9367744e5b9e188597841cb2bf0cd64964e9c49a2cb3e43bd57294c018')
+sha256sums_aarch64=('42526659d444124bb2da06048d5e2fb30ac500b090bcb6ee5f7aac713fe9449a')
 
 # dist FLATTENS every `include` entry to the archive root: `contrib/carrel.1`
 # arrives as `carrel.1`. The flat paths below were verified against the real

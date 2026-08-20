@@ -1,17 +1,12 @@
 # Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.8.17
-Release:        2%{?dist}
+Version:        2026.8.20
+Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
 URL:            https://github.com/VaHughes/carrel
 Source0:        %{url}/archive/v%{version}/carrel-%{version}.tar.gz
-# The v2026.8.17 tag's %%check carries a picker test that assumed every painted
-# path fits the overlay; COPR's /builddir working tree is wider, so it failed
-# only here. Fixed on main in dd1296b — DROP THIS PATCH at the next release.
-Patch0:         carrel-2026.8.17-picker-paint-contract.patch
-
 BuildRequires:  cargo
 BuildRequires:  rust >= 1.90
 
@@ -51,6 +46,11 @@ cargo test --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Thu Aug 20 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.20-1
+- Pipe into carrel and it streams as the producer writes; a sticky heading
+  breadcrumb; section folding with za/zM/zR and click-a-heading; and a
+  Homebrew formula on every release.
+
 * Mon Aug 17 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.17-2
 - Patch the picker round-trip test to pin the painter's clipping contract;
   it failed only under COPR's deep /builddir working tree.
