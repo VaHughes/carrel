@@ -933,13 +933,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
                         Keys::map_outline(k)
                     } else if app.is_home() {
                         let mode = app.home().map_or(home::HomeMode::Filter, |h| h.mode);
-                        // `Other…` sits one past the listed roots; while it is
-                        // highlighted, printable keys edit the path.
-                        let typing_path = app.home().is_some_and(|h| {
-                            h.mode == home::HomeMode::Picker
-                                && h.picker.selected == h.picker.roots.len()
-                        });
-                        keys.map_home(k, mode, typing_path)
+                        keys.map_home(k, mode)
                     } else {
                         keys.map(k, app.searching())
                     };

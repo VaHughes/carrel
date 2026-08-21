@@ -1099,8 +1099,24 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// Every home action, then one scroll clamp.
+///
+/// The clamp lives here rather than in the arms because an arm that forgot it
+/// would leave the selection off screen with nothing to point at — and there
+/// are a dozen arms that move a selection.
 fn home_update(app: &mut App, action: Action) -> Outcome {
+    let (_, list_h) = crate::home::list_geometry(app.cols, app.rows, app.hints);
+    let (cols, rows) = (app.cols, app.rows);
+    let out = home_action(app, action);
+    if let Some(h) = app.home_mut() {
+        h.clamp_scroll(usize::from(list_h));
+        h.clamp_picker_scroll(cols, rows);
+    }
+    out
+}
+
+#[allow(clippy::too_many_lines)]
+fn home_action(app: &mut App, action: Action) -> Outcome {
     match action {
         Action::Quit => return Outcome::Quit,
 
@@ -1152,29 +1168,24 @@ fn home_update(app: &mut App, action: Action) -> Outcome {
         }
 
         // A click in the picker. Clamped, so an index from a frame that has
-        // since changed can never point past `Other…`.
+        // since changed can never point past the last match.
         Action::PickerSelect(i) => {
             if let Some(h) = app.home_mut() {
-                h.picker.selected = i.min(h.picker.roots.len());
+                h.picker.selected = i.min(h.picker.roots.len().saturating_sub(1));
             }
             return Outcome::Redraw;
         }
         Action::PickerChoose => {
-            // Enter follows the HIGHLIGHT. The typed path only applies while
-            // `Other…` itself is highlighted — otherwise typing into Other…
-            // and then moving back up would leave Enter committing the
-            // abandoned text forever, with escape the only way out.
+            // Enter follows the HIGHLIGHT, and falls back to the typed path
+            // only when nothing matched it — so a path typed in full still
+            // works even where its parent cannot be listed.
             let Some(root) = app.home().and_then(|h| {
                 let p = &h.picker;
-                if p.selected < p.roots.len() {
-                    p.roots.get(p.selected).cloned()
-                } else {
-                    p.typed
-                        .as_deref()
-                        .map(str::trim)
+                p.roots.get(p.selected).cloned().or_else(|| {
+                    Some(p.typed.trim())
                         .filter(|t| !t.is_empty())
-                        .map(PathBuf::from)
-                }
+                        .map(crate::home::expand_typed)
+                })
             }) else {
                 return Outcome::Idle;
             };
@@ -1208,11 +1219,12 @@ fn home_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::PickerOpen => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let roots = Home::matches_for("");
             if let Some(h) = app.home_mut() {
-                h.picker.roots = Home::candidate_roots(&cwd);
+                h.picker.roots = roots;
                 h.picker.selected = 0;
-                h.picker.typed = None;
+                h.picker.top = 0;
+                h.picker.typed.clear();
                 h.mode = HomeMode::Picker;
             }
             return Outcome::Redraw;
@@ -1281,7 +1293,7 @@ fn home_update(app: &mut App, action: Action) -> Outcome {
         }
         Action::HomeMove(n) => {
             if h.mode == HomeMode::Picker {
-                let last = h.picker.roots.len();
+                let last = h.picker.roots.len().saturating_sub(1);
                 h.picker.selected = if n < 0 {
                     h.picker.selected.saturating_sub(n.unsigned_abs() as usize)
                 } else {
@@ -1314,31 +1326,45 @@ fn home_update(app: &mut App, action: Action) -> Outcome {
             h.mode = HomeMode::Filter;
             Outcome::Redraw
         }
+        // In the picker, keystrokes belong to the picker alone — NOTHING may
+        // fall through to the filter hidden behind the overlay, a corruption
+        // that used to stay invisible until Esc. Typing edits the path and
+        // re-lists the directories that match it.
+        Action::HomeKey(k) if h.mode == HomeMode::Picker => {
+            match k {
+                SearchKey::Char(c) => h.picker.typed.push(c),
+                SearchKey::Backspace => {
+                    h.picker.typed.pop();
+                }
+                SearchKey::Accept => return Outcome::Idle,
+                // Two-stage escape, the same shape as the filter's: clear the
+                // path first, close the picker only when there is nothing
+                // left to clear.
+                SearchKey::Cancel => {
+                    if h.picker.typed.is_empty() {
+                        h.mode = HomeMode::Normal;
+                        return Outcome::Redraw;
+                    }
+                    h.picker.typed.clear();
+                }
+            }
+            let typed = h.picker.typed.clone();
+            let roots = Home::matches_for(&typed);
+            let h = app.home_mut().expect("home screen");
+            h.picker.roots = roots;
+            h.picker.selected = 0;
+            h.picker.top = 0;
+            Outcome::Redraw
+        }
         Action::HomeKey(k) => {
-            // In the picker, keystrokes belong to the picker alone. Typing
-            // edits the `Other…` path only while `Other…` is selected, and
-            // NOTHING may fall through to the filter hidden behind the
-            // overlay — that corruption was invisible until Esc.
-            let on_other = h.mode == HomeMode::Picker;
-            let other_selected = on_other && h.picker.selected == h.picker.roots.len();
             match k {
                 SearchKey::Char(c) => {
-                    if other_selected {
-                        h.picker.typed.get_or_insert_with(String::new).push(c);
-                    } else if !on_other {
-                        h.filter.push(c);
-                        h.refilter();
-                    }
+                    h.filter.push(c);
+                    h.refilter();
                 }
                 SearchKey::Backspace => {
-                    if other_selected {
-                        if let Some(t) = h.picker.typed.as_mut() {
-                            t.pop();
-                        }
-                    } else if !on_other {
-                        h.filter.pop();
-                        h.refilter();
-                    }
+                    h.filter.pop();
+                    h.refilter();
                 }
                 SearchKey::Accept => return Outcome::Idle,
                 SearchKey::Cancel => {

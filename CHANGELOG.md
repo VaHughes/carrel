@@ -2,6 +2,24 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## 2026.8.21
+
+- **The directory picker is an input now.** `d` opens a box you type a path into, and it
+  completes against the filesystem as you go — `~` expands, a trailing `/` lists a
+  directory whole, a bare word completes against the one you are standing in, and the
+  matches redraw on every keystroke. The old fixed menu of `~/Documents` and
+  `~/Documents/GitHub` is gone: those were a guess, and they found nothing at all on a
+  machine that keeps its files anywhere else. With nothing typed the picker offers the
+  current directory and the top level of your home. `$HOME` itself is still never offered
+  — scanning all of it descends into every cache and container on the machine — but you
+  can type it. Arrows and `Ctrl-N`/`Ctrl-P` move; `Esc` clears the path, then closes.
+- **Clicking a file no longer scrolls the list.** Scroll down, click something halfway up
+  the screen, and the list used to yank itself so the clicked file sat on the very last
+  row. The home screen has a real scroll offset now, and it moves only when the selection
+  would leave the screen.
+- **Choosing a directory lands in the menu, not the filter.** It used to drop straight
+  into filter mode, where the next keystroke silently hid files.
+
 ## 2026.8.20
 
 - **Section folding.** `za` folds the section you're in behind its heading; `zM` folds

@@ -142,10 +142,11 @@ impl Keys {
 
     /// Home-screen bindings. Telescope's model: filter mode types, normal mode
     /// is vim, and `Ctrl-N`/`Ctrl-P` and the arrows move in both.
-    /// `typing_path` is true while the picker's `Other…` row is highlighted:
-    /// printable keys then edit the path, so `j`/`k` must type, not move —
-    /// a path like `/home/jay` is untypeable otherwise. Arrows and Ctrl-N/P still move.
-    pub fn map_home(&mut self, key: KeyEvent, mode: HomeMode, typing_path: bool) -> Option<Action> {
+    ///
+    /// The picker types too — it is an input, so every printable key belongs
+    /// to the path and `j`/`k` cannot move; a path like `/home/jay` is
+    /// untypeable otherwise. Arrows and `Ctrl-N`/`Ctrl-P` move there.
+    pub fn map_home(&mut self, key: KeyEvent, mode: HomeMode) -> Option<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
         // A pending `g` consumes this key, exactly as the reader's map() does —
@@ -179,9 +180,9 @@ impl Keys {
 
         match mode {
             HomeMode::Picker => match key.code {
-                KeyCode::Char('j') if !typing_path => Some(Action::HomeMove(1)),
-                KeyCode::Char('k') if !typing_path => Some(Action::HomeMove(-1)),
-                KeyCode::Esc => Some(Action::PickerCancel),
+                // Two-stage escape, so `Esc` first clears a typed path and
+                // only then closes the overlay. `HomeKey` carries both.
+                KeyCode::Esc => Some(Action::HomeKey(SearchKey::Cancel)),
                 KeyCode::Char(c) => Some(Action::HomeKey(SearchKey::Char(c))),
                 KeyCode::Backspace => Some(Action::HomeKey(SearchKey::Backspace)),
                 _ => None,
@@ -340,10 +341,12 @@ pub const HINT_HOME_FILTER: &[(&str, &str)] =
     &[("type", "narrow"), ("enter", "open"), ("esc", "back")];
 pub const HINT_HOME_SEARCH: &[(&str, &str)] =
     &[("type", "query"), ("enter", "open first"), ("esc", "back")];
-pub const HINT_HOME_PICKER: &[(&str, &str)] =
-    &[("j/k", "move"), ("enter", "choose"), ("esc", "back")];
-pub const HINT_HOME_PICKER_OTHER: &[(&str, &str)] =
-    &[("type", "the path"), ("enter", "choose"), ("esc", "back")];
+pub const HINT_HOME_PICKER: &[(&str, &str)] = &[
+    ("type", "a path"),
+    ("↑/↓", "move"),
+    ("enter", "choose"),
+    ("esc", "back"),
+];
 
 /// The scrollbar thumb's `(top, len)` in bar rows.
 ///
@@ -505,7 +508,7 @@ mod tests {
     fn home_filter_mode_sends_printable_characters_to_the_filter() {
         let mut m = Keys::new();
         assert_eq!(
-            m.map_home(k('j'), HomeMode::Filter, false),
+            m.map_home(k('j'), HomeMode::Filter),
             Some(Action::HomeKey(SearchKey::Char('j'))),
         );
     }
@@ -514,24 +517,17 @@ mod tests {
     fn home_normal_mode_uses_vim_keys() {
         let mut m = Keys::new();
         assert_eq!(
-            m.map_home(k('j'), HomeMode::Normal, false),
+            m.map_home(k('j'), HomeMode::Normal),
             Some(Action::HomeMove(1))
         );
         assert_eq!(
-            m.map_home(k('d'), HomeMode::Normal, false),
+            m.map_home(k('d'), HomeMode::Normal),
             Some(Action::PickerOpen)
         );
+        assert_eq!(m.map_home(k('q'), HomeMode::Normal), Some(Action::Quit));
+        assert_eq!(m.map_home(k('g'), HomeMode::Normal), None, "gg is two keys");
         assert_eq!(
-            m.map_home(k('q'), HomeMode::Normal, false),
-            Some(Action::Quit)
-        );
-        assert_eq!(
-            m.map_home(k('g'), HomeMode::Normal, false),
-            None,
-            "gg is two keys"
-        );
-        assert_eq!(
-            m.map_home(k('g'), HomeMode::Normal, false),
+            m.map_home(k('g'), HomeMode::Normal),
             Some(Action::HomeGo(Edge::First)),
         );
     }
@@ -540,11 +536,11 @@ mod tests {
     fn ctrl_n_and_p_move_in_both_home_modes() {
         let mut m = Keys::new();
         assert_eq!(
-            m.map_home(ctrl('n'), HomeMode::Filter, false),
+            m.map_home(ctrl('n'), HomeMode::Filter),
             Some(Action::HomeMove(1))
         );
         assert_eq!(
-            m.map_home(ctrl('p'), HomeMode::Normal, false),
+            m.map_home(ctrl('p'), HomeMode::Normal),
             Some(Action::HomeMove(-1))
         );
     }
@@ -553,37 +549,41 @@ mod tests {
     fn enter_opens_a_file_but_chooses_a_root_in_the_picker() {
         let mut m = Keys::new();
         assert_eq!(
-            m.map_home(code(KeyCode::Enter), HomeMode::Filter, false),
+            m.map_home(code(KeyCode::Enter), HomeMode::Filter),
             Some(Action::HomeOpen)
         );
         assert_eq!(
-            m.map_home(code(KeyCode::Enter), HomeMode::Picker, false),
+            m.map_home(code(KeyCode::Enter), HomeMode::Picker),
             Some(Action::PickerChoose),
         );
     }
 
     #[test]
-    fn j_and_k_navigate_the_picker_but_type_into_the_other_path() {
+    fn every_letter_types_into_the_picker_path_and_arrows_move() {
         let mut m = Keys::new();
-        // On a listed root, vim keys move…
+        // The picker is an input, so vim keys belong to the path — otherwise
+        // /home/jay is untypeable, its j stolen by movement.
         assert_eq!(
-            m.map_home(k('j'), HomeMode::Picker, false),
-            Some(Action::HomeMove(1)),
-        );
-        // …but while `Other…` is highlighted they belong to the path —
-        // otherwise a path like /home/jay is untypeable, its j stolen by movement.
-        assert_eq!(
-            m.map_home(k('j'), HomeMode::Picker, true),
+            m.map_home(k('j'), HomeMode::Picker),
             Some(Action::HomeKey(SearchKey::Char('j'))),
         );
         assert_eq!(
-            m.map_home(k('k'), HomeMode::Picker, true),
+            m.map_home(k('k'), HomeMode::Picker),
             Some(Action::HomeKey(SearchKey::Char('k'))),
         );
-        // Arrows still move even while typing.
+        // Arrows and Ctrl-N/P move.
         assert_eq!(
-            m.map_home(code(KeyCode::Up), HomeMode::Picker, true),
+            m.map_home(code(KeyCode::Up), HomeMode::Picker),
             Some(Action::HomeMove(-1)),
+        );
+        assert_eq!(
+            m.map_home(ctrl('n'), HomeMode::Picker),
+            Some(Action::HomeMove(1)),
+        );
+        // Esc is the two-stage cancel: the path first, the overlay second.
+        assert_eq!(
+            m.map_home(code(KeyCode::Esc), HomeMode::Picker),
+            Some(Action::HomeKey(SearchKey::Cancel)),
         );
     }
 
@@ -624,11 +624,11 @@ mod tests {
             "while typing a search, H is a letter"
         );
         assert_eq!(
-            m.map_home(k('H'), HomeMode::Normal, false),
+            m.map_home(k('H'), HomeMode::Normal),
             Some(Action::HintsToggle)
         );
         assert_eq!(
-            m.map_home(k('H'), HomeMode::Filter, false),
+            m.map_home(k('H'), HomeMode::Filter),
             Some(Action::HomeKey(SearchKey::Char('H'))),
             "while filtering, H is a letter"
         );
@@ -645,6 +645,7 @@ mod tests {
             Some(match key {
                 "type" => return None,
                 "j/k" => vec![k('j')],
+                "↑/↓" => vec![code(KeyCode::Down)],
                 "spc" => vec![k(' ')],
                 "/" => vec![k('/')],
                 "o" => vec![k('o')],
@@ -673,10 +674,10 @@ mod tests {
                 evs.iter().fold(None, |_, e| m.map(*e, searching))
             })
         };
-        let home = |mode: HomeMode, typing: bool| -> Dispatch {
+        let home = |mode: HomeMode| -> Dispatch {
             Box::new(move |evs| {
                 let mut m = Keys::new();
-                evs.iter().fold(None, |_, e| m.map_home(*e, mode, typing))
+                evs.iter().fold(None, |_, e| m.map_home(*e, mode))
             })
         };
         let outline: Dispatch = Box::new(|evs| evs.iter().fold(None, |_, e| Keys::map_outline(*e)));
@@ -688,31 +689,10 @@ mod tests {
             ("link", HINT_LINK, reader(false)),
             ("outline", HINT_OUTLINE, outline),
             ("help", HINT_HELP, reader(false)),
-            (
-                "home-browse",
-                HINT_HOME_BROWSE,
-                home(HomeMode::Normal, false),
-            ),
-            (
-                "home-filter",
-                HINT_HOME_FILTER,
-                home(HomeMode::Filter, false),
-            ),
-            (
-                "home-search",
-                HINT_HOME_SEARCH,
-                home(HomeMode::Search, false),
-            ),
-            (
-                "home-picker",
-                HINT_HOME_PICKER,
-                home(HomeMode::Picker, false),
-            ),
-            (
-                "home-picker-other",
-                HINT_HOME_PICKER_OTHER,
-                home(HomeMode::Picker, true),
-            ),
+            ("home-browse", HINT_HOME_BROWSE, home(HomeMode::Normal)),
+            ("home-filter", HINT_HOME_FILTER, home(HomeMode::Filter)),
+            ("home-search", HINT_HOME_SEARCH, home(HomeMode::Search)),
+            ("home-picker", HINT_HOME_PICKER, home(HomeMode::Picker)),
         ];
         for (state, table, dispatch) in cases {
             for (key, label) in table {
@@ -805,16 +785,16 @@ mod tests {
         assert_eq!(m.map(k('h'), false), Some(Action::HelpToggle));
         assert_eq!(m.map(code(KeyCode::F(1)), false), Some(Action::HelpToggle));
         assert_eq!(
-            m.map_home(k('h'), HomeMode::Normal, false),
+            m.map_home(k('h'), HomeMode::Normal),
             Some(Action::HelpToggle)
         );
         assert_eq!(
-            m.map_home(code(KeyCode::F(1)), HomeMode::Filter, false),
+            m.map_home(code(KeyCode::F(1)), HomeMode::Filter),
             Some(Action::HelpToggle),
             "F1 works even while filtering"
         );
         assert_eq!(
-            m.map_home(k('h'), HomeMode::Filter, false),
+            m.map_home(k('h'), HomeMode::Filter),
             Some(Action::HomeKey(SearchKey::Char('h'))),
             "h types into the filter"
         );

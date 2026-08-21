@@ -111,25 +111,25 @@ mod picker {
     }
 
     #[test]
-    fn typing_a_path_into_other_and_choosing_it_changes_the_root() {
+    fn typing_a_path_completes_it_and_choosing_it_changes_the_root() {
         let d = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         std::fs::write(target.path().join("x.md"), "# x").unwrap();
 
         let mut app = picker_app(&d);
-        // Move to Other… (one past the listed roots).
-        let n = app.home().unwrap().picker.roots.len();
-        update(&mut app, Action::HomeMove(i32::try_from(n).unwrap()));
-        assert_eq!(app.home().unwrap().picker.selected, n);
-
         for c in target.path().to_str().unwrap().chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
         let h = app.home().unwrap();
         assert_eq!(
-            h.picker.typed.as_deref(),
-            target.path().to_str(),
-            "typing on Other… must fill the typed path",
+            h.picker.typed.as_str(),
+            target.path().to_str().unwrap(),
+            "typing must fill the picker's path",
+        );
+        assert_eq!(
+            h.picker.roots,
+            vec![target.path().to_path_buf()],
+            "and the fully typed path is the one match",
         );
         assert!(
             h.filter.is_empty(),
@@ -144,45 +144,111 @@ mod picker {
         assert_eq!(app.config_dir, None);
     }
 
+    /// The maintainer's report, 2026-08-21: choosing a directory dropped
+    /// straight into the filter, so the next keystroke silently hid files.
     #[test]
-    fn enter_follows_the_highlight_even_after_typing_into_other() {
-        // The trap this guards against: type something into Other…, change
-        // your mind, move the highlight back up to a listed root, press
-        // Enter. The typed text must not hijack the choice — it used to,
-        // which left the picker unable to choose anything but the abandoned
-        // path until the user escaped out entirely.
+    fn choosing_a_directory_lands_in_the_menu_not_the_filter() {
         let d = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        std::fs::write(target.path().join("x.md"), "# x").unwrap();
+
         let mut app = picker_app(&d);
-        let n = i32::try_from(app.home().unwrap().picker.roots.len()).unwrap();
-        update(&mut app, Action::HomeMove(n)); // down to Other…
-        for c in "/nowhere".chars() {
+        for c in target.path().to_str().unwrap().chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
-        update(&mut app, Action::HomeMove(-n)); // change of mind: back up
-        let expected = app.home().unwrap().picker.roots[0].clone();
-        assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
+        update(&mut app, Action::PickerChoose);
+        let h = app.home().unwrap();
+        assert_eq!(h.root, target.path());
+        assert_eq!(h.mode, HomeMode::Normal);
+    }
+
+    #[test]
+    fn a_partial_path_offers_every_directory_that_matches_it() {
+        let d = tempfile::tempdir().unwrap();
+        for sub in ["alpha", "album", "beta"] {
+            std::fs::create_dir(d.path().join(sub)).unwrap();
+        }
+        let mut app = picker_app(&d);
+        for c in format!("{}/al", d.path().display()).chars() {
+            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+        }
         assert_eq!(
-            app.home().unwrap().root,
-            expected,
-            "Enter must follow the highlight, not the abandoned typed path"
+            app.home().unwrap().picker.roots,
+            vec![d.path().join("album"), d.path().join("alpha")],
+        );
+        // Backspacing widens the list again — the completion is live.
+        update(&mut app, Action::HomeKey(SearchKey::Backspace));
+        update(&mut app, Action::HomeKey(SearchKey::Backspace));
+        assert_eq!(
+            app.home().unwrap().picker.roots,
+            vec![
+                d.path().join("album"),
+                d.path().join("alpha"),
+                d.path().join("beta"),
+            ],
+            "a trailing slash lists the directory whole",
         );
     }
 
     #[test]
-    fn enter_on_other_with_nothing_typed_is_a_no_op() {
+    fn escape_clears_the_typed_path_before_it_closes_the_picker() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = picker_app(&d);
+        update(&mut app, Action::HomeKey(SearchKey::Char('/')));
+        update(&mut app, Action::HomeKey(SearchKey::Cancel));
+        let h = app.home().unwrap();
+        assert!(h.picker.typed.is_empty(), "first Esc clears the path");
+        assert_eq!(h.mode, HomeMode::Picker, "and the picker stays up");
+        update(&mut app, Action::HomeKey(SearchKey::Cancel));
+        assert_eq!(app.home().unwrap().mode, HomeMode::Normal, "second closes");
+    }
+
+    #[test]
+    fn enter_follows_the_highlight_not_the_typed_prefix() {
+        // The trap this guards against: type a prefix, move the highlight
+        // down to the second match, press Enter. The typed text must not
+        // hijack the choice — it used to, which left the picker unable to
+        // choose anything but the abandoned path until Esc.
+        let d = tempfile::tempdir().unwrap();
+        for sub in ["alpha", "album"] {
+            std::fs::create_dir(d.path().join(sub)).unwrap();
+        }
+        let mut app = picker_app(&d);
+        for c in format!("{}/al", d.path().display()).chars() {
+            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+        }
+        update(&mut app, Action::HomeMove(1)); // down to the second match
+        let expected = app.home().unwrap().picker.roots[1].clone();
+        assert_eq!(expected, d.path().join("alpha"));
+        assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
+        assert_eq!(app.home().unwrap().root, expected);
+    }
+
+    #[test]
+    fn a_typed_path_that_is_not_a_directory_is_refused_out_loud() {
         let d = tempfile::tempdir().unwrap();
         let mut app = picker_app(&d);
         let before = app.home().unwrap().root.clone();
-        let n = i32::try_from(app.home().unwrap().picker.roots.len()).unwrap();
-        update(&mut app, Action::HomeMove(n)); // to Other…
-        // Type, then erase — Some("") must count as nothing typed, not as
-        // a real path "" that earns a "not a directory" complaint.
-        update(&mut app, Action::HomeKey(SearchKey::Char('x')));
-        update(&mut app, Action::HomeKey(SearchKey::Backspace));
-        assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Idle);
+        // Nothing matches, so Enter falls through to the typed text — which
+        // has to be complained about rather than silently doing nothing.
+        for c in "/no/such/place".chars() {
+            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+        }
+        assert!(app.home().unwrap().picker.roots.is_empty());
+        assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
         let h = app.home().unwrap();
         assert_eq!(h.root, before, "nothing to choose, nothing chosen");
         assert_eq!(h.mode, HomeMode::Picker, "and the picker stays up");
+        assert!(h.note.is_some(), "with a complaint on the status bar");
+
+        // Erasing it all is not a path "" that earns the same complaint —
+        // the defaults come back and Enter takes the highlighted one.
+        for _ in 0.."/no/such/place".len() {
+            update(&mut app, Action::HomeKey(SearchKey::Backspace));
+        }
+        let expected = app.home().unwrap().picker.roots[0].clone();
+        assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
+        assert_eq!(app.home().unwrap().root, expected);
     }
 
     #[test]
@@ -202,7 +268,7 @@ mod picker {
     }
 
     #[test]
-    fn typing_with_a_listed_root_selected_does_not_leak_into_the_filter() {
+    fn picker_keys_never_leak_into_the_filter_behind_the_overlay() {
         let d = tempfile::tempdir().unwrap();
         let mut app = picker_app(&d);
         update(&mut app, Action::HomeKey(SearchKey::Char('z')));
@@ -211,7 +277,7 @@ mod picker {
             h.filter.is_empty(),
             "picker keys must never edit the filter"
         );
-        assert!(h.picker.typed.is_none());
+        assert_eq!(h.picker.typed, "z");
     }
 
     #[test]
@@ -224,7 +290,6 @@ mod picker {
             keys.map_home(
                 KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
                 HomeMode::Normal,
-                false,
             ),
             None,
         );
@@ -463,8 +528,7 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
     // path itself (ASCII here, so cells == chars). The contract under test is
     // that a row paints exactly as much of its entry as fits — not that every
     // entry fits.
-    let entries = u16::try_from(home.picker_entries()).unwrap();
-    let (_, _, box_w, _) = carrel::home::picker_geometry(cols, rows, entries);
+    let (_, _, box_w, _) = carrel::home::picker_geometry(cols, rows);
     let budget = usize::from(box_w) - 3;
     let mut checked = 0;
     for row in 0..rows {
@@ -472,10 +536,7 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
             continue;
         };
         let painted: String = (0..cols).map(|c| buf[(c, row)].symbol()).collect();
-        let expected = match home.picker.roots.get(i) {
-            Some(p) => p.display().to_string(),
-            None => "Other…".to_string(), // the last row
-        };
+        let expected = home.picker.roots[i].display().to_string();
         let shown: String = expected.chars().take(budget).collect();
         assert!(
             painted.contains(&shown),
@@ -484,9 +545,11 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
         );
         checked += 1;
     }
+    let (_, _, visible) = home.picker_view(cols, rows);
     assert_eq!(
         checked,
-        home.picker_entries(),
-        "every picker row should be hittable"
+        home.picker_entries().min(visible),
+        "every VISIBLE picker row should be hittable"
     );
+    assert!(checked > 0, "the picker painted nothing to click");
 }

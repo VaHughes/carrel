@@ -34,9 +34,6 @@ pub fn of(app: &App) -> Footer {
     }
     if let Screen::Home(h) = &app.screen {
         return match h.mode {
-            HomeMode::Picker if h.picker.selected == h.picker.roots.len() => {
-                f('◎', "choose", keys::HINT_HOME_PICKER_OTHER)
-            }
             HomeMode::Picker => f('◎', "choose", keys::HINT_HOME_PICKER),
             HomeMode::Filter => f('◉', "filter", keys::HINT_HOME_FILTER),
             HomeMode::Search => f('◉', "search", keys::HINT_HOME_SEARCH),
@@ -146,9 +143,10 @@ mod tests {
         let f = of(&a);
         assert_eq!((f.bulb, f.word), ('◎', "choose"));
         assert_eq!(f.hints, keys::HINT_HOME_PICKER);
-        // Move onto Other… — the hints must switch to typing, not lie about j/k.
+        // The picker is an input: its hints must say so wherever the
+        // highlight sits, because `j` types there rather than moving.
         let n = i32::try_from(a.home().unwrap().picker.roots.len()).unwrap();
         update(&mut a, Action::HomeMove(n));
-        assert_eq!(of(&a).hints, keys::HINT_HOME_PICKER_OTHER);
+        assert_eq!(of(&a).hints, keys::HINT_HOME_PICKER);
     }
 }

@@ -1249,9 +1249,11 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect) {
         return;
     }
 
-    // Keep the selection on screen without a scroll model: window around it.
+    // The window comes from `home::window_first`, which `Home::row_at`
+    // inverts — and which scrolls only when the selection would fall off it,
+    // so a click never drags the list out from under the pointer.
     let h = area.height as usize;
-    let first = home.selected.saturating_sub(h.saturating_sub(1));
+    let first = crate::home::window_first(home.top, home.selected, home.filtered.len(), h);
     for (row, &idx) in home.filtered.iter().skip(first).take(h).enumerate() {
         let y = area.y + row as u16;
         let e = &home.entries[idx];
@@ -1300,7 +1302,8 @@ fn paint_hits(frame: &mut Frame, home: &Home, area: Rect) {
     }
     let per = 2usize; // name row + context row
     let visible = (area.height as usize / per).max(1);
-    let first = home.hit_selected.saturating_sub(visible.saturating_sub(1));
+    let first =
+        crate::home::window_first(home.hit_top, home.hit_selected, home.hits.len(), visible);
     for (i, hit) in home.hits.iter().skip(first).take(visible).enumerate() {
         let y = area.y + u16::try_from(i * per).unwrap_or(u16::MAX);
         let shown = hit
@@ -1406,10 +1409,9 @@ fn paint_breadcrumb(frame: &mut Frame, app: &App, text: Rect) {
 }
 
 fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
-    // Geometry from `home::picker_geometry`, which `Home::picker_row_at`
-    // inverts to turn a click into a directory. One derivation, both ways.
-    let entries = u16::try_from(home.picker_entries()).unwrap_or(u16::MAX);
-    let (px, py, width, height) = crate::home::picker_geometry(area.width, area.height, entries);
+    // Geometry from `Home::picker_view`, which `Home::picker_row_at` inverts
+    // to turn a click into a directory. One derivation, both ways.
+    let ((px, py, width, height), first, visible) = home.picker_view(area.width, area.height);
     let bx = Rect::new(area.x + px, area.y + py, width, height);
     let w = width;
 
@@ -1426,8 +1428,39 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
     }
     buf.set_stringn(bx.x, bx.y, " choose a directory", w as usize, theme::dim());
 
-    for (i, root) in home.picker.roots.iter().enumerate() {
-        let yy = bx.y + 1 + u16::try_from(i).unwrap_or(0);
+    // The input row. The path is right-anchored inside it, because what you
+    // are typing is the END of a path and that is the part worth seeing.
+    if bx.height > 1 {
+        let inner = usize::from(w.saturating_sub(4));
+        let typed: String = {
+            let n = home.picker.typed.chars().count();
+            home.picker
+                .typed
+                .chars()
+                .skip(n.saturating_sub(inner))
+                .collect()
+        };
+        buf.set_stringn(
+            bx.x + 1,
+            bx.y + 1,
+            format!("› {typed}▏"),
+            w.saturating_sub(1) as usize,
+            theme::selected(),
+        );
+    }
+
+    for (i, root) in home
+        .picker
+        .roots
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+    {
+        let Ok(off) = u16::try_from(i - first) else {
+            break;
+        };
+        let yy = bx.y + 2 + off;
         if yy >= bx.bottom() {
             break;
         }
@@ -1441,20 +1474,15 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
         buf.set_stringn(bx.x + 1, yy, &text, w.saturating_sub(1) as usize, style);
     }
 
-    // `Other…` sits last and takes a typed path.
-    let yy = bx.y + 1 + u16::try_from(home.picker.roots.len()).unwrap_or(0);
-    if yy < bx.bottom() {
-        let sel = home.picker.selected >= home.picker.roots.len();
-        let style = if sel {
-            theme::selected()
-        } else {
-            Style::default()
-        };
-        let text = match &home.picker.typed {
-            Some(t) => format!("{} Other… {t}", if sel { "▸" } else { " " }),
-            None => format!("{} Other…", if sel { "▸" } else { " " }),
-        };
-        buf.set_stringn(bx.x + 1, yy, &text, w.saturating_sub(1) as usize, style);
+    // An empty list is a dead end unless it says so.
+    if home.picker.roots.is_empty() && bx.height > 2 {
+        buf.set_stringn(
+            bx.x + 1,
+            bx.y + 2,
+            "  no directory matches",
+            w.saturating_sub(1) as usize,
+            theme::dim(),
+        );
     }
 }
 
@@ -2202,13 +2230,18 @@ mod tests {
     fn the_picker_overlays_the_list() {
         let mut app = home_app(4, 60, 20);
         crate::app::update(&mut app, Action::PickerOpen);
+        crate::app::update(&mut app, Action::HomeKey(SearchKey::Char('/')));
         let buf = buffer_of(&app, 60, 20);
         let all: String = (0..20)
             .map(|y| line(&buf, y))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(all.contains("choose a directory"), "{all}");
-        assert!(all.contains("Other…"), "{all}");
+        // The input row echoes what is being typed, with a cursor after it.
+        assert!(all.contains("› /▏"), "no input row:\n{all}");
+        // …and the matches for it are listed beneath, `/` being one
+        // directory every machine has.
+        assert!(all.contains("▸ /"), "no match list:\n{all}");
     }
 
     #[test]

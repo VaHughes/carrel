@@ -155,7 +155,7 @@ pub enum Action {
     HomeSearchMode,
     PickerOpen,
     /// Put the picker's highlight on an absolute entry — a mouse click.
-    /// `roots.len()` is the `Other…` row. Clamped by the receiver.
+    /// An index into the picker's match list. Clamped by the receiver.
     PickerSelect(usize),
     PickerChoose,
     PickerCancel,
