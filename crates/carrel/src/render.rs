@@ -69,6 +69,10 @@ pub fn draw_with_links(frame: &mut Frame, app: &App, links: &mut Vec<OscLink>) {
 /// a fast scroll, because that is when whole rows change at once and the runs
 /// are long enough to carry the drift past the next resync.
 ///
+/// Upstream: ratatui#2651 is the bug, ratatui#2721 the fix (unmerged as of
+/// 2026-08-22). **Delete this function when that lands** — it is a workaround,
+/// not a design.
+///
 /// `ForcedWidth` makes the diff skip the trailing cell outright, which leaves
 /// the following cell non-contiguous and forces the `MoveTo` that resyncs the
 /// cursor. The skipped cell needs no clearing: it is the half the emoji glyph
