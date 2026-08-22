@@ -4,6 +4,15 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **Follow a document that is still being written.** `F` pins the view to the end of a
+  growing pipe — an agent writing as it thinks, a build log, a `tail -f` — and any
+  deliberate move away detaches it again. It starts **off**, even for a pipe: nothing moves
+  under you unless you ask, and `G` on a still-growing document is the other way to ask.
+  The footer says `following` while it does.
+- **Copy a code block without touching the mouse.** `]` and `[` step between code blocks —
+  a bar marks the one in focus — and `y` copies it, fence excluded. The most common thing
+  anyone does with an answer from an agent is take the command out of it; that is now two
+  keys rather than a careful drag.
 - **Windows is not coming, and the roadmap says so now.** The port was scoped and costed
   months ago and has been listed as planned ever since. It is declined: there is no Windows
   machine on this project, so a Windows build could only ever be verified by CI, never by

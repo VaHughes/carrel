@@ -716,10 +716,18 @@ fn poll_stream(
         app.reload_from(&buf);
         images.for_file = None;
         diagrams.for_file = None;
+        // Following is applied HERE, not in `update()`: the stream is drained
+        // by the event loop, and no action fires when a chunk lands.
+        if app.following {
+            let h = app.text_h();
+            app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
+        }
     }
     app.piped = Some(buf);
     if done {
         app.streaming = false;
+        // Nothing left to follow; the lamp says `reading` again.
+        app.following = false;
         if app.file.is_none() {
             app.path = "(stdin)".into();
         }

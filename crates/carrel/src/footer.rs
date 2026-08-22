@@ -52,10 +52,15 @@ pub fn of(app: &App) -> Footer {
     if app.matches.is_some() {
         return f('●', "matches", keys::HINT_MATCHES);
     }
+    // Following outranks ambient streaming: it is a mode the reader chose,
+    // and its keys differ — detaching is the thing they will want next.
+    if app.following {
+        return f('◉', "following", keys::HINT_FOLLOWING);
+    }
     // Ambient, not a mode: every mode above outranks it, and the keys are
     // the ordinary reading set — only the lamp says content is arriving.
     if app.streaming {
-        return f('◉', "streaming", keys::HINT_READING);
+        return f('◉', "streaming", keys::HINT_STREAMING);
     }
     f('●', "reading", keys::HINT_READING)
 }
@@ -77,12 +82,22 @@ mod tests {
         a.streaming = true;
         let f = of(&a);
         assert_eq!((f.bulb, f.word), ('◉', "streaming"));
-        assert_eq!(f.hints, keys::HINT_READING, "same keys, different weather");
+        // Streaming used to show the plain reading hints — "same keys,
+        // different weather". It shows its own now, because `F` exists ONLY
+        // while a document is growing and the footer is the one place anyone
+        // would find it.
+        assert_eq!(f.hints, keys::HINT_STREAMING);
+        assert!(f.hints.iter().any(|(k, _)| *k == "F"));
 
         // A mode still outranks the ambient stream…
         update(&mut a, Action::SearchOpen(Direction::Forward));
         assert_eq!(of(&a).word, "searching");
         update(&mut a, Action::SearchKey(SearchKey::Cancel));
+
+        // …and following outranks it, being a mode the reader chose.
+        update(&mut a, Action::FollowToggle);
+        assert_eq!((of(&a).bulb, of(&a).word), ('◉', "following"));
+        update(&mut a, Action::FollowToggle);
 
         // …and EOF hands the lamp back to reading.
         a.streaming = false;

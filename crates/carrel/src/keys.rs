@@ -88,6 +88,10 @@ impl Keys {
             KeyCode::Char('H') => Some(Action::HintsToggle),
             KeyCode::Char('B') => Some(Action::BreadcrumbToggle),
             KeyCode::Char('m') => Some(Action::RenderedToggle),
+            KeyCode::Char('F') => Some(Action::FollowToggle),
+            KeyCode::Char(']') => Some(Action::CodeStep(self.take())),
+            KeyCode::Char('[') => Some(Action::CodeStep(-self.take())),
+            KeyCode::Char('y') => Some(Action::YankBlock),
 
             KeyCode::Char('j') | KeyCode::Down => Some(Action::Scroll(Span::Line, self.take())),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::Scroll(Span::Line, -self.take())),
@@ -291,6 +295,9 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("B", "hide / show the breadcrumb"),
     ("q", "close file (or quit)"),
     ("Q Ctrl-C", "quit"),
+    ("] [", "next / previous code block"),
+    ("y", "copy the code block"),
+    ("F", "follow a growing document"),
     ("§", "mouse"),
     ("drag", "select — copies on release"),
     ("2× click", "select word, 3× the block"),
@@ -333,6 +340,18 @@ pub const HINT_READING: &[(&str, &str)] = &[
     ("h", "more"),
 ];
 pub const HINT_SEARCH_TYPING: &[(&str, &str)] = &[("enter", "jump"), ("esc", "cancel")];
+pub const HINT_STREAMING: &[(&str, &str)] = &[
+    ("j/k", "scroll"),
+    ("F", "follow the end"),
+    ("y", "copy block"),
+    ("h", "more"),
+];
+pub const HINT_FOLLOWING: &[(&str, &str)] = &[
+    ("F", "stop"),
+    ("k", "detach"),
+    ("y", "copy block"),
+    ("h", "more"),
+];
 pub const HINT_MATCHES: &[(&str, &str)] =
     &[("n/N", "next/prev"), ("zz", "center"), ("esc", "clear")];
 pub const HINT_LINK: &[(&str, &str)] = &[("tab", "next"), ("enter", "follow"), ("esc", "clear")];
@@ -701,6 +720,9 @@ mod tests {
             Some(match key {
                 "type" => return None,
                 "j/k" => vec![k('j')],
+                "k" => vec![k('k')],
+                "F" => vec![k('F')],
+                "y" => vec![k('y')],
                 "↑/↓" => vec![code(KeyCode::Down)],
                 "spc" => vec![k(' ')],
                 "/" => vec![k('/')],
@@ -740,6 +762,8 @@ mod tests {
 
         let cases: Vec<Case> = vec![
             ("reading", HINT_READING, reader(false)),
+            ("streaming", HINT_STREAMING, reader(false)),
+            ("following", HINT_FOLLOWING, reader(false)),
             ("search-typing", HINT_SEARCH_TYPING, reader(true)),
             ("matches", HINT_MATCHES, reader(false)),
             ("link", HINT_LINK, reader(false)),
@@ -883,6 +907,9 @@ mod tests {
                 A::ThemeCycle => "T",
                 A::TableToggle => "t",
                 A::RenderedToggle => "m",
+                A::FollowToggle => "F",
+                A::CodeStep(_) => "] [",
+                A::YankBlock => "y",
                 A::HelpToggle => "h F1",
                 A::HintsToggle => "H",
                 A::BreadcrumbToggle => "B",

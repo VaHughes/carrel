@@ -101,6 +101,16 @@ pub struct App {
     /// A stdin stream is still arriving. Presentation only: the footer lamp
     /// and the path label read it; nothing else may.
     pub streaming: bool,
+    /// Pinned to the end of a growing document.
+    ///
+    /// **Deliberately starts OFF, even for a pipe.** Nothing may move under
+    /// the reader unless they asked for it; `F` asks, and so does `G` while
+    /// streaming, because going to the end of a document that is still being
+    /// written is a statement about wanting the end.
+    pub following: bool,
+    /// The code block the block cursor sits on, if any. Paint marks it and
+    /// `y` copies it.
+    pub code_focus: Option<BlockIdx>,
     /// The breadcrumb band is wanted (config/`B`). Whether it actually shows
     /// also needs [`Self::band`] — a document with no headings reserves no
     /// rows for a band that would be permanently blank.
@@ -317,6 +327,8 @@ impl App {
             path,
             file: None,
             streaming: false,
+            following: false,
+            code_focus: None,
             piped: None,
             breadcrumb: true,
             has_headings,
@@ -558,6 +570,40 @@ impl App {
             }
         }
         changed
+    }
+
+    /// The next code block in direction `n`, from wherever the cursor is.
+    ///
+    /// `n == 0` means "the one at or after the current position", which is
+    /// what `y` uses when nothing is focused yet. Stepping is over code
+    /// blocks alone, not every block — `{`/`}` already walk all of them, and
+    /// a motion that stops at every paragraph is useless for the thing this
+    /// exists to serve: getting the command out of an agent's answer.
+    #[must_use]
+    pub fn next_code_block(&self, n: i32) -> Option<BlockIdx> {
+        let is_code = |b: u32| {
+            matches!(
+                self.doc.node_for_block(BlockIdx(b)).kind,
+                carrel_core::NodeKind::CodeBlock { .. }
+            )
+        };
+        let last = u32::try_from(self.doc.block_count()).ok()?.checked_sub(1)?;
+        let here = self
+            .code_focus
+            .map_or_else(|| self.layout.block_at_row(self.view.scroll_row).0, |b| b.0);
+        if n == 0 {
+            return (here..=last).find(|&b| is_code(b)).map(BlockIdx);
+        }
+        let mut at = here;
+        for _ in 0..n.unsigned_abs() {
+            let found = if n < 0 {
+                (0..at).rev().find(|&b| is_code(b))
+            } else {
+                (at.saturating_add(1)..=last).find(|&b| is_code(b))
+            };
+            at = found?;
+        }
+        Some(BlockIdx(at))
     }
 
     /// The one gate every byte-targeted jump goes through: **anything that
@@ -1492,11 +1538,60 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 
         Action::LinkStep(n) => link_step(app, n, h),
 
-        Action::LinkFollow => link_follow(app),
+        Action::LinkFollow => {
+            app.following = false;
+            link_follow(app)
+        }
 
         Action::Back => go_back(app, h),
 
+        Action::FollowToggle => {
+            app.following = !app.following;
+            if app.following {
+                app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
+                app.note = Some("following the end".into());
+            } else {
+                app.note = Some("stopped following".into());
+            }
+            Outcome::Redraw
+        }
+
+        // Stepping the block cursor is a byte-targeted jump like any other,
+        // so it goes through `reveal_byte` — a code block inside a fold must
+        // unfold its way into view rather than being unreachable.
+        Action::CodeStep(n) => {
+            let Some(target) = app.next_code_block(n) else {
+                app.note = Some("no code block that way".into());
+                return Outcome::Redraw;
+            };
+            app.code_focus = Some(target);
+            let byte = app.doc.node_for_block(target).doc.start;
+            app.reveal_byte(byte, h, Where::Top);
+            Outcome::Redraw
+        }
+
+        Action::YankBlock => {
+            let Some(b) = app.code_focus.or_else(|| app.next_code_block(0)) else {
+                app.note = Some("no code block here to copy".into());
+                return Outcome::Redraw;
+            };
+            app.code_focus = Some(b);
+            let node = app.doc.node_for_block(b);
+            let text = app.doc.text[node.doc.start as usize..node.doc.end as usize].to_string();
+            let lines = text.lines().count();
+            app.clipboard = Some(text);
+            app.note = Some(format!(
+                "copied {lines} line{}",
+                if lines == 1 { "" } else { "s" }
+            ));
+            Outcome::Redraw
+        }
+
         Action::Scroll(span, n) => {
+            // Scrolling away from the end is a deliberate move: stop following.
+            if n < 0 {
+                app.following = false;
+            }
             let step = match span {
                 Span::Line => 1,
                 Span::HalfPage => i32::from(h / 2).max(1),
@@ -1508,10 +1603,16 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::GoToStart => {
+            app.following = false;
             app.view.scroll_to(&app.doc, &app.layout, 0, h);
             Outcome::Redraw
         }
         Action::GoToEnd => {
+            // `G` on a document that is still being written means "and keep
+            // me there" — the one place following turns itself on.
+            if app.streaming {
+                app.following = true;
+            }
             app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
             Outcome::Redraw
         }
@@ -1558,6 +1659,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         Action::SearchKey(k) => search_key(app, k, h),
 
         Action::MatchStep(n) => {
+            app.following = false;
             let Some(m) = app.matches.as_mut() else {
                 return Outcome::Idle;
             };
@@ -3005,6 +3107,134 @@ mod tests {
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
         assert_eq!(a.note, None, "a streamed chunk is not a 'reloaded' event");
+    }
+
+    // --- follow mode and the block cursor (2026-08-21) ---
+
+    fn streaming_app() -> App {
+        let mut a = App::new(
+            "(stdin)".into(),
+            Document::parse(&"a line\n\n".repeat(60)),
+            40,
+            10,
+        );
+        a.file = None;
+        a.streaming = true;
+        a
+    }
+
+    #[test]
+    fn following_pins_the_view_to_the_end_as_the_document_grows() {
+        let mut a = streaming_app();
+        update(&mut a, Action::FollowToggle);
+        assert!(a.following);
+        let end = a.layout.max_scroll(a.text_h());
+        assert_eq!(a.view.scroll_row, end, "F goes to the end at once");
+
+        // Appending must keep it there. `poll_stream` applies this in the
+        // event loop; the state half is what a test can reach.
+        a.reload_from(&"a line\n\n".repeat(120));
+        let h = a.text_h();
+        a.view.scroll_to(&a.doc, &a.layout, u32::MAX, h);
+        assert_eq!(a.view.scroll_row, a.layout.max_scroll(h));
+        assert!(a.view.scroll_row > end, "the document really grew");
+    }
+
+    #[test]
+    fn a_deliberate_move_detaches_but_an_incidental_one_does_not() {
+        let mut a = streaming_app();
+        update(&mut a, Action::FollowToggle);
+        assert!(a.following);
+        update(&mut a, Action::Scroll(Span::Line, -1));
+        assert!(!a.following, "scrolling up detaches");
+
+        update(&mut a, Action::FollowToggle);
+        update(&mut a, Action::ThemeCycle);
+        assert!(a.following, "cycling a theme is not a move");
+        update(&mut a, Action::HintsToggle);
+        assert!(a.following, "nor is folding the hints");
+
+        // Scrolling DOWN is not a detach either — it is going the same way.
+        update(&mut a, Action::Scroll(Span::Line, 1));
+        assert!(a.following);
+    }
+
+    #[test]
+    fn g_follows_only_while_the_document_is_still_growing() {
+        let mut a = streaming_app();
+        update(&mut a, Action::GoToEnd);
+        assert!(a.following, "G on a growing document means keep me here");
+
+        let mut b = streaming_app();
+        b.streaming = false;
+        update(&mut b, Action::GoToEnd);
+        assert!(!b.following, "G on a finished document is just a jump");
+    }
+
+    #[test]
+    fn the_code_cursor_steps_code_blocks_only_and_yank_copies_one() {
+        let src = "intro\n\n```sh\nfirst cmd\n```\n\nprose between\n\n```sh\nsecond cmd\n```\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 40, 20);
+        update(&mut a, Action::CodeStep(1));
+        let one = a.code_focus.expect("a first code block");
+        assert!(matches!(
+            a.doc.node_for_block(one).kind,
+            carrel_core::NodeKind::CodeBlock { .. }
+        ));
+
+        update(&mut a, Action::CodeStep(1));
+        let two = a.code_focus.expect("a second code block");
+        assert_ne!(one, two, "it stepped past the prose, not into it");
+        assert!(matches!(
+            a.doc.node_for_block(two).kind,
+            carrel_core::NodeKind::CodeBlock { .. }
+        ));
+
+        update(&mut a, Action::YankBlock);
+        assert_eq!(
+            a.clipboard.take().as_deref(),
+            Some("second cmd\n"),
+            "the block's text, no fence"
+        );
+        assert_eq!(a.note.as_deref(), Some("copied 1 line"));
+
+        // Past the last one, the cursor says so rather than moving.
+        update(&mut a, Action::CodeStep(1));
+        assert_eq!(a.code_focus, Some(two));
+        assert!(a.note.is_some());
+    }
+
+    #[test]
+    fn yank_with_no_cursor_takes_the_block_in_front_of_you() {
+        let src = "intro\n\n```sh\nthe one\n```\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 40, 20);
+        assert!(a.code_focus.is_none());
+        update(&mut a, Action::YankBlock);
+        assert_eq!(a.clipboard.take().as_deref(), Some("the one\n"));
+    }
+
+    #[test]
+    fn a_document_with_no_code_says_so_instead_of_copying_prose() {
+        let mut a = App::new("t.md".into(), Document::parse("just prose\n"), 40, 10);
+        update(&mut a, Action::YankBlock);
+        assert!(a.clipboard.is_none(), "prose is not a code block");
+        assert!(a.note.is_some());
+    }
+
+    /// A folded section must not make a code block unreachable — the standing
+    /// rule for every byte-targeted jump.
+    #[test]
+    fn stepping_to_a_code_block_inside_a_fold_unfolds_it() {
+        let src = "# Head\n\n```sh\nhidden cmd\n```\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 40, 20);
+        update(&mut a, Action::FoldAll);
+        assert!(!a.folded.is_empty());
+        update(&mut a, Action::CodeStep(1));
+        let b = a.code_focus.expect("found it through the fold");
+        assert!(
+            a.layout.height(b) > 0,
+            "the block is still hidden after stepping to it"
+        );
     }
 
     #[test]

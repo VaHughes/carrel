@@ -421,6 +421,43 @@ fn block_area(app: &App, node: &carrel_core::Node, full: Rect) -> Rect {
     Rect::new(x, full.y, full.right() - x, full.height)
 }
 
+/// The block cursor's bar, in the margin the block already leaves to its
+/// left. Decoration, never in the text — the standing rule the fold `▸` and
+/// the table `│` separators both follow.
+fn paint_block_cursor(
+    frame: &mut Frame,
+    app: &App,
+    block: BlockIdx,
+    area: Rect,
+    skip: u32,
+    y: u16,
+) {
+    // `PAD_LEFT` is 2, so there is always a screen column to the left of the
+    // text area to put the bar in — and a code block BLEEDS to the full
+    // width, meaning `area.x == full.x` for exactly the blocks this marks.
+    // Guarding on `area.x > full.x` drew nothing at all (caught in a pty,
+    // not by a frame test).
+    if app.code_focus != Some(block) || area.x == 0 {
+        return;
+    }
+    // `content_height`, not `height`: the trailing gap belongs to the block
+    // but is not part of it, and a bar running into the spacing row reads as
+    // if the block were three lines long when it is one.
+    let rows_here = app
+        .layout
+        .content_height(&app.doc, block)
+        .saturating_sub(skip);
+    for r in 0..u16::try_from(rows_here).unwrap_or(u16::MAX) {
+        let yy = y.saturating_add(r);
+        if yy >= area.bottom() {
+            break;
+        }
+        frame
+            .buffer_mut()
+            .set_stringn(area.x - 1, yy, "┃", 1, crate::theme::marker());
+    }
+}
+
 fn paint_rows(
     frame: &mut Frame,
     app: &App,
@@ -451,6 +488,7 @@ fn paint_rows(
         // painter below sees the block's geometry and none of them has to
         // know the measure exists.
         let area = block_area(app, app.doc.node_for_block(block), full);
+        paint_block_cursor(frame, app, block, area, skip, y);
         // A rendered mermaid diagram paints its art lines instead of the
         // block's wrapped source — properly line-skipped on partial scroll,
         // which text can do and pixels cannot. Wider-than-viewport art

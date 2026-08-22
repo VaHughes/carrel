@@ -121,6 +121,12 @@ pub enum Action {
     /// `m`: flip every mermaid block between rendered box art and source,
     /// like `t` for tables.
     RenderedToggle,
+    /// Pin the view to the end of a document that is still growing.
+    FollowToggle,
+    /// Move the block cursor to the next/previous CODE block.
+    CodeStep(i32),
+    /// Copy the focused code block to the clipboard.
+    YankBlock,
     /// `o`: open the outline picker (or close it, when open).
     OutlineToggle,
     /// Move the outline selection through the FILTERED list. Saturates.
