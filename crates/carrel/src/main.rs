@@ -1414,7 +1414,10 @@ fn paint(
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) -> std::io::Result<()> {
     synchronized(|| {
-        terminal.draw(|f| render::draw_full(f, app, links, images))?;
+        terminal.draw(|f| {
+            render::draw_full(f, app, links, images);
+            render::declare_wide_cells(f);
+        })?;
         emit_osc8(links)
     })
 }

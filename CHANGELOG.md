@@ -4,13 +4,21 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
-- **Scrolling fast no longer leaves stray characters on screen.** Every frame is now sent as
-  one synchronized update (DEC mode 2026), so the terminal draws it whole or not at all.
-  Before, a slow scroll changed few enough cells to land within a single refresh, but a fast
-  one rewrote most of the screen and the update could span a refresh boundary — leaving
-  characters from the previous frame sitting in the gaps of the new one. Reproduced on both
-  ghostty and foot; the bytes carrel wrote were always correct, what was missing was the
-  frame boundary. Terminals that do not know mode 2026 ignore it.
+- **Scrolling fast no longer eats or strands characters.** A line containing an emoji
+  (`⚠️`, `✅` — anything written with a variation selector) could paint as `automatd` instead
+  of `automated`, and drop stray letters elsewhere on the screen. ratatui's cell diff emits
+  the column *underneath* such an emoji immediately after the emoji itself, and the crossterm
+  backend only repositions the cursor when the next cell is not the previous one plus one —
+  so in every terminal that gives the emoji its two columns (ghostty and foot both do) that
+  write landed a column late, and every write after it in the same run followed, each
+  overwriting its right-hand neighbour until the next reposition. It took a fast scroll to
+  see because that is when whole rows change at once and the runs get long. carrel now
+  declares the true width of those cells, which makes the diff skip the covered column and
+  restores the reposition.
+
+- **Every frame is sent as one synchronized update** (DEC mode 2026), so a terminal draws it
+  whole or not at all instead of being free to show a half-applied one. Terminals that do not
+  know the mode ignore it.
 
 - **The man page documents every reader key again**, including how to page, follow a link,
   and go back — basics it had quietly never carried — and a test now fails the build if a

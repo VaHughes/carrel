@@ -56,6 +56,45 @@ pub fn draw_with_links(frame: &mut Frame, app: &App, links: &mut Vec<OscLink>) {
     draw_full(frame, app, links, &mut HashMap::new());
 }
 
+/// Declare the real column width of emoji-presentation cells, so ratatui's
+/// diff skips their trailing column instead of emitting it.
+///
+/// ratatui 0.30.2's diff has a VS16 special case that yields the trailing cell
+/// of an emoji **immediately after** the emoji itself, and
+/// `CrosstermBackend::draw` only emits a `MoveTo` when the next cell is not
+/// `x + 1`. So in any terminal that gives the emoji its two columns — ghostty
+/// and foot both do — that trailing write lands one column late, and every
+/// cell in the rest of that contiguous run follows it, each overwriting its
+/// right-hand neighbour: `automated` paints as `automatd`. It only shows up on
+/// a fast scroll, because that is when whole rows change at once and the runs
+/// are long enough to carry the drift past the next resync.
+///
+/// `ForcedWidth` makes the diff skip the trailing cell outright, which leaves
+/// the following cell non-contiguous and forces the `MoveTo` that resyncs the
+/// cursor. The skipped cell needs no clearing: it is the half the emoji glyph
+/// is drawn over.
+pub fn declare_wide_cells(frame: &mut Frame) {
+    use ratatui::buffer::CellDiffOption;
+
+    let area = frame.area();
+    let buf = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let Some(cell) = buf.cell_mut((x, y)) else {
+                continue;
+            };
+            if !cell.symbol().contains('\u{FE0F}') {
+                continue;
+            }
+            if let Some(w) = std::num::NonZeroU16::new(display_width(cell.symbol()))
+                && w.get() > 1
+            {
+                cell.set_diff_option(CellDiffOption::ForcedWidth(w));
+            }
+        }
+    }
+}
+
 /// Draw with everything: link collection and ready-image protocols.
 ///
 /// The protocol map is the ONLY place `ratatui-image` state reaches painting;
