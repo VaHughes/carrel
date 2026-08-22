@@ -6,7 +6,7 @@
 # Publishing still waits on AUR account registration reopening.
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel-bin
-pkgver=2026.8.21
+pkgver=2026.8.22
 pkgrel=1
 pkgdesc="A quiet place to read your markdown — a terminal markdown reader (prebuilt)"
 arch=('x86_64' 'aarch64')
@@ -16,8 +16,8 @@ provides=('carrel')
 conflicts=('carrel')
 source_x86_64=("$url/releases/download/v$pkgver/carrel-x86_64-unknown-linux-musl.tar.xz")
 source_aarch64=("$url/releases/download/v$pkgver/carrel-aarch64-unknown-linux-musl.tar.xz")
-sha256sums_x86_64=('318cede2295cafda4606b2b8b89d6d2a9788196803366812e40a597530128257')
-sha256sums_aarch64=('1a6bb6c6339a26385326f64762090667ac911211112eae55162027a68d705fe5')
+sha256sums_x86_64=('91fc56bf39efeb080e9e735900256d0b53308da6e6ea1e5977159365eaf1660f')
+sha256sums_aarch64=('8a23633b6b71953b50c6570c4b6bbdad9aed25fe63d7a55ecd83cd39b4132dbd')
 
 # dist FLATTENS every `include` entry to the archive root: `contrib/carrel.1`
 # arrives as `carrel.1`. The flat paths below were verified against the real
