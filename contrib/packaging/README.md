@@ -1,14 +1,17 @@
 # Packaging templates
 
-**All recipes are stamped for v2026.8.17.** `carrel` (AUR) and `carrel.spec` (COPR) build
-from the GitHub **source** tarball, which carries `contrib/` and `Cargo.lock`. `carrel-bin`
-(AUR, prebuilt) is no longer blocked: v2026.8.17 is the first release whose archives carry
-the man page and completions it installs. Note that **dist flattens `include` paths to the
-archive root**: `contrib/carrel.1` arrives as `carrel.1`. AUR publishing itself still waits
-on Arch reopening account registration.
+**The AUR and COPR recipes are stamped for v2026.8.21; `carrel-package.nix` still says
+v2026.8.17.** The stamp is bumped in a commit *after* each tag, because the spec reads its
+version from the commit but fetches `Source0` from the tag tarball. `carrel` (AUR) and
+`carrel.spec` (COPR) build from the GitHub **source** tarball, which carries `contrib/` and
+`Cargo.lock`. `carrel-bin` (AUR, prebuilt) is no longer blocked: v2026.8.17 is the first
+release whose archives carry the man page and completions it installs. Note that **dist
+flattens `include` paths to the archive root**: `contrib/carrel.1` arrives as `carrel.1`.
+AUR publishing itself still waits on Arch reopening account registration.
 
-**`carrel-package.nix`** is the nixpkgs by-name package, ready except for its two hashes,
-which need a machine with nix — the fill-in steps are in the file's header comment.
+**`carrel-package.nix`** is the nixpkgs by-name package, ready except for its two hashes
+and a version bump. The hashes need nix, which `docker run --rm nixos/nix` provides — the
+fill-in steps are in the file's header comment.
 
 ## Checksums
 
