@@ -1,5 +1,5 @@
 # dist (cargo-dist) release configuration — packaging spec §1.
-# Six unix targets; Windows joins after the Q19 minimum-viable port.
+# Six unix targets. Windows was declined outright, 2026-08-21 — not pending.
 # NOTE: `dist init` rewrites this file and DELETES its comments — re-add them
 # after any regeneration (it happened once already, 2026-08-17).
 [workspace]

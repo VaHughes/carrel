@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **Windows is not coming, and the roadmap says so now.** The port was scoped and costed
+  months ago and has been listed as planned ever since. It is declined: there is no Windows
+  machine on this project, so a Windows build could only ever be verified by CI, never by
+  someone reading in a real terminal. Carrel is a Unix program — six targets, and that is
+  the set.
 - **`x^2^` and `H~2~O` now render as superscript and subscript.** The markdown parser only
   recognises `^…^` and `~…~` when they follow a space, so the spellings people actually
   write — attached to the word — stayed on screen as literal carets and tildes. Carrel now

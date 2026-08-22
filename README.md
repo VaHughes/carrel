@@ -102,8 +102,9 @@ cp contrib/carrel.desktop ~/.local/share/applications/
 xdg-mime default carrel.desktop text/markdown
 ```
 
-Windows support is planned (the port is scoped and small); until it lands, no Windows binaries
-are published rather than shipping ones that half-work.
+Carrel is a Unix program. There are no Windows binaries and none are planned — the port was
+scoped, costed, and then declined, because a terminal reader nobody here can sit in front of
+and read with is not one worth publishing.
 
 ## Pipe into it
 
@@ -206,7 +207,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] A sticky heading breadcrumb: the enclosing sections, pinned while you scroll
 - [x] Section folding — `za`/`zM`/`zR` and click-a-heading; search always unfolds its target
 - [x] Packaging: Homebrew, Fedora COPR, the shell installer, crates.io
-- [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`, winget
+- [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 
 ## Contributing
