@@ -92,4 +92,5 @@ Directive block:
 A directive.
 :::
 
-Attached scripts, an upstream pulldown-cmark limitation: x^2^ and H~2~O.
+Attached scripts, which upstream declines and carrel handles: x^2^ and H~2~O.
+Not scripts: ~~struck~~, a path ~/Work, a url https://e.com/a^b^, and x^a b^.

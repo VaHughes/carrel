@@ -4,6 +4,17 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **`x^2^` and `H~2~O` now render as superscript and subscript.** The markdown parser only
+  recognises `^…^` and `~…~` when they follow a space, so the spellings people actually
+  write — attached to the word — stayed on screen as literal carets and tildes. Carrel now
+  handles those itself, and the result is indistinguishable from the spaced form: the
+  markers are consumed, the content is a script run, and search and selection see the same
+  text you do. Deliberately narrow, because `~` and `^` are ordinary characters: the
+  content must be short and unbroken, `~~strikethrough~~` is untouched, a `~/path` after a
+  space is untouched, and URLs are skipped whole.
+- **A URL inside a fenced code block is no longer turned into a link.** Bare `www.` addresses
+  were being linkified everywhere, code samples included, where they came out styled as
+  links and clickable in terminals that support it.
 - **The directory picker is an input now.** `d` opens a box you type a path into, and it
   completes against the filesystem as you go — `~` expands, a trailing `/` lists a
   directory whole, a bare word completes against the one you are standing in, and the

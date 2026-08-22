@@ -198,13 +198,33 @@ fn directive_blocks_are_eaten_by_the_definition_list_extension() {
 }
 
 #[test]
-fn attached_scripts_stay_literal_an_upstream_limitation() {
-    // pulldown-cmark 0.13.4 only recognises ^…^ and ~…~ at a word boundary,
-    // so `x^2^` and `H~2~O` -- the forms people actually write -- do not
-    // parse. Pinned so a bump that fixes it shows up as a failing test.
+fn attached_scripts_render_even_though_upstream_declines_them() {
+    // pulldown-cmark 0.13.4 only opens ^…^ and ~…~ at a word boundary, so
+    // `x^2^` and `H~2~O` -- the forms people actually write -- reach us as
+    // literal text. carrel closes that gap itself (`attached_scripts`), so
+    // the markers are consumed here exactly as the parsed form's are.
     let out = plain();
-    assert!(out.contains("x^2^"), "{out}");
-    assert!(out.contains("H~2~O"), "{out}");
+    assert!(out.contains("x2"), "superscript not applied: {out}");
+    assert!(out.contains("H2O"), "subscript not applied: {out}");
+    assert!(!out.contains("x^2^"), "markers survived: {out}");
+    assert!(!out.contains("H~2~O"), "markers survived: {out}");
+}
+
+/// The other half of the same feature: what must NOT be read as a script.
+#[test]
+fn the_attached_script_scan_leaves_paths_urls_and_strikethrough_alone() {
+    let out = plain();
+    assert!(out.contains("struck"), "strikethrough still renders: {out}");
+    assert!(!out.contains("~~"), "strikethrough markers survived: {out}");
+    assert!(out.contains("~/Work"), "a home path was eaten: {out}");
+    assert!(
+        out.contains("https://e.com/a^b^"),
+        "a url was rewritten: {out}"
+    );
+    assert!(
+        out.contains("x^a b^"),
+        "whitespace content was eaten: {out}"
+    );
 }
 
 // --- whole-document invariants ---

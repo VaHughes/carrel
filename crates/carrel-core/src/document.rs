@@ -85,6 +85,134 @@ pub struct LinkId(pub u32);
 ///
 /// Returns byte ranges into `text` paired with the URL to register. The scheme
 /// is `http://` per GFM — carrel does not guess at transport.
+/// One `x^2^`-style run: where the delimiters sit and what they enclose.
+struct ScriptRun {
+    /// Byte index of the opening delimiter.
+    open: usize,
+    /// The enclosed text, delimiters excluded.
+    content: Range<usize>,
+    /// Byte index of the closing delimiter.
+    close: usize,
+    style: Style,
+}
+
+/// Find `x^2^` / `H~2~O` runs — the attached forms pulldown-cmark declines.
+///
+/// **The rules are narrow on purpose.** `~` and `^` are ordinary characters in
+/// prose, so a permissive scan would eat things that are not scripts at all.
+/// A run is recognised only when every one of these holds:
+///
+/// 1. **The opener is attached to the preceding character**, which must be
+///    alphanumeric. This is precisely the case upstream skips — anything after
+///    whitespace or at the start of a run either already parsed or is
+///    unmatched, and either way is not ours to touch. It is also what keeps
+///    `cp ~/src~/dst` alone: that `~` follows a space.
+/// 2. **The content is non-empty, has no whitespace, and is at most
+///    [`MAX_SCRIPT`] bytes.** Real scripts are short — `2`, `10`, `n+1`. The
+///    whitespace rule alone stops a stray `~` from swallowing half a sentence
+///    to reach the next one.
+/// 3. **The content holds no delimiter of either kind**, so `~~strike~~`
+///    (which upstream owns) and `a^b~c^` cannot be misread.
+/// 4. **`~` is skipped when doubled** — `~~` is strikethrough, upstream's.
+/// 5. **URL-shaped tokens are skipped whole.** A bare `https://…` is NOT
+///    autolinked here (only `www.`, `<…>` and explicit links are), so it
+///    reaches this scan as ordinary text — and turning
+///    `…/wiki/X^2^` into `…/wiki/X2` would hand the reader a URL they cannot
+///    use. Checked against the whitespace-delimited token, not the line.
+///
+/// Runs are returned in order and never overlap: the scan resumes after each
+/// closing delimiter.
+fn attached_scripts(text: &str) -> Vec<ScriptRun> {
+    /// Longest content a script run may enclose. `H~2~O` is 1; a chemical
+    /// formula or an exponent that runs past this is prose with punctuation
+    /// in it, not a script.
+    const MAX_SCRIPT: usize = 16;
+
+    let bytes = text.as_bytes();
+    let mut out: Vec<ScriptRun> = Vec::new();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        let delim = bytes[at];
+        if delim != b'^' && delim != b'~' {
+            at += 1;
+            continue;
+        }
+        // Rule 4: `~~` belongs to strikethrough.
+        if delim == b'~' && (bytes.get(at + 1) == Some(&b'~') || (at > 0 && bytes[at - 1] == b'~'))
+        {
+            at += 1;
+            continue;
+        }
+        // Rule 1: attached to an alphanumeric. `char_indices` is not needed —
+        // a UTF-8 continuation byte is never alphanumeric ASCII, and a
+        // multi-byte letter is not one we can cheaply classify here, so the
+        // conservative answer is the right one.
+        if at == 0 || !bytes[at - 1].is_ascii_alphanumeric() {
+            at += 1;
+            continue;
+        }
+        // Rules 2 and 3: scan for the closer.
+        let start = at + 1;
+        let mut scan = start;
+        let closed = loop {
+            match bytes.get(scan) {
+                None => break None,
+                Some(&c) if c == delim => break Some(scan),
+                // Whitespace, the other delimiter, or too far: not a script.
+                Some(&c) if c.is_ascii_whitespace() || c == b'^' || c == b'~' => break None,
+                Some(_) if scan - start >= MAX_SCRIPT => break None,
+                Some(_) => scan += 1,
+            }
+        };
+        let Some(close) = closed else {
+            at += 1;
+            continue;
+        };
+        if close == start {
+            at += 1; // empty content
+            continue;
+        }
+        // Rule 5, last because it is the only check that walks: a long line
+        // with no whitespace would otherwise cost a token scan per `~` in it.
+        // By here we have a complete candidate, so this runs once per run,
+        // not once per delimiter.
+        if let Some(token_end) = url_token_end(bytes, at) {
+            at = token_end;
+            continue;
+        }
+        out.push(ScriptRun {
+            open: at,
+            content: start..close,
+            close,
+            style: if delim == b'^' {
+                Style::SUPERSCRIPT
+            } else {
+                Style::SUBSCRIPT
+            },
+        });
+        at = close + 1;
+    }
+    out
+}
+
+/// If `at` falls inside a URL-shaped whitespace-delimited token, where that
+/// token ends. Used to skip the token whole — see [`attached_scripts`] rule 5.
+fn url_token_end(bytes: &[u8], at: usize) -> Option<usize> {
+    let start = bytes[..at]
+        .iter()
+        .rposition(u8::is_ascii_whitespace)
+        .map_or(0, |p| p + 1);
+    let end = bytes[at..]
+        .iter()
+        .position(u8::is_ascii_whitespace)
+        .map_or(bytes.len(), |p| at + p);
+    let token = &bytes[start..end];
+    let urlish = token.windows(3).any(|w| w == b"://")
+        || token.starts_with(b"www.")
+        || token.starts_with(b"mailto:");
+    urlish.then_some(end)
+}
+
 fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
     const TRAIL: &[char] = &['?', '!', '.', ',', ':', '*', '_', '~'];
     let bytes = text.as_bytes();
@@ -763,14 +891,27 @@ impl<'a> Builder<'a> {
     /// Skipped entirely inside an explicit link (`current_link` is set) — a
     /// `[label](url)` whose label happens to contain `www.` must not sprout a
     /// second, nested destination.
+    /// True while the open block is a code block.
+    ///
+    /// **Every hand-rolled inline pass must check this.** pulldown-cmark does
+    /// not run its own inline parsing inside a code block, so anything we add
+    /// on top has to decline as well — a URL in a code sample became a live
+    /// OSC 8 link for six days because `push_linkified` did not ask
+    /// (found 2026-08-21, by probing before adding a second such pass).
+    fn in_code_block(&self) -> bool {
+        self.open
+            .as_ref()
+            .is_some_and(|o| matches!(o.kind, NodeKind::CodeBlock { .. }))
+    }
+
     fn push_linkified(&mut self, t: &str, src: Range<usize>) {
-        if self.current_link.is_some() {
+        if self.current_link.is_some() || self.in_code_block() {
             self.push(t, src, ProvKind::Verbatim);
             return;
         }
         let hits = extended_autolinks(t);
         if hits.is_empty() {
-            self.push(t, src, ProvKind::Verbatim);
+            self.push_scripted(t, src, ProvKind::Verbatim);
             return;
         }
         let mut cursor = 0usize;
@@ -779,7 +920,7 @@ impl<'a> Builder<'a> {
                 // The prefix's source range is unknowable byte-for-byte once
                 // we split, so it is Substituted, not Verbatim — the same rule
                 // entity decoding already follows.
-                self.push(&t[cursor..range.start], src.clone(), ProvKind::Substituted);
+                self.push_scripted(&t[cursor..range.start], src.clone(), ProvKind::Substituted);
             }
             let id = LinkId(self.links.len() as u32);
             // Raw, exactly like the explicit-link path above: control
@@ -795,6 +936,42 @@ impl<'a> Builder<'a> {
             self.current_link = prev_link;
             self.style = prev_style;
             cursor = range.end;
+        }
+        if cursor < t.len() {
+            self.push_scripted(&t[cursor..], src, ProvKind::Substituted);
+        }
+    }
+
+    /// `x^2^` and `H~2~O` — the attached forms pulldown-cmark declines.
+    ///
+    /// Upstream only opens `^…^` / `~…~` at a word boundary, so the spellings
+    /// people actually write stay literal (verified against 0.13.4, which is
+    /// still the newest release as of 2026-08-21). This closes exactly that
+    /// gap and nothing wider: the delimiters are consumed and the content
+    /// becomes a `SUPERSCRIPT` / `SUBSCRIPT` run, which is what the parsed
+    /// form already produces — so paint, search, and selection cannot tell
+    /// the two apart.
+    ///
+    /// The scan is deliberately narrow, because `~` and `^` are ordinary
+    /// characters in prose. See [`attached_scripts`] for the rules.
+    fn push_scripted(&mut self, t: &str, src: Range<usize>, kind: ProvKind) {
+        let runs = attached_scripts(t);
+        if runs.is_empty() {
+            self.push(t, src, kind);
+            return;
+        }
+        let mut cursor = 0usize;
+        for run in runs {
+            if run.open > cursor {
+                self.push(&t[cursor..run.open], src.clone(), ProvKind::Substituted);
+            }
+            let prev = self.style;
+            self.style = self.style.insert(run.style);
+            // The delimiters are dropped, so this run's source range is longer
+            // than its text: Substituted, exactly like `Event::Code`.
+            self.push(&t[run.content.clone()], src.clone(), ProvKind::Substituted);
+            self.style = prev;
+            cursor = run.close + 1;
         }
         if cursor < t.len() {
             self.push(&t[cursor..], src, ProvKind::Substituted);
@@ -1089,7 +1266,40 @@ impl<'a> Builder<'a> {
     #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     fn run(mut self) -> Document {
         let parser = Parser::new_ext(self.source, Self::opts());
-        for (ev, src) in parser.into_offset_iter() {
+        // Adjacent `Text` events over contiguous source are ONE text run, and
+        // have to be seen as one: pulldown-cmark splits at a delimiter run it
+        // then declines to use, so `x^2^` arrives as `Text("x^2") Text("^")`.
+        // Any hand-rolled inline pass that looks at one event at a time is
+        // blind to a closer that landed in the next one — which is exactly
+        // how `x^2^` stayed literal while `H~2~O` worked.
+        //
+        // Coalescing is safe because there is nothing between two adjacent
+        // events by definition, and the merged run keeps its `Verbatim`
+        // standing only when the byte lengths still correspond, which `push`
+        // already checks.
+        let mut events = parser.into_offset_iter().peekable();
+        while let Some((ev, src)) = events.next() {
+            let (ev, src) = match ev {
+                Event::Text(first) => {
+                    let mut joined: Option<String> = None;
+                    let mut end = src.end;
+                    while let Some((Event::Text(next), nsrc)) = events.peek() {
+                        if nsrc.start != end {
+                            break;
+                        }
+                        joined
+                            .get_or_insert_with(|| first.to_string())
+                            .push_str(next);
+                        end = nsrc.end;
+                        events.next();
+                    }
+                    match joined {
+                        Some(j) => (Event::Text(j.into()), src.start..end),
+                        None => (Event::Text(first), src),
+                    }
+                }
+                other => (other, src),
+            };
             match ev {
                 // --- containers: contribute indent and structure only ---
                 // The bar is "│ ", two cells, on every row of every enclosed
@@ -2330,12 +2540,77 @@ mod tests {
         );
     }
 
+    /// `x^2^` / `H~2~O`: upstream declines the attached forms, so
+    /// [`attached_scripts`] handles them. The result must be
+    /// INDISTINGUISHABLE from the parsed form — same consumed markers, same
+    /// style run — or paint, search and selection would each need a special
+    /// case.
     #[test]
-    fn an_attached_caret_stays_literal_because_upstream_does_not_parse_it() {
-        // Pins the KNOWN gap so a pulldown-cmark bump that fixes it shows up
-        // as a failing test rather than a silent behaviour change.
-        let doc = Document::parse("x^2^\n");
-        assert!(doc.text.contains("x^2^"), "still literal: {:?}", doc.text);
+    fn attached_scripts_become_the_same_style_runs_as_parsed_ones() {
+        for (src, want, style) in [
+            ("x^2^\n", "x2", Style::SUPERSCRIPT),
+            ("H~2~O\n", "H2O", Style::SUBSCRIPT),
+            ("E = mc^2^ exactly\n", "E = mc2 exactly", Style::SUPERSCRIPT),
+            ("log~2~n\n", "log2n", Style::SUBSCRIPT),
+        ] {
+            let doc = Document::parse(src);
+            assert_eq!(doc.text.trim_end(), want, "for {src:?}");
+            let node = doc.node_for_block(BlockIdx(0));
+            let run = node
+                .inlines
+                .iter()
+                .find(|i| i.style.contains(style))
+                .unwrap_or_else(|| panic!("no {style:?} run for {src:?}"));
+            assert_eq!(&doc.text[run.doc.start as usize..run.doc.end as usize], "2");
+        }
+    }
+
+    /// **`x^2^` arrives as TWO events** — `Text("x^2")` then `Text("^")` —
+    /// because pulldown-cmark splits at a delimiter run it then declines to
+    /// use. A per-event scan cannot see the closer, which is why `H~2~O`
+    /// worked and `x^2^` did not until `run` coalesced adjacent text.
+    #[test]
+    fn adjacent_text_events_over_contiguous_source_are_one_run() {
+        let mut opts = Options::empty();
+        opts.insert(Options::ENABLE_SUPERSCRIPT);
+        let evs: Vec<_> = Parser::new_ext("x^2^\n", opts).collect();
+        let texts = evs.iter().filter(|e| matches!(e, Event::Text(_))).count();
+        assert_eq!(texts, 2, "upstream still splits: {evs:?}");
+        // …and carrel still sees one run through it.
+        assert_eq!(Document::parse("x^2^\n").text.trim_end(), "x2");
+    }
+
+    #[test]
+    fn the_attached_script_scan_declines_what_is_not_a_script() {
+        for src in [
+            "x^^\n",                           // empty
+            "x^a b^\n",                        // whitespace inside
+            "a~verylongsubscripttexthere~b\n", // past MAX_SCRIPT
+            "see ~/Work and ~/Work\n",         // opener not attached
+            "https://e.com/a^b^\n",            // a bare url is plain text here
+            "`x^2^`\n",                        // a code span
+            "```\nx^2^\n```\n",                // a code block
+        ] {
+            let doc = Document::parse(src);
+            assert!(
+                doc.text.contains('^') || doc.text.contains('~'),
+                "markers were eaten in {src:?}: {:?}",
+                doc.text
+            );
+        }
+    }
+
+    /// A `www.` autolink inside a fenced block became a live OSC 8 link for
+    /// six days, because the hand-rolled pass never asked whether it was in
+    /// code. Found 2026-08-21 while adding a second such pass.
+    #[test]
+    fn a_code_block_is_never_linkified() {
+        let doc = Document::parse("```\nsee www.example.com\n```\n");
+        assert!(doc.links.is_empty(), "linkified code: {:?}", doc.links);
+        assert!(doc.text.contains("www.example.com"));
+        // Prose next to it still linkifies.
+        let doc = Document::parse("see www.example.com\n");
+        assert_eq!(doc.links.len(), 1);
     }
 
     // --- GFM extended autolinks (Q16, 2026-08-15) ---
