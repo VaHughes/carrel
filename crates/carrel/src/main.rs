@@ -694,6 +694,7 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
     app.state_dir = carrel::state::state_dir();
     app.hints = config::load_hints().unwrap_or(true);
     app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
+    app.outline_margin = config::load_outline_margin().unwrap_or(false);
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
     app.on_resize(app.cols, app.rows);
@@ -871,6 +872,7 @@ fn run_stdin(rx: &Receiver<String>) -> std::io::Result<()> {
     // No state_dir: a pathless document has no position to resume or save.
     app.hints = config::load_hints().unwrap_or(true);
     app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
+    app.outline_margin = config::load_outline_margin().unwrap_or(false);
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
     app.on_resize(app.cols, app.rows);
     run_loop(terminal, app, images, Some(rx))
@@ -1001,6 +1003,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     app.state_dir = carrel::state::state_dir();
     app.hints = config::load_hints().unwrap_or(true);
     app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
+    app.outline_margin = config::load_outline_margin().unwrap_or(false);
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
     load_resume(&mut app);
@@ -1159,6 +1162,11 @@ fn mouse_action(
         // selection — the reason mouse capture disabled native selection is
         // that this one copies CLEAN text: no bars, no markers, no gutter.
         MouseEventKind::Down(MouseButton::Left) => {
+            // The margin outline owns clicks in its own columns, before the
+            // text does — a click there is a jump, not a selection.
+            if let Some(b) = app.margin_row_at(m.column, m.row) {
+                return Some(Action::OutlineJumpTo(b));
+            }
             let span = doc_span_at(app, m.column, m.row)?;
             match clicks.press(m.column, m.row) {
                 2 => Some(Action::SelectWord(span.0)),

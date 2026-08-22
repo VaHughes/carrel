@@ -121,6 +121,8 @@ pub enum Action {
     /// `m`: flip every mermaid block between rendered box art and source,
     /// like `t` for tables.
     RenderedToggle,
+    /// Jump to a heading block — the margin outline's click.
+    OutlineJumpTo(carrel_core::BlockIdx),
     /// Open a continue-reading row by index.
     HomeResume(usize),
     /// Toggle a bookmark at the current position.

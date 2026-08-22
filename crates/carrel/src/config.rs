@@ -78,7 +78,7 @@ fn parse_key(text: &str, key: &str) -> Option<String> {
 ///
 /// With more than one key, "write only mine" done naively destroys the
 /// others — the original `save_root` rewrote the whole file. (Key count is
-/// now five — root, theme, hints, `max_width`, breadcrumb — the top of the module-doc's stated TOML
+/// now six — root, theme, hints, `max_width`, breadcrumb, `outline_margin` — the top of the module-doc's stated TOML
 /// trigger zone; the format stays hand-rolled while every key is one flat
 /// string, and the trigger becomes real the moment one wants structure.)
 fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
@@ -161,6 +161,26 @@ pub fn load_breadcrumb_in(dir: &Path) -> Option<bool> {
 
 pub fn save_breadcrumb_in(dir: &Path, on: bool) -> std::io::Result<()> {
     upsert_key_in(dir, "breadcrumb", if on { "true" } else { "false" })
+}
+
+/// The saved margin-outline setting. Absent means **off**: it changes the
+/// text column's geometry, and nobody's screen should move on upgrade.
+#[must_use]
+pub fn load_outline_margin() -> Option<bool> {
+    load_outline_margin_in(&config_dir()?)
+}
+
+#[must_use]
+pub fn load_outline_margin_in(dir: &Path) -> Option<bool> {
+    parse_key(
+        &std::fs::read_to_string(dir.join("config")).ok()?,
+        "outline_margin",
+    )
+    .map(|v| v == "true")
+}
+
+pub fn save_outline_margin_in(dir: &Path, on: bool) -> std::io::Result<()> {
+    upsert_key_in(dir, "outline_margin", if on { "true" } else { "false" })
 }
 
 /// The default reading measure, in columns.

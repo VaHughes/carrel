@@ -935,6 +935,7 @@ mod tests {
                 A::HomeFilterMode => "i",
                 A::HomeSearchMode => "/",
                 A::HomeResume(_) => "1 2 3",
+                A::OutlineJumpTo(_) => "click",
                 // Deliberately undocumented: internal or pointer-driven.
                 // (The mouse gestures ARE documented — as prose rows in the
                 // help table's mouse group, not as key bindings.)

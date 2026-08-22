@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **The outline in the margin** (`outline_margin = true`). On a wide terminal the 90-column
+  measure leaves empty space; the section tree can live there instead — every heading,
+  indented by level, the ones you are inside lit, click any of them to jump. It folds away
+  on a terminal without the columns to spare rather than squeezing the measure, and it is
+  off unless you ask, so nothing moves on upgrade.
 - **Continue reading.** Carrel has always remembered where you were in every document and
   never mentioned it. The home screen now opens with what you are part-way through — the
   file, how far in, and roughly how long is left — and `1`, `2`, `3` or a click picks one

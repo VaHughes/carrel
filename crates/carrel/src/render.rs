@@ -114,6 +114,7 @@ pub fn draw_full(
         app.hints,
         app.band(),
         app.max_width,
+        app.gutter_w(),
     );
     // The FULL text area, not the measure column: `paint_rows` gives each
     // block its own column inside it, so a table may be wider than prose
@@ -128,6 +129,7 @@ pub fn draw_full(
     let status_y = area.height.saturating_sub(if app.hints { 2 } else { 1 });
     let status = Rect::new(0, status_y, area.width, 1);
 
+    paint_margin_outline(frame, app, text);
     paint_rows(frame, app, text, links, images);
     paint_scrollbar(frame, app, bar);
     paint_status(frame, app, status);
@@ -469,6 +471,47 @@ fn paint_block_cursor(
         frame
             .buffer_mut()
             .set_stringn(area.x - 1, yy, "┃", 1, crate::theme::marker());
+    }
+}
+
+/// The section tree in the left margin: every heading, indented by level,
+/// with the enclosing ones lit. Only when [`App::gutter_w`] reserved the
+/// columns — paint must ask the same function the layout width came from,
+/// or the text would be wrapped for one geometry and drawn in another.
+fn paint_margin_outline(frame: &mut Frame, app: &App, area: Rect) {
+    let g = app.gutter_w();
+    if g == 0 {
+        return;
+    }
+    let rows = app.margin_rows();
+    let h = usize::from(area.height);
+    let first = crate::app::margin_first(&rows, h);
+    let buf = frame.buffer_mut();
+    for (i, (b, level, here)) in rows.iter().skip(first).take(h).enumerate() {
+        let Ok(off) = u16::try_from(i) else { break };
+        let y = area.y + off;
+        if y >= area.bottom() {
+            break;
+        }
+        let node = app.doc.node_for_block(*b);
+        let label = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
+        let indent = usize::from(level.saturating_sub(1)).min(3);
+        let style = if *here {
+            theme::selected()
+        } else {
+            theme::dim()
+        };
+        if *here {
+            buf.set_stringn(crate::app::PAD_LEFT, y, "▸", 1, theme::lamp());
+        }
+        let text = format!("{}{label}", "  ".repeat(indent));
+        buf.set_stringn(
+            crate::app::PAD_LEFT + 1,
+            y,
+            &text,
+            usize::from(g.saturating_sub(2)),
+            style,
+        );
     }
 }
 
@@ -2516,7 +2559,7 @@ mod tests {
         // The thumb's bottom cell is the bar's bottom cell. The bar keeps
         // the true right edge and its track aligns with the text rows.
         let bar_x = 30 - 1;
-        let th = App::text_size(30, 10, true, app.band(), crate::config::DEFAULT_MEASURE).2;
+        let th = App::text_size(30, 10, true, app.band(), crate::config::DEFAULT_MEASURE, 0).2;
         let (top_y, bottom_y) = (app.text_y(), app.text_y() + th - 1);
         assert_eq!(
             buf[(bar_x, bottom_y)].symbol(),

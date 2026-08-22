@@ -101,6 +101,9 @@ pub struct App {
     /// A stdin stream is still arriving. Presentation only: the footer lamp
     /// and the path label read it; nothing else may.
     pub streaming: bool,
+    /// The section tree in the left margin is wanted (config `outline_margin`).
+    /// Whether it actually shows also needs [`Self::gutter_w`].
+    pub outline_margin: bool,
     /// Bookmarks for the open document, in document order.
     ///
     /// **Doc bytes**, so they survive reflow and resize by construction —
@@ -221,6 +224,9 @@ pub struct App {
 /// both derived from — so wrapping and painting cannot disagree about them.
 /// The scrollbar keeps the true right edge and the status bar the full width;
 /// margins belong to the text alone.
+/// Width of the margin outline when it shows.
+pub const GUTTER_W: u16 = 22;
+
 pub const PAD_LEFT: u16 = 2;
 pub const PAD_RIGHT: u16 = 2;
 pub const PAD_TOP: u16 = 1;
@@ -273,10 +279,11 @@ impl App {
         footer: bool,
         band: bool,
         max_width: u16,
+        gutter: u16,
     ) -> (u16, u16, u16) {
         // Status row always; the lamplight hint row only while showing.
         let chrome = if footer { 2 } else { 1 };
-        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT);
+        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT + gutter);
         (
             measure_of(bleed, max_width),
             bleed,
@@ -316,9 +323,29 @@ impl App {
     /// Hit-testing and paint both come through here. If they ever stop doing
     /// so, a click lands on the wrong byte and no frame test will notice.
     #[must_use]
-    pub const fn text_x(cols: u16, max_width: u16) -> u16 {
-        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT);
-        PAD_LEFT + (bleed - measure_of(bleed, max_width)) / 2
+    pub const fn text_x(cols: u16, max_width: u16, gutter: u16) -> u16 {
+        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT + gutter);
+        PAD_LEFT + gutter + (bleed - measure_of(bleed, max_width)) / 2
+    }
+
+    /// Columns reserved on the left for the margin outline.
+    ///
+    /// Zero unless the reader asked for it (`outline_margin`), the document
+    /// has headings to show, and the terminal can spare the columns —
+    /// **the measure is the point of the reading desk, so the gutter folds
+    /// away rather than squeezing it.**
+    #[must_use]
+    pub fn gutter_w(&self) -> u16 {
+        if !self.outline_margin || !self.has_headings {
+            return 0;
+        }
+        let bleed = self.cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT);
+        let measure = measure_of(bleed, self.max_width);
+        if bleed.saturating_sub(measure) >= GUTTER_W + 4 {
+            GUTTER_W
+        } else {
+            0
+        }
     }
 
     #[must_use]
@@ -328,7 +355,7 @@ impl App {
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
         let (w, bleed, _) =
-            Self::text_size(cols, rows, true, has_headings, config::DEFAULT_MEASURE);
+            Self::text_size(cols, rows, true, has_headings, config::DEFAULT_MEASURE, 0);
         let layout = Layout::with_measure(&doc, bleed.max(1), w.max(1), HashMap::new(), false);
         let mut app = Self {
             screen: Screen::Reader,
@@ -340,6 +367,7 @@ impl App {
             path,
             file: None,
             streaming: false,
+            outline_margin: false,
             marks: Vec::new(),
             diff_ok: false,
             diff_forced: None,
@@ -806,6 +834,50 @@ impl App {
             .collect()
     }
 
+    /// The margin outline's rows: every heading, with its level, and whether
+    /// it encloses where the reader is.
+    ///
+    /// Derived per call from the section index, never stored — the same rule
+    /// the breadcrumb and folding follow, and the reason a fold or a reload
+    /// cannot leave it stale.
+    #[must_use]
+    pub fn margin_rows(&self) -> Vec<(BlockIdx, u8, bool)> {
+        let here = self.doc.section_path(self.view.anchor);
+        self.headings()
+            .into_iter()
+            .map(|b| {
+                let n = self.doc.node_for_block(b);
+                let level = match n.kind {
+                    carrel_core::NodeKind::Heading { level } => level,
+                    _ => 1,
+                };
+                (b, level, here.contains(&n.id))
+            })
+            .collect()
+    }
+
+    /// Which margin-outline row a click at `row` lands on.
+    ///
+    /// **The inverse of the paint**, and it takes its window from the same
+    /// place: `text_y` for the top edge, `text_h` for the height. A hit-test
+    /// that re-derived either would drift, and no frame test would see it.
+    #[must_use]
+    pub fn margin_row_at(&self, col: u16, row: u16) -> Option<BlockIdx> {
+        let g = self.gutter_w();
+        if g == 0 || col < PAD_LEFT || col >= PAD_LEFT + g {
+            return None;
+        }
+        let top = self.text_y();
+        if row < top {
+            return None;
+        }
+        let rows = self.margin_rows();
+        let i = usize::from(row - top);
+        // The painted window starts at the same offset the painter uses.
+        let first = margin_first(&rows, usize::from(self.text_h()));
+        rows.get(first + i).map(|(b, _, _)| *b)
+    }
+
     /// Doc position of a link's first visible run, for revealing it.
     fn link_pos(&self, id: LinkId) -> Option<u32> {
         self.doc
@@ -825,6 +897,7 @@ impl App {
             self.hints,
             self.band(),
             self.max_width,
+            self.gutter_w(),
         )
         .0
         .max(1)
@@ -840,6 +913,7 @@ impl App {
             self.hints,
             self.band(),
             self.max_width,
+            self.gutter_w(),
         )
         .1
         .max(1)
@@ -853,6 +927,7 @@ impl App {
             self.hints,
             self.band(),
             self.max_width,
+            self.gutter_w(),
         )
         .2
         .max(1)
@@ -879,7 +954,7 @@ impl App {
     /// The prose column's left edge for this app's geometry.
     #[must_use]
     pub fn text_x_now(&self) -> u16 {
-        Self::text_x(self.cols, self.max_width)
+        Self::text_x(self.cols, self.max_width, self.gutter_w())
     }
 
     /// The `(start, end)` doc bytes of the grapheme cluster under a pointer
@@ -1081,6 +1156,21 @@ pub fn check_document_size(path: &Path) -> std::io::Result<()> {
 
 /// The one transition. Pure state, no drawing and no terminal.
 ///
+/// The first margin-outline row to paint, so the current section stays on
+/// screen in a document with more headings than rows.
+///
+/// Paint and hit-testing both call this — one derivation, both ways.
+#[must_use]
+pub fn margin_first(rows: &[(BlockIdx, u8, bool)], height: usize) -> usize {
+    if rows.len() <= height {
+        return 0;
+    }
+    let cur = rows.iter().rposition(|(_, _, here)| *here).unwrap_or(0);
+    // Keep the current section roughly centred once the list scrolls.
+    let half = height / 2;
+    cur.saturating_sub(half).min(rows.len() - height)
+}
+
 /// Parse, adapting a raw diff into markdown first when this document is
 /// allowed to be one.
 ///
@@ -1685,6 +1775,19 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             let at = app.marks[i];
             app.reveal_byte(at, h, Where::Top);
             app.note = Some(format!("bookmark {} of {}", i + 1, app.marks.len()));
+            Outcome::Redraw
+        }
+
+        // The margin outline's click. Same destination as the outline
+        // picker's jump, through the same reveal gate.
+        Action::OutlineJumpTo(b) => {
+            let here = app.view.anchor;
+            if app.file.is_some() || app.piped.is_some() {
+                let from = app.file.clone().unwrap_or_default();
+                app.history.push((from, here));
+            }
+            let byte = app.doc.node_for_block(b).doc.start;
+            app.reveal_byte(byte, h, Where::Top);
             Outcome::Redraw
         }
 

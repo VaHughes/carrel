@@ -37,11 +37,11 @@ fn frame(app: &App, cols: u16, rows: u16) -> Buffer {
 #[test]
 fn a_narrow_terminal_is_untouched_by_the_measure() {
     // 80 columns: usable text is 80 - 1 scrollbar - 2 - 2 = 75, under 90.
-    let (prose, bleed, _) = App::text_size(80, 24, true, false, DEFAULT_MEASURE);
+    let (prose, bleed, _) = App::text_size(80, 24, true, false, DEFAULT_MEASURE, 0);
     assert_eq!(prose, 75);
     assert_eq!(prose, bleed, "under the measure the two budgets agree");
     assert_eq!(
-        App::text_x(80, DEFAULT_MEASURE),
+        App::text_x(80, DEFAULT_MEASURE, 0),
         2,
         "just the plain left pad"
     );
@@ -49,26 +49,26 @@ fn a_narrow_terminal_is_untouched_by_the_measure() {
 
 #[test]
 fn a_wide_terminal_pins_prose_to_the_measure_and_centres_it() {
-    let (prose, bleed, _) = App::text_size(200, 24, true, false, DEFAULT_MEASURE);
+    let (prose, bleed, _) = App::text_size(200, 24, true, false, DEFAULT_MEASURE, 0);
     assert_eq!(prose, 90);
     assert_eq!(bleed, 195, "200 - 1 scrollbar - 2 - 2");
     // PAD_LEFT + (195 - 90) / 2 = 2 + 52
-    assert_eq!(App::text_x(200, DEFAULT_MEASURE), 54);
+    assert_eq!(App::text_x(200, DEFAULT_MEASURE, 0), 54);
 }
 
 #[test]
 fn zero_reproduces_the_pre_measure_geometry_exactly() {
-    let (prose, bleed, h) = App::text_size(200, 24, true, false, 0);
+    let (prose, bleed, h) = App::text_size(200, 24, true, false, 0, 0);
     assert_eq!((prose, bleed), (195, 195));
     assert_eq!(h, 20, "24 - 2 chrome - 1 top - 1 bottom");
-    assert_eq!(App::text_x(200, 0), 2, "the old left edge, unmoved");
+    assert_eq!(App::text_x(200, 0, 0), 2, "the old left edge, unmoved");
 }
 
 #[test]
 fn a_terminal_narrower_than_its_own_chrome_does_not_underflow() {
-    let (prose, bleed, h) = App::text_size(1, 1, true, false, DEFAULT_MEASURE);
+    let (prose, bleed, h) = App::text_size(1, 1, true, false, DEFAULT_MEASURE, 0);
     assert_eq!((prose, bleed, h), (0, 0, 0));
-    assert_eq!(App::text_x(1, DEFAULT_MEASURE), 2);
+    assert_eq!(App::text_x(1, DEFAULT_MEASURE, 0), 2);
 }
 
 // --- what binds and what bleeds ---
@@ -161,7 +161,7 @@ fn every_node_kind_is_classified_by_the_layout() {
 fn a_wide_frame_centres_the_prose_column() {
     let app = app_at(200, 12, "hello measure");
     let buf = frame(&app, 200, 12);
-    let x = App::text_x(200, DEFAULT_MEASURE);
+    let x = App::text_x(200, DEFAULT_MEASURE, 0);
     assert_eq!(buf[(x, 1)].symbol(), "h", "text starts at the centred edge");
     assert_eq!(
         buf[(2, 1)].symbol(),
@@ -207,7 +207,7 @@ fn clicking_a_column_lands_on_the_character_painted_there() {
     for cols in [40u16, 60, 80, 100, 140, 200, 300] {
         let app = app_at(cols, 24, PROSE);
         let buf = frame(&app, cols, 24);
-        let x = App::text_x(cols, app.max_width);
+        let x = App::text_x(cols, app.max_width, 0);
         let mut checked = 0;
         for col in x..x + app.text_w() {
             let Some((start, end)) = app.doc_span_at(col, 1) else {
@@ -229,10 +229,84 @@ fn clicking_a_column_lands_on_the_character_painted_there() {
     }
 }
 
+/// The same guard, with the margin outline reserving columns.
+///
+/// **This is the one that makes the gutter safe.** The measure work taught
+/// that hard-coding a left edge offsets every click by the margin and no
+/// frame test can see it; a gutter is the same hazard again, so the same
+/// round trip has to hold with one present.
+#[test]
+fn clicking_a_column_still_lands_on_its_character_with_the_margin_outline() {
+    let src = format!(
+        "# A heading
+
+## Another
+
+{PROSE}"
+    );
+    // The gutter needs 26 spare columns, so it appears from about 118.
+    for cols in [130u16, 160, 200] {
+        let mut app = app_at(cols, 24, &src);
+        app.outline_margin = true;
+        app.on_resize(cols, 24);
+        assert!(app.gutter_w() > 0, "cols={cols}: precondition, no gutter");
+
+        let buf = frame(&app, cols, 24);
+        let x = App::text_x(cols, app.max_width, app.gutter_w());
+        assert!(
+            x >= carrel::app::PAD_LEFT + app.gutter_w(),
+            "the text must start right of the gutter"
+        );
+        let mut checked = 0;
+        for row in [app.text_y(), app.text_y() + 2] {
+            for col in x..x + app.text_w() {
+                let Some((start, end)) = app.doc_span_at(col, row) else {
+                    continue;
+                };
+                let byte = &app.doc.text[start as usize..end as usize];
+                let painted = buf[(col, row)].symbol();
+                if painted == " " {
+                    continue;
+                }
+                assert_eq!(
+                    byte, painted,
+                    "cols={cols} col={col} row={row}: pointer says {byte:?},                      cell paints {painted:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 10, "cols={cols}: checked almost nothing");
+    }
+}
+
+/// A narrow terminal folds the gutter away rather than squeezing the measure.
+#[test]
+fn the_margin_outline_gives_way_before_the_measure_does() {
+    let src = format!(
+        "# A heading
+
+{PROSE}"
+    );
+    let mut app = app_at(80, 24, &src);
+    app.outline_margin = true;
+    app.on_resize(80, 24);
+    assert_eq!(app.gutter_w(), 0, "80 columns has none to spare");
+    let narrow = app.text_w();
+
+    app.on_resize(200, 24);
+    assert!(app.gutter_w() > 0, "200 columns does");
+    assert_eq!(
+        app.text_w(),
+        narrow.max(app.text_w()),
+        "the measure is never squeezed to make room"
+    );
+    assert_eq!(app.text_w(), DEFAULT_MEASURE, "still the full measure");
+}
+
 #[test]
 fn a_click_left_of_the_centred_column_is_outside_the_text() {
     let app = app_at(200, 24, PROSE);
-    let x = App::text_x(200, DEFAULT_MEASURE);
+    let x = App::text_x(200, DEFAULT_MEASURE, 0);
     assert!(x > 2, "precondition: the column is actually inset");
     assert_eq!(app.doc_span_at(x - 1, 1), None, "the margin is not text");
     assert!(app.doc_span_at(x, 1).is_some(), "the first cell is");
@@ -248,7 +322,7 @@ fn a_selection_highlights_the_cells_the_text_is_painted_in() {
     let mut app = app_at(200, 12, "hello measure");
     app.selection = Some(0..5); // "hello"
     let buf = frame(&app, 200, 12);
-    let x = App::text_x(200, DEFAULT_MEASURE);
+    let x = App::text_x(200, DEFAULT_MEASURE, 0);
     // The mouse selection is REVERSED, not a background colour — it has to
     // read as a selection in all 17 palettes and under NO_COLOR.
     let reversed = |c: u16| {
@@ -287,7 +361,7 @@ fn an_osc8_link_is_emitted_at_the_column_its_text_is_painted_in() {
         "the OSC 8 run must start on the cell its first character occupies"
     );
     assert!(
-        link.x >= App::text_x(200, DEFAULT_MEASURE),
+        link.x >= App::text_x(200, DEFAULT_MEASURE, 0),
         "a link cannot start left of the text column"
     );
 }
