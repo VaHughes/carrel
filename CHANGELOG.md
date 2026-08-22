@@ -12,7 +12,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   machine that keeps its files anywhere else. With nothing typed the picker offers the
   current directory and the top level of your home. `$HOME` itself is still never offered
   — scanning all of it descends into every cache and container on the machine — but you
-  can type it. Arrows and `Ctrl-N`/`Ctrl-P` move; `Esc` clears the path, then closes.
+  can type it. `Ctrl-J`/`Ctrl-K` (or `Ctrl-N`/`Ctrl-P`, or the arrows) move; `Esc` clears
+  the path, then closes. The box grows downward from a fixed top edge, so the input row
+  holds still while the match list changes under it.
+- **`Ctrl-J` / `Ctrl-K` move anywhere typing owns the letters** — the directory picker, the
+  name filter, file search, and the outline picker. Bare `j`/`k` have to reach the text in
+  those modes (a path like `/home/jay` is untypeable otherwise), so the vim reflex gets the
+  modifier rather than being sent to find the arrow keys.
 - **Clicking a file no longer scrolls the list.** Scroll down, click something halfway up
   the screen, and the list used to yank itself so the clicked file sat on the very last
   row. The home screen has a real scroll offset now, and it moves only when the selection

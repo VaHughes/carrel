@@ -528,7 +528,8 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
     // path itself (ASCII here, so cells == chars). The contract under test is
     // that a row paints exactly as much of its entry as fits — not that every
     // entry fits.
-    let (_, _, box_w, _) = carrel::home::picker_geometry(cols, rows);
+    let entries = u16::try_from(home.picker_entries()).unwrap();
+    let (_, _, box_w, _) = carrel::home::picker_geometry(cols, rows, entries);
     let budget = usize::from(box_w) - 3;
     let mut checked = 0;
     for row in 0..rows {

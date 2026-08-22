@@ -161,10 +161,17 @@ impl Keys {
 
         // Movement and commit work identically in every mode. So does F1 —
         // a function key can open help even while typing into the filter.
+        //
+        // `Ctrl-J`/`Ctrl-K` are the vim motion for a mode that types: the
+        // bare letters have to reach the text (a path like /home/jay is
+        // untypeable otherwise), so the reflex gets the modifier instead of
+        // being told to go and find the arrow keys. Safe in raw mode —
+        // Enter arrives as `\r`/`KeyCode::Enter`, and the `\n` that would
+        // collide with Ctrl-J only appears when raw mode is OFF.
         match key.code {
             KeyCode::F(1) => return Some(Action::HelpToggle),
-            KeyCode::Char('n') if ctrl => return Some(Action::HomeMove(1)),
-            KeyCode::Char('p') if ctrl => return Some(Action::HomeMove(-1)),
+            KeyCode::Char('n' | 'j') if ctrl => return Some(Action::HomeMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => return Some(Action::HomeMove(-1)),
             KeyCode::Char('c') if ctrl => return Some(Action::Quit),
             KeyCode::Down => return Some(Action::HomeMove(1)),
             KeyCode::Up => return Some(Action::HomeMove(-1)),
@@ -224,8 +231,10 @@ impl Keys {
     pub fn map_outline(key: KeyEvent) -> Option<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('n') if ctrl => Some(Action::OutlineMove(1)),
-            KeyCode::Char('p') if ctrl => Some(Action::OutlineMove(-1)),
+            // Ctrl-J/Ctrl-K for the same reason as `map_home`: the outline
+            // filter types, so the bare letters belong to the text.
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::OutlineMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::OutlineMove(-1)),
             KeyCode::Char('c') if ctrl => Some(Action::Quit),
             KeyCode::Down => Some(Action::OutlineMove(1)),
             KeyCode::Up => Some(Action::OutlineMove(-1)),
@@ -292,7 +301,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
 pub const HOME_HELP: &[(&str, &str)] = &[
     ("§", "moving"),
     ("j k ↓ ↑", "move"),
-    ("Ctrl-N Ctrl-P", "move"),
+    ("Ctrl-N/P Ctrl-J/K", "move while typing"),
     ("gg G Home End", "first / last"),
     ("Enter", "open"),
     // Prose, not a binding — the mouse rows are documented the same way the
@@ -305,7 +314,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("/", "search inside files"),
     ("Esc", "clear filter, then leave it"),
     ("§", "other"),
-    ("d", "choose a directory"),
+    ("d", "directory: type, it completes"),
     ("T", "cycle themes"),
     ("h F1", "this help (normal mode)"),
     ("H", "hide / show the key hints"),
@@ -343,7 +352,9 @@ pub const HINT_HOME_SEARCH: &[(&str, &str)] =
     &[("type", "query"), ("enter", "open first"), ("esc", "back")];
 pub const HINT_HOME_PICKER: &[(&str, &str)] = &[
     ("type", "a path"),
-    ("↑/↓", "move"),
+    // Arrows work too, but a hint's job is the key you would NOT guess —
+    // and in a mode that types, `j`/`k` are the reflex that needs redirecting.
+    ("^j/^k", "move"),
     ("enter", "choose"),
     ("esc", "back"),
 ];
@@ -558,6 +569,48 @@ mod tests {
         );
     }
 
+    /// The cost of making the picker an input: `j`/`k` had to stop moving,
+    /// because a path like `/home/jay` is untypeable if they do. `Ctrl-J` and
+    /// `Ctrl-K` are the vim reflex redirected rather than removed — and they
+    /// must NOT be confused with Enter, which is `\r` in raw mode.
+    #[test]
+    fn ctrl_j_and_ctrl_k_move_wherever_typing_owns_the_letters() {
+        let mut m = Keys::new();
+        for mode in [
+            HomeMode::Picker,
+            HomeMode::Filter,
+            HomeMode::Search,
+            HomeMode::Normal,
+        ] {
+            assert_eq!(
+                m.map_home(ctrl('j'), mode),
+                Some(Action::HomeMove(1)),
+                "{mode:?}"
+            );
+            assert_eq!(
+                m.map_home(ctrl('k'), mode),
+                Some(Action::HomeMove(-1)),
+                "{mode:?}"
+            );
+            assert_eq!(
+                m.map_home(code(KeyCode::Enter), mode),
+                Some(if mode == HomeMode::Picker {
+                    Action::PickerChoose
+                } else {
+                    Action::HomeOpen
+                }),
+                "Ctrl-J must not have eaten Enter in {mode:?}"
+            );
+        }
+        // The outline picker types too, so it gets the same pair.
+        assert_eq!(Keys::map_outline(ctrl('j')), Some(Action::OutlineMove(1)),);
+        assert_eq!(Keys::map_outline(ctrl('k')), Some(Action::OutlineMove(-1)),);
+        assert_eq!(
+            Keys::map_outline(code(KeyCode::Enter)),
+            Some(Action::OutlineJump),
+        );
+    }
+
     #[test]
     fn every_letter_types_into_the_picker_path_and_arrows_move() {
         let mut m = Keys::new();
@@ -646,6 +699,7 @@ mod tests {
                 "type" => return None,
                 "j/k" => vec![k('j')],
                 "↑/↓" => vec![code(KeyCode::Down)],
+                "^j/^k" => vec![ctrl('j')],
                 "spc" => vec![k(' ')],
                 "/" => vec![k('/')],
                 "o" => vec![k('o')],

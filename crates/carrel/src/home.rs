@@ -43,26 +43,31 @@ pub const fn list_geometry(cols: u16, rows: u16, hints: bool) -> (u16, u16) {
     (top, bottom.saturating_sub(top))
 }
 
-/// Entry rows the picker shows, however many directories matched.
+/// The most directory rows the picker will show at once.
 pub const PICKER_ROWS: u16 = 12;
 
 /// The directory picker overlay's box: `(x, y, width, height)`.
 ///
-/// Same contract as [`list_geometry`] and for the same reason — paint centres
-/// the box, and [`Home::picker_row_at`] has to invert exactly that centring to
-/// turn a click into a directory.
+/// Same contract as [`list_geometry`] and for the same reason — paint places
+/// the box, and [`Home::picker_row_at`] has to invert exactly that placement
+/// to turn a click into a directory.
 ///
-/// **The height is fixed and deliberately does not follow the match count.**
-/// The box is centred, so a height that tracked the matches would move the
-/// input row up and down under the cursor on every keystroke — the matches
-/// change with each letter typed. A short list leaves the box part-empty,
-/// which is what every other picker of this kind does.
+/// **The box grows downward from a fixed top edge.** `y` is computed from the
+/// box's FULL height, not its current one, so the title and input rows sit
+/// still while the match list grows and shrinks underneath them — every
+/// letter typed changes the match count, and a centred box of varying height
+/// would walk the input row up and down under the cursor. Anchoring the top
+/// instead of the middle is what lets the height follow the matches at all,
+/// so a two-match list is a small box rather than a mostly-empty one.
 #[must_use]
-pub const fn picker_geometry(cols: u16, screen_rows: u16) -> (u16, u16, u16, u16) {
+pub const fn picker_geometry(cols: u16, screen_rows: u16, entries: u16) -> (u16, u16, u16, u16) {
     let width = clamp_u16(cols.saturating_sub(8), 10, 60);
-    let height = min_u16(PICKER_ROWS + 3, screen_rows);
+    let full = min_u16(PICKER_ROWS + 3, screen_rows);
+    // At least one entry row, so "no directory matches" has somewhere to go.
+    let wanted = if entries == 0 { 1 } else { entries };
+    let height = min_u16(wanted.saturating_add(3), full);
     let x = (cols.saturating_sub(width)) / 2;
-    let y = (screen_rows.saturating_sub(height)) / 2;
+    let y = (screen_rows.saturating_sub(full)) / 2;
     (x, y, width, height)
 }
 
@@ -304,7 +309,8 @@ impl Home {
     /// paint draws from it and [`Self::picker_row_at`] inverts it.
     #[must_use]
     pub fn picker_view(&self, cols: u16, screen_rows: u16) -> ((u16, u16, u16, u16), usize, usize) {
-        let g = picker_geometry(cols, screen_rows);
+        let entries = u16::try_from(self.picker.roots.len()).unwrap_or(u16::MAX);
+        let g = picker_geometry(cols, screen_rows, entries);
         let visible = usize::from(picker_visible(g.3));
         let first = window_first(
             self.picker.top,
@@ -809,12 +815,20 @@ mod tests {
             "the top entry row is the first VISIBLE match"
         );
 
-        // And the box does NOT shrink when the match list does: a height
-        // that followed the matches would move the input row under the
-        // cursor on every keystroke.
-        let tall = h.picker_view(cols, 40).0.3;
-        h.picker.roots.truncate(1);
-        assert_eq!(h.picker_view(cols, 40).0.3, tall, "the box height is fixed");
+        // The box shrinks to its matches, but its TOP EDGE never moves —
+        // otherwise the input row would walk under the cursor as the match
+        // count changed with every letter typed.
+        let (full_box, _, _) = h.picker_view(cols, 40);
+        h.picker.roots.truncate(2);
+        let (small_box, _, _) = h.picker_view(cols, 40);
+        assert_eq!(small_box.1, full_box.1, "the top edge is anchored");
+        assert_eq!(small_box.3, 2 + 3, "the height follows the matches");
+        assert!(small_box.3 < full_box.3, "and it really did shrink");
+
+        // Even with nothing matching, there is a row to say so on.
+        h.picker.roots.clear();
+        assert_eq!(h.picker_view(cols, 40).0.1, full_box.1);
+        assert_eq!(h.picker_view(cols, 40).2, 1, "one row for the message");
     }
 
     #[test]

@@ -1882,7 +1882,7 @@ mod tests {
         let buf = buffer_of(&app, 60, 20);
         let text: String = (0..20).map(|y| line(&buf, y) + "\n").collect();
         assert!(
-            text.contains("choose a directory"),
+            text.contains("directory: type, it completes"),
             "home rows painted:\n{text}"
         );
     }
