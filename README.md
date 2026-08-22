@@ -56,6 +56,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 |---|---|
 | **Search that survives reflow and resize** | Matches are byte offsets into the document, so the match set is bit-for-bit identical at any width and a highlight follows its text across a rewrap. Most readers lose or shift matches when the window resizes; carrel can't, by construction. The headline feature and the hardest part. |
 | **A comfortable measure** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
+| **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, foldable, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
 | **Clickable links** | Real OSC 8 hyperlinks, with graceful degradation. |
 | **Correct emoji and wide characters** | Measured per grapheme cluster, never per codepoint. |
@@ -237,6 +238,9 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] stdin/pager mode — pipe in, stream as it arrives, keep your place
 - [x] A sticky heading breadcrumb: the enclosing sections, pinned while you scroll
 - [x] Section folding — `za`/`zM`/`zR` and click-a-heading; search always unfolds its target
+- [x] Diffs read as documents — `git show | carrel`, foldable per file, and git's pager
+- [x] Follow mode for a growing pipe; copy a code block with `y`
+- [x] Continue reading, bookmarks, backlinks, the outline in the margin
 - [x] Packaging: Homebrew, Fedora COPR, the shell installer, crates.io
 - [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
