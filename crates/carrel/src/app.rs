@@ -101,6 +101,9 @@ pub struct App {
     /// A stdin stream is still arriving. Presentation only: the footer lamp
     /// and the path label read it; nothing else may.
     pub streaming: bool,
+    /// The backlinks pane, while it is open. `None` means closed; the rows
+    /// stream in from `links.rs` and the event loop appends them.
+    pub backlinks: Option<Backlinks>,
     /// The section tree in the left margin is wanted (config `outline_margin`).
     /// Whether it actually shows also needs [`Self::gutter_w`].
     pub outline_margin: bool,
@@ -367,6 +370,7 @@ impl App {
             path,
             file: None,
             streaming: false,
+            backlinks: None,
             outline_margin: false,
             marks: Vec::new(),
             diff_ok: false,
@@ -1171,6 +1175,15 @@ pub fn margin_first(rows: &[(BlockIdx, u8, bool)], height: usize) -> usize {
     cur.saturating_sub(half).min(rows.len() - height)
 }
 
+/// The backlinks pane's state: what has arrived, and where the cursor is.
+#[derive(Debug, Default)]
+pub struct Backlinks {
+    pub rows: Vec<crate::links::Backlink>,
+    pub selected: usize,
+    /// The query finished — the difference between "none yet" and "none".
+    pub done: bool,
+}
+
 /// Parse, adapting a raw diff into markdown first when this document is
 /// allowed to be one.
 ///
@@ -1780,6 +1793,54 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 
         // The margin outline's click. Same destination as the outline
         // picker's jump, through the same reveal gate.
+        // Backlinks: who points here. Opening starts a query; the event
+        // loop streams rows in. Toggling closes it.
+        Action::BacklinksToggle => {
+            if app.backlinks.is_some() {
+                app.backlinks = None;
+            } else if app.file.is_none() {
+                app.note = Some("a piped document has no path to link to".into());
+            } else {
+                app.backlinks = Some(Backlinks::default());
+            }
+            Outcome::Redraw
+        }
+        Action::BacklinksMove(n) => {
+            if let Some(b) = app.backlinks.as_mut() {
+                let last = b.rows.len().saturating_sub(1);
+                b.selected = if n < 0 {
+                    b.selected.saturating_sub(n.unsigned_abs() as usize)
+                } else {
+                    b.selected
+                        .saturating_add(n.unsigned_abs() as usize)
+                        .min(last)
+                };
+            }
+            Outcome::Redraw
+        }
+        Action::BacklinksOpen => {
+            let Some(path) = app
+                .backlinks
+                .as_ref()
+                .and_then(|b| b.rows.get(b.selected))
+                .map(|r| r.path.clone())
+            else {
+                return Outcome::Idle;
+            };
+            app.backlinks = None;
+            let here = app.view.anchor;
+            if let Some(from) = app.file.clone() {
+                app.history.push((from, here));
+            }
+            match app.open_path(&path) {
+                Ok(()) => Outcome::Redraw,
+                Err(e) => {
+                    app.note = Some(format!("cannot open {}: {e}", path.display()));
+                    Outcome::Redraw
+                }
+            }
+        }
+
         Action::OutlineJumpTo(b) => {
             let here = app.view.anchor;
             if app.file.is_some() || app.piped.is_some() {

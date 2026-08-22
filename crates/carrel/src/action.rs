@@ -121,6 +121,12 @@ pub enum Action {
     /// `m`: flip every mermaid block between rendered box art and source,
     /// like `t` for tables.
     RenderedToggle,
+    /// Open or close the backlinks pane.
+    BacklinksToggle,
+    /// Move the backlinks cursor.
+    BacklinksMove(i32),
+    /// Open the selected backlink.
+    BacklinksOpen,
     /// Jump to a heading block — the margin outline's click.
     OutlineJumpTo(carrel_core::BlockIdx),
     /// Open a continue-reading row by index.

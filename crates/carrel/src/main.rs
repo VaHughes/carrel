@@ -226,6 +226,56 @@ fn run_stdin_or_fallback() -> ExitCode {
 /// A document at 0% is one that was opened and not read; at 100% it is
 /// finished. Neither is something to continue, and offering them would make
 /// the list noise rather than an answer.
+/// Start, feed, or stop the backlinks query as the pane opens and closes.
+///
+/// The scan the home screen builds is not available here — a document opened
+/// directly never had one — so the walk is rooted at the document's own
+/// directory, which is also the only place a relative link could point.
+fn drive_backlinks(
+    app: &mut App,
+    rx: &mut Option<Receiver<carrel::links::Msg>>,
+    started_for: &mut Option<PathBuf>,
+) {
+    use std::sync::mpsc::TryRecvError;
+
+    // Closed: drop the receiver, which stops the thread on its next send.
+    let Some(_) = app.backlinks.as_ref() else {
+        *rx = None;
+        *started_for = None;
+        return;
+    };
+    let Some(file) = app.file.clone() else { return };
+
+    if started_for.as_deref() != Some(file.as_path()) {
+        let root = file
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let (entries, _) = scan::walk_blocking(&root);
+        *rx = Some(carrel::links::spawn(entries, file.clone(), 0));
+        *started_for = Some(file);
+        return;
+    }
+
+    let Some(chan) = rx.as_ref() else { return };
+    loop {
+        match chan.try_recv() {
+            Ok(carrel::links::Msg::Found(b, _)) => {
+                if let Some(pane) = app.backlinks.as_mut() {
+                    pane.rows.push(b);
+                }
+            }
+            Ok(carrel::links::Msg::Done(_)) | Err(TryRecvError::Disconnected) => {
+                if let Some(pane) = app.backlinks.as_mut() {
+                    pane.done = true;
+                }
+                *rx = None;
+                break;
+            }
+            Err(TryRecvError::Empty) => break,
+        }
+    }
+}
+
 /// Fill the home screen's continue-reading band.
 ///
 /// Read once at startup: it is a small file, and a list that changed under
@@ -723,8 +773,13 @@ fn run_loop(
     let mut clicks = Clicks::default();
     let mut reloader = Reloader::new();
     let mut diagrams = Diagrams::new();
+    // The backlinks query: started when the pane opens, dropped when it
+    // closes — which is what stops an abandoned walk on its next send.
+    let mut backlinks: Option<Receiver<carrel::links::Msg>> = None;
+    let mut backlinks_for: Option<PathBuf> = None;
 
     loop {
+        drive_backlinks(&mut app, &mut backlinks, &mut backlinks_for);
         images.sync(&mut app);
         images.drain(&mut app);
         diagrams.sync(&app);
@@ -743,7 +798,9 @@ fn run_loop(
             let Ok(ev) = event::read() else { break };
             match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    let action = if app.outline.is_some() {
+                    let action = if app.backlinks.is_some() {
+                        Keys::map_backlinks(k)
+                    } else if app.outline.is_some() {
                         Keys::map_outline(k)
                     } else {
                         keys.map(k, app.searching())

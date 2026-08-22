@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **What links here** (`L`). Reading a note and want to know which other notes point at it?
+  `L` lists them, with the line each link sits on; enter opens one. It understands both
+  `[[wikilinks]]` and ordinary markdown links, resolves them the way the reader does, and a
+  document that merely says the word is not a link. There is no index to go stale — it is a
+  question asked when you ask it.
 - **A stated position on remote documents: carrel will not fetch them.** Other readers will
   open a URL you hand them; carrel does not, and now says so in the README as a decision
   rather than leaving it as an absence. It depends on no HTTP client and no TLS library, so

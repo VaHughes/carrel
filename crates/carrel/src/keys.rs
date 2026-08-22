@@ -93,6 +93,7 @@ impl Keys {
             KeyCode::Char('m') => Some(Action::MarkToggle),
             KeyCode::Char('\'') => Some(Action::MarkNext),
             KeyCode::Char('F') => Some(Action::FollowToggle),
+            KeyCode::Char('L') => Some(Action::BacklinksToggle),
             KeyCode::Char(']') => Some(Action::CodeStep(self.take())),
             KeyCode::Char('[') => Some(Action::CodeStep(-self.take())),
             KeyCode::Char('y') => Some(Action::YankBlock),
@@ -236,6 +237,23 @@ impl Keys {
         }
     }
 
+    /// Backlinks-pane bindings. A short list of files: move, open, close.
+    /// No filter, so the letters stay free — `L` closes it the way it opened.
+    #[must_use]
+    pub fn map_backlinks(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::BacklinksMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::BacklinksMove(-1)),
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::BacklinksMove(1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::BacklinksMove(-1)),
+            KeyCode::Enter => Some(Action::BacklinksOpen),
+            KeyCode::Char('L' | 'q') | KeyCode::Esc => Some(Action::BacklinksToggle),
+            _ => None,
+        }
+    }
+
     /// Outline-picker bindings: the home screen's idiom exactly — printable
     /// keys type, arrows and Ctrl-N/P move, Enter commits, Esc backs out.
     #[must_use]
@@ -303,6 +321,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("q", "close file (or quit)"),
     ("Q Ctrl-C", "quit"),
     ("m '", "bookmark here / go to next"),
+    ("L", "what links here"),
     ("] [", "next / previous code block"),
     ("y", "copy the code block"),
     ("F", "follow a growing document"),
@@ -894,6 +913,7 @@ mod tests {
     /// fails to compile until someone decides which it is — help that lies
     /// is worse than no help.
     #[test]
+    #[allow(clippy::too_many_lines)] // one arm per Action; that IS the test
     fn every_action_is_documented_or_deliberately_not() {
         use crate::action::Action as A;
         // Same key documenting two variants (reader + home) is the point.
@@ -936,6 +956,8 @@ mod tests {
                 A::HomeSearchMode => "/",
                 A::HomeResume(_) => "1 2 3",
                 A::OutlineJumpTo(_) => "click",
+                A::BacklinksToggle => "L",
+                A::BacklinksMove(_) | A::BacklinksOpen => "L",
                 // Deliberately undocumented: internal or pointer-driven.
                 // (The mouse gestures ARE documented — as prose rows in the
                 // help table's mouse group, not as key bindings.)

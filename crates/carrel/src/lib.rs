@@ -22,6 +22,7 @@ pub mod home;
 pub mod images;
 pub mod keys;
 pub mod layout;
+pub mod links;
 pub mod math_art;
 pub mod plain;
 pub mod render;

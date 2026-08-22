@@ -147,11 +147,93 @@ pub fn draw_full(
     if app.outline.is_some() {
         paint_outline(frame, app);
     }
+    if app.backlinks.is_some() {
+        paint_backlinks(frame, app);
+    }
 }
 
 /// The outline picker: headings indented by level, the selection styled,
 /// the list window scrolled to keep the selection visible. Content derives
 /// from the document every frame — nothing here can be stale.
+/// The backlinks pane: which documents point at this one.
+///
+/// Same overlay shape as the outline picker — a centred box, a title, a
+/// selected row — because it answers the same kind of question and a reader
+/// should not have to learn two of them.
+fn paint_backlinks(frame: &mut Frame, app: &App) {
+    let Some(bl) = &app.backlinks else { return };
+    let area = frame.area();
+    if area.width < 24 || area.height < 6 {
+        return;
+    }
+    let w = 64u16.min(area.width.saturating_sub(4));
+    let rows_needed = u16::try_from(bl.rows.len() * 2).unwrap_or(u16::MAX);
+    let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
+    let x = (area.width - w) / 2;
+    let y = (area.height - h) / 2;
+    let buf = frame.buffer_mut();
+
+    let blank = " ".repeat(w as usize);
+    for py in y..y + h {
+        buf.set_stringn(x, py, &blank, w as usize, theme::status());
+    }
+    let bar = "─".repeat(w as usize);
+    buf.set_stringn(
+        x,
+        y,
+        format!("┌ what links here {bar}"),
+        w as usize,
+        theme::status(),
+    );
+    let foot = if bl.done {
+        format!("└ {} found · ↵ open · esc close {bar}", bl.rows.len())
+    } else {
+        format!("└ looking… {bar}")
+    };
+    buf.set_stringn(x, y + h - 1, foot, w as usize, theme::status());
+
+    if bl.rows.is_empty() {
+        let msg = if bl.done {
+            "Nothing links to this document."
+        } else {
+            "Looking…"
+        };
+        buf.set_stringn(x + 2, y + 1, msg, w as usize - 2, theme::status());
+        return;
+    }
+
+    let inner = usize::from(h.saturating_sub(2));
+    let per = 2usize;
+    let visible = (inner / per).max(1);
+    let first = bl.selected.saturating_sub(visible.saturating_sub(1));
+    for (i, row) in bl.rows.iter().skip(first).take(visible).enumerate() {
+        let py = y + 1 + u16::try_from(i * per).unwrap_or(u16::MAX);
+        if py >= y + h - 1 {
+            break;
+        }
+        let sel = first + i == bl.selected;
+        let style = if sel {
+            theme::selected()
+        } else {
+            theme::status()
+        };
+        let name = row.path.file_name().map_or_else(
+            || row.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        buf.set_stringn(
+            x + 1,
+            py,
+            format!("{} {name}", if sel { "▸" } else { " " }),
+            w as usize - 1,
+            style,
+        );
+        if py + 1 < y + h - 1 {
+            buf.set_stringn(x + 4, py + 1, &row.line, w as usize - 5, theme::dim());
+        }
+    }
+}
+
 fn paint_outline(frame: &mut Frame, app: &App) {
     let Some(picker) = &app.outline else { return };
     let matches = app.outline_matches();
