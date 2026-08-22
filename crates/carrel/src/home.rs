@@ -29,7 +29,7 @@ pub const BANNER_MIN_ROWS: u16 = 17;
 /// and the active-root line. Below it: the status row, plus the lamplight
 /// hint row while it shows.
 #[must_use]
-pub const fn list_geometry(cols: u16, rows: u16, hints: bool) -> (u16, u16) {
+pub const fn list_geometry(cols: u16, rows: u16, hints: bool, resume: u16) -> (u16, u16) {
     // Banner: lamp row, 3 shade rows, desk, then the tagline and a blank.
     // Small terminal: just the wordmark. Both are followed by the root line.
     let header = if cols >= BANNER_MIN_COLS && rows >= BANNER_MIN_ROWS {
@@ -37,10 +37,18 @@ pub const fn list_geometry(cols: u16, rows: u16, hints: bool) -> (u16, u16) {
     } else {
         1
     };
-    let top = header + 1;
+    let top = header + 1 + resume_band(resume);
     let chrome = if hints { 2 } else { 1 };
     let bottom = rows.saturating_sub(chrome);
     (top, bottom.saturating_sub(top))
+}
+
+/// Rows the continue-reading band costs: a label, its entries, and a blank.
+/// Zero when there is nothing to resume, so a first run looks exactly as it
+/// always has.
+#[must_use]
+pub const fn resume_band(resume: u16) -> u16 {
+    if resume == 0 { 0 } else { resume + 2 }
 }
 
 /// The most directory rows the picker will show at once.
@@ -136,6 +144,45 @@ pub enum HomeMode {
     Search,
 }
 
+/// One "continue reading" row: a document you were part-way through.
+#[derive(Clone, Debug)]
+pub struct Resume {
+    pub path: PathBuf,
+    /// What the status bar would have said, carried in the state file so a
+    /// list of these costs no file reads.
+    pub percent: u16,
+    pub minutes_left: Option<usize>,
+}
+
+/// How many documents the continue list offers. A reading desk shows what
+/// you are in the middle of, not a history.
+pub const RESUME_ROWS: usize = 3;
+
+/// A continue row for a remembered position, or `None` if it is not one.
+///
+/// **A document at 0% was opened and not read; at 100% it is finished.**
+/// Neither is something to continue, and offering them would make the list
+/// a history rather than an answer. The bounds are 1%–99%.
+///
+/// Pure so the rule is testable: the caller does the `is_file` check, which
+/// is the only part that needs a disk.
+#[must_use]
+pub fn resume_from(path: PathBuf, permille: Option<u16>, words: Option<u32>) -> Option<Resume> {
+    let permille = permille?;
+    if !(10..=990).contains(&permille) {
+        return None;
+    }
+    let left = f64::from(words.unwrap_or(0)) * (1.0 - f64::from(permille) / 1000.0)
+        / f64::from(u32::try_from(crate::app::READING_WPM).unwrap_or(200));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let minutes = left.round() as usize;
+    Some(Resume {
+        path,
+        percent: permille / 10,
+        minutes_left: (minutes >= 1).then_some(minutes),
+    })
+}
+
 /// The directory picker overlay: an input line and the directories it matches.
 ///
 /// There is no fixed menu of roots any more and no `Other…` row. Typing IS
@@ -173,6 +220,12 @@ pub struct Home {
     pub unreadable: usize,
     /// A one-line note for the status bar, e.g. a vanished saved root.
     pub note: Option<String>,
+    /// Documents with a remembered reading position, most recent first.
+    ///
+    /// Injected by `main.rs` exactly as the config dir is — the state layer
+    /// is never reached from library code, because a test once wrote into
+    /// the developer's real config doing precisely that.
+    pub resume: Vec<Resume>,
     /// The content-search query ([`HomeMode::Search`]).
     pub query: String,
     /// Streamed results for `query`. The event loop owns the generation
@@ -209,6 +262,7 @@ impl Home {
             scanning: true,
             unreadable: 0,
             note: None,
+            resume: Vec::new(),
             query: String::new(),
             hits: Vec::new(),
             hit_selected: 0,
@@ -361,6 +415,36 @@ impl Home {
         self.picker.top = first;
     }
 
+    /// How many continue-reading rows this screen shows.
+    #[must_use]
+    pub fn resume_shown(&self) -> u16 {
+        u16::try_from(self.resume.len().min(RESUME_ROWS)).unwrap_or(0)
+    }
+
+    /// Which continue-reading row the pointer is over.
+    ///
+    /// The band sits between the root line and the file list; its rows are
+    /// numbered on screen, so a click and the number key reach the same
+    /// document.
+    #[must_use]
+    pub fn resume_row_at(&self, row: u16, cols: u16, rows: u16) -> Option<usize> {
+        let shown = self.resume_shown();
+        if shown == 0 {
+            return None;
+        }
+        let header = if cols >= BANNER_MIN_COLS && rows >= BANNER_MIN_ROWS {
+            7
+        } else {
+            1
+        };
+        // header, the root line, then the band's own label row.
+        let first = header + 2;
+        if row < first || row >= first + shown {
+            return None;
+        }
+        Some(usize::from(row - first))
+    }
+
     /// Which list index the pointer is over, or `None` off the list.
     ///
     /// **The inverse of the paint**, and it must stay that way: both this and
@@ -372,7 +456,7 @@ impl Home {
     /// context line), so a click on either one selects that hit.
     #[must_use]
     pub fn row_at(&self, row: u16, cols: u16, rows: u16, hints: bool) -> Option<usize> {
-        let (top, height) = list_geometry(cols, rows, hints);
+        let (top, height) = list_geometry(cols, rows, hints, self.resume_shown());
         if height == 0 || row < top || row >= top.saturating_add(height) {
             return None;
         }
@@ -646,19 +730,19 @@ mod tests {
 
     #[test]
     fn the_list_starts_under_the_banner_and_stops_above_the_chrome() {
-        let (top, h) = list_geometry(100, 40, true);
+        let (top, h) = list_geometry(100, 40, true, 0);
         assert_eq!(top, 8, "7 banner rows + the root line");
         assert_eq!(h, 40 - 2 - 8, "status + hint row below");
         // Hiding the hints gives the list one more row.
-        assert_eq!(list_geometry(100, 40, false).1, h + 1);
+        assert_eq!(list_geometry(100, 40, false, 0).1, h + 1);
         // Too small for the banner: just the wordmark and the root line.
-        assert_eq!(list_geometry(40, 10, true).0, 2);
+        assert_eq!(list_geometry(40, 10, true, 0).0, 2);
     }
 
     #[test]
     fn a_click_on_the_first_row_selects_the_first_file() {
         let h = home();
-        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2);
+        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2, 0);
         assert_eq!(h.row_at(top, BIG.0, BIG.1, BIG.2), Some(0));
         assert_eq!(h.row_at(top + 1, BIG.0, BIG.1, BIG.2), Some(1));
         assert_eq!(h.row_at(top + 2, BIG.0, BIG.1, BIG.2), Some(2));
@@ -667,7 +751,7 @@ mod tests {
     #[test]
     fn clicks_off_the_list_are_not_hits() {
         let h = home();
-        let (top, height) = list_geometry(BIG.0, BIG.1, BIG.2);
+        let (top, height) = list_geometry(BIG.0, BIG.1, BIG.2, 0);
         assert_eq!(h.row_at(top - 1, BIG.0, BIG.1, BIG.2), None, "the banner");
         assert_eq!(
             h.row_at(top + height, BIG.0, BIG.1, BIG.2),
@@ -686,7 +770,7 @@ mod tests {
         let mut h = home();
         h.filter = "no-such-file".into();
         h.refilter();
-        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2);
+        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2, 0);
         assert_eq!(h.row_at(top, BIG.0, BIG.1, BIG.2), None);
     }
 
@@ -698,7 +782,7 @@ mod tests {
         let many: Vec<Entry> = (0..50).map(|i| e(&format!("f{i}.md"), i)).collect();
         let mut h = Home::new(PathBuf::from("/root"), many);
         let (cols, rows, hints) = (100u16, 14u16, true);
-        let (top, height) = list_geometry(cols, rows, hints);
+        let (top, height) = list_geometry(cols, rows, hints, 0);
         h.selected = h.filtered.len() - 1; // scrolled to the bottom
         h.clamp_scroll(usize::from(height));
         let first = h.selected - (usize::from(height) - 1);
@@ -719,7 +803,7 @@ mod tests {
         let many: Vec<Entry> = (0..50).map(|i| e(&format!("f{i}.md"), i)).collect();
         let mut h = Home::new(PathBuf::from("/root"), many);
         let (cols, rows, hints) = (100u16, 14u16, true);
-        let (top, height) = list_geometry(cols, rows, hints);
+        let (top, height) = list_geometry(cols, rows, hints, 0);
         let hh = usize::from(height);
 
         // Scroll down past a screenful, the way the wheel does.
@@ -768,7 +852,7 @@ mod tests {
                 first_line: "b".into(),
             },
         ];
-        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2);
+        let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2, 0);
         assert_eq!(h.row_at(top, BIG.0, BIG.1, BIG.2), Some(0), "name row");
         assert_eq!(
             h.row_at(top + 1, BIG.0, BIG.1, BIG.2),
@@ -1089,6 +1173,62 @@ mod tests {
         }
         std::fs::write(d.path().join("note.md"), "x").unwrap();
         d
+    }
+
+    // --- continue reading (2026-08-21) ---
+
+    #[test]
+    fn only_a_document_you_are_part_way_through_is_worth_continuing() {
+        let p = || PathBuf::from("/x/doc.md");
+        assert!(
+            resume_from(p(), Some(0), Some(1000)).is_none(),
+            "opened and not read"
+        );
+        assert!(
+            resume_from(p(), Some(1000), Some(1000)).is_none(),
+            "finished"
+        );
+        assert!(
+            resume_from(p(), None, None).is_none(),
+            "an old-format entry"
+        );
+
+        let r = resume_from(p(), Some(640), Some(4000)).expect("part way through");
+        assert_eq!(r.percent, 64);
+        // 36% of 4000 words at 200 wpm ≈ 7 minutes.
+        assert_eq!(r.minutes_left, Some(7));
+
+        // Under a minute says nothing rather than "0 min left".
+        let r = resume_from(p(), Some(990), Some(100)).expect("nearly done");
+        assert_eq!(r.minutes_left, None);
+    }
+
+    #[test]
+    fn the_continue_band_costs_rows_only_when_it_has_something_to_say() {
+        assert_eq!(resume_band(0), 0, "a first run looks exactly as it did");
+        assert_eq!(resume_band(2), 4, "a label, two rows, and a blank");
+        let (top_without, h_without) = list_geometry(100, 40, true, 0);
+        let (top_with, h_with) = list_geometry(100, 40, true, 2);
+        assert_eq!(top_with, top_without + 4);
+        assert_eq!(h_with, h_without - 4, "the band takes from the list");
+    }
+
+    #[test]
+    fn a_click_on_a_continue_row_resolves_to_that_row() {
+        let mut h = home();
+        h.resume = vec![
+            resume_from(PathBuf::from("/a.md"), Some(500), Some(100)).unwrap(),
+            resume_from(PathBuf::from("/b.md"), Some(500), Some(100)).unwrap(),
+        ];
+        assert_eq!(h.resume_shown(), 2);
+        // Banner (7) + root line (1) + the band's label row = first entry.
+        assert_eq!(h.resume_row_at(9, 100, 40), Some(0));
+        assert_eq!(h.resume_row_at(10, 100, 40), Some(1));
+        assert_eq!(h.resume_row_at(8, 100, 40), None, "the label");
+        assert_eq!(h.resume_row_at(11, 100, 40), None, "past the band");
+        // And the file list starts below it, with no overlap.
+        let (top, _) = list_geometry(100, 40, true, h.resume_shown());
+        assert!(top > 10, "the list must start below the band, got {top}");
     }
 
     #[test]

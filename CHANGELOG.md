@@ -4,6 +4,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **Continue reading.** Carrel has always remembered where you were in every document and
+  never mentioned it. The home screen now opens with what you are part-way through — the
+  file, how far in, and roughly how long is left — and `1`, `2`, `3` or a click picks one
+  up. Documents you have finished, or opened and not read, are not offered: the band is an
+  answer, not a history. Nothing appears until you have something to continue, so a first
+  run looks exactly as it did.
 - **Bookmarks.** `m` marks the place you are reading; `'` walks between marks, wrapping;
   a dot in the margin shows which blocks are marked. They are remembered between sessions
   and survive a resize — they are document positions, not screen positions — though not an

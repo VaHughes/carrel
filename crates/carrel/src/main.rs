@@ -220,6 +220,41 @@ fn run_stdin_or_fallback() -> ExitCode {
     }
 }
 
+/// The continue-reading rows: remembered documents that still exist and
+/// that the reader is genuinely part-way through.
+///
+/// A document at 0% is one that was opened and not read; at 100% it is
+/// finished. Neither is something to continue, and offering them would make
+/// the list noise rather than an answer.
+/// Fill the home screen's continue-reading band.
+///
+/// Read once at startup: it is a small file, and a list that changed under
+/// the reader would be worse than one that is a few seconds stale.
+fn load_resume(app: &mut App) {
+    let Some(dir) = app.state_dir.clone() else {
+        return;
+    };
+    let resume = resume_rows(&dir);
+    if let Some(h) = app.home_mut() {
+        h.resume = resume;
+    }
+}
+
+fn resume_rows(dir: &Path) -> Vec<carrel::home::Resume> {
+    carrel::state::recent_in(dir)
+        .into_iter()
+        .filter_map(|e| {
+            let path = PathBuf::from(&e.path);
+            // The disk check is the only part that needs one; the rule about
+            // what counts as "part way through" is pure and lives in `home`.
+            path.is_file()
+                .then(|| carrel::home::resume_from(path, e.permille, e.words))
+                .flatten()
+        })
+        .take(carrel::home::RESUME_ROWS)
+        .collect()
+}
+
 /// Whether a path is allowed to be sniffed as a diff. `.md` never is.
 fn diff_ok_for(path: &Path) -> bool {
     diff_forced().unwrap_or_else(|| {
@@ -968,6 +1003,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    load_resume(&mut app);
     app.on_resize(app.cols, app.rows);
     if let Some(n) = note
         && let Some(h) = app.home_mut()
@@ -1248,6 +1284,13 @@ fn home_mouse_action(
                     1 => Action::PickerSelect(i),
                     _ => Action::PickerChoose,
                 });
+            }
+            // A continue row is its own affordance: it is numbered, and a
+            // single click opens it. The file list keeps click-to-select /
+            // double-click-to-open, because a misclick there is cheap and a
+            // misclick here costs you the screen.
+            if let Some(i) = home.resume_row_at(m.row, app.cols, app.rows) {
+                return Some(Action::HomeResume(i));
             }
             let i = home.row_at(m.row, app.cols, app.rows, app.hints)?;
             match clicks.press(m.column, m.row) {

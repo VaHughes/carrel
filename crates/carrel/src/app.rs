@@ -428,8 +428,30 @@ impl App {
     /// Quietly does nothing without a state dir (tests) or a file (home).
     fn save_position(&self) {
         if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
-            let _ = crate::state::save_position_in(dir, file, self.view.anchor);
+            // The progress numbers are the status bar's own, saved alongside
+            // so the home screen can show them without opening the file.
+            let _ = crate::state::save_position_in(
+                dir,
+                file,
+                self.view.anchor,
+                self.permille(),
+                u32::try_from(self.words).unwrap_or(u32::MAX),
+            );
         }
+    }
+
+    /// How far through the document, in permille — the percentage the status
+    /// bar shows, at a resolution worth persisting.
+    #[must_use]
+    pub fn permille(&self) -> u16 {
+        let max = self.layout.max_scroll(self.text_h());
+        if max == 0 {
+            return 1000;
+        }
+        let frac = f64::from(self.view.scroll_row.min(max)) / f64::from(max);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let p = (frac * 1000.0).round() as u16;
+        p.min(1000)
     }
 
     /// Persist the bookmark list. Inert for a piped document, which has no
@@ -1214,7 +1236,8 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
 /// would leave the selection off screen with nothing to point at — and there
 /// are a dozen arms that move a selection.
 fn home_update(app: &mut App, action: Action) -> Outcome {
-    let (_, list_h) = crate::home::list_geometry(app.cols, app.rows, app.hints);
+    let resume = app.home().map_or(0, crate::home::Home::resume_shown);
+    let (_, list_h) = crate::home::list_geometry(app.cols, app.rows, app.hints, resume);
     let (cols, rows) = (app.cols, app.rows);
     let out = home_action(app, action);
     if let Some(h) = app.home_mut() {
@@ -1320,6 +1343,25 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 }
             }
             return Outcome::Redraw;
+        }
+
+        Action::HomeResume(i) => {
+            let Some(path) = app
+                .home()
+                .and_then(|h| h.resume.get(i))
+                .map(|r| r.path.clone())
+            else {
+                return Outcome::Idle;
+            };
+            return match app.open_path(&path) {
+                Ok(()) => Outcome::Redraw,
+                Err(e) => {
+                    if let Some(h) = app.home_mut() {
+                        h.note = Some(format!("cannot open {}: {e}", path.display()));
+                    }
+                    Outcome::Redraw
+                }
+            };
         }
 
         Action::HelpToggle => {
@@ -2595,7 +2637,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let f = d.path().join("doc.md");
         std::fs::write(&f, SRC).unwrap();
-        crate::state::save_position_in(state.path(), &f, 7).unwrap();
+        crate::state::save_position_in(state.path(), &f, 7, 0, 0).unwrap();
 
         let cached = vec![Entry {
             path: f.clone(),
@@ -2619,7 +2661,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let f = d.path().join("doc.md");
         std::fs::write(&f, "tiny\n").unwrap();
-        crate::state::save_position_in(state.path(), &f, 10_000).unwrap();
+        crate::state::save_position_in(state.path(), &f, 10_000, 0, 0).unwrap();
 
         let cached = vec![Entry {
             path: f.clone(),

@@ -6,10 +6,18 @@
 //! reason `config.rs` works that way (a test once stomped the developer's
 //! real config; see the comment there).
 //!
-//! Format: one entry per line, `anchor<TAB>saved_at<TAB>path`. The path is
-//! last because it is the only field that could contain a tab; parsing
-//! splits from the left exactly twice. Malformed lines are ignored, so a
-//! newer version's file cannot break an older binary.
+//! Format: one entry per line,
+//! `anchor<TAB>saved_at<TAB>permille<TAB>words<TAB>path`. The path is last
+//! because it is the only field that could contain a tab. **The old
+//! three-field form still parses** — an entry written before 2026-08-21
+//! simply has no progress to show, rather than being dropped — and
+//! malformed lines are ignored, so a newer version's file cannot break an
+//! older binary.
+//!
+//! `permille` and `words` exist so the home screen can say "64%, 18 min
+//! left" without opening the file. Opening every remembered document to
+//! paint a list of them is not affordable; both numbers are already
+//! computed by the status bar at the moment a position is saved.
 
 use std::path::{Path, PathBuf};
 
@@ -28,27 +36,60 @@ pub fn state_dir() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".local").join("state").join("carrel"))
 }
 
-#[derive(Debug)]
-struct Entry {
-    anchor: u32,
-    saved_at: u64,
-    path: String,
+/// One remembered document.
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub anchor: u32,
+    pub saved_at: u64,
+    /// How far in, in permille. `None` for an entry written before the
+    /// field existed.
+    pub permille: Option<u16>,
+    /// The document's word count when it was last read, for the estimate.
+    pub words: Option<u32>,
+    pub path: String,
 }
 
 fn parse(text: &str) -> Vec<Entry> {
     text.lines()
         .filter_map(|line| {
-            let mut it = line.splitn(3, '\t');
+            let mut it = line.splitn(5, '\t');
             let anchor = it.next()?.parse().ok()?;
             let saved_at = it.next()?.parse().ok()?;
+            let third = it.next()?;
+            // Three fields: the old form, where the third IS the path.
+            let Some(fourth) = it.next() else {
+                return (!third.is_empty()).then(|| Entry {
+                    anchor,
+                    saved_at,
+                    permille: None,
+                    words: None,
+                    path: third.to_string(),
+                });
+            };
             let path = it.next()?;
             (!path.is_empty()).then(|| Entry {
                 anchor,
                 saved_at,
+                permille: third.parse().ok(),
+                words: fourth.parse().ok(),
                 path: path.to_string(),
             })
         })
         .collect()
+}
+
+/// Every remembered document, most recently read first.
+///
+/// The home screen's "continue reading" list. Entries whose file has gone
+/// are the caller's to drop — this layer does not touch the disk to check.
+#[must_use]
+pub fn recent_in(dir: &Path) -> Vec<Entry> {
+    let Ok(text) = std::fs::read_to_string(dir.join("positions")) else {
+        return Vec::new();
+    };
+    let mut v = parse(&text);
+    v.sort_by_key(|e| std::cmp::Reverse(e.saved_at));
+    v
 }
 
 /// The canonical key for a file: symlink-resolved when possible, so the same
@@ -75,7 +116,13 @@ pub fn load_position_in(dir: &Path, file: &Path) -> Option<u32> {
 /// Upsert `file`'s anchor; `anchor == 0` removes the entry (top of the file
 /// is the default — remembering it is noise). Keeps the newest [`CAP`]
 /// entries by save time.
-pub fn save_position_in(dir: &Path, file: &Path, anchor: u32) -> std::io::Result<()> {
+pub fn save_position_in(
+    dir: &Path,
+    file: &Path,
+    anchor: u32,
+    permille: u16,
+    words: u32,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("positions");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -91,6 +138,8 @@ pub fn save_position_in(dir: &Path, file: &Path, anchor: u32) -> std::io::Result
         entries.push(Entry {
             anchor,
             saved_at,
+            permille: Some(permille),
+            words: Some(words),
             path: k,
         });
     }
@@ -99,7 +148,15 @@ pub fn save_position_in(dir: &Path, file: &Path, anchor: u32) -> std::io::Result
     let mut out = String::new();
     for e in &entries {
         use std::fmt::Write as _;
-        let _ = writeln!(out, "{}\t{}\t{}", e.anchor, e.saved_at, e.path);
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}\t{}\t{}",
+            e.anchor,
+            e.saved_at,
+            e.permille.unwrap_or(0),
+            e.words.unwrap_or(0),
+            e.path
+        );
     }
     std::fs::write(path, out)
 }
@@ -194,9 +251,9 @@ mod tests {
         let f = dir.path().join("doc.md");
         std::fs::write(&f, "x").unwrap();
         assert_eq!(load_position_in(dir.path(), &f), None, "nothing saved yet");
-        save_position_in(dir.path(), &f, 1234).unwrap();
+        save_position_in(dir.path(), &f, 1234, 0, 0).unwrap();
         assert_eq!(load_position_in(dir.path(), &f), Some(1234));
-        save_position_in(dir.path(), &f, 99).unwrap();
+        save_position_in(dir.path(), &f, 99, 0, 0).unwrap();
         assert_eq!(
             load_position_in(dir.path(), &f),
             Some(99),
@@ -209,8 +266,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("doc.md");
         std::fs::write(&f, "x").unwrap();
-        save_position_in(dir.path(), &f, 1234).unwrap();
-        save_position_in(dir.path(), &f, 0).unwrap();
+        save_position_in(dir.path(), &f, 1234, 0, 0).unwrap();
+        save_position_in(dir.path(), &f, 0, 0, 0).unwrap();
         assert_eq!(
             load_position_in(dir.path(), &f),
             None,
@@ -225,8 +282,8 @@ mod tests {
         let b = dir.path().join("b.md");
         std::fs::write(&a, "x").unwrap();
         std::fs::write(&b, "x").unwrap();
-        save_position_in(dir.path(), &a, 10).unwrap();
-        save_position_in(dir.path(), &b, 20).unwrap();
+        save_position_in(dir.path(), &a, 10, 0, 0).unwrap();
+        save_position_in(dir.path(), &b, 20, 0, 0).unwrap();
         assert_eq!(load_position_in(dir.path(), &a), Some(10));
         assert_eq!(load_position_in(dir.path(), &b), Some(20));
     }
@@ -237,7 +294,7 @@ mod tests {
         // Paths need not exist: canonicalize falls back to the spelling.
         for i in 0..(CAP + 10) {
             let f = dir.path().join(format!("f{i}.md"));
-            save_position_in(dir.path(), &f, 1).unwrap();
+            save_position_in(dir.path(), &f, 1, 0, 0).unwrap();
         }
         let text = std::fs::read_to_string(dir.path().join("positions")).unwrap();
         assert_eq!(text.lines().count(), CAP);

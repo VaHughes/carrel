@@ -1208,6 +1208,53 @@ const TAGLINE: &str = "a quiet place to read your markdown";
 // list starts — and hit-testing inverts that same function.
 use crate::home::{BANNER_MIN_COLS, BANNER_MIN_ROWS, SPLASH_W};
 
+/// The continue-reading band: what you were in the middle of, from the state
+/// file, numbered so a click and the number key reach the same row. Returns
+/// the row the file list starts on.
+fn paint_resume(frame: &mut Frame, home: &Home, area: Rect, mut y: u16) -> u16 {
+    let shown = usize::from(home.resume_shown());
+    if shown > 0 {
+        let buf = frame.buffer_mut();
+        buf.set_stringn(
+            area.x + 1,
+            y,
+            "continue reading",
+            area.width as usize,
+            theme::dim(),
+        );
+        y += 1;
+        for (i, r) in home.resume.iter().take(shown).enumerate() {
+            let name = r.path.file_name().map_or_else(
+                || r.path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            buf.set_stringn(area.x, y, format!("{} ", i + 1), 3, theme::selected());
+            buf.set_stringn(
+                area.x + 2,
+                y,
+                &name,
+                area.width.saturating_sub(24) as usize,
+                Style::default(),
+            );
+            let right = match r.minutes_left {
+                Some(m) => format!("{}%  ·  {m} min left", r.percent),
+                None => format!("{}%", r.percent),
+            };
+            let rw = u16::try_from(right.chars().count()).unwrap_or(0);
+            buf.set_stringn(
+                area.right().saturating_sub(rw + 1),
+                y,
+                &right,
+                rw as usize,
+                theme::dim(),
+            );
+            y += 1;
+        }
+        y += 1;
+    }
+    y
+}
+
 fn draw_home(frame: &mut Frame, app: &App, home: &Home) {
     let area = frame.area();
     let banner = area.width >= BANNER_MIN_COLS && area.height >= BANNER_MIN_ROWS;
@@ -1249,11 +1296,14 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home) {
         y += 1;
     }
 
+    y = paint_resume(frame, home, area, y);
+
     // The list rect comes from `home::list_geometry`, NOT from the `y` this
     // function happened to paint to — because `Home::row_at` inverts that same
     // function to turn a click into a file. Two derivations would drift and
     // every click would land on the wrong row.
-    let (list_top, list_h) = crate::home::list_geometry(area.width, area.height, app.hints);
+    let (list_top, list_h) =
+        crate::home::list_geometry(area.width, area.height, app.hints, home.resume_shown());
     debug_assert_eq!(
         y, list_top,
         "the header painted to row {y} but list_geometry says {list_top}"

@@ -218,6 +218,9 @@ impl Keys {
                 KeyCode::Char('T') => Some(Action::ThemeCycle),
                 KeyCode::Char('H') => Some(Action::HintsToggle),
                 KeyCode::Char('d') => Some(Action::PickerOpen),
+                // 1-3 open the continue-reading rows, which are numbered on
+                // screen. Normal mode only — in the filter they are characters.
+                KeyCode::Char(c @ '1'..='3') => Some(Action::HomeResume(c as usize - '1' as usize)),
                 // `/` means "search content" everywhere else in carrel, so
                 // it does here too (wave E); `i` remains the filename filter.
                 KeyCode::Char('i') => Some(Action::HomeFilterMode),
@@ -321,6 +324,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     // them because there is no key to press.
     ("click", "select a file"),
     ("double-click", "open it"),
+    ("1 2 3", "continue reading"),
     ("§", "finding"),
     ("i", "filter names: type to narrow"),
     ("/", "search inside files"),
@@ -930,6 +934,7 @@ mod tests {
                 A::HomeOpen => "Enter",
                 A::HomeFilterMode => "i",
                 A::HomeSearchMode => "/",
+                A::HomeResume(_) => "1 2 3",
                 // Deliberately undocumented: internal or pointer-driven.
                 // (The mouse gestures ARE documented — as prose rows in the
                 // help table's mouse group, not as key bindings.)
