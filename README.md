@@ -29,13 +29,22 @@ Everything below installs the terminal reader.
 > a reader with vim motions, incremental search, and a resize that keeps your place. Syntax
 > highlighting, tables, images and mermaid diagrams all render. See [Roadmap](#roadmap).
 
-### Privacy
+### It never fetches anything
 
 Carrel reads only the directory you point it at. The default is the directory you are standing in;
 anything wider is a root you choose yourself — from the list `d` offers, or by typing a path. It
 sends nothing anywhere — remote images in documents are never fetched; they render as their alt
 text. The index it caches lives under `$XDG_CACHE_HOME/carrel` and holds file paths and
 modification times, nothing else.
+
+**This is a decision, not an omission.** Other readers will fetch a URL you hand them, or
+pull a GitHub README, and that is genuinely convenient. Carrel will not, and is not going
+to: a document is a thing you already have, and a reader that opens network connections on
+your behalf is a reader you have to think about before you point it at something. Carrel
+does not link against an HTTP client at all, so this is a property you can check rather
+than a promise you have to trust. If you want a remote document, fetch it with a tool whose
+job that is and pipe it in — `gh pr view 128 | carrel` — which keeps the fetching, and the
+credentials it uses, somewhere you can see them.
 
 ---
 
