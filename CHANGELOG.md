@@ -4,6 +4,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **A stated position on remote documents: carrel will not fetch them.** Other readers will
+  open a URL you hand them; carrel does not, and now says so in the README as a decision
+  rather than leaving it as an absence. It depends on no HTTP client and no TLS library, so
+  "it never fetches anything" is something you can check rather than something you have to
+  take on trust. Piping covers the real need — `gh pr view 128 | carrel` — and keeps the
+  fetch, and the credentials it uses, where you can see them.
 - **The outline in the margin** (`outline_margin = true`). On a wide terminal the 90-column
   measure leaves empty space; the section tree can live there instead — every heading,
   indented by level, the ones you are inside lit, click any of them to jump. It folds away

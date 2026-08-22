@@ -41,8 +41,8 @@ modification times, nothing else.
 pull a GitHub README, and that is genuinely convenient. Carrel will not, and is not going
 to: a document is a thing you already have, and a reader that opens network connections on
 your behalf is a reader you have to think about before you point it at something. Carrel
-does not link against an HTTP client at all, so this is a property you can check rather
-than a promise you have to trust. If you want a remote document, fetch it with a tool whose
+depends on no HTTP client and no TLS library — `cargo tree` is the whole audit — so this is
+closer to a property you can check than a promise you have to trust. If you want a remote document, fetch it with a tool whose
 job that is and pipe it in — `gh pr view 128 | carrel` — which keeps the fetching, and the
 credentials it uses, somewhere you can see them.
 
