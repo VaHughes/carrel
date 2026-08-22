@@ -813,8 +813,7 @@ fn run_loop(
         images.drain(&mut app);
         diagrams.sync(&app);
         diagrams.drain(&mut app);
-        terminal.draw(|f| render::draw_full(f, &app, &mut links, &mut images.protocols))?;
-        emit_osc8(&links)?;
+        paint(&mut terminal, &app, &mut links, &mut images.protocols)?;
 
         // Wake in time to apply a debounced resize even with no input arriving.
         let timeout = deadline.map_or(Duration::from_millis(100), |d| {
@@ -1124,8 +1123,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         diagrams.sync(&app);
         diagrams.drain(&mut app);
         fill_titles(&mut app);
-        terminal.draw(|f| render::draw_full(f, &app, &mut links, &mut images.protocols))?;
-        emit_osc8(&links)?;
+        paint(&mut terminal, &app, &mut links, &mut images.protocols)?;
 
         drain_scan(&mut app, &mut scan_rx);
 
@@ -1406,6 +1404,41 @@ fn home_mouse_action(
 /// them. Terminals without OSC 8 ignore the sequences entirely, and when the
 /// cells later change, ratatui repaints them without the wrapper, which is
 /// exactly right. URLs were stripped of control characters at collection.
+/// One frame: the ratatui paint plus the OSC 8 hyperlink pass that rides on
+/// top of it, together inside a single synchronized update so the terminal
+/// never shows the two half-applied.
+fn paint(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &App,
+    links: &mut Vec<OscLink>,
+    images: &mut HashMap<BlockIdx, StatefulProtocol>,
+) -> std::io::Result<()> {
+    synchronized(|| {
+        terminal.draw(|f| render::draw_full(f, app, links, images))?;
+        emit_osc8(links)
+    })
+}
+
+/// Paint one frame inside a synchronized update (DEC mode 2026).
+///
+/// Without it the terminal may render a half-applied frame. A slow scroll
+/// changes few cells and lands within one refresh; a fast one rewrites most of
+/// the screen, the update spans a refresh boundary, and characters from the
+/// previous frame are still on screen where the new one has not arrived — read
+/// as stray letters scattered "in places". The bytes were always correct; what
+/// was missing was the frame boundary. `End` runs even when the paint fails,
+/// or the screen would stay frozen. Terminals that do not know mode 2026
+/// ignore both halves.
+fn synchronized<T>(paint: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+    use ratatui::crossterm::execute;
+    use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+
+    execute!(std::io::stdout(), BeginSynchronizedUpdate)?;
+    let painted = paint();
+    execute!(std::io::stdout(), EndSynchronizedUpdate)?;
+    painted
+}
+
 fn emit_osc8(links: &[OscLink]) -> std::io::Result<()> {
     use ratatui::crossterm::{cursor, queue, style};
 

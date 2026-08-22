@@ -4,6 +4,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Scrolling fast no longer leaves stray characters on screen.** Every frame is now sent as
+  one synchronized update (DEC mode 2026), so the terminal draws it whole or not at all.
+  Before, a slow scroll changed few enough cells to land within a single refresh, but a fast
+  one rewrote most of the screen and the update could span a refresh boundary — leaving
+  characters from the previous frame sitting in the gaps of the new one. Reproduced on both
+  ghostty and foot; the bytes carrel wrote were always correct, what was missing was the
+  frame boundary. Terminals that do not know mode 2026 ignore it.
+
 - **The man page documents every reader key again**, including how to page, follow a link,
   and go back — basics it had quietly never carried — and a test now fails the build if a
   key reaches the help overlay without reaching the man page.

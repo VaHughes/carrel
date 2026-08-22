@@ -179,6 +179,41 @@ fn the_reader_enters_the_alternate_screen_paints_and_leaves() {
 }
 
 #[test]
+fn every_frame_is_bracketed_in_a_synchronized_update() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("doc.md"), "# Title\n\nbody text\n").unwrap();
+
+    let raw = pty_run("doc.md", "jjjq", d.path());
+
+    let begins = raw.matches("\x1b[?2026h").count();
+    let ends = raw.matches("\x1b[?2026l").count();
+
+    // Without a frame boundary the terminal is free to render a half-applied
+    // update: a fast scroll rewrites most of the screen, the write spans a
+    // refresh, and characters from the previous frame stay on screen where the
+    // new one has not landed. Reproduced on both ghostty and foot.
+    assert!(begins > 0, "frames must open a synchronized update");
+    assert_eq!(
+        begins, ends,
+        "every synchronized update must be closed — an unbalanced one freezes the screen"
+    );
+
+    // The teeth: the paint has to be INSIDE the update, not merely near one.
+    let open = raw.find("\x1b[?2026h").unwrap();
+    let close = raw[open..]
+        .find("\x1b[?2026l")
+        .expect("an opened synchronized update must close");
+    assert!(
+        raw[open..open + close].contains("Title"),
+        "the document must paint between begin and end, not outside them"
+    );
+}
+
+#[test]
 fn the_home_screen_survives_a_pty_round_trip_too() {
     if !script_available() {
         eprintln!("SKIP: `script`(1) not available — pty smoke not run");
