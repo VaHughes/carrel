@@ -17,10 +17,21 @@
 //!
 //! # Scope
 //!
-//! Text blocks — paragraphs, headings, list items, block quotes. Code blocks,
-//! tables, images and rules keep a placeholder path and get their own design;
-//! code needs a no-wrap policy with horizontal scroll, which is viewport state
-//! this crate does not hold, and tables are research question Q15.
+//! Every block wraps through [`wrap`], which is why there is no per-kind
+//! layout to keep in step. What differs is the fit, not the algorithm:
+//!
+//! - **Code blocks** carry `Slice::code`, which reserves the continuation
+//!   marker and hangs wrapped rows under the line's own indent. A no-wrap
+//!   policy with horizontal scroll would need viewport state this crate does
+//!   not hold, and remains unbuilt.
+//! - **Tables** are aligned at PARSE — column widths are max-content display
+//!   widths, so cells are padded in space 2 and each visual row is already one
+//!   contiguous range. Nothing table-shaped happens here. [`wrap_range`] lays
+//!   out a single cell for the frontend's card view (Q15, answered and
+//!   shipped 2026-08-11).
+//! - **Images, mermaid art and math** wrap their alt/source text like anything
+//!   else; their real heights are a frontend override, because they depend on
+//!   cell size and decoded dimensions this crate never sees.
 //!
 //! # The width rule
 //!

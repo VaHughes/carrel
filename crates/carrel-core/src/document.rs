@@ -858,8 +858,8 @@ impl<'a> Builder<'a> {
             return;
         }
         // Synthetic pushes are structure, not content: the block separator and
-        // the table cell separator, which is a placeholder the (unwritten) table
-        // layout consumes. Expanding those would destroy the marker.
+        // the table cell separator, which marks where one cell ends and paint
+        // renders as a space. Expanding those would destroy the marker.
         let s: &str = &if kind == ProvKind::Synthetic {
             advance_col(s, &mut self.col);
             Cow::Borrowed(s)

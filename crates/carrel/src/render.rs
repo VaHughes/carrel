@@ -726,10 +726,12 @@ fn paint_row(
                 })
             };
             let s = &app.doc.text[at as usize..end as usize];
-            // Table cells are separated by a synthetic '\t' that the unwritten
-            // table layout will consume. `set_stringn` SKIPS control characters,
-            // so leaving it would butt two cells together ("resizeNo shipping").
-            // A space is the honest placeholder until tables are designed (Q15).
+            // Table cells are separated by a synthetic '\t' — a cell boundary
+            // in the text, not a tab to expand. `set_stringn` SKIPS control
+            // characters, so leaving it would butt two cells together
+            // ("resizeNo shipping"); a space is what it paints as. The `│`
+            // rules are decoration drawn elsewhere, and the card view finds
+            // cells through `NodeKind::Table::cell_starts`, not through this.
             let s: &str = &if s.contains('\t') {
                 Cow::Owned(s.replace('\t', " "))
             } else {
