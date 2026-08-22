@@ -23,6 +23,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   the screen, and the list used to yank itself so the clicked file sat on the very last
   row. The home screen has a real scroll offset now, and it moves only when the selection
   would leave the screen.
+- **The home screen no longer changes what you have selected while it is scanning.** The
+  cached list paints first and the live scan refines it; every batch that arrived re-sorted
+  the list under a selection that was a bare row number, so a newly-found file appearing
+  above your highlight quietly slid a *different* file under it — and pressing Enter at
+  that moment opened something you never picked. The selection now holds onto its file and
+  follows it wherever the sort puts it. Worst on a cold cache, a large tree, or a network
+  mount, where the scan streams for longer.
 - **Choosing a directory lands in the menu, not the filter.** It used to drop straight
   into filter mode, where the next keystroke silently hid files.
 

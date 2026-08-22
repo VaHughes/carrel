@@ -249,11 +249,43 @@ impl Home {
         if fresh.is_empty() {
             return;
         }
+        // Captured BEFORE `entries` moves, because the anchor is read through
+        // `filtered`, whose indices the sort below invalidates.
+        let anchor = self.selection_anchor();
         let replacing: HashSet<&PathBuf> = fresh.iter().map(|e| &e.path).collect();
         self.entries.retain(|e| !replacing.contains(&e.path));
         self.entries.extend(fresh);
         self.entries.sort_by_key(|e| std::cmp::Reverse(e.mtime));
         self.refilter();
+        self.restore_selection(anchor.as_deref());
+    }
+
+    /// The file the selection is on, to be put back after the list moves.
+    ///
+    /// **The selection is an index, and the list re-sorts under it.** Every
+    /// batch from the live walk sorts `entries` newest-first, so a file
+    /// arriving above the highlight used to slide a different file under it —
+    /// and pressing Enter as a batch landed opened something the user never
+    /// chose. Same fix in shape as the reader's: anchor to a stable identity
+    /// (here the path), derive the position again afterwards.
+    fn selection_anchor(&self) -> Option<PathBuf> {
+        self.selected_path().map(Path::to_path_buf)
+    }
+
+    /// Put the selection back on `anchor`, if that file is still listed.
+    ///
+    /// If it is not — `finish_scan` dropped it, or a filter hides it — the
+    /// clamp `refilter` already applied stands. There is nothing better to
+    /// do than leave the highlight where the list is shortest.
+    fn restore_selection(&mut self, anchor: Option<&Path>) {
+        let Some(path) = anchor else { return };
+        if let Some(i) = self
+            .filtered
+            .iter()
+            .position(|&e| self.entries[e].path == path)
+        {
+            self.selected = i;
+        }
     }
 
     /// The walk died before finishing. Keep everything — the cached entries
@@ -265,12 +297,14 @@ impl Home {
 
     /// The walk finished. Anything it did not rediscover is gone from disk.
     pub fn finish_scan(&mut self, unreadable: usize) {
+        let anchor = self.selection_anchor();
         let seen = std::mem::take(&mut self.seen);
         self.entries.retain(|e| seen.contains(&e.path));
         self.seen = seen;
         self.scanning = false;
         self.unreadable = unreadable;
         self.refilter();
+        self.restore_selection(anchor.as_deref());
     }
 
     /// Rebuild `filtered` and clamp `selected` so it can never dangle.
@@ -880,6 +914,82 @@ mod tests {
         h.push(e("newest.md", 99));
         assert!(h.entries[0].path.ends_with("newest.md"));
         assert_eq!(h.filtered.len(), 4);
+    }
+
+    /// Confirmed by probe 2026-08-21, then fixed: the cache paints first and
+    /// the live walk refines it, so `entries` re-sorts newest-first under a
+    /// selection that is a bare index. A file arriving above the highlight
+    /// slid a DIFFERENT file under it — and Enter at that moment opened
+    /// something the user never chose.
+    #[test]
+    fn the_selection_stays_on_its_file_while_the_scan_streams() {
+        let mut h = Home::new(
+            PathBuf::from("/root"),
+            vec![e("a.md", 30), e("b.md", 20), e("c.md", 10)],
+        );
+        h.selected = 1;
+        assert!(h.selected_path().unwrap().ends_with("b.md"));
+
+        // Two newer files arrive and sort above the highlight.
+        h.push_many(vec![e("y.md", 98), e("z.md", 99)]);
+        assert!(
+            h.selected_path().unwrap().ends_with("b.md"),
+            "selection drifted to {:?}",
+            h.selected_path()
+        );
+        assert_eq!(h.selected, 3, "and its index followed the sort");
+
+        // An older file lands below it: nothing moves.
+        h.push(e("old.md", 1));
+        assert!(h.selected_path().unwrap().ends_with("b.md"));
+        assert_eq!(h.selected, 3);
+    }
+
+    #[test]
+    fn finishing_a_scan_keeps_the_selection_on_its_file() {
+        // A stale cache entry ABOVE the selection is the case that bites: the
+        // clamp alone lands on the right row only when the selection was at
+        // the end, so the drop has to shift a real neighbour under it.
+        let mut h = Home::new(
+            PathBuf::from("/root"),
+            vec![
+                e("gone.md", 50),
+                e("b.md", 40),
+                e("c.md", 30),
+                e("d.md", 20),
+            ],
+        );
+        h.selected = 2;
+        assert!(h.selected_path().unwrap().ends_with("c.md"));
+        // The walk rediscovers everything except the stale one.
+        h.push_many(vec![e("b.md", 40), e("c.md", 30), e("d.md", 20)]);
+        h.finish_scan(0);
+        assert_eq!(h.entries.len(), 3, "the stale entry is gone");
+        assert!(
+            h.selected_path().unwrap().ends_with("c.md"),
+            "selection drifted to {:?}",
+            h.selected_path()
+        );
+        assert_eq!(h.selected, 1, "its index followed the drop");
+    }
+
+    /// A safety net rather than a regression guard: it passes with or without
+    /// the anchor, and exists so a future change cannot leave the selection
+    /// dangling past the end of the list.
+    #[test]
+    fn a_selection_whose_file_vanishes_lands_somewhere_valid() {
+        let mut h = Home::new(
+            PathBuf::from("/root"),
+            vec![e("kept.md", 30), e("gone.md", 20)],
+        );
+        h.selected = 1;
+        h.push(e("kept.md", 30));
+        h.finish_scan(0); // gone.md was never rediscovered
+        assert_eq!(h.entries.len(), 1);
+        assert!(
+            h.selected_path().unwrap().ends_with("kept.md"),
+            "a dangling selection is worse than a moved one"
+        );
     }
 
     #[test]
