@@ -54,6 +54,19 @@ pipes. A bare pipe selects this automatically, so
 .B carrel doc.md | less
 does the right thing. Output is ASCII\-safe and contains no escape bytes.
 .TP
+.B \-\-diff
+Read the input as a unified diff even if its name does not say so: a heading
+per commit and per file, hunks as code. A pipe and a
+.I .diff
+or
+.I .patch
+file are read this way already; a
+.I .md
+file never is.
+.TP
+.B \-\-no\-diff
+Never adapt a diff, even on a pipe.
+.TP
 .B \-\-version ", " \-V
 Print the version and exit.
 .TP

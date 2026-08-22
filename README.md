@@ -119,7 +119,27 @@ an-agent --stream | carrel     # content appears as it arrives
 `carrel -` forces stdin mode, and `cmd | carrel - pattern` prints a match report. Piping
 *out* still produces plain text, so `cmd | carrel | grep` behaves. While a producer is
 still writing, the reader is already open — and your position and search matches hold as
-content arrives, because positions never depend on the screen.
+content arrives, because positions never depend on the screen. Press `F` to pin the view
+to the end while it grows, and `y` to copy the code block you are looking at
+(`]` and `[` step between them).
+
+### Diffs, and git's pager
+
+A pipe — or a `.diff` / `.patch` file — is read as a diff when it looks like one: a heading
+per commit and per file, hunks as code, additions and removals in your theme's own colours.
+Because files become *sections*, everything carrel already does to sections works on a
+diff: fold a file away with `za`, collapse the whole changeset with `zM`, jump between
+files from the outline, and search across all of it without the results moving when you
+resize.
+
+```bash
+git show | carrel
+git log -p | carrel
+git config core.pager carrel     # and then every git command that pages
+```
+
+A `.md` file is **never** read as a diff, whatever it contains — so a document *about*
+diffs stays a document. `--diff` forces the reading, `--no-diff` refuses it.
 
 ## Configuration
 

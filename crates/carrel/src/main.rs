@@ -36,6 +36,9 @@ USAGE:
     carrel <FILE> <PATTERN>      print search results and exit
     cmd | carrel                 read the pipe, streaming as it arrives
     cmd | carrel - <PATTERN>     print search results for the pipe and exit
+    git show | carrel            a diff, as sections you can fold
+    carrel --diff <FILE>         read FILE as a diff whatever it is called
+    carrel --no-diff             never adapt a diff, even on a pipe
     carrel --plain <FILE> [W]    the document as plain text (screen readers,
                                  pipes; a bare pipe does this by default)
     carrel --plain - [W]         piped input as plain text
@@ -63,8 +66,48 @@ KEYS (while reading):
     m                            mermaid diagrams: rendered ↔ source
     T                            cycle themes    q Ctrl-C        quit
     h F1                         help            Ctrl-O          back
+    ] [                          next / previous code block
+    y                            copy the code block
+    F                            follow a document that is still arriving
     mouse: drag selects and copies; double-click a word, triple-click a block
+
+    Diffs: a pipe, or a .diff/.patch file, is read as one — a heading per
+    commit and per file, hunks as code. A .md file never is. Use it as
+    git's pager with:  git config core.pager carrel
 ";
+
+/// `--diff` / `--no-diff`, for the whole run. A `OnceLock` because the
+/// entry points are many and threading one bool through all of them would
+/// touch every signature for a flag almost nobody passes.
+static DIFF_FORCED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+
+fn diff_forced() -> Option<bool> {
+    DIFF_FORCED.get().copied().flatten()
+}
+
+/// Pull `--diff` / `--no-diff` out of the argument list.
+fn take_diff_flag(args: &mut Vec<String>) -> Option<bool> {
+    let mut forced = None;
+    args.retain(|a| match a.as_str() {
+        "--diff" => {
+            forced = Some(true);
+            false
+        }
+        "--no-diff" => {
+            forced = Some(false);
+            false
+        }
+        _ => true,
+    });
+    forced
+}
+
+/// A single-dash flag carrel does not know, arriving from something that
+/// thinks it is talking to `less`. `-` itself is the stdin marker and is
+/// never foreign; `--plain` and friends are carrel's own.
+fn is_foreign_pager_flag(a: &str) -> bool {
+    a.len() >= 2 && a.starts_with('-') && !a.starts_with("--") && !matches!(a, "-h" | "-V")
+}
 
 fn main() -> ExitCode {
     // no-color.org: any non-empty value means monochrome. Once, at startup —
@@ -72,7 +115,16 @@ fn main() -> ExitCode {
     if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
         carrel::theme::set_mono(true);
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let diff_forced = take_diff_flag(&mut args);
+    // Pager mode: git hands its pager flags it does not expect to be
+    // understood (`-R`, `-F`, `-X`, …). Ignore unknown single-dash flags
+    // when stdin is a pipe, and keep erroring on them otherwise — silently
+    // swallowing a typo in interactive use would be worse than the error.
+    if !std::io::stdin().is_terminal() {
+        args.retain(|a| !is_foreign_pager_flag(a));
+    }
+    DIFF_FORCED.set(diff_forced).ok();
     match args.as_slice() {
         [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
@@ -161,16 +213,28 @@ fn run_stdin_or_fallback() -> ExitCode {
         // The reader thread owns stdin now; collect through its channel
         // — it reads to EOF regardless, so this is the whole document.
         let src: String = rx.iter().collect();
-        print!("{}", carrel::plain::render(&Document::parse(&src), 80));
+        let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
+        print!("{}", carrel::plain::render(&doc, 80));
         ExitCode::SUCCESS
     }
+}
+
+/// Whether a path is allowed to be sniffed as a diff. `.md` never is.
+fn diff_ok_for(path: &Path) -> bool {
+    diff_forced().unwrap_or_else(|| {
+        matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("diff" | "patch")
+        )
+    })
 }
 
 /// `--plain -`: piped input as linear text at a width.
 fn print_plain_stdin(width: u16) -> ExitCode {
     match read_stdin_capped() {
         Ok(src) => {
-            print!("{}", carrel::plain::render(&Document::parse(&src), width));
+            let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
+            print!("{}", carrel::plain::render(&doc, width));
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -250,7 +314,8 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         // Piping implies plain (Q17): a pipe wants the document, not a
         // summary — and linear text is also what a screen reader can use.
-        print!("{}", carrel::plain::render(&Document::parse(&src), 80));
+        let doc = carrel::app::adapt(&src, diff_ok_for(path));
+        print!("{}", carrel::plain::render(&doc, 80));
         return ExitCode::SUCCESS;
     }
 
@@ -562,7 +627,14 @@ fn b64(bytes: &[u8]) -> String {
 
 fn run(path: &Path, src: &str) -> std::io::Result<()> {
     let theme_note = startup_theme();
-    let doc = Document::parse(src);
+    // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
+    let diff_ok = diff_forced().unwrap_or_else(|| {
+        matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("diff" | "patch")
+        )
+    });
+    let doc = carrel::app::adapt(src, diff_ok);
 
     // Protocol + font detection queries the terminal, so it must happen
     // before the alternate screen swallows the replies.
@@ -578,6 +650,8 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
         .to_string_lossy()
         .into_owned();
     let mut app = App::new(name, doc, size.width, size.height);
+    app.diff_ok = diff_ok;
+    app.diff_forced = diff_forced();
     app.file = Some(path.to_path_buf());
     app.note = theme_note;
     app.config_dir = config::config_dir();
@@ -752,6 +826,9 @@ fn run_stdin(rx: &Receiver<String>) -> std::io::Result<()> {
         size.height,
     );
     app.streaming = true;
+    // A pipe is the pager case: `git show | carrel` is the whole point.
+    app.diff_ok = diff_forced().unwrap_or(true);
+    app.diff_forced = diff_forced();
     app.piped = Some(String::new());
     app.note = theme_note;
     app.config_dir = config::config_dir();
@@ -1216,7 +1293,8 @@ fn emit_osc8(links: &[OscLink]) -> std::io::Result<()> {
 fn print_plain(path: &Path, width: u16) -> ExitCode {
     match std::fs::read_to_string(path) {
         Ok(src) => {
-            print!("{}", carrel::plain::render(&Document::parse(&src), width));
+            let doc = carrel::app::adapt(&src, diff_ok_for(path));
+            print!("{}", carrel::plain::render(&doc, width));
             ExitCode::SUCCESS
         }
         Err(e) => {

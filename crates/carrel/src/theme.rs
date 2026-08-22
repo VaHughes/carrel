@@ -59,6 +59,12 @@ pub struct Palette {
     func: Color,
     ty: Color,
     punct: Color,
+    /// A diff line that adds, and one that removes. Chosen per theme from
+    /// that theme's own published palette — `string`/`kw` are not reliable
+    /// green/red proxies (dracula's string is yellow, solarized's kw olive).
+    ins: Color,
+    /// `del_` because `del` is close enough to a keyword to read badly.
+    del_: Color,
 }
 
 const fn c(hex: u32) -> Color {
@@ -106,6 +112,8 @@ pub static PALETTES: &[Palette] = &[
         func: CREAM,
         ty: LAMP_DIM,
         punct: WOOD_DIM,
+        ins: LAMP,
+        del_: c(0xC0604E),
     },
     // The desk at night.
     Palette {
@@ -135,6 +143,8 @@ pub static PALETTES: &[Palette] = &[
         func: CREAM,
         ty: LAMP_DIM,
         punct: WOOD_DIM,
+        ins: LAMP,
+        del_: c(0xC0604E),
     },
     // Reading a page: cream paper, ink text.
     Palette {
@@ -164,6 +174,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x2A2118),
         ty: c(0x5C865A),
         punct: c(0x9A8464),
+        ins: c(0x4A7A44),
+        del_: c(0x9A3B2E),
     },
     Palette {
         name: "catppuccin-mocha",
@@ -192,6 +204,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x89B4FA),
         ty: c(0xF9E2AF),
         punct: c(0x7F849C),
+        ins: c(0xA6E3A1),
+        del_: c(0xF38BA8),
     },
     Palette {
         name: "catppuccin-latte",
@@ -220,6 +234,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x1E66F5),
         ty: c(0xDF8E1D),
         punct: c(0x7C7F93),
+        ins: c(0x40A02B),
+        del_: c(0xD20F39),
     },
     Palette {
         name: "gruvbox-dark",
@@ -248,6 +264,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x8EC07C),
         ty: c(0xFABD2F),
         punct: c(0xA89984),
+        ins: c(0xB8BB26),
+        del_: c(0xFB4934),
     },
     Palette {
         name: "gruvbox-light",
@@ -276,6 +294,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x427B58),
         ty: c(0xB57614),
         punct: c(0x7C6F64),
+        ins: c(0x79740E),
+        del_: c(0x9D0006),
     },
     Palette {
         name: "tokyo-night",
@@ -304,6 +324,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x7AA2F7),
         ty: c(0x2AC3DE),
         punct: c(0xA9B1D6),
+        ins: c(0x9ECE6A),
+        del_: c(0xF7768E),
     },
     Palette {
         name: "nord",
@@ -332,6 +354,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x88C0D0),
         ty: c(0x8FBCBB),
         punct: c(0xD8DEE9),
+        ins: c(0xA3BE8C),
+        del_: c(0xBF616A),
     },
     Palette {
         name: "dracula",
@@ -360,6 +384,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x50FA7B),
         ty: c(0x8BE9FD),
         punct: c(0xF8F8F2),
+        ins: c(0x50FA7B),
+        del_: c(0xFF5555),
     },
     Palette {
         name: "solarized-dark",
@@ -388,6 +414,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x268BD2),
         ty: c(0xB58900),
         punct: c(0x839496),
+        ins: c(0x859900),
+        del_: c(0xDC322F),
     },
     Palette {
         name: "solarized-light",
@@ -416,6 +444,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x268BD2),
         ty: c(0xB58900),
         punct: c(0x657B83),
+        ins: c(0x859900),
+        del_: c(0xDC322F),
     },
     Palette {
         name: "everforest",
@@ -444,6 +474,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x83C092),
         ty: c(0xDBBC7F),
         punct: c(0x9DA9A0),
+        ins: c(0xA7C080),
+        del_: c(0xE67E80),
     },
     Palette {
         name: "rose-pine",
@@ -472,6 +504,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0xEBBCBA),
         ty: c(0x9CCFD8),
         punct: c(0x908CAA),
+        ins: c(0x9CCFD8),
+        del_: c(0xEB6F92),
     },
     Palette {
         name: "kanagawa",
@@ -500,6 +534,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x7E9CD8),
         ty: c(0x7AA89F),
         punct: c(0x9CABCA),
+        ins: c(0x98BB6C),
+        del_: c(0xC34043),
     },
     // The weird cyber neon one. Glow sold separately.
     Palette {
@@ -529,6 +565,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x36F9F6),
         ty: c(0xFF7EDB),
         punct: c(0xB6B1B1),
+        ins: c(0x72F1B8),
+        del_: c(0xFE4450),
     },
     // The ocean one: Oceanic Next's deep-sea blues.
     Palette {
@@ -558,6 +596,8 @@ pub static PALETTES: &[Palette] = &[
         func: c(0x6699CC),
         ty: c(0xFAC863),
         punct: c(0xC0C5CE),
+        ins: c(0x99C794),
+        del_: c(0xEC5F67),
     },
 ];
 
@@ -717,7 +757,16 @@ pub fn token(kind: carrel_core::TokenKind) -> Style {
         K::Function => code.fg(p.func).add_modifier(Modifier::BOLD),
         K::Type => code.fg(p.ty),
         K::Punctuation => code.fg(p.punct),
-        K::Plain => code,
+        // A diff line reads as a whole line, so it takes weight as well as
+        // hue — on a low-contrast theme the green and the red alone are not
+        // enough to tell them apart at a glance.
+        K::Inserted => code.fg(p.ins).add_modifier(Modifier::BOLD),
+        K::Deleted => code.fg(p.del_),
+        K::Meta => code.fg(p.comment).add_modifier(Modifier::BOLD),
+        // `Plain`, and anything a future `TokenKind` adds: the block's own
+        // colours. The enum is `#[non_exhaustive]`, so an upstream addition
+        // must degrade rather than fail the build.
+        K::Plain | _ => code,
     })
 }
 

@@ -4,7 +4,7 @@
 _carrel() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W "--help --version --plain" -- "$cur") )
+        COMPREPLY=( $(compgen -W "--help --version --plain --diff --no-diff" -- "$cur") )
     else
         COMPREPLY=( $(compgen -f -X '!*.md' -- "$cur") $(compgen -d -- "$cur") )
     fi

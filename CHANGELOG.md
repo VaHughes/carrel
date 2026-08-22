@@ -4,6 +4,16 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **`git show | carrel` reads like a document.** A pipe, or a `.diff`/`.patch` file, is
+  recognised as a diff and laid out as one: a heading per commit and per file with its
+  `+/−` counts, hunks as code, additions and removals coloured from your own theme's
+  palette rather than a generic red and green. Because files become *sections*, everything
+  carrel already does works on a diff — fold a file with `za`, collapse the changeset with
+  `zM`, jump between files from the outline, search across all of it without the matches
+  moving when you resize. `git config core.pager carrel` puts it in front of every git
+  command that pages, and unknown pager flags are ignored rather than refused.
+  A `.md` file is never read as a diff whatever it contains; `--diff` and `--no-diff`
+  override the guess.
 - **Follow a document that is still being written.** `F` pins the view to the end of a
   growing pipe — an agent writing as it thinks, a build log, a `tail -f` — and any
   deliberate move away detaches it again. It starts **off**, even for a pipe: nothing moves

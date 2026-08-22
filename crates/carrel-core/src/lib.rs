@@ -34,6 +34,7 @@
 //!
 //! [Carrel]: https://github.com/VaHughes/carrel
 
+pub mod diff;
 pub mod document;
 pub mod highlight;
 pub mod layout;
@@ -41,6 +42,7 @@ pub mod math;
 pub mod position;
 pub mod search;
 
+pub use diff::{looks_like_diff, to_markdown};
 pub use document::{
     AlertKind, Document, Inline, LinkId, Marker, Node, NodeKind, Prefix, Prov, ProvKind, Style,
 };

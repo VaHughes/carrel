@@ -26,7 +26,13 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 pub const MAX_HIGHLIGHT_BYTES: usize = 32 * 1024;
 
 /// What a run of code *is*, semantically. Frontends map these to colours.
+///
+/// `#[non_exhaustive]` since 2026.8.21: adding a variant is otherwise a
+/// breaking change for any downstream exhaustive match, and this enum grows
+/// whenever a new grammar needs a distinction (diff insert/delete were the
+/// first).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TokenKind {
     Keyword,
     String,
@@ -35,6 +41,12 @@ pub enum TokenKind {
     Function,
     Type,
     Punctuation,
+    /// A diff line that adds.
+    Inserted,
+    /// A diff line that removes.
+    Deleted,
+    /// Structural chrome inside a listing — a diff's `@@` hunk header.
+    Meta,
     /// Unclassified. Never stored — a gap between tokens *is* `Plain`.
     Plain,
 }
@@ -61,6 +73,12 @@ fn syntaxes() -> &'static SyntaxSet {
 struct Prefixes {
     comment: Scope,
     string: Scope,
+    /// Container scopes: checked against the WHOLE stack before specificity,
+    /// because they wrap the punctuation inside them. `markup.inserted` wraps
+    /// `punctuation.definition.inserted`, so leaving diff scopes to the
+    /// ordered pass would colour the `+` sigil and leave the line plain —
+    /// which is precisely what carrel did before 2026-08-21.
+    containers: Vec<(Scope, TokenKind)>,
     ordered: Vec<(Scope, TokenKind)>,
 }
 
@@ -71,8 +89,14 @@ fn prefixes() -> &'static Prefixes {
         Prefixes {
             comment: s("comment"),
             string: s("string"),
+            containers: vec![
+                (s("markup.inserted"), TokenKind::Inserted),
+                (s("markup.deleted"), TokenKind::Deleted),
+            ],
             // First match wins; more specific prefixes come first.
             ordered: vec![
+                (s("meta.diff.range"), TokenKind::Meta),
+                (s("meta.diff.header"), TokenKind::Meta),
                 (s("constant.numeric"), TokenKind::Number),
                 (s("constant.language"), TokenKind::Keyword),
                 (s("constant"), TokenKind::Number),
@@ -107,6 +131,11 @@ fn classify(stack: &ScopeStack) -> TokenKind {
         }
         if p.string.is_prefix_of(*scope) {
             return TokenKind::String;
+        }
+        for (prefix, kind) in &p.containers {
+            if prefix.is_prefix_of(*scope) {
+                return *kind;
+            }
         }
     }
     for scope in stack.as_slice().iter().rev() {

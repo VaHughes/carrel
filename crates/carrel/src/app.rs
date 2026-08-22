@@ -101,6 +101,12 @@ pub struct App {
     /// A stdin stream is still arriving. Presentation only: the footer lamp
     /// and the path label read it; nothing else may.
     pub streaming: bool,
+    /// May this document be sniffed as a raw diff? Set per document by
+    /// whoever opened it — see [`Self::parse_adapting`].
+    pub diff_ok: bool,
+    /// `--diff` / `--no-diff`: a command-line override that outranks the
+    /// per-document rule for the whole run.
+    pub diff_forced: Option<bool>,
     /// Pinned to the end of a growing document.
     ///
     /// **Deliberately starts OFF, even for a pipe.** Nothing may move under
@@ -327,6 +333,8 @@ impl App {
             path,
             file: None,
             streaming: false,
+            diff_ok: false,
+            diff_forced: None,
             following: false,
             code_focus: None,
             piped: None,
@@ -428,7 +436,15 @@ impl App {
         self.save_position();
         check_document_size(path)?;
         let src = std::fs::read_to_string(path)?;
-        self.doc = Document::parse(&src);
+        // A `.md` file is never sniffed; `.diff`/`.patch` always are. Set
+        // before parsing, because `parse_adapting` reads it.
+        self.diff_ok = self.diff_forced.unwrap_or_else(|| {
+            matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("diff" | "patch")
+            )
+        });
+        self.doc = self.parse_adapting(&src);
         self.matches = None;
         self.mode = Mode::Normal;
         self.selected_link = None;
@@ -483,11 +499,15 @@ impl App {
         Ok(())
     }
 
+    fn parse_adapting(&self, src: &str) -> Document {
+        adapt(src, self.diff_ok)
+    }
+
     /// The body of [`Self::reload`], for a document that has no file to
     /// re-read — a piped stream re-parses through here on every append.
     /// Sets no note: one reload is an event, a stream of them is weather.
     pub fn reload_from(&mut self, src: &str) {
-        self.doc = Document::parse(src);
+        self.doc = self.parse_adapting(src);
         self.layout = Layout::with_measure(
             &self.doc,
             self.bleed_w(),
@@ -1013,6 +1033,23 @@ pub fn check_document_size(path: &Path) -> std::io::Result<()> {
 
 /// The one transition. Pure state, no drawing and no terminal.
 ///
+/// Parse, adapting a raw diff into markdown first when this document is
+/// allowed to be one.
+///
+/// **The one place the diff policy lives.** `diff_ok` is set by whoever
+/// opened the document: true for a pipe and for `.diff`/`.patch`, false for a
+/// `.md` file — so a markdown document *about* diffs can never be mangled by
+/// the sniffer, which is the entire safety argument. `--diff` / `--no-diff`
+/// override it for the run.
+#[must_use]
+pub fn adapt(src: &str, diff_ok: bool) -> Document {
+    if diff_ok && carrel_core::looks_like_diff(src) {
+        Document::parse(&carrel_core::to_markdown(src))
+    } else {
+        Document::parse(src)
+    }
+}
+
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
@@ -3107,6 +3144,85 @@ mod tests {
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
         assert_eq!(a.note, None, "a streamed chunk is not a 'reloaded' event");
+    }
+
+    // --- the diff adapter's policy (2026-08-21) ---
+
+    const RAW_DIFF: &str = "\
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,2 +1,2 @@
+-old
++new
+";
+
+    #[test]
+    fn a_pipe_is_adapted_and_a_markdown_file_is_never_sniffed() {
+        // The safety argument in one test: the SAME bytes are a diff on a
+        // pipe and prose in a `.md` file.
+        let piped = adapt(RAW_DIFF, true);
+        assert!(
+            piped
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. })),
+            "a pipe should have become sections: {:?}",
+            piped.text
+        );
+
+        // Not adapted: no sections, and the diff stays one run of prose.
+        // (`--` becomes an en-dash here — smart punctuation, which is what
+        // markdown parsing of a diff looks like and exactly why `.md` files
+        // are never sniffed.)
+        let as_markdown = adapt(RAW_DIFF, false);
+        assert!(
+            !as_markdown
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. })),
+            "a .md file must not be restructured: {:?}",
+            as_markdown.text
+        );
+        assert!(
+            !as_markdown
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, carrel_core::NodeKind::CodeBlock { .. })),
+            "nor fenced: {:?}",
+            as_markdown.text
+        );
+    }
+
+    #[test]
+    fn a_markdown_document_about_diffs_survives_the_reader() {
+        // The false-positive that the never-sniff-a-.md rule exists to stop.
+        let doc = adapt(
+            "# On diffs\n\nRun `git show`. Output starts `diff --git a/x b/x`.\n",
+            false,
+        );
+        assert!(doc.text.contains("diff --git a/x b/x"), "{:?}", doc.text);
+    }
+
+    #[test]
+    fn a_streamed_diff_is_adapted_on_every_append() {
+        let mut a = App::new("(stdin)".into(), Document::parse(""), 60, 20);
+        a.file = None;
+        a.diff_ok = true;
+        // Half a diff arrives…
+        a.reload_from("diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n");
+        let first = a.doc.block_count();
+        // …then the rest.
+        a.reload_from(RAW_DIFF);
+        assert!(a.doc.block_count() >= first, "it re-parsed");
+        assert!(
+            a.doc
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. })),
+            "still adapted after the append: {:?}",
+            a.doc.text
+        );
     }
 
     // --- follow mode and the block cursor (2026-08-21) ---
