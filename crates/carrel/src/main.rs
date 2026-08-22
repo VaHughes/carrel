@@ -276,6 +276,34 @@ fn drive_backlinks(
     }
 }
 
+/// Home-screen preferences that live on `Home` rather than `App`.
+fn set_home_prefs(app: &mut App) {
+    let titles = config::load_titles().unwrap_or(false);
+    if let Some(h) = app.home_mut() {
+        h.show_titles = titles;
+    }
+}
+
+/// Read titles for the rows about to be painted, and cache them.
+///
+/// Lazy on purpose: fourteen file heads per frame is free, and the whole
+/// index is not. Runs before the draw so a title appears on the frame the
+/// row does, rather than one frame late.
+fn fill_titles(app: &mut App) {
+    let Some(h) = app.home() else { return };
+    let wanted = h.visible_entries(app.cols, app.rows, app.hints);
+    if wanted.is_empty() {
+        return;
+    }
+    let read: Vec<_> = wanted
+        .into_iter()
+        .map(|e| ((e.path.clone(), e.mtime), scan::title_of(&e.path)))
+        .collect();
+    if let Some(h) = app.home_mut() {
+        h.titles.extend(read);
+    }
+}
+
 /// Fill the home screen's continue-reading band.
 ///
 /// Read once at startup: it is a small file, and a list that changed under
@@ -1064,6 +1092,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
     load_resume(&mut app);
+    set_home_prefs(&mut app);
     app.on_resize(app.cols, app.rows);
     if let Some(n) = note
         && let Some(h) = app.home_mut()
@@ -1093,6 +1122,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         images.drain(&mut app);
         diagrams.sync(&app);
         diagrams.drain(&mut app);
+        fill_titles(&mut app);
         terminal.draw(|f| render::draw_full(f, &app, &mut links, &mut images.protocols))?;
         emit_osc8(&links)?;
 

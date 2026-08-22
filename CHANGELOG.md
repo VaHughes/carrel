@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **The home list can show titles instead of file names** (`titles = true`): `title:` from
+  frontmatter, else the document's first heading, else the file name as before. Only the
+  rows actually on screen are read, and only their first 2 KB, so a folder of 100,000 notes
+  costs the same as a folder of ten.
 - **What links here** (`L`). Reading a note and want to know which other notes point at it?
   `L` lists them, with the line each link sits on; enter opens one. It understands both
   `[[wikilinks]]` and ordinary markdown links, resolves them the way the reader does, and a

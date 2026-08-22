@@ -161,6 +161,7 @@ unknown keys and `#` comments are ignored.
 | `max_width` | `90` | The reading measure: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
 | `theme` | `terminal` | Palette name — the default inherits your terminal's own colours. `T` cycles all 17 in the app and saves your choice. |
 | `hints` | `true` | The lamplight hint row along the bottom. `H` toggles it. |
+| `titles` | `false` | Show each document's own title — `title:` from frontmatter, else its first heading — instead of its file name. Falls back to the name for a file that has neither. |
 | `outline_margin` | `false` | The section tree pinned in the left margin, current section lit, on terminals wide enough to spare the columns. Click a heading to jump. Off by default because it moves the text column. |
 | `breadcrumb` | `true` | The section path pinned atop the page while you scroll — `The Book ▸ Chapter ▸ Detail` — with a rule under it. `B` toggles it. Documents with no headings never show one. |
 | `root` | — | The directory the home screen lists. `d` picks one in the app. |

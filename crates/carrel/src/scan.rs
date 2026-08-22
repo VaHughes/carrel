@@ -182,6 +182,106 @@ pub fn save_cache_in(dir: &Path, root: &Path, entries: &[Entry]) {
     let _ = std::fs::write(dir.join(cache_name(root)), text);
 }
 
+/// The document's own title: `title:` from frontmatter, else the first `#`
+/// heading, else nothing.
+///
+/// **Reads only the head of the file.** A home screen paints fourteen rows;
+/// reading 110k files to fill them is not affordable, so this takes the first
+/// [`TITLE_BYTES`] and stops. Callers cache by `(path, mtime)`.
+#[must_use]
+pub fn title_of(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; TITLE_BYTES];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    let head = String::from_utf8_lossy(&buf);
+
+    let mut in_front = false;
+    for (i, line) in head.lines().enumerate() {
+        let t = line.trim();
+        if i == 0 && (t == "---" || t == "+++") {
+            in_front = true;
+            continue;
+        }
+        if in_front {
+            if t == "---" || t == "+++" {
+                in_front = false;
+                continue;
+            }
+            if let Some(v) = t
+                .strip_prefix("title:")
+                .or_else(|| t.strip_prefix("title ="))
+            {
+                let v = v.trim().trim_matches(['"', '\'']).trim();
+                if !v.is_empty() {
+                    return Some(v.chars().take(120).collect());
+                }
+            }
+            continue;
+        }
+        if let Some(h) = t.strip_prefix("# ") {
+            let h = h.trim();
+            if !h.is_empty() {
+                return Some(h.chars().take(120).collect());
+            }
+        }
+    }
+    None
+}
+
+/// How much of a file to read looking for its title. A frontmatter block and
+/// a first heading live well inside this.
+const TITLE_BYTES: usize = 2048;
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn frontmatter_title_wins_then_the_first_heading() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            title_of(&write(
+                d.path(),
+                "a.md",
+                "---\ntitle: The Real Name\ntags: [x]\n---\n\n# Something Else\n"
+            )),
+            Some("The Real Name".into())
+        );
+        assert_eq!(
+            title_of(&write(d.path(), "b.md", "# Just A Heading\n\nbody\n")),
+            Some("Just A Heading".into())
+        );
+        assert_eq!(
+            title_of(&write(d.path(), "c.md", "no title at all\n")),
+            None
+        );
+        // Quoted and TOML forms.
+        assert_eq!(
+            title_of(&write(d.path(), "d.md", "---\ntitle: \"Quoted\"\n---\n")),
+            Some("Quoted".into())
+        );
+        assert_eq!(
+            title_of(&write(d.path(), "e.md", "+++\ntitle = \"Toml\"\n+++\n")),
+            Some("Toml".into())
+        );
+    }
+
+    #[test]
+    fn a_heading_far_past_the_head_is_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let body = format!("{}\n# Too Late\n", "x".repeat(TITLE_BYTES * 2));
+        assert_eq!(title_of(&write(d.path(), "big.md", &body)), None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

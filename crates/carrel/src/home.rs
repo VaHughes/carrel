@@ -3,7 +3,7 @@
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6. Every behaviour here is a
 //! pure function over a `Vec<Entry>`, so the tests never touch a disk.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::scan::Entry;
@@ -220,6 +220,14 @@ pub struct Home {
     pub unreadable: usize,
     /// A one-line note for the status bar, e.g. a vanished saved root.
     pub note: Option<String>,
+    /// Titles read from the head of a file, keyed by `(path, mtime)`.
+    ///
+    /// **Filled lazily for the rows actually painted.** Reading 110k file
+    /// heads to fill fourteen rows is not affordable; reading fourteen is
+    /// free. The mtime is part of the key so an edited file re-reads.
+    pub titles: HashMap<(PathBuf, std::time::SystemTime), Option<String>>,
+    /// Show frontmatter titles instead of file names (config `titles`).
+    pub show_titles: bool,
     /// Documents with a remembered reading position, most recent first.
     ///
     /// Injected by `main.rs` exactly as the config dir is — the state layer
@@ -262,6 +270,8 @@ impl Home {
             scanning: true,
             unreadable: 0,
             note: None,
+            titles: HashMap::new(),
+            show_titles: false,
             resume: Vec::new(),
             query: String::new(),
             hits: Vec::new(),
@@ -413,6 +423,44 @@ impl Home {
     pub fn clamp_picker_scroll(&mut self, cols: u16, screen_rows: u16) {
         let (_, first, _) = self.picker_view(cols, screen_rows);
         self.picker.top = first;
+    }
+
+    /// The label for an entry: its title if we have one and titles are
+    /// wanted, else its path relative to the root.
+    ///
+    /// Reading happens in `main.rs` (the state layer does no I/O); this only
+    /// consults what was cached.
+    #[must_use]
+    pub fn label_for(&self, e: &Entry) -> String {
+        if self.show_titles
+            && let Some(Some(t)) = self.titles.get(&(e.path.clone(), e.mtime))
+        {
+            return t.clone();
+        }
+        e.path
+            .strip_prefix(&self.root)
+            .unwrap_or(&e.path)
+            .display()
+            .to_string()
+    }
+
+    /// The entries currently painted, whose titles are worth reading.
+    #[must_use]
+    pub fn visible_entries(&self, cols: u16, rows: u16, hints: bool) -> Vec<Entry> {
+        if !self.show_titles {
+            return Vec::new();
+        }
+        let (_, height) = list_geometry(cols, rows, hints, self.resume_shown());
+        let h = usize::from(height);
+        let first = window_first(self.top, self.selected, self.filtered.len(), h);
+        self.filtered
+            .iter()
+            .skip(first)
+            .take(h)
+            .filter_map(|&i| self.entries.get(i))
+            .filter(|e| !self.titles.contains_key(&(e.path.clone(), e.mtime)))
+            .cloned()
+            .collect()
     }
 
     /// How many continue-reading rows this screen shows.
@@ -1173,6 +1221,52 @@ mod tests {
         }
         std::fs::write(d.path().join("note.md"), "x").unwrap();
         d
+    }
+
+    #[test]
+    fn a_title_replaces_the_name_only_when_asked_and_only_when_known() {
+        let mut h = home();
+        let e = h.entries[0].clone();
+        let name = h.label_for(&e);
+        assert!(name.contains(".md"), "off by default: {name}");
+
+        h.show_titles = true;
+        assert_eq!(
+            h.label_for(&e),
+            name,
+            "no title read yet, so the name stands"
+        );
+
+        h.titles
+            .insert((e.path.clone(), e.mtime), Some("A Real Title".into()));
+        assert_eq!(h.label_for(&e), "A Real Title");
+
+        // A file with no title of its own keeps its name forever.
+        h.titles.insert((e.path.clone(), e.mtime), None);
+        assert_eq!(h.label_for(&e), name);
+    }
+
+    #[test]
+    fn only_the_rows_on_screen_are_worth_reading_titles_for() {
+        let many: Vec<Entry> = (0..500).map(|i| e(&format!("f{i}.md"), i)).collect();
+        let mut h = Home::new(PathBuf::from("/root"), many);
+        assert!(
+            h.visible_entries(100, 20, true).is_empty(),
+            "titles are off, so nothing is worth reading"
+        );
+        h.show_titles = true;
+        let want = h.visible_entries(100, 20, true);
+        assert!(!want.is_empty());
+        assert!(
+            want.len() < 30,
+            "a screenful, not the index: got {}",
+            want.len()
+        );
+        // Once cached, they are not asked for again.
+        for x in &want {
+            h.titles.insert((x.path.clone(), x.mtime), None);
+        }
+        assert!(h.visible_entries(100, 20, true).is_empty());
     }
 
     // --- continue reading (2026-08-21) ---

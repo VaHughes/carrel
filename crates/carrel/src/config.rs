@@ -78,7 +78,7 @@ fn parse_key(text: &str, key: &str) -> Option<String> {
 ///
 /// With more than one key, "write only mine" done naively destroys the
 /// others — the original `save_root` rewrote the whole file. (Key count is
-/// now six — root, theme, hints, `max_width`, breadcrumb, `outline_margin` — the top of the module-doc's stated TOML
+/// now seven — root, theme, hints, `max_width`, breadcrumb, `outline_margin`, titles — the top of the module-doc's stated TOML
 /// trigger zone; the format stays hand-rolled while every key is one flat
 /// string, and the trigger becomes real the moment one wants structure.)
 fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
@@ -181,6 +181,23 @@ pub fn load_outline_margin_in(dir: &Path) -> Option<bool> {
 
 pub fn save_outline_margin_in(dir: &Path, on: bool) -> std::io::Result<()> {
     upsert_key_in(dir, "outline_margin", if on { "true" } else { "false" })
+}
+
+/// The saved title setting. Absent means **off**: a file list that shows
+/// something other than file names is a different product, and that should
+/// be asked for.
+#[must_use]
+pub fn load_titles() -> Option<bool> {
+    load_titles_in(&config_dir()?)
+}
+
+#[must_use]
+pub fn load_titles_in(dir: &Path) -> Option<bool> {
+    parse_key(&std::fs::read_to_string(dir.join("config")).ok()?, "titles").map(|v| v == "true")
+}
+
+pub fn save_titles_in(dir: &Path, on: bool) -> std::io::Result<()> {
+    upsert_key_in(dir, "titles", if on { "true" } else { "false" })
 }
 
 /// The default reading measure, in columns.

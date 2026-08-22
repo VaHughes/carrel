@@ -1486,12 +1486,7 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect) {
     for (row, &idx) in home.filtered.iter().skip(first).take(h).enumerate() {
         let y = area.y + row as u16;
         let e = &home.entries[idx];
-        let shown = e
-            .path
-            .strip_prefix(&home.root)
-            .unwrap_or(&e.path)
-            .display()
-            .to_string();
+        let shown = home.label_for(e);
         let is_sel = first + row == home.selected;
         let style = if is_sel {
             theme::selected()
