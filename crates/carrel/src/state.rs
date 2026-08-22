@@ -137,6 +137,7 @@ pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<u32> {
 /// list of digits, so the tab-safe field is the one that has to come last —
 /// and that is the marks, not the path.
 pub fn save_marks_in(dir: &Path, file: &Path, marks: &[u32]) -> std::io::Result<()> {
+    use std::fmt::Write as _;
     std::fs::create_dir_all(dir)?;
     let path = dir.join("bookmarks");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -153,7 +154,6 @@ pub fn save_marks_in(dir: &Path, file: &Path, marks: &[u32]) -> std::io::Result<
         sorted.sort_unstable();
         sorted.dedup();
         let joined: Vec<String> = sorted.iter().map(ToString::to_string).collect();
-        use std::fmt::Write as _;
         let _ = writeln!(out, "{k}\t{}", joined.join(","));
     }
     std::fs::write(path, out)

@@ -3213,7 +3213,11 @@ mod tests {
     // --- bookmarks (2026-08-21) ---
 
     fn marked_app() -> App {
-        let body: String = (0..40).map(|i| format!("Para {i} here.\n\n")).collect();
+        let body: String = (0..40).fold(String::new(), |mut b, i| {
+            use std::fmt::Write as _;
+            let _ = write!(b, "Para {i} here.\n\n");
+            b
+        });
         App::new("t.md".into(), Document::parse(&body), 40, 8)
     }
 
