@@ -2,7 +2,11 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## 2026.8.21
+## Unreleased
+
+- **The man page documents every reader key again**, including how to page, follow a link,
+  and go back — basics it had quietly never carried — and a test now fails the build if a
+  key reaches the help overlay without reaching the man page.
 
 - **The home list can show titles instead of file names** (`titles = true`): `title:` from
   frontmatter, else the document's first heading, else the file name as before. Only the
@@ -45,6 +49,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   command that pages, and unknown pager flags are ignored rather than refused.
   A `.md` file is never read as a diff whatever it contains; `--diff` and `--no-diff`
   override the guess.
+
+## 2026.8.21
+
 - **Follow a document that is still being written.** `F` pins the view to the end of a
   growing pipe — an agent writing as it thinks, a build log, a `tail -f` — and any
   deliberate move away detaches it again. It starts **off**, even for a pipe: nothing moves

@@ -65,6 +65,7 @@ KEYS (while reading):
     t                            tables: cards ↔ wrapped
     r                            mermaid, math: rendered ↔ source
     m '                          set a bookmark / go to the next
+    L                            what links here (backlinks)
     T                            cycle themes    q Ctrl-C        quit
     h F1                         help            Ctrl-O          back
     ] [                          next / previous code block

@@ -220,6 +220,60 @@ fn version_flag_prints_the_version_and_exits_zero() {
     }
 }
 
+/// The man page names every reader key by hand, so it rots the same way the
+/// flags would.
+///
+/// **The flag guard below did not cover this**, and four keys — `F`, `y`,
+/// `] [` and `L` — reached a release undocumented before anyone noticed
+/// (2026-08-21). The help overlay had them, because a compile-time exhaustive
+/// match forces that; the man page has no such compiler.
+#[test]
+fn the_man_page_documents_every_key_the_help_overlay_does() {
+    // Rows the man page deliberately does not carry: the mouse gestures, which
+    // it covers as prose under MOUSE. A NEW key is in neither list and fails
+    // until someone decides which it is.
+    const NOT_IN_MAN: &[&str] = &["drag", "2× click", "wheel", "click", "double-click"];
+
+    let man = std::fs::read_to_string("../../contrib/carrel.1").expect("man page");
+    // Section headers (`§`) are grouping, and prose rows like "double-click"
+    // are gestures, not keys — the same exemption the honesty test makes.
+    // Keys appear as `.B x` or, for a row of them, `.BR j ", " k ", " …`.
+    // Strip roff and collect every token either macro names.
+    let mut named: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in man.lines() {
+        let Some(rest) = line
+            .strip_prefix(".B ")
+            .or_else(|| line.strip_prefix(".BR "))
+        else {
+            continue;
+        };
+        let cleaned = rest.replace("\\-", "-").replace('\\', "").replace('"', " ");
+        for tok in cleaned.split([' ', ',']) {
+            let t = tok.trim();
+            if !t.is_empty() {
+                named.insert(t.to_string());
+            }
+        }
+        named.insert(cleaned.trim().to_string());
+    }
+
+    let mut missing: Vec<&str> = Vec::new();
+    for (key, _) in carrel::keys::READER_HELP {
+        if *key == "§" || NOT_IN_MAN.contains(key) {
+            continue;
+        }
+        // A row like "gg G Home End" is documented if any of its keys is.
+        if key.split_whitespace().any(|k| named.contains(k)) || named.contains(*key) {
+            continue;
+        }
+        missing.push(key);
+    }
+    assert!(
+        missing.is_empty(),
+        "contrib/carrel.1 documents no entry for: {missing:?}"
+    );
+}
+
 /// The completions and the man page name every flag by hand. If a flag is
 /// added to USAGE and not to them they rot silently, so assert the sets match.
 #[test]

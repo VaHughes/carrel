@@ -78,8 +78,26 @@ Print usage and exit.
 .BR j ", " k ", " \(ua ", " \(da
 Scroll by a line.
 .TP
+.BR Ctrl\-E ", " Ctrl\-Y
+Scroll by a line without moving the reading position.
+.TP
+.BR Space ", " b ", " PgDn ", " PgUp ", " Ctrl\-F ", " Ctrl\-B
+Page forward and back.
+.TP
+.BR Ctrl\-D ", " Ctrl\-U
+Half a page forward and back.
+.TP
 .BR gg ", " G
 Jump to the start or the end.
+.TP
+.B 42G
+Jump to a row by number.
+.TP
+.B { }
+Move to the previous or next block.
+.TP
+.B zz zt zb
+Put the current match in the middle, at the top, or at the bottom.
 .TP
 .B /
 Search. Matches survive reflow and resize by construction.
@@ -96,12 +114,38 @@ Toggle wide tables between card view and wrapping in place.
 .B r
 Toggle rendered blocks \(em diagrams and math \(em between art and source.
 .TP
+.B ] [
+Move to the next or previous code block. The one in focus is marked in the
+margin.
+.TP
+.B y
+Copy the focused code block, without its fence. With nothing focused, the
+nearest code block at or after the top of the screen.
+.TP
+.B F
+Follow a document that is still arriving on a pipe: the view stays at the end
+as content appears. Any deliberate move away detaches it.
+.TP
+.B L
+What links here \(em the documents that link to this one, by
+.I [[wikilink]]
+or by ordinary markdown link. Enter opens one.
+.TP
 .B m
 Set or clear a bookmark at the current position. Bookmarks are remembered
 between sessions and survive a resize; they do not survive an edit to the file.
 .TP
 .B '
 Go to the next bookmark, wrapping at the end.
+.TP
+.BR Tab ", " Shift\-Tab
+Select the next or previous link.
+.TP
+.B Enter
+Follow the selected link.
+.TP
+.B Ctrl\-O
+Go back where you came from.
 .TP
 .B T
 Cycle themes.
@@ -124,7 +168,11 @@ Clicking a heading toggles its fold. Search and links unfold their targets.
 Clear the selection, the selected link, and any search highlights.
 .TP
 .B q
-Quit.
+Close the file, returning to the home screen if it was opened from there;
+otherwise quit.
+.TP
+.BR Q ", " Ctrl\-C
+Quit outright, whatever is open.
 .SS Home screen
 .TP
 .B i
