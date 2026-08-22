@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.8.22
 
 - **Scrolling fast no longer eats or strands characters.** A line containing an emoji
   (`⚠️`, `✅` — anything written with a variation selector) could paint as `automatd` instead
