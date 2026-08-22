@@ -63,7 +63,8 @@ KEYS (while reading):
     zz zt zb                     put the current match middle / top / bottom
     o                            outline: jump to a section
     t                            tables: cards ↔ wrapped
-    m                            mermaid diagrams: rendered ↔ source
+    r                            mermaid, math: rendered ↔ source
+    m '                          set a bookmark / go to the next
     T                            cycle themes    q Ctrl-C        quit
     h F1                         help            Ctrl-O          back
     ] [                          next / previous code block

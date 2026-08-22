@@ -101,6 +101,13 @@ pub struct App {
     /// A stdin stream is still arriving. Presentation only: the footer lamp
     /// and the path label read it; nothing else may.
     pub streaming: bool,
+    /// Bookmarks for the open document, in document order.
+    ///
+    /// **Doc bytes**, so they survive reflow and resize by construction —
+    /// the same currency as a search match and the scroll anchor. They do
+    /// NOT survive an edit to the file, which is honest for a reader and is
+    /// said so in the help.
+    pub marks: Vec<u32>,
     /// May this document be sniffed as a raw diff? Set per document by
     /// whoever opened it — see [`Self::parse_adapting`].
     pub diff_ok: bool,
@@ -333,6 +340,7 @@ impl App {
             path,
             file: None,
             streaming: false,
+            marks: Vec::new(),
             diff_ok: false,
             diff_forced: None,
             following: false,
@@ -424,6 +432,23 @@ impl App {
         }
     }
 
+    /// Persist the bookmark list. Inert for a piped document, which has no
+    /// path to key on — the same contract position saving already has.
+    fn save_marks(&self) {
+        if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
+            let _ = crate::state::save_marks_in(dir, file, &self.marks);
+        }
+    }
+
+    /// Load the bookmark list for the open file. Called wherever a document
+    /// is opened, beside the position restore.
+    fn load_marks(&mut self) {
+        self.marks = match (self.state_dir.as_deref(), self.file.as_deref()) {
+            (Some(dir), Some(file)) => crate::state::load_marks_in(dir, file),
+            _ => Vec::new(),
+        };
+    }
+
     /// Load a document and switch to the reader.
     ///
     /// Neutral about history — the caller decides whether this navigation is
@@ -445,6 +470,7 @@ impl App {
             )
         });
         self.doc = self.parse_adapting(&src);
+        self.load_marks();
         self.matches = None;
         self.mode = Mode::Normal;
         self.selected_link = None;
@@ -1581,6 +1607,44 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::Back => go_back(app, h),
+
+        // A bookmark lands on the block the reader is looking at, not on a
+        // raw scroll offset: `zz` and a resize both move the offset, and a
+        // mark that drifted off the thing it marked would be useless.
+        Action::MarkToggle => {
+            let block = app.layout.block_at_row(app.view.scroll_row);
+            let at = app.doc.node_for_block(block).doc.start;
+            if let Some(i) = app.marks.iter().position(|&m| m == at) {
+                app.marks.remove(i);
+                app.note = Some("bookmark cleared".into());
+            } else {
+                app.marks.push(at);
+                app.marks.sort_unstable();
+                let n = app.marks.iter().position(|&m| m == at).unwrap_or(0) + 1;
+                app.note = Some(format!("bookmark {n} of {}", app.marks.len()));
+            }
+            app.save_marks();
+            Outcome::Redraw
+        }
+
+        Action::MarkNext => {
+            if app.marks.is_empty() {
+                app.note = Some("no bookmarks — press m to set one".into());
+                return Outcome::Redraw;
+            }
+            let here = app
+                .doc
+                .node_for_block(app.layout.block_at_row(app.view.scroll_row))
+                .doc
+                .start;
+            // The next one strictly after where we are, wrapping — the only
+            // behaviour that lets `'` walk a list of any length.
+            let i = app.marks.iter().position(|&m| m > here).unwrap_or(0);
+            let at = app.marks[i];
+            app.reveal_byte(at, h, Where::Top);
+            app.note = Some(format!("bookmark {} of {}", i + 1, app.marks.len()));
+            Outcome::Redraw
+        }
 
         Action::FollowToggle => {
             app.following = !app.following;
@@ -3144,6 +3208,83 @@ mod tests {
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
         assert_eq!(a.note, None, "a streamed chunk is not a 'reloaded' event");
+    }
+
+    // --- bookmarks (2026-08-21) ---
+
+    fn marked_app() -> App {
+        let body: String = (0..40).map(|i| format!("Para {i} here.\n\n")).collect();
+        App::new("t.md".into(), Document::parse(&body), 40, 8)
+    }
+
+    #[test]
+    fn a_bookmark_toggles_and_lands_on_a_block_not_a_scroll_offset() {
+        let mut a = marked_app();
+        update(&mut a, Action::Scroll(Span::Line, 6));
+        update(&mut a, Action::MarkToggle);
+        assert_eq!(a.marks.len(), 1);
+        let at = a.marks[0];
+        // It sits on a block start, so `zz` and a resize cannot drift it off
+        // the thing it marks.
+        assert!(
+            a.doc.nodes.iter().any(|n| n.doc.start == at),
+            "the mark is not on a block boundary"
+        );
+
+        update(&mut a, Action::MarkToggle);
+        assert!(a.marks.is_empty(), "the same key clears it");
+    }
+
+    #[test]
+    fn the_quote_key_walks_the_bookmarks_and_wraps() {
+        let mut a = marked_app();
+        update(&mut a, Action::Scroll(Span::Line, 4));
+        update(&mut a, Action::MarkToggle);
+        update(&mut a, Action::Scroll(Span::Line, 20));
+        update(&mut a, Action::MarkToggle);
+        assert_eq!(a.marks.len(), 2);
+        let (first, second) = (a.marks[0], a.marks[1]);
+
+        update(&mut a, Action::GoToStart);
+        update(&mut a, Action::MarkNext);
+        let here = |a: &App| {
+            a.doc
+                .node_for_block(a.layout.block_at_row(a.view.scroll_row))
+                .doc
+                .start
+        };
+        assert_eq!(here(&a), first);
+        update(&mut a, Action::MarkNext);
+        assert_eq!(here(&a), second);
+        update(&mut a, Action::MarkNext);
+        assert_eq!(here(&a), first, "it wraps rather than stopping");
+    }
+
+    #[test]
+    fn a_bookmark_survives_a_resize_because_it_is_a_doc_byte() {
+        let mut a = marked_app();
+        update(&mut a, Action::Scroll(Span::Line, 8));
+        update(&mut a, Action::MarkToggle);
+        let at = a.marks[0];
+        a.on_resize(24, 8);
+        assert_eq!(a.marks, vec![at], "reflow cannot move a doc byte");
+        update(&mut a, Action::GoToStart);
+        update(&mut a, Action::MarkNext);
+        assert_eq!(
+            a.doc
+                .node_for_block(a.layout.block_at_row(a.view.scroll_row))
+                .doc
+                .start,
+            at,
+            "and it still lands on the same block at the new width"
+        );
+    }
+
+    #[test]
+    fn the_quote_key_says_so_when_there_is_nothing_to_go_to() {
+        let mut a = marked_app();
+        update(&mut a, Action::MarkNext);
+        assert!(a.note.is_some());
     }
 
     // --- the diff adapter's policy (2026-08-21) ---

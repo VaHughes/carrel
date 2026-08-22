@@ -104,9 +104,89 @@ pub fn save_position_in(dir: &Path, file: &Path, anchor: u32) -> std::io::Result
     std::fs::write(path, out)
 }
 
+/// The bookmarks for `file`, in document order. Never an error.
+///
+/// Kept in their own file rather than as another column of `positions`:
+/// a position is one number that is always overwritten, a bookmark list is
+/// many and is edited. Same key function, so the two agree about what "the
+/// same document reached two ways" means.
+#[must_use]
+pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<u32> {
+    let Ok(text) = std::fs::read_to_string(dir.join("bookmarks")) else {
+        return Vec::new();
+    };
+    let k = key(file);
+    for line in text.lines() {
+        let Some((path, marks)) = line.split_once('\t') else {
+            continue;
+        };
+        if path != k {
+            continue;
+        }
+        let mut out: Vec<u32> = marks.split(',').filter_map(|m| m.parse().ok()).collect();
+        out.sort_unstable();
+        out.dedup();
+        return out;
+    }
+    Vec::new()
+}
+
+/// Replace `file`'s bookmarks. An empty list removes the entry.
+///
+/// **Path first here**, unlike `positions`: the marks are a comma-joined
+/// list of digits, so the tab-safe field is the one that has to come last —
+/// and that is the marks, not the path.
+pub fn save_marks_in(dir: &Path, file: &Path, marks: &[u32]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("bookmarks");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let k = key(file);
+    let mut out = String::new();
+    for line in existing.lines() {
+        if line.split_once('\t').is_none_or(|(p, _)| p != k) && !line.trim().is_empty() {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !marks.is_empty() {
+        let mut sorted: Vec<u32> = marks.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let joined: Vec<String> = sorted.iter().map(ToString::to_string).collect();
+        use std::fmt::Write as _;
+        let _ = writeln!(out, "{k}\t{}", joined.join(","));
+    }
+    std::fs::write(path, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_trips_bookmarks_and_keeps_other_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.md");
+        let b = dir.path().join("b.md");
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "y").unwrap();
+        assert!(load_marks_in(dir.path(), &a).is_empty());
+
+        save_marks_in(dir.path(), &a, &[300, 100, 100]).unwrap();
+        assert_eq!(
+            load_marks_in(dir.path(), &a),
+            vec![100, 300],
+            "sorted and deduped"
+        );
+
+        save_marks_in(dir.path(), &b, &[7]).unwrap();
+        assert_eq!(load_marks_in(dir.path(), &a), vec![100, 300], "a survived");
+        assert_eq!(load_marks_in(dir.path(), &b), vec![7]);
+
+        save_marks_in(dir.path(), &a, &[]).unwrap();
+        assert!(load_marks_in(dir.path(), &a).is_empty(), "cleared");
+        assert_eq!(load_marks_in(dir.path(), &b), vec![7], "b still survived");
+    }
 
     #[test]
     fn round_trips_a_position() {

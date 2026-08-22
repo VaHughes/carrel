@@ -421,9 +421,10 @@ fn block_area(app: &App, node: &carrel_core::Node, full: Rect) -> Rect {
     Rect::new(x, full.y, full.right() - x, full.height)
 }
 
-/// The block cursor's bar, in the margin the block already leaves to its
-/// left. Decoration, never in the text — the standing rule the fold `▸` and
-/// the table `│` separators both follow.
+/// Margin marks: a bookmark dot, and the block cursor's bar.
+///
+/// Decoration, never in the text — the standing rule the fold `▸` and the
+/// table `│` separators both follow.
 fn paint_block_cursor(
     frame: &mut Frame,
     app: &App,
@@ -437,7 +438,20 @@ fn paint_block_cursor(
     // width, meaning `area.x == full.x` for exactly the blocks this marks.
     // Guarding on `area.x > full.x` drew nothing at all (caught in a pty,
     // not by a frame test).
-    if app.code_focus != Some(block) || area.x == 0 {
+    // A bookmarked block gets a dot on its first row; the focused code block
+    // gets a bar down its side. Both live in the margin `PAD_LEFT` leaves.
+    if area.x == 0 {
+        return;
+    }
+    if skip == 0
+        && y < area.bottom()
+        && app.marks.contains(&app.doc.node_for_block(block).doc.start)
+    {
+        frame
+            .buffer_mut()
+            .set_stringn(area.x - 1, y, "▪", 1, crate::theme::lamp());
+    }
+    if app.code_focus != Some(block) {
         return;
     }
     // `content_height`, not `height`: the trailing gap belongs to the block

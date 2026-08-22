@@ -121,6 +121,10 @@ pub enum Action {
     /// `m`: flip every mermaid block between rendered box art and source,
     /// like `t` for tables.
     RenderedToggle,
+    /// Toggle a bookmark at the current position.
+    MarkToggle,
+    /// Jump to the next bookmark, wrapping.
+    MarkNext,
     /// Pin the view to the end of a document that is still growing.
     FollowToggle,
     /// Move the block cursor to the next/previous CODE block.

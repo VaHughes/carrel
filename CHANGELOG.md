@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## 2026.8.21
 
+- **Bookmarks.** `m` marks the place you are reading; `'` walks between marks, wrapping;
+  a dot in the margin shows which blocks are marked. They are remembered between sessions
+  and survive a resize — they are document positions, not screen positions — though not an
+  edit to the file. **`m` used to toggle rendered diagrams and math; that moves to `r`**,
+  which was always the better mnemonic for it.
 - **`git show | carrel` reads like a document.** A pipe, or a `.diff`/`.patch` file, is
   recognised as a diff and laid out as one: a heading per commit and per file with its
   `+/−` counts, hunks as code, additions and removals coloured from your own theme's
