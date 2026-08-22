@@ -352,9 +352,12 @@ pub const HINT_HOME_SEARCH: &[(&str, &str)] =
     &[("type", "query"), ("enter", "open first"), ("esc", "back")];
 pub const HINT_HOME_PICKER: &[(&str, &str)] = &[
     ("type", "a path"),
-    // Arrows work too, but a hint's job is the key you would NOT guess —
-    // and in a mode that types, `j`/`k` are the reflex that needs redirecting.
-    ("^j/^k", "move"),
+    // The arrows, not `^j/^k`, even though the Ctrl pair is the less
+    // guessable one: whoever is reading the footer is reading it because
+    // they do not know what to do, and a cryptic key there leaves them
+    // unsure the obvious one even works. A vim user who presses `j`, watches
+    // it land in the path, and opens help finds `Ctrl-J`/`Ctrl-K` at once.
+    ("↑/↓", "move"),
     ("enter", "choose"),
     ("esc", "back"),
 ];
@@ -699,7 +702,6 @@ mod tests {
                 "type" => return None,
                 "j/k" => vec![k('j')],
                 "↑/↓" => vec![code(KeyCode::Down)],
-                "^j/^k" => vec![ctrl('j')],
                 "spc" => vec![k(' ')],
                 "/" => vec![k('/')],
                 "o" => vec![k('o')],
