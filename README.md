@@ -32,9 +32,10 @@ Everything below installs the terminal reader.
 ### Privacy
 
 Carrel reads only the directory you point it at. The default is the directory you are standing in;
-anything wider is a root you pick yourself from a visible list. It sends nothing anywhere — remote
-images in documents are never fetched; they render as their alt text. The index it caches lives
-under `$XDG_CACHE_HOME/carrel` and holds file paths and modification times, nothing else.
+anything wider is a root you choose yourself — from the list `d` offers, or by typing a path. It
+sends nothing anywhere — remote images in documents are never fetched; they render as their alt
+text. The index it caches lives under `$XDG_CACHE_HOME/carrel` and holds file paths and
+modification times, nothing else.
 
 ---
 
