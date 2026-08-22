@@ -1,7 +1,7 @@
 # Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.8.20
+Version:        2026.8.21
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -46,6 +46,12 @@ cargo test --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Fri Aug 21 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.21-1
+- Diffs read as documents; git pager support
+- Follow mode for growing documents; copy a code block with y
+- Attached superscripts (x^2^, H~2~O); home-screen scroll and picker fixes
+- Windows declined; no Windows binaries are planned
+
 * Thu Aug 20 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.20-1
 - Pipe into carrel and it streams as the producer writes; a sticky heading
   breadcrumb; section folding with za/zM/zR and click-a-heading; and a
