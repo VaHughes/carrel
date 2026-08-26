@@ -450,6 +450,31 @@ pub struct Prov {
     pub kind: ProvKind,
 }
 
+/// One GFM task-list item, as [`Document::tasks`] reports it.
+#[derive(Clone, Debug)]
+pub struct TaskMark {
+    pub done: bool,
+    /// Doc byte of the item's first row.
+    pub at: u32,
+}
+
+/// A `<details>…</details>` region: foldable like a section, with its
+/// `<summary>` text as the visible fold header.
+///
+/// Doc bytes only — width-independent, like every coordinate here. The body
+/// is *not* a span of its own because it is ordinary blocks; the fold span is
+/// `(summary.end, end)`, mirroring how a heading's body runs from the heading's
+/// own `doc.end` to its section end.
+#[derive(Clone, Debug)]
+pub struct DetailsRegion {
+    /// The visible summary text. A region is only recorded when this is
+    /// non-empty — without a summary there is nothing to keep visible, so
+    /// there is no fold to offer.
+    pub summary: Range<u32>,
+    /// Just past the last byte of the foldable body.
+    pub end: u32,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ProvKind {
     /// Affine, `doc.len() == src.len()`. The common case, ~99% of entries.
@@ -481,6 +506,10 @@ pub struct Document {
     wiki: Box<[bool]>,
     /// Sorted by `doc.start`, contiguous, non-overlapping.
     prov: Box<[Prov]>,
+    /// `<details>` regions, in document order. Nested regions appear both
+    /// alone and inside their parent's span; the fold layer resolves that,
+    /// the same way it resolves nested headings.
+    pub details: Box<[DetailsRegion]>,
 }
 
 impl Document {
@@ -644,6 +673,78 @@ impl Document {
         let n = self.node_for_block(b);
         &self.text[n.doc.start as usize..n.doc.end as usize]
     }
+
+    /// Every footnote reference occurrence, in reading order: `(name, byte)`.
+    ///
+    /// References are the literal `[^name]` runs a reader sees. Candidates
+    /// inside code blocks are skipped — a code sample that mentions `[^x]`
+    /// is prose about footnotes, not one.
+    #[must_use]
+    pub fn footnote_refs(&self) -> Vec<(Box<str>, u32)> {
+        let mut out = Vec::new();
+        let bytes = self.text.as_bytes();
+        let mut i = 0usize;
+        while i + 1 < bytes.len() {
+            // Always advance past this byte (or past the whole candidate), so
+            // a stray `[^` with no closer cannot spin forever.
+            if bytes[i] == b'['
+                && bytes[i + 1] == b'^'
+                && let Some(close) = self.text[i + 2..].find(']')
+            {
+                let end = i + 2 + close;
+                let name = &self.text[i + 2..end];
+                let at = i as u32;
+                i = end + 1;
+                let node = self.node_for_block(self.block_at_doc(DocByte(at)));
+                if !name.is_empty() && !matches!(node.kind, NodeKind::CodeBlock { .. }) {
+                    out.push((name.into(), at));
+                }
+                continue;
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Every GFM task-list item, in reading order.
+    ///
+    /// A task is any list item whose marker carried a `- [ ]` / `- [x]`;
+    /// `at` is its block start, so a jump lands on the item's first row.
+    #[must_use]
+    pub fn tasks(&self) -> Vec<TaskMark> {
+        (0..self.block_count())
+            .map(|i| BlockIdx(i as u32))
+            .filter_map(|b| {
+                let n = self.node_for_block(b);
+                let done = n.prefix.as_ref()?.task?;
+                Some(TaskMark {
+                    done,
+                    at: n.doc.start,
+                })
+            })
+            .collect()
+    }
+
+    /// Every footnote definition, in document order: `(name, byte)`.
+    ///
+    /// A definition's `[^name]:` label is decoration — it lives on the
+    /// block's [`Prefix`], never in [`Document::text`] — so definitions are
+    /// found through their prefixes and reported at their block start.
+    #[must_use]
+    pub fn footnote_defs(&self) -> Vec<(Box<str>, u32)> {
+        (0..self.block_count())
+            .map(|i| BlockIdx(i as u32))
+            .filter_map(|b| {
+                let n = self.node_for_block(b);
+                let label: &str = n.prefix.as_ref()?.text.as_ref();
+                let rest = label.strip_prefix("[^")?;
+                let close = rest.find(']')?;
+                rest[close + 1..]
+                    .starts_with(':')
+                    .then(|| (rest[..close].into(), n.doc.start))
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -691,6 +792,17 @@ struct Open {
     mixed: bool,
 }
 
+/// A `<details>` seen but not yet closed.
+#[derive(Default)]
+struct PendingDetails {
+    /// Where the summary text began — just past `<summary>`'s `>`.
+    summary_start: Option<u32>,
+    /// Where it ended — where `</summary>` sat. Absent when no `<summary>`
+    /// was written at all; such a region is dropped at close time, because a
+    /// fold with nothing to keep visible is not a fold.
+    summary_end: Option<u32>,
+}
+
 /// Strips tags from raw HTML, keeping the text content (research Q16:
 /// an HTML block must not swallow its contents — a `<details>` body has to
 /// stay readable and searchable). State survives across events because a
@@ -708,6 +820,21 @@ struct HtmlStrip {
     in_comment: bool,
     /// Dropping a container's whole body until this closer appears.
     skip_until: Option<&'static str>,
+    /// Tags completed by the most recent [`HtmlStrip::strip`] call, in order,
+    /// each with where in that call's *output* the tag sat. The builder drains
+    /// this to give structure-bearing tags (`<details>`, `<summary>`) to the
+    /// document model; everything here is lowercase.
+    completed: Vec<HtmlMark>,
+}
+
+/// One completed tag and where it landed.
+#[derive(Debug)]
+struct HtmlMark {
+    /// The whole tag, lowercased — `<summary open>` as written.
+    tag: String,
+    /// Offset within the stripped output produced by the same `strip()` call,
+    /// i.e. how much visible text preceded the tag in that chunk.
+    at_out: usize,
 }
 
 impl HtmlStrip {
@@ -741,6 +868,10 @@ impl HtmlStrip {
                     t.push('>');
                     let tag = std::mem::take(t).to_ascii_lowercase();
                     self.tag = None;
+                    self.completed.push(HtmlMark {
+                        at_out: out.len(),
+                        tag: tag.clone(),
+                    });
                     if tag.starts_with("<!--") {
                         // `<!-- -->` already ended; a longer comment sets state.
                         if !tag.ends_with("-->") {
@@ -831,6 +962,14 @@ struct Builder<'a> {
     table: Option<TableRec>,
     /// Carries tag state across the `Event::Html` lines of one HTML block.
     html: HtmlStrip,
+    /// The `<details>` regions being accumulated, if any — a STACK, because
+    /// one details can nest inside another and each summary belongs to its
+    /// own opener. Spans HTML blocks, paragraphs and everything else between
+    /// `<details>` and `</details>`; unlike [`Self::html`], whose state one
+    /// block owns.
+    pending_details: Vec<PendingDetails>,
+    /// Finished regions, in document order.
+    details: Vec<DetailsRegion>,
     /// Enclosing GFM alerts, innermost last (alerts can nest, in principle).
     alerts: Vec<AlertKind>,
     /// The column each enclosing quote's bar sits at, outermost first.
@@ -867,6 +1006,8 @@ impl<'a> Builder<'a> {
             in_image: false,
             table: None,
             html: HtmlStrip::default(),
+            pending_details: Vec::new(),
+            details: Vec::new(),
             alerts: Vec::new(),
             quote_cols: Vec::new(),
             footnote: None,
@@ -1155,6 +1296,40 @@ impl<'a> Builder<'a> {
         self.open
             .as_ref()
             .is_some_and(|o| o.kind == NodeKind::Item && o.doc_start as usize == self.text.len())
+    }
+
+    /// Feed one completed HTML tag to the `<details>` state machine.
+    ///
+    /// `at` is the tag's position in doc space — where the visible text it
+    /// delimits starts or stops. Tags that carry no structure for this model
+    /// are ignored; the stripper already decided their text's fate. Openers
+    /// push and closers pop, so a nested `<summary>` belongs to the region
+    /// it was written in rather than clobbering its parent's.
+    fn details_mark(&mut self, tag: &str, at: u32) {
+        if tag.starts_with("</details") {
+            if let Some(p) = self.pending_details.pop()
+                // A summary with nothing visible in it folds nothing: drop
+                // the region rather than offer a fold whose header is blank.
+                && let (Some(s), Some(e)) = (p.summary_start, p.summary_end)
+                && s < e
+                && !self.text[s as usize..e as usize].trim().is_empty()
+            {
+                self.details.push(DetailsRegion {
+                    summary: s..e,
+                    end: at,
+                });
+            }
+        } else if tag.starts_with("<details") {
+            self.pending_details.push(PendingDetails::default());
+        } else if tag.starts_with("<summary") {
+            if let Some(p) = self.pending_details.last_mut() {
+                p.summary_start = Some(at);
+            }
+        } else if tag.starts_with("</summary")
+            && let Some(p) = self.pending_details.last_mut()
+        {
+            p.summary_end = Some(at);
+        }
     }
 
     fn open_is_item(&self) -> bool {
@@ -1626,13 +1801,17 @@ impl<'a> Builder<'a> {
 
                 // Raw HTML: tags stripped, text kept (research Q16). A block's
                 // body stays readable and searchable — a `<details>` block
-                // must never swallow its contents.
+                // must never swallow its contents. Structure-bearing tags
+                // (`<details>`, `<summary>`) are drained from the stripper
+                // and recorded as fold regions before the text is pushed.
                 Event::Html(t) | Event::InlineHtml(t) => {
                     let mut out = String::new();
                     self.html.strip(&t, &mut out);
+                    let marks = std::mem::take(&mut self.html.completed);
                     // Blank-line hygiene: an HTML block's tag-only lines leave
                     // bare newlines behind; skip them at a block's start and
                     // after another newline so no empty rows are minted.
+                    let mut leading = 0usize;
                     while out.starts_with('\n')
                         && self
                             .open
@@ -1640,12 +1819,26 @@ impl<'a> Builder<'a> {
                             .is_none_or(|o| o.doc_start as usize == self.text.len())
                     {
                         out.remove(0);
+                        leading += 1;
                     }
                     while out.ends_with("\n\n") {
                         out.pop();
                     }
-                    if !out.is_empty() {
+                    let kept = out.len();
+                    if kept > 0 {
                         self.push(&out, src, ProvKind::Substituted);
+                    }
+                    for m in marks {
+                        // Map the mark from pre-hygiene output offsets to a doc
+                        // byte: leading removals shift everything down, and a
+                        // chunk that ended up empty has no positions to offer.
+                        let off = m.at_out.saturating_sub(leading).min(kept);
+                        let at = if kept > 0 {
+                            (self.text.len() - kept + off) as u32
+                        } else {
+                            self.text.len() as u32
+                        };
+                        self.details_mark(&m.tag, at);
                     }
                 }
                 // Task list markers are decoration, so they extend the item's
@@ -1687,6 +1880,7 @@ impl<'a> Builder<'a> {
             links: self.links.into_boxed_slice(),
             wiki: self.wiki.into_boxed_slice(),
             prov: self.prov.into_boxed_slice(),
+            details: self.details.into_boxed_slice(),
         }
     }
 }
@@ -2333,6 +2527,93 @@ mod tests {
         assert!(!plain.text.contains("Note"));
     }
 
+    // --- GFM task lists ---
+
+    #[test]
+    fn tasks_are_found_with_their_state_and_order() {
+        let src = "- [ ] open one\n- [x] done one\n  - [ ] nested open\nplain bullet\n";
+        let doc = Document::parse(src);
+        let ts = doc.tasks();
+        assert_eq!(ts.len(), 3, "{ts:?}");
+        assert_eq!(ts.iter().filter(|t| t.done).count(), 1);
+        assert!(ts[0].at < ts[1].at && ts[1].at < ts[2].at, "reading order");
+        // Each lands on its item's first byte.
+        for t in &ts {
+            let n = doc.node_for_block(doc.block_at_doc(DocByte(t.at)));
+            assert!(n.prefix.as_ref().is_some_and(|p| p.task.is_some()));
+        }
+    }
+
+    #[test]
+    fn a_document_without_tasks_reports_none() {
+        assert!(Document::parse("no checkboxes here\n").tasks().is_empty());
+    }
+
+    // --- <details> regions ---
+
+    /// The GitHub shape: opener block, blank line, markdown body, blank
+    /// line, closer block. The summary text stays ordinary searchable text.
+    #[test]
+    fn a_details_region_records_its_summary_and_end() {
+        let src = "<details>\n<summary>Click me</summary>\n\nHidden body prose.\n\n</details>\n";
+        let doc = Document::parse(src);
+        assert_eq!(doc.details.len(), 1, "text: {:?}", doc.text);
+        let r = &doc.details[0];
+        assert_eq!(
+            &doc.text[r.summary.start as usize..r.summary.end as usize],
+            "Click me"
+        );
+        // The region ends at the closer, past the body's last byte.
+        assert!(
+            r.end as usize >= doc.text.find("prose.").unwrap() + "prose.".len(),
+            "end {} covers the body",
+            r.end
+        );
+        assert!(doc.text.contains("Hidden body prose."));
+    }
+
+    #[test]
+    fn nested_details_produce_two_regions_and_inner_closes_first() {
+        let src = concat!(
+            "<details>\n<summary>outer</summary>\n\n",
+            "<details>\n<summary>inner</summary>\n\ndeep body\n\n</details>\n\n",
+            "outer tail\n\n</details>\n"
+        );
+        let doc = Document::parse(src);
+        assert_eq!(doc.details.len(), 2);
+        let inner = &doc.details[0];
+        let outer = &doc.details[1];
+        let sum = |r: &DetailsRegion| &doc.text[r.summary.start as usize..r.summary.end as usize];
+        assert_eq!(sum(inner), "inner");
+        assert_eq!(sum(outer), "outer");
+        // The inner one ends before the outer tail; the outer covers it.
+        assert!(inner.end <= outer.end);
+        assert!(
+            (inner.end as usize) <= doc.text.find("outer tail").unwrap(),
+            "inner closed by its own tag, not the outer's"
+        );
+    }
+
+    #[test]
+    fn an_empty_summary_is_not_a_fold() {
+        let doc = Document::parse("<details>\n<summary></summary>\n\nbody\n\n</details>\n");
+        assert!(doc.details.is_empty());
+        let doc = Document::parse("<details>\nbody without a summary\n\n</details>\n");
+        assert!(doc.details.is_empty());
+    }
+
+    #[test]
+    fn details_on_one_line_still_record_their_summary() {
+        let doc =
+            Document::parse("before <details><summary>tiny</summary>after body</details> end\n");
+        assert_eq!(doc.details.len(), 1);
+        let r = &doc.details[0];
+        assert_eq!(
+            &doc.text[r.summary.start as usize..r.summary.end as usize],
+            "tiny"
+        );
+    }
+
     // --- footnote definitions get their label back ---
 
     #[test]
@@ -2349,6 +2630,48 @@ mod tests {
             def.indent >= p.width,
             "continuation rows hang under the label"
         );
+    }
+
+    // --- footnote references and definitions pair up ---
+
+    #[test]
+    fn footnote_references_and_definitions_are_findable() {
+        let src = "a body[^one] with two[^two].\n\n[^one]: first note\n\n[^two]: second\n";
+        let doc = Document::parse(src);
+        let refs = doc.footnote_refs();
+        assert_eq!(refs.len(), 2, "{refs:?}");
+        assert_eq!(refs[0].0.as_ref(), "one");
+        assert_eq!(
+            &doc.text[refs[0].1 as usize..refs[0].1 as usize + 6],
+            "[^one]"
+        );
+        let defs = doc.footnote_defs();
+        assert_eq!(defs.len(), 2, "{defs:?}");
+        // Each reference pairs with the definition of the same name.
+        for (name, _) in &refs {
+            assert!(
+                defs.iter().any(|(d, _)| d == name),
+                "no definition for {name}"
+            );
+        }
+        // Definitions sit at their block start, where a jump reveals them.
+        let (dname, dbyte) = &defs[0];
+        assert_eq!(dname.as_ref(), "one");
+        assert_eq!(&doc.text[*dbyte as usize..*dbyte as usize + 5], "first");
+    }
+
+    #[test]
+    fn a_bracket_caret_inside_code_is_not_a_footnote_reference() {
+        let doc = Document::parse("text[^a] then\n\n```rust\nlet x = \"[^not one]\";\n```\n");
+        let refs = doc.footnote_refs();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].0.as_ref(), "a");
+    }
+
+    #[test]
+    fn an_unclosed_bracket_caret_spins_nowhere() {
+        let doc = Document::parse("oops [^ no closer here\n");
+        assert!(doc.footnote_refs().is_empty());
     }
 
     // --- fragment anchors ---

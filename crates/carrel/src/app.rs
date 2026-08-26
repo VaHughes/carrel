@@ -47,6 +47,15 @@ pub struct Outline {
     pub selected: usize,
 }
 
+/// What `za` (or a click on a fold marker) decided to fold: a heading's
+/// section, or a `<details>` region.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FoldTarget {
+    Section(carrel_core::NodeId),
+    /// Index into `doc.details`.
+    Details(u32),
+}
+
 /// Which screen is in front of the reader.
 ///
 /// The reader's own state (`doc`, `layout`, `view`) always exists; on the home
@@ -104,6 +113,13 @@ pub struct App {
     /// The backlinks pane, while it is open. `None` means closed; the rows
     /// stream in from `links.rs` and the event loop appends them.
     pub backlinks: Option<Backlinks>,
+    /// The forward-links pane, while it is open. Derived whole at open —
+    /// see [`Forward`].
+    pub forward: Option<Forward>,
+    /// The bookmark list (`"`) while it is up. Only the cursor lives here —
+    /// the rows derive from `marks` at every use, so a mark added or cleared
+    /// under the pane shows immediately.
+    pub mark_list: Option<usize>,
     /// The section tree in the left margin is wanted (config `outline_margin`).
     /// Whether it actually shows also needs [`Self::gutter_w`].
     pub outline_margin: bool,
@@ -145,6 +161,10 @@ pub struct App {
     /// cannot be invalidated by reflow, by construction. Cleared on reload —
     /// the ids indexed the old parse (the selection precedent).
     pub folded: std::collections::HashSet<carrel_core::NodeId>,
+    /// Folded `<details>` regions, by index into `doc.details`. The same
+    /// currency and the same clearing rule as `folded`: doc bytes under the
+    /// hood, gone when the document is re-parsed.
+    pub folded_details: std::collections::BTreeSet<u32>,
     /// Where we came from: `(file, anchor)` pairs. `Ctrl-O` pops.
     pub history: Vec<(PathBuf, u32)>,
     /// The link `Tab` has selected, if any.
@@ -198,6 +218,20 @@ pub struct App {
     /// `Some` while the outline picker is up. The heading list itself is
     /// DERIVED from `doc` at every use — nothing here can go stale.
     pub outline: Option<Outline>,
+    /// The document-info card is showing (`I`). Pure presentation intent —
+    /// the rows are derived fresh at every paint.
+    pub info: bool,
+    /// Spotlight (`S`): dim every block but the one nearest the centre of
+    /// the view. Presentation only — the painter reads it, nothing else.
+    pub focus: bool,
+    /// Auto-read (`A`): the event loop sends [`Action::AutoTick`] on its own
+    /// cadence and each one drifts a row. Any deliberate motion turns this
+    /// off — nothing keeps moving once the reader takes the wheel.
+    pub auto_read: bool,
+    /// When the open file last changed on disk. Captured once at open by
+    /// whoever did the reading (the binary or [`Self::open_path`]); `None`
+    /// for a piped document. State-layer I/O stops there.
+    pub mtime: Option<std::time::SystemTime>,
     /// The mouse selection, in doc bytes — the same currency as a search
     /// match, so reflow and resize cannot invalidate it.
     pub selection: Option<std::ops::Range<u32>>,
@@ -243,6 +277,35 @@ pub const PAD_BOTTOM: u16 = 1;
 /// have. Code blocks and tables read slower than prose, so a code-heavy
 /// document will over-estimate; that is accepted.
 pub const READING_WPM: usize = 200;
+
+/// How often auto-read (`A`) asks for the next row. The event loop owns the
+/// clock; this only documents the pace. 300 ms is two hundred rows a minute
+/// — brisk enough to feel like reading, gentle enough to stop mid-sentence.
+pub const AUTO_READ_MS: u64 = 300;
+
+/// Epoch seconds as `YYYY-MM-DD HH:MM`, no calendar library — Howard
+/// Hinnant's `civil_from_days` arithmetic, which every state timestamp here
+/// already implicitly assumes.
+#[must_use]
+pub fn format_epoch(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(0);
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        rem / 3600,
+        (rem % 3600) / 60
+    )
+}
 
 /// Whitespace-separated runs in the display text.
 ///
@@ -371,6 +434,8 @@ impl App {
             file: None,
             streaming: false,
             backlinks: None,
+            forward: None,
+            mark_list: None,
             outline_margin: false,
             marks: Vec::new(),
             diff_ok: false,
@@ -381,6 +446,7 @@ impl App {
             breadcrumb: true,
             has_headings,
             folded: std::collections::HashSet::new(),
+            folded_details: std::collections::BTreeSet::new(),
             history: Vec::new(),
             selected_link: None,
             image_dims: HashMap::new(),
@@ -396,6 +462,10 @@ impl App {
             hints: true,
             help: None,
             outline: None,
+            info: false,
+            focus: false,
+            auto_read: false,
+            mtime: None,
             selection: None,
             sel_anchor: None,
             clipboard: None,
@@ -523,9 +593,11 @@ impl App {
                 Some("diff" | "patch")
             )
         });
+        self.mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         self.doc = self.parse_adapting(&src);
         self.load_marks();
         self.matches = None;
+        self.forward = None;
         self.mode = Mode::Normal;
         self.selected_link = None;
         self.view = ViewState::new();
@@ -552,6 +624,7 @@ impl App {
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
         self.folded.clear();
+        self.folded_details.clear();
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -605,9 +678,18 @@ impl App {
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
         self.folded.clear();
+        self.folded_details.clear();
         self.selection = None;
         self.sel_anchor = None;
         self.selected_link = None;
+        if self.forward.is_some() {
+            // The rows indexed the old parse; re-derive rather than lie.
+            let rows = forward_rows(self);
+            if let Some(f) = self.forward.as_mut() {
+                f.rows = rows;
+                f.selected = f.selected.min(f.rows.len().saturating_sub(1));
+            }
+        }
         let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
         self.view.anchor = self.view.anchor.min(last);
         self.view.restore(&self.doc, &self.layout, self.text_h());
@@ -636,13 +718,15 @@ impl App {
     }
 
     /// The blocks a fold hides: everything strictly inside a folded
-    /// heading's span, nested headings included. Derived per call from
-    /// `folded` × the section index — never stored.
+    /// heading's span, nested headings included, and the body of every
+    /// folded `<details>` — its summary stays visible, like a folded
+    /// heading's own line does. Derived per call from `folded` × the
+    /// section index × `doc.details` — never stored.
     fn hidden_blocks(&self) -> std::collections::HashSet<BlockIdx> {
-        if self.folded.is_empty() {
+        if self.folded.is_empty() && self.folded_details.is_empty() {
             return std::collections::HashSet::new();
         }
-        let spans: Vec<(u32, u32)> = self
+        let mut spans: Vec<(u32, u32)> = self
             .folded
             .iter()
             .map(|&id| {
@@ -650,6 +734,12 @@ impl App {
                 (n.doc.end, self.doc.section_end(id))
             })
             .collect();
+        spans.extend(self.folded_details.iter().filter_map(|&i| {
+            self.doc
+                .details
+                .get(i as usize)
+                .map(|r| (r.summary.end, r.end))
+        }));
         (0..self.doc.block_count())
             .map(|i| BlockIdx(i as u32))
             .filter(|&b| {
@@ -661,13 +751,31 @@ impl App {
 
     /// Unfold every folded section that hides `byte`. Returns whether
     /// anything changed. A byte inside a folded heading's own text is
-    /// visible already, so the heading itself does not count.
+    /// visible already, so the heading itself does not count; the same
+    /// holds for a `<details>` summary row.
     fn unfold_to(&mut self, byte: u32) -> bool {
         let mut changed = false;
         for id in self.doc.section_path(byte) {
             if byte > self.doc.nodes[id.0 as usize].doc.end && self.folded.remove(&id) {
                 changed = true;
             }
+        }
+        // A details body hides its byte only when the byte sits strictly
+        // inside it; a byte at or past `end` belongs to later content.
+        let victims: Vec<u32> = self
+            .folded_details
+            .iter()
+            .copied()
+            .filter(|&i| {
+                self.doc
+                    .details
+                    .get(i as usize)
+                    .is_some_and(|r| byte > r.summary.end && byte < r.end)
+            })
+            .collect();
+        for i in victims {
+            self.folded_details.remove(&i);
+            changed = true;
         }
         changed
     }
@@ -744,16 +852,50 @@ impl App {
     /// `za`'s target: the innermost section for the top-visible byte — the
     /// breadcrumb's own byte, except a heading at the top of the view
     /// targets itself (the breadcrumb pops it; a fold should grab it).
-    fn fold_target(&self) -> Option<carrel_core::NodeId> {
+    ///
+    /// A `<details>` region competes by the same rule sections do: whichever
+    /// candidate *starts deeper* wins, and a summary at the top of the view
+    /// targets its own region outright, exactly as a heading does.
+    fn fold_target(&self) -> Option<FoldTarget> {
         let b = self.layout.block_at_row(self.view.scroll_row);
         if b.get() >= self.doc.block_count() {
             return None;
         }
         let node = self.doc.node_for_block(b);
         if matches!(node.kind, carrel_core::NodeKind::Heading { .. }) {
-            return Some(node.id);
+            return Some(FoldTarget::Section(node.id));
         }
-        self.doc.section_path(node.doc.start).last().copied()
+        // The top block carries a summary: that region is the target.
+        if let Some((i, _)) = self
+            .doc
+            .details
+            .iter()
+            .enumerate()
+            .find(|(_, r)| node.doc.contains(&r.summary.start))
+        {
+            return Some(FoldTarget::Details(u32::try_from(i).unwrap_or(u32::MAX)));
+        }
+        let byte = node.doc.start;
+        let sec = self.doc.section_path(byte).last().copied();
+        let det = self
+            .doc
+            .details
+            .iter()
+            .position(|r| r.summary.end < byte && byte < r.end);
+        match (det, sec) {
+            (Some(i), Some(h)) => {
+                let detail_first =
+                    self.doc.details[i].summary.start > self.doc.nodes[h.0 as usize].doc.start;
+                Some(if detail_first {
+                    FoldTarget::Details(u32::try_from(i).unwrap_or(u32::MAX))
+                } else {
+                    FoldTarget::Section(h)
+                })
+            }
+            (Some(i), None) => Some(FoldTarget::Details(u32::try_from(i).unwrap_or(u32::MAX))),
+            (None, Some(h)) => Some(FoldTarget::Section(h)),
+            (None, None) => None,
+        }
     }
 
     /// Resume the saved reading position for the open file, silently, with a
@@ -814,28 +956,107 @@ impl App {
             .collect()
     }
 
-    /// Headings surviving the outline filter — case-insensitive substring,
-    /// the same rule as the home screen's `refilter`, so the two pickers
-    /// feel like one.
+    /// The document-info card's rows: `(label, value)`, derived fresh every
+    /// call from the parse and the counters already kept. Nothing here is
+    /// stored, so nothing here can go stale.
+    #[must_use]
+    pub fn info_rows(&self) -> Vec<(&'static str, String)> {
+        let mut headings = 0usize;
+        let mut code = 0usize;
+        let mut tables = 0usize;
+        let mut images = 0usize;
+        let mut math = 0usize;
+        for n in &self.doc.nodes {
+            match n.kind {
+                carrel_core::NodeKind::Heading { .. } => headings += 1,
+                carrel_core::NodeKind::CodeBlock { .. } => code += 1,
+                carrel_core::NodeKind::Table { .. } => tables += 1,
+                carrel_core::NodeKind::Image { .. } => images += 1,
+                carrel_core::NodeKind::Math => math += 1,
+                _ => {}
+            }
+        }
+        let external = self.doc.links.iter().filter(|l| l.contains("://")).count();
+        // Distinct local destinations — the forward pane's own rule, so the
+        // two can never disagree about what a link is.
+        let internal = crate::app::forward_rows(self)
+            .iter()
+            .filter(|r| r.target.is_some())
+            .count();
+        let mut rows = vec![
+            (
+                "document",
+                if self.path.is_empty() {
+                    "(stdin)".into()
+                } else {
+                    self.path.clone()
+                },
+            ),
+            ("words", self.words.to_string()),
+            (
+                "reading time",
+                format!("{} min total", self.words.div_ceil(READING_WPM)),
+            ),
+            ("headings", headings.to_string()),
+            ("code blocks", code.to_string()),
+            ("tables", tables.to_string()),
+            ("images", images.to_string()),
+            ("math blocks", math.to_string()),
+            ("links", format!("{internal} local · {external} external")),
+            (
+                "footnotes",
+                format!(
+                    "{} refs · {} notes",
+                    self.doc.footnote_refs().len(),
+                    self.doc.footnote_defs().len()
+                ),
+            ),
+            ("tasks", {
+                let ts = self.doc.tasks();
+                let done = ts.iter().filter(|t| t.done).count();
+                format!("{done} of {} done", ts.len())
+            }),
+            ("details folds", self.doc.details.len().to_string()),
+            ("bookmarks", self.marks.len().to_string()),
+        ];
+        if let Some(t) = self.mtime {
+            // Human date, no chrono: the state file's own epoch-seconds habit,
+            // formatted as Y-M-D by hand.
+            let secs = t
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| u64::min(d.as_secs(), 253_402_300_799));
+            rows.push(("last changed", format_epoch(secs)));
+        }
+        rows
+    }
+
+    /// Headings surviving the outline filter, best match first. The same
+    /// fuzzy rule the home screen's `refilter` uses, so the two pickers
+    /// feel like one; an empty filter is every heading in reading order.
     #[must_use]
     pub fn outline_matches(&self) -> Vec<BlockIdx> {
         let needle = self
             .outline
             .as_ref()
-            .map(|o| o.filter.to_lowercase())
+            .map(|o| o.filter.trim().to_lowercase())
             .unwrap_or_default();
-        self.headings()
+        if needle.is_empty() {
+            return self.headings();
+        }
+        let mut scored: Vec<(i32, BlockIdx)> = self
+            .headings()
             .into_iter()
-            .filter(|b| {
-                if needle.is_empty() {
-                    return true;
-                }
-                let n = self.doc.node_for_block(*b);
-                self.doc.text[n.doc.start as usize..n.doc.end as usize]
-                    .to_lowercase()
-                    .contains(&needle)
+            .filter_map(|b| {
+                let n = self.doc.node_for_block(b);
+                crate::fuzzy::score(
+                    &self.doc.text[n.doc.start as usize..n.doc.end as usize],
+                    &needle,
+                )
+                .map(|s| (s, b))
             })
-            .collect()
+            .collect();
+        scored.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
+        scored.into_iter().map(|(_, b)| b).collect()
     }
 
     /// The margin outline's rows: every heading, with its level, and whether
@@ -1184,6 +1405,27 @@ pub struct Backlinks {
     pub done: bool,
 }
 
+/// One row of the forward-links pane: a destination this document points
+/// at. `target` is `Some` when it resolves to a local file — wikilinks
+/// through the same resolver the reader uses, relative links against the
+/// document's own directory — and `None` for anything external, which a
+/// reader that never fetches will show but not open.
+#[derive(Clone, Debug)]
+pub struct ForwardRow {
+    pub dest: String,
+    /// The link's visible text, when it has one and differs from the dest.
+    pub label: Option<String>,
+    pub target: Option<PathBuf>,
+}
+
+/// The forward-links pane: derived in one pass at open time — every link is
+/// already in memory, so unlike backlinks there is nothing to stream.
+#[derive(Debug, Default)]
+pub struct Forward {
+    pub rows: Vec<ForwardRow>,
+    pub selected: usize,
+}
+
 /// Parse, adapting a raw diff into markdown first when this document is
 /// allowed to be one.
 ///
@@ -1222,6 +1464,31 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.relayout(); // the band's rows come from / return to the text
         return Outcome::Redraw;
     }
+    // The info card is passive — it never owns the keyboard — but `I`
+    // reaches it from any reader state, the way `H` and `B` do. So does the
+    // spotlight, its neighbour in the capital-toggle row.
+    if !app.is_home() {
+        match action {
+            Action::InfoToggle => {
+                app.info = !app.info;
+                return Outcome::Redraw;
+            }
+            Action::FocusToggle => {
+                app.focus = !app.focus;
+                return Outcome::Redraw;
+            }
+            Action::AutoToggle => {
+                app.auto_read = !app.auto_read;
+                app.note = Some(if app.auto_read {
+                    "auto-read on — any motion stops it".into()
+                } else {
+                    "auto-read off".into()
+                });
+                return Outcome::Redraw;
+            }
+            _ => {}
+        }
+    }
     // The help overlay owns the keyboard while it is up: scroll scrolls the
     // sheet, dismiss-shaped actions close it, everything else is inert — a
     // stray keystroke must not navigate the document underneath.
@@ -1240,6 +1507,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
                 Outcome::Redraw
             }
             Action::GoToStart => {
+                app.auto_read = false;
                 app.help = Some(0);
                 Outcome::Redraw
             }
@@ -1431,13 +1699,21 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Redraw;
             }
             // Persisting here is the whole point of the picker: it is how a
-            // choice becomes the default. A failed write is not worth blocking
-            // the user over — the choice still applies to this run. Tests run
-            // with no `config_dir`, so they can never write the real file.
+            // choice becomes the default — and a place. A failed write is not
+            // worth blocking the user over — the choice still applies to this
+            // run. Tests run with no `config_dir`, so they can never write the
+            // real file.
             let saved = match app.config_dir.as_deref() {
-                Some(dir) => crate::config::save_root_in(dir, &root),
+                Some(dir) => crate::config::save_root_in(dir, &root)
+                    .and_then(|()| crate::config::add_place_in(dir, &root)),
                 None => Ok(()),
             };
+            if let Some(h) = app.home_mut() {
+                // The menu reflects the new favourite immediately.
+                h.places.retain(|p| p != &root);
+                h.places.insert(0, root.clone());
+                h.places.truncate(crate::config::PLACE_CAP);
+            }
             let cached = crate::scan::load_cache(&root);
             if let Some(h) = app.home_mut() {
                 h.set_root(root, cached);
@@ -1473,7 +1749,9 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::PickerOpen => {
-            let roots = Home::matches_for("");
+            let places = app.home().map(|h| h.places.clone()).unwrap_or_default();
+            let mut roots = merge_places(places, Home::matches_for(""));
+            roots.dedup();
             if let Some(h) = app.home_mut() {
                 h.picker.roots = roots;
                 h.picker.selected = 0;
@@ -1603,7 +1881,15 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 }
             }
             let typed = h.picker.typed.clone();
-            let roots = Home::matches_for(&typed);
+            // Places lead the empty menu; once something is typed the
+            // filesystem's own completions take over.
+            let places = if typed.is_empty() {
+                h.places.clone()
+            } else {
+                Vec::new()
+            };
+            let mut roots = merge_places(places, Home::matches_for(&typed));
+            roots.dedup();
             let h = app.home_mut().expect("home screen");
             h.picker.roots = roots;
             h.picker.selected = 0;
@@ -1658,12 +1944,21 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::FoldToggle => {
-            let Some(id) = app.fold_target() else {
+            let Some(target) = app.fold_target() else {
                 app.note = Some("no section here to fold".into());
                 return Outcome::Redraw;
             };
-            if !app.folded.remove(&id) {
-                app.folded.insert(id);
+            match target {
+                FoldTarget::Section(id) => {
+                    if !app.folded.remove(&id) {
+                        app.folded.insert(id);
+                    }
+                }
+                FoldTarget::Details(i) => {
+                    if !app.folded_details.remove(&i) {
+                        app.folded_details.insert(i);
+                    }
+                }
             }
             app.after_fold_change();
             Outcome::Redraw
@@ -1676,11 +1971,14 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 .filter(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }))
                 .map(|n| n.id)
                 .collect();
+            app.folded_details =
+                (0..u32::try_from(app.doc.details.len()).unwrap_or(u32::MAX)).collect();
             app.after_fold_change();
             Outcome::Redraw
         }
         Action::UnfoldAll => {
             app.folded.clear();
+            app.folded_details.clear();
             app.after_fold_change();
             Outcome::Redraw
         }
@@ -1721,6 +2019,23 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             if app.selection.is_none()
                 && let Some((byte, _)) = pressed
             {
+                // A `<details>` summary row folds its region, exactly as a
+                // heading row folds its section — the two markers look alike,
+                // so they must behave alike.
+                if let Some((i, _)) = app
+                    .doc
+                    .details
+                    .iter()
+                    .enumerate()
+                    .find(|(_, r)| r.summary.contains(&byte))
+                {
+                    let i = u32::try_from(i).unwrap_or(u32::MAX);
+                    if !app.folded_details.remove(&i) {
+                        app.folded_details.insert(i);
+                    }
+                    app.after_fold_change();
+                    return Outcome::Redraw;
+                }
                 let node = app.doc.node_for_block(app.doc.block_at_doc(DocByte(byte)));
                 if matches!(node.kind, carrel_core::NodeKind::Heading { .. }) {
                     let id = node.id;
@@ -1772,6 +2087,56 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        // The bookmark list: `'` walks blind, `"` shows all. Rows are
+        // derived from `marks` at every use — nothing to go stale.
+        Action::MarkListToggle => {
+            if app.mark_list.is_some() {
+                app.mark_list = None;
+            } else if app.marks.is_empty() {
+                app.note = Some("no bookmarks — press m to set one".into());
+                return Outcome::Redraw;
+            } else {
+                // Land on the first mark at or after the reader, the way the
+                // outline picker pre-selects the current section.
+                let here = app
+                    .doc
+                    .node_for_block(app.layout.block_at_row(app.view.scroll_row))
+                    .doc
+                    .start;
+                let sel = app
+                    .marks
+                    .iter()
+                    .position(|&m| m >= here)
+                    .unwrap_or(app.marks.len().saturating_sub(1));
+                app.mark_list = Some(sel);
+            }
+            Outcome::Redraw
+        }
+        Action::MarkListMove(n) => {
+            if let Some(sel) = app.mark_list
+                && !app.marks.is_empty()
+            {
+                let last = app.marks.len().saturating_sub(1);
+                app.mark_list = Some(if n < 0 {
+                    sel.saturating_sub(n.unsigned_abs() as usize)
+                } else {
+                    sel.saturating_add(n.unsigned_abs() as usize).min(last)
+                });
+            }
+            Outcome::Redraw
+        }
+        Action::MarkListJump => {
+            let Some(&at) = app.mark_list.and_then(|sel| app.marks.get(sel)) else {
+                return Outcome::Idle;
+            };
+            app.mark_list = None;
+            if let Some(from) = app.file.clone() {
+                app.history.push((from, app.view.anchor));
+            }
+            app.reveal_byte(at, h, crate::action::Where::Top);
+            Outcome::Redraw
+        }
+
         Action::MarkNext => {
             if app.marks.is_empty() {
                 app.note = Some("no bookmarks — press m to set one".into());
@@ -1795,6 +2160,8 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         // picker's jump, through the same reveal gate.
         // Backlinks: who points here. Opening starts a query; the event
         // loop streams rows in. Toggling closes it.
+        Action::FootnoteJump => footnote_jump(app, h),
+
         Action::BacklinksToggle => {
             if app.backlinks.is_some() {
                 app.backlinks = None;
@@ -1828,6 +2195,62 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Idle;
             };
             app.backlinks = None;
+            let here = app.view.anchor;
+            if let Some(from) = app.file.clone() {
+                app.history.push((from, here));
+            }
+            match app.open_path(&path) {
+                Ok(()) => Outcome::Redraw,
+                Err(e) => {
+                    app.note = Some(format!("cannot open {}: {e}", path.display()));
+                    Outcome::Redraw
+                }
+            }
+        }
+
+        // Forward links: who this note points at. Derived whole at open —
+        // every destination is already in memory — so there is no query to
+        // drive and nothing to stream.
+        Action::ForwardToggle => {
+            app.forward = if app.forward.is_some() {
+                None
+            } else {
+                Some(Forward {
+                    rows: forward_rows(app),
+                    selected: 0,
+                })
+            };
+            Outcome::Redraw
+        }
+        Action::ForwardMove(n) => {
+            if let Some(f) = app.forward.as_mut() {
+                let last = f.rows.len().saturating_sub(1);
+                f.selected = if n < 0 {
+                    f.selected.saturating_sub(n.unsigned_abs() as usize)
+                } else {
+                    f.selected
+                        .saturating_add(n.unsigned_abs() as usize)
+                        .min(last)
+                };
+            }
+            Outcome::Redraw
+        }
+        Action::ForwardOpen => {
+            let Some(row) = app
+                .forward
+                .as_ref()
+                .and_then(|f| f.rows.get(f.selected))
+                .cloned()
+            else {
+                return Outcome::Idle;
+            };
+            let Some(path) = row.target else {
+                // The standing rule, said out loud where a fetch would have
+                // happened in another reader.
+                app.note = Some(format!("external — carrel does not fetch: {}", row.dest));
+                return Outcome::Redraw;
+            };
+            app.forward = None;
             let here = app.view.anchor;
             if let Some(from) = app.file.clone() {
                 app.history.push((from, here));
@@ -1877,6 +2300,29 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        Action::TaskStep(n) => {
+            let tasks = app.doc.tasks();
+            if tasks.is_empty() {
+                app.note = Some("no task lists in this document".into());
+                return Outcome::Redraw;
+            }
+            let here = app
+                .doc
+                .node_for_block(app.layout.block_at_row(app.view.scroll_row))
+                .doc
+                .start;
+            let len = tasks.len();
+            let span = i32::try_from(len).unwrap_or(i32::MAX);
+            let steps = usize::try_from(n.rem_euclid(span)).unwrap_or(0);
+            let start = tasks.partition_point(|t| t.at <= here);
+            let i = (start + steps) % len;
+            let t = &tasks[i];
+            app.reveal_byte(t.at, h, crate::action::Where::Top);
+            let state = if t.done { "done" } else { "open" };
+            app.note = Some(format!("task {} of {len} ({state})", i + 1));
+            Outcome::Redraw
+        }
+
         Action::YankBlock => {
             let Some(b) = app.code_focus.or_else(|| app.next_code_block(0)) else {
                 app.note = Some("no code block here to copy".into());
@@ -1894,7 +2340,24 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        // The heartbeat. Only ever acts while auto-read is on, so a tick
+        // that arrives after the reader took over is inert by construction.
+        Action::AutoTick => {
+            if !app.auto_read {
+                return Outcome::Idle;
+            }
+            let before = app.view.scroll_row;
+            app.view.scroll_by(&app.doc, &app.layout, 1, h);
+            if app.view.scroll_row == before {
+                app.auto_read = false;
+                app.note = Some("the end — auto-read stopped".into());
+            }
+            Outcome::Redraw
+        }
+
         Action::Scroll(span, n) => {
+            // A deliberate move: the reader has the wheel again.
+            app.auto_read = false;
             // Scrolling away from the end is a deliberate move: stop following.
             if n < 0 {
                 app.following = false;
@@ -1915,6 +2378,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
         Action::GoToEnd => {
+            app.auto_read = false;
             // `G` on a document that is still being written means "and keep
             // me there" — the one place following turns itself on.
             if app.streaming {
@@ -2062,6 +2526,127 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         // Home-only actions never reach the reader.
         _ => Outcome::Idle,
     }
+}
+
+/// `%`: the footnote's other end.
+///
+/// The last reference-or-definition at or above the view decides where you
+/// are: under a reference, `%` takes you to its definition; inside a
+/// definition, back to its first reference; above everything, to the first
+/// reference in the document. Either way a history entry is pushed, so
+/// `Ctrl-O` returns — a jump is a link follow in spirit.
+fn footnote_jump(app: &mut App, h: u16) -> Outcome {
+    let byte = app
+        .doc
+        .node_for_block(app.layout.block_at_row(app.view.scroll_row))
+        .doc
+        .start;
+    let refs = app.doc.footnote_refs();
+    let defs = app.doc.footnote_defs();
+    if refs.is_empty() {
+        app.note = Some("no footnotes in this document".into());
+        return Outcome::Redraw;
+    }
+    let mut marks: Vec<(u32, bool, &str)> = refs
+        .iter()
+        .map(|(n, at)| (*at, false, n.as_ref()))
+        .chain(defs.iter().map(|(n, at)| (*at, true, n.as_ref())))
+        .collect();
+    marks.sort_unstable_by_key(|m| m.0);
+    let governing = marks.iter().rev().find(|m| m.0 <= byte).copied();
+    let target = if let Some((_, true, name)) = governing {
+        // Inside a definition: back to its first reference.
+        refs.iter()
+            .find(|(n, _)| n.as_ref() == name)
+            .map(|(_, at)| *at)
+    } else {
+        // Under a reference (or past every mark): to its definition. Past
+        // the last mark wraps to the first pair, like `/` wrapping.
+        let name = if let Some((_, _, name)) = governing {
+            name
+        } else {
+            refs[0].0.as_ref()
+        };
+        defs.iter()
+            .find(|(d, _)| d.as_ref() == name)
+            .map(|(_, at)| *at)
+    };
+    let Some(target) = target else {
+        return Outcome::Idle;
+    };
+    if app.file.is_some() || app.piped.is_some() {
+        let from = app.file.clone().unwrap_or_default();
+        app.history.push((from, app.view.anchor));
+    }
+    app.reveal_byte(target, h, crate::action::Where::Top);
+    Outcome::Redraw
+}
+
+/// Places ahead of the picker's own matches; a place that also matched the
+/// filesystem listing keeps its front-row seat once.
+fn merge_places(places: Vec<PathBuf>, matched: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out = places;
+    for m in matched {
+        if !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
+}
+
+/// Every distinct destination the open document points at, in reading order.
+///
+/// Resolution is exactly the reader's own rule — wikilinks through
+/// `wiki::resolve`, relative links against the document's directory,
+/// fragments stripped — so a row that says it opens really opens. Bare
+/// `#fragment` links are internal navigation, not destinations, and are
+/// skipped; duplicates collapse onto their first occurrence.
+fn forward_rows(app: &App) -> Vec<ForwardRow> {
+    let dir = app.doc_dir();
+    let index = app
+        .home_stash
+        .as_deref()
+        .map_or(&[][..], |h| h.entries.as_slice());
+    let mut rows: Vec<ForwardRow> = Vec::new();
+    for (i, link) in app.doc.links.iter().enumerate() {
+        let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
+        if link.starts_with('#') {
+            continue;
+        }
+        let target = if app.doc.is_wikilink(id) {
+            app.wiki
+                .get(&id)
+                .cloned()
+                .or_else(|| crate::wiki::resolve(link, &dir, index))
+        } else if link.contains("://") {
+            None
+        } else {
+            let bare = link.split(['#', '?']).next().unwrap_or(link);
+            (!bare.is_empty()).then(|| dir.join(bare))
+        };
+        if rows
+            .iter()
+            .any(|r| r.dest.as_str() == link.as_ref() && r.target == target)
+        {
+            continue;
+        }
+        // The link's first visible run is its label, when that differs from
+        // the destination itself.
+        let label = app
+            .doc
+            .nodes
+            .iter()
+            .flat_map(|n| n.inlines.iter())
+            .find(|inl| inl.link == Some(id))
+            .map(|inl| app.doc.text[inl.doc.start as usize..inl.doc.end as usize].to_string())
+            .filter(|t| !t.is_empty() && t.as_str() != &**link);
+        rows.push(ForwardRow {
+            dest: link.to_string(),
+            label,
+            target,
+        });
+    }
+    rows
 }
 
 /// Back to the library, if we came from it. Entries, filter, and selection
@@ -2364,6 +2949,7 @@ fn search_key(app: &mut App, k: SearchKey, h: u16) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     #[test]
     fn hints_toggle_flips_and_persists_only_into_the_injected_dir() {
@@ -3331,6 +3917,420 @@ mod tests {
         update(&mut a, Action::SelectAnchor((at, at + 1)));
         update(&mut a, Action::SelectRelease);
         assert!(a.folded.is_empty());
+    }
+
+    // --- <details> fold like a section ---
+
+    const DETAILS_SRC: &str = concat!(
+        "# Top\n\n",
+        "<details>\n<summary>Click me</summary>\n\n",
+        "hidden body prose\n\n",
+        "</details>\n\n",
+        "after the details\n"
+    );
+
+    #[test]
+    fn folding_a_details_region_hides_its_body_and_keeps_its_summary() {
+        let mut a = App::new("d.md".into(), Document::parse(DETAILS_SRC), 40, 10);
+        assert_eq!(a.doc.details.len(), 1, "{:?}", a.doc.details);
+        update(&mut a, Action::FoldToggle); // top block is the H1 → its section
+        assert!(a.folded.contains(&a.doc.nodes[0].id), "za folded Top");
+        update(&mut a, Action::UnfoldAll);
+
+        // Scroll so the summary row is at the top; za must target the region.
+        let sum = a.doc.details[0].summary.start;
+        a.reveal_byte(sum, a.text_h(), crate::action::Where::Top);
+        update(&mut a, Action::FoldToggle);
+        assert!(a.folded_details.contains(&0), "za folded the region");
+        // The summary text stays on the page; the body does not.
+        let sum_block = a.doc.block_at_doc(carrel_core::DocByte(sum));
+        assert!(a.layout.height(sum_block) > 0, "summary visible");
+        let body_at = u32::try_from(a.doc.text.find("hidden body").unwrap()).unwrap();
+        let body_block = a.doc.block_at_doc(carrel_core::DocByte(body_at));
+        assert_eq!(a.layout.height(body_block), 0, "body folded away");
+    }
+
+    #[test]
+    fn fold_all_folds_details_too_and_a_search_unfolds_them() {
+        let mut a = App::new("d.md".into(), Document::parse(DETAILS_SRC), 40, 10);
+        update(&mut a, Action::FoldAll);
+        assert!(a.folded_details.contains(&0), "zM folds regions");
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        for c in "prose".chars() {
+            update(&mut a, Action::SearchKey(SearchKey::Char(c)));
+        }
+        update(&mut a, Action::SearchKey(SearchKey::Accept));
+        let m = a.matches.as_ref().expect("matches live");
+        let byte = m.ranges[m.current.unwrap()].start;
+        let b = a.doc.block_at_doc(carrel_core::DocByte(byte));
+        assert!(a.layout.height(b) > 0, "the jump unfolded its region");
+        assert!(!a.folded_details.contains(&0));
+    }
+
+    #[test]
+    fn a_click_on_a_summary_toggles_the_region() {
+        let mut a = App::new("d.md".into(), Document::parse(DETAILS_SRC), 40, 10);
+        let at = a.doc.details[0].summary.start + 2; // inside "Click me"
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        assert!(a.folded_details.contains(&0), "click folds");
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        assert!(!a.folded_details.contains(&0), "click again unfolds");
+    }
+
+    #[test]
+    fn a_reload_clears_details_folds_with_the_rest() {
+        let mut a = App::new("d.md".into(), Document::parse(DETAILS_SRC), 40, 10);
+        let all = a.layout.total_rows();
+        update(&mut a, Action::FoldAll);
+        assert!(a.layout.total_rows() < all, "details bodies went away");
+        a.reload_from(DETAILS_SRC);
+        assert!(a.folded_details.is_empty(), "indices indexed the old parse");
+        assert_eq!(a.layout.total_rows(), all);
+    }
+
+    // --- footnote % jumps ---
+
+    /// Long enough to scroll: `Where::Top` must be able to land without
+    /// clamping, which a five-row fixture never exercises.
+    fn foot_src() -> String {
+        // Definitions mid-document, with room after: `Where::Top` must land
+        // without end-clamping, which a target in the last screenful never
+        // allows.
+        let mut s = String::new();
+        for i in 0..60 {
+            let _ = write!(s, "filler paragraph number {i}\n\n");
+        }
+        s.push_str("intro[^1] more[^2]\n\ntail\n\n[^1]: first note\n\n[^2]: second note\n\n");
+        for i in 0..60 {
+            let _ = write!(s, "afterward paragraph number {i}\n\n");
+        }
+        s
+    }
+
+    #[test]
+    fn percent_jumps_from_a_reference_to_its_definition() {
+        let src = foot_src();
+        let mut a = App::new("f.md".into(), Document::parse(&src), 40, 40);
+        a.file = Some(std::path::PathBuf::from("f.md"));
+        // Stand on the first reference itself.
+        let ref1 = a.doc.footnote_refs()[0].1;
+        a.reveal_byte(ref1, a.text_h(), crate::action::Where::Middle);
+        update(&mut a, Action::FootnoteJump);
+        let def1 = a.doc.footnote_defs()[0].1;
+        assert_eq!(a.view.anchor, def1, "landed at the definition");
+        assert_eq!(a.history.len(), 1, "the jump pushed an undo entry");
+        let top = a
+            .doc
+            .node_for_block(a.layout.block_at_row(a.view.scroll_row));
+        assert_eq!(&*top.prefix.as_ref().expect("def label").text, "[^1]: ");
+    }
+
+    #[test]
+    fn percent_round_trips_and_ctrl_o_returns() {
+        let src = foot_src();
+        let mut a = App::new("f.md".into(), Document::parse(&src), 40, 40);
+        a.file = Some(std::path::PathBuf::from("f.md"));
+        let def1 = a.doc.footnote_defs()[0].1;
+        update(&mut a, Action::FootnoteJump); // top of doc wraps to pair one
+        assert_eq!(a.view.anchor, def1);
+        update(&mut a, Action::FootnoteJump); // inside the definition: back
+        let ref1 = a.doc.footnote_refs()[0].1;
+        assert!(
+            a.view.anchor <= ref1,
+            "returned above the reference, got {}",
+            a.view.anchor
+        );
+        // Ctrl-O undoes each leg exactly.
+        update(&mut a, Action::Back);
+        assert_eq!(a.view.anchor, def1, "back at the definition");
+        update(&mut a, Action::Back);
+        assert_eq!(a.view.anchor, 0, "back at the very start");
+    }
+
+    #[test]
+    fn percent_on_a_document_without_footnotes_says_so() {
+        let mut a = App::new("f.md".into(), Document::parse("plain prose only\n"), 40, 10);
+        assert_eq!(update(&mut a, Action::FootnoteJump), Outcome::Redraw);
+        assert!(
+            a.note
+                .as_deref()
+                .is_some_and(|n| n.contains("no footnotes"))
+        );
+    }
+
+    // --- forward links (l) ---
+
+    #[test]
+    fn the_forward_pane_lists_local_and_external_and_skips_fragments() {
+        let src = concat!(
+            "a [local](neighbour.md), a [wiki]([[Neighbour]]), ",
+            "an [outside](https://example.com/x), and [here](#section).\n"
+        );
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
+        update(&mut a, Action::ForwardToggle);
+        let f = a.forward.as_ref().expect("pane open");
+        assert_eq!(f.rows.len(), 3, "fragments are not destinations");
+        assert_eq!(
+            f.rows[0].target.as_deref(),
+            Some(std::path::Path::new("./neighbour.md"))
+        );
+        assert!(f.rows[1].dest.contains("Neighbour"), "{}", f.rows[1].dest);
+        assert!(f.rows[2].target.is_none(), "external is never fetchable");
+        assert_eq!(f.rows[0].label.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn opening_an_external_forward_link_says_so_and_fetches_nothing() {
+        let src = "see [that](https://example.com/elsewhere)\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
+        update(&mut a, Action::ForwardToggle);
+        assert_eq!(update(&mut a, Action::ForwardOpen), Outcome::Redraw);
+        assert!(
+            a.note
+                .as_deref()
+                .is_some_and(|n| n.contains("does not fetch")),
+            "{:?}",
+            a.note
+        );
+        assert!(a.forward.is_some(), "the pane stays open");
+    }
+
+    #[test]
+    fn duplicate_destinations_collapse_to_one_row() {
+        let src = "one [x](dup.md), two [y](dup.md)\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
+        update(&mut a, Action::ForwardToggle);
+        assert_eq!(a.forward.as_ref().unwrap().rows.len(), 1);
+    }
+
+    // --- document info card (I) ---
+
+    #[test]
+    fn the_info_card_toggles_and_counts_the_document() {
+        let src = "# Title\n\npara one[^a]\n\n```rust\nlet x;\n```\n\n| t |\n|---|\n| c |\n\n[^a]: note\n";
+        let mut a = App::new("stats.md".into(), Document::parse(src), 40, 10);
+        assert!(!a.info);
+        update(&mut a, Action::InfoToggle);
+        assert!(a.info);
+        let rows = a.info_rows();
+        let get = |k: &str| {
+            rows.iter()
+                .find(|(l, _)| *l == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(get("document"), "stats.md");
+        assert_eq!(get("headings"), "1");
+        assert_eq!(get("code blocks"), "1");
+        assert_eq!(get("tables"), "1");
+        assert_eq!(get("footnotes"), "1 refs · 1 notes");
+        assert_eq!(get("bookmarks"), "0");
+        update(&mut a, Action::InfoToggle);
+        assert!(!a.info);
+    }
+
+    #[test]
+    fn a_piped_document_reports_itself_as_stdin_with_no_mtime() {
+        let a = App::new(String::new(), Document::parse("hello world\n"), 40, 10);
+        assert_eq!(
+            a.info_rows()
+                .iter()
+                .find(|(l, _)| *l == "document")
+                .map(|(_, v)| v.clone()),
+            Some("(stdin)".into())
+        );
+        assert!(a.mtime.is_none());
+    }
+
+    #[test]
+    fn epoch_formats_as_a_civil_date() {
+        assert_eq!(format_epoch(0), "1970-01-01 00:00");
+        assert_eq!(format_epoch(59), "1970-01-01 00:00", "seconds never shown");
+        assert_eq!(format_epoch(86_400 * 19_000 + 3_600), "2022-01-08 01:00");
+    }
+
+    // --- task jumping (X) ---
+
+    #[test]
+    fn x_jumps_through_tasks_and_wraps() {
+        let mut src = String::new();
+        for i in 0..30 {
+            let _ = writeln!(src, "filler {i}");
+            src.push_str("\n\n");
+        }
+        src.push_str("- [ ] one\n\n- [ ] two\n\n- [x] three done\n\n");
+        for i in 0..30 {
+            let _ = writeln!(src, "tail {i}");
+            src.push_str("\n\n");
+        }
+        let mut a = App::new("t.md".into(), Document::parse(&src), 40, 40);
+        // Four presses over three tasks: every one lands on A task, says
+        // which and how many, and by press four the cycle has wrapped.
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            update(&mut a, Action::TaskStep(1));
+            let note = a.note.clone().expect("a note per jump");
+            let idx: usize = note
+                .split_whitespace()
+                .nth(1)
+                .and_then(|w| w.parse().ok())
+                .expect("task N of M");
+            seen.push(idx);
+            let top = a.layout.block_at_row(a.view.scroll_row);
+            assert!(
+                a.doc
+                    .node_for_block(top)
+                    .prefix
+                    .as_ref()
+                    .is_some_and(|p| p.task.is_some()),
+                "landed on a task: {note}"
+            );
+        }
+        assert_eq!(
+            seen.iter().collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn x_on_a_document_without_tasks_says_so() {
+        let mut a = App::new("t.md".into(), Document::parse("nothing here\n"), 40, 10);
+        assert_eq!(update(&mut a, Action::TaskStep(1)), Outcome::Redraw);
+        assert!(
+            a.note
+                .as_deref()
+                .is_some_and(|n| n.contains("no task lists")),
+            "{:?}",
+            a.note
+        );
+    }
+
+    // --- auto-read (A) ---
+
+    #[test]
+    fn auto_read_ticks_drift_a_row_and_any_motion_stops_them() {
+        let mut src = String::new();
+        for i in 0..40 {
+            let _ = writeln!(src, "filler {i}");
+            src.push('\n');
+        }
+        let mut a = App::new("a.md".into(), Document::parse(&src), 40, 40);
+        update(&mut a, Action::AutoToggle);
+        assert!(a.auto_read);
+
+        let before = a.view.scroll_row;
+        assert_eq!(update(&mut a, Action::AutoTick), Outcome::Redraw);
+        assert_eq!(a.view.scroll_row, before + 1, "one row per heartbeat");
+
+        // The reader takes the wheel: any deliberate scroll detaches.
+        update(&mut a, Action::Scroll(crate::action::Span::Line, -2));
+        assert!(!a.auto_read);
+        let frozen = a.view.scroll_row;
+        assert_eq!(update(&mut a, Action::AutoTick), Outcome::Idle, "inert now");
+        assert_eq!(a.view.scroll_row, frozen);
+    }
+
+    #[test]
+    fn auto_read_stops_itself_at_the_end_of_the_document() {
+        let mut a = App::new("a.md".into(), Document::parse("top\n\nbottom\n"), 40, 10);
+        update(&mut a, Action::GoToEnd);
+        update(&mut a, Action::AutoToggle);
+        assert!(a.auto_read);
+        // Already pinned to the end: the first tick has nowhere to go.
+        update(&mut a, Action::AutoTick);
+        assert!(!a.auto_read, "the end stops it");
+        assert!(
+            a.note.as_deref().is_some_and(|n| n.contains("the end")),
+            "{:?}",
+            a.note
+        );
+    }
+
+    // --- the bookmark list (") ---
+
+    #[test]
+    fn the_outline_picker_ranks_fuzzy_matches_best_first() {
+        // Both headings carry r-s-t in order; the tight one ranks first.
+        let src = "# Results\n\nx\n\n# Rust\n\ny\n";
+        let mut a = App::new("o.md".into(), Document::parse(src), 40, 10);
+        update(&mut a, Action::OutlineToggle);
+        for c in "rst".chars() {
+            update(&mut a, Action::OutlineKey(SearchKey::Char(c)));
+        }
+        let matches = a.outline_matches();
+        assert_eq!(matches.len(), 2);
+        let first = a.doc.node_for_block(matches[0]);
+        assert_eq!(
+            &a.doc.text[first.doc.start as usize..first.doc.end as usize],
+            "Rust",
+            "the tighter run outranks the gappy one"
+        );
+    }
+
+    #[test]
+    fn the_mark_list_opens_preselected_and_jumps() {
+        let src = "# One\n\nfirst body\n\n# Two\n\nsecond body\n";
+        let mut a = App::new("m.md".into(), Document::parse(src), 40, 10);
+        a.file = Some(std::path::PathBuf::from("m.md"));
+        // Seed two marks at real block starts; a fixture this small cannot
+        // scroll, so driving them through the view would double-mark one.
+        let b0 = a.doc.node_for_block(BlockIdx(0)).doc.start;
+        let b2 = a.doc.node_for_block(BlockIdx(2)).doc.start;
+        // With no marks, the list declines to open and says why.
+        update(&mut a, Action::MarkListToggle);
+        assert!(
+            a.note
+                .as_deref()
+                .is_some_and(|n| n.contains("no bookmarks"))
+        );
+        a.marks = vec![b0, b2];
+
+        update(&mut a, Action::MarkListToggle);
+        let sel = a.mark_list.expect("list open");
+        // The view tops out on a fixture this small, so it sits above both
+        // marks — the first one is "at or after" it.
+        assert_eq!(a.marks[sel], b0, "pre-selected at or after the view");
+
+        update(&mut a, Action::MarkListMove(-1));
+        update(&mut a, Action::MarkListJump);
+        assert!(a.mark_list.is_none(), "jump closes the list");
+        assert_eq!(a.history.len(), 1, "Ctrl-O can undo the jump");
+        let top = a.layout.block_at_row(a.view.scroll_row);
+        assert_eq!(
+            a.doc.node_for_block(top).doc.start,
+            a.marks[0],
+            "landed on the marked block"
+        );
+    }
+
+    #[test]
+    fn the_mark_list_cursor_saturates_and_clamps() {
+        let mut a = App::new("m.md".into(), Document::parse("one\ntwo\n"), 40, 10);
+        a.marks = vec![0, 8];
+        update(&mut a, Action::MarkListToggle);
+        update(&mut a, Action::MarkListMove(-9));
+        assert_eq!(a.mark_list, Some(0), "saturates at the first");
+        update(&mut a, Action::MarkListMove(9));
+        assert_eq!(a.mark_list, Some(1), "clamps at the last");
+        update(&mut a, Action::MarkListToggle);
+        assert!(a.mark_list.is_none());
+    }
+
+    #[test]
+    fn clearing_marks_under_the_open_list_keeps_the_cursor_honest() {
+        let mut a = App::new("m.md".into(), Document::parse("one\ntwo\nthree\n"), 40, 10);
+        a.marks = vec![0, 4, 10];
+        update(&mut a, Action::MarkListToggle);
+        update(&mut a, Action::MarkListMove(2));
+        assert_eq!(a.mark_list, Some(2));
+        // A mark cleared under the pane shrinks the rows; the cursor
+        // re-clamps against the live list rather than pointing past it.
+        a.marks.remove(2);
+        update(&mut a, Action::MarkListMove(1));
+        assert_eq!(a.mark_list, Some(1), "re-clamped to the new last");
     }
 
     #[test]

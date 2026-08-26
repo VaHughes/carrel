@@ -93,6 +93,13 @@ pub enum Action {
     /// `B`: show / hide the breadcrumb band. Persisted like the hints.
     /// Only a document with headings paints one either way.
     BreadcrumbToggle,
+    /// `S`: spotlight — dim every block except the one nearest the centre
+    /// of the view. Pure presentation: layout and positions never hear
+    /// about it.
+    FocusToggle,
+    /// `I`: show / hide the document-info card — words, minutes, structure.
+    /// Derived fresh every frame it shows; nothing to go stale.
+    InfoToggle,
     /// `za`: fold or unfold the innermost section at the top of the view —
     /// the same byte the breadcrumb derives from, so the two agree on
     /// "current section".
@@ -121,12 +128,25 @@ pub enum Action {
     /// `m`: flip every mermaid block between rendered box art and source,
     /// like `t` for tables.
     RenderedToggle,
+    /// `%`: jump between a footnote reference and its definition. From a
+    /// reference (or anywhere above one), to that reference's definition;
+    /// from inside a definition, back to its first reference. Pushes a
+    /// history entry either way, so `Ctrl-O` returns.
+    FootnoteJump,
     /// Open or close the backlinks pane.
     BacklinksToggle,
     /// Move the backlinks cursor.
     BacklinksMove(i32),
     /// Open the selected backlink.
     BacklinksOpen,
+    /// `l`: open or close the forward-links pane — what this document
+    /// points at, the mirror of the backlinks pane.
+    ForwardToggle,
+    /// Move the forward-links cursor.
+    ForwardMove(i32),
+    /// Open the selected forward link when it resolves locally; an external
+    /// destination is shown as a note instead of being fetched.
+    ForwardOpen,
     /// Jump to a heading block — the margin outline's click.
     OutlineJumpTo(carrel_core::BlockIdx),
     /// Open a continue-reading row by index.
@@ -135,10 +155,25 @@ pub enum Action {
     MarkToggle,
     /// Jump to the next bookmark, wrapping.
     MarkNext,
+    /// `"`: open or close the bookmark list — every mark with its context
+    /// line, Enter jumps. `'` walks them blind; this shows the whole list.
+    MarkListToggle,
+    /// Move the bookmark-list cursor.
+    MarkListMove(i32),
+    /// Jump to the selected bookmark.
+    MarkListJump,
     /// Pin the view to the end of a document that is still growing.
     FollowToggle,
+    /// `A`: start or stop auto-read — the view drifts down one row per
+    /// [`crate::app::AUTO_READ_MS`] until any deliberate motion takes over.
+    AutoToggle,
+    /// The event loop's heartbeat while auto-read is on. Inert otherwise,
+    /// so a stray late tick can never move anything.
+    AutoTick,
     /// Move the block cursor to the next/previous CODE block.
     CodeStep(i32),
+    /// `X`: jump to the next GFM task item, wrapping. Count-multiplied.
+    TaskStep(i32),
     /// Copy the focused code block to the clipboard.
     YankBlock,
     /// `o`: open the outline picker (or close it, when open).

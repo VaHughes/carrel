@@ -67,6 +67,16 @@ file never is.
 .B \-\-no\-diff
 Never adapt a diff, even on a pipe.
 .TP
+.B \-\-render
+Styled linear text for embedding in another tool's output: weight, slant,
+strike and OSC 8 hyperlinks, but never an SGR colour. With NO_COLOR set it
+is exactly
+.BR \-\-plain .
+.TP
+.B \-\-tasks
+Print every GFM task in the file as checkbox lines and exit. The file is
+never modified.
+.TP
 .B \-\-version ", " \-V
 Print the version and exit.
 .TP
@@ -118,6 +128,9 @@ Toggle rendered blocks \(em diagrams and math \(em between art and source.
 Move to the next or previous code block. The one in focus is marked in the
 margin.
 .TP
+.B X
+Jump to the next task-list item, wrapping. A count jumps that many.
+.TP
 .B y
 Copy the focused code block, without its fence. With nothing focused, the
 nearest code block at or after the top of the screen.
@@ -126,10 +139,18 @@ nearest code block at or after the top of the screen.
 Follow a document that is still arriving on a pipe: the view stays at the end
 as content appears. Any deliberate move away detaches it.
 .TP
+.B A
+Auto\-read: the view drifts down a row at a time until any motion stops it.
+.TP
 .B L
 What links here \(em the documents that link to this one, by
 .I [[wikilink]]
 or by ordinary markdown link. Enter opens one.
+.TP
+.B l
+What this points at \(em every destination in the document, the mirror of
+.BR L .
+Enter opens a local one; an external URL is named, never fetched.
 .TP
 .B m
 Set or clear a bookmark at the current position. Bookmarks are remembered
@@ -137,6 +158,9 @@ between sessions and survive a resize; they do not survive an edit to the file.
 .TP
 .B '
 Go to the next bookmark, wrapping at the end.
+.TP
+.B "
+List every bookmark with its line; enter jumps to one.
 .TP
 .BR Tab ", " Shift\-Tab
 Select the next or previous link.
@@ -160,9 +184,22 @@ Fold the hint footer.
 Hide or show the breadcrumb band (the enclosing sections, pinned atop the
 page while you scroll).
 .TP
+.B I
+Show or hide the document card: words, reading time, structure, links,
+when the file last changed.
+.TP
+.B S
+Spotlight: dim every paragraph except the one nearest the centre of the
+view.
+.TP
 .BR za ", " zM ", " zR
 Fold the current section behind its heading; fold every section; open all.
 Clicking a heading toggles its fold. Search and links unfold their targets.
+.TP
+.B %
+Jump to the footnote definition of the reference nearest above the view;
+inside a definition, back to its first reference.
+Ctrl\-O returns.
 .TP
 .B Esc
 Clear the selection, the selected link, and any search highlights.
@@ -197,7 +234,9 @@ Honoured: colours off, weight and emphasis kept.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/carrel
-Theme, chosen root directory, footer preference, and
+Theme, chosen root directory, footer preference, favourite places (repeated
+.B place
+lines, newest first), and
 .BR max_width ,
 the reading measure in columns (default 90; 0 turns it off).
 .TP

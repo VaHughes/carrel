@@ -193,6 +193,88 @@ pub fn draw_full(
     if app.backlinks.is_some() {
         paint_backlinks(frame, app);
     }
+    if app.forward.is_some() {
+        paint_forward(frame, app);
+    }
+    if app.mark_list.is_some() {
+        paint_marks(frame, app);
+    }
+    if app.info {
+        paint_info(frame, app);
+    }
+}
+
+/// The bookmark list (`"`): every mark with its context line. Rows derive
+/// from `App::marks` at every frame, so a mark toggled under the pane shows
+/// immediately.
+fn paint_marks(frame: &mut Frame, app: &App) {
+    let Some(selected) = app.mark_list else {
+        return;
+    };
+    let area = frame.area();
+    if area.width < 24 || area.height < 6 {
+        return;
+    }
+    let w = 64u16.min(area.width.saturating_sub(4));
+    let rows_needed = u16::try_from(app.marks.len()).unwrap_or(u16::MAX);
+    let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
+    let x = (area.width - w) / 2;
+    let y = (area.height - h) / 2;
+    let buf = frame.buffer_mut();
+
+    let blank = " ".repeat(w as usize);
+    for py in y..y + h {
+        buf.set_stringn(x, py, &blank, w as usize, theme::status());
+    }
+    let bar = "─".repeat(w as usize);
+    buf.set_stringn(
+        x,
+        y,
+        format!("┌ bookmarks {bar}"),
+        w as usize,
+        theme::status(),
+    );
+    buf.set_stringn(
+        x,
+        y + h - 1,
+        format!("└ {} marks · ↵ go · esc close {bar}", app.marks.len()),
+        w as usize,
+        theme::status(),
+    );
+
+    let inner = usize::from(h.saturating_sub(2));
+    let first = selected.saturating_sub(inner.saturating_sub(1));
+    for (i, &at) in app.marks.iter().enumerate().skip(first).take(inner) {
+        let py = y + 1 + u16::try_from(i - first).unwrap_or(u16::MAX);
+        if py >= y + h - 1 {
+            break;
+        }
+        let sel = i == selected;
+        let style = if sel {
+            theme::selected()
+        } else {
+            theme::status()
+        };
+        // The marked block's first line, trimmed — the same context shape
+        // the link panes show.
+        let block = app.doc.block_at_doc(carrel_core::DocByte(at));
+        let text = app.doc.block_text(block);
+        let line: String = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(56)
+            .collect();
+        buf.set_stringn(
+            x + 1,
+            py,
+            format!("{} {line}", if sel { "▸" } else { " " }),
+            w as usize - 1,
+            style,
+        );
+    }
 }
 
 /// The outline picker: headings indented by level, the selection styled,
@@ -274,6 +356,157 @@ fn paint_backlinks(frame: &mut Frame, app: &App) {
         if py + 1 < y + h - 1 {
             buf.set_stringn(x + 4, py + 1, &row.line, w as usize - 5, theme::dim());
         }
+    }
+}
+
+/// The forward-links pane: what this document points at. The backlinks
+/// pane's mirror — same overlay, same keys, the other direction.
+fn paint_forward(frame: &mut Frame, app: &App) {
+    let Some(pane) = &app.forward else { return };
+    let area = frame.area();
+    if area.width < 24 || area.height < 6 {
+        return;
+    }
+    let w = 64u16.min(area.width.saturating_sub(4));
+    let rows_needed = u16::try_from(pane.rows.len() * 2).unwrap_or(u16::MAX);
+    let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
+    let x = (area.width - w) / 2;
+    let y = (area.height - h) / 2;
+    let buf = frame.buffer_mut();
+
+    let blank = " ".repeat(w as usize);
+    for py in y..y + h {
+        buf.set_stringn(x, py, &blank, w as usize, theme::status());
+    }
+    let bar = "─".repeat(w as usize);
+    buf.set_stringn(
+        x,
+        y,
+        format!("┌ what this points at {bar}"),
+        w as usize,
+        theme::status(),
+    );
+    buf.set_stringn(
+        x,
+        y + h - 1,
+        format!("└ {} links · ↵ open · esc close {bar}", pane.rows.len()),
+        w as usize,
+        theme::status(),
+    );
+
+    if pane.rows.is_empty() {
+        buf.set_stringn(
+            x + 2,
+            y + 1,
+            "This document has no links.",
+            w as usize - 2,
+            theme::status(),
+        );
+        return;
+    }
+
+    let inner = usize::from(h.saturating_sub(2));
+    let per = 2usize;
+    let visible = (inner / per).max(1);
+    let first = pane.selected.saturating_sub(visible.saturating_sub(1));
+    for (i, row) in pane.rows.iter().skip(first).take(visible).enumerate() {
+        let py = y + 1 + u16::try_from(i * per).unwrap_or(u16::MAX);
+        if py >= y + h - 1 {
+            break;
+        }
+        let sel = first + i == pane.selected;
+        let style = if sel {
+            theme::selected()
+        } else {
+            theme::status()
+        };
+        // Local destinations wear their file name; external ones show they
+        // will not be fetched.
+        let head = match (&row.target, row.label.as_deref()) {
+            (Some(_), Some(label)) => label.to_string(),
+            _ => row.dest.clone(),
+        };
+        let marker = if row.target.is_some() {
+            "▸"
+        } else {
+            "⌾ no fetch"
+        };
+        buf.set_stringn(
+            x + 1,
+            py,
+            format!("{} {head}", if sel { "▸" } else { " " }),
+            w as usize - 1,
+            style,
+        );
+        if py + 1 < y + h - 1 {
+            let detail = if row.target.is_some() {
+                marker.to_string()
+            } else {
+                format!("{marker} {}", short_dest(&row.dest))
+            };
+            buf.set_stringn(x + 4, py + 1, &detail, w as usize - 5, theme::dim());
+        }
+    }
+}
+
+/// The destination for the dim row: a URL trimmed to something that fits.
+fn short_dest(dest: &str) -> String {
+    dest.chars().take(48).collect()
+}
+
+/// The document-info card (`I`): what kind of document this is, derived
+/// fresh every frame. Passive — it never owns the keyboard.
+fn paint_info(frame: &mut Frame, app: &App) {
+    let rows = app.info_rows();
+    let area = frame.area();
+    if area.width < 40 || area.height < 8 {
+        return;
+    }
+    let w = 56u16.min(area.width.saturating_sub(4));
+    let h = (u16::try_from(rows.len()).unwrap_or(u16::MAX) + 2)
+        .min(area.height.saturating_sub(2))
+        .max(4);
+    let x = (area.width - w) / 2;
+    let y = (area.height - h) / 2;
+    let buf = frame.buffer_mut();
+
+    let blank = " ".repeat(w as usize);
+    for py in y..y + h {
+        buf.set_stringn(x, py, &blank, w as usize, theme::status());
+    }
+    let bar = "─".repeat(w as usize);
+    buf.set_stringn(
+        x,
+        y,
+        format!("┌ document {bar}"),
+        w as usize,
+        theme::status(),
+    );
+    buf.set_stringn(
+        x,
+        y + h - 1,
+        format!("└ I close {bar}"),
+        w as usize,
+        theme::status(),
+    );
+
+    // Labels pad to the longest label; values clip at the card's edge.
+    let label_w = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0) + 2;
+    let inner = usize::from(w.saturating_sub(3));
+    for (i, (label, value)) in rows.iter().enumerate().take(inner) {
+        let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+        if py >= y + h - 1 {
+            break;
+        }
+        let line = format!("{label:<label_w$}{value}");
+        buf.set_stringn(x + 2, py, &line, w as usize - 3, theme::body());
+        buf.set_stringn(
+            x + 2,
+            py,
+            format!("{label:<label_w$}"),
+            w as usize - 3,
+            theme::dim(),
+        );
     }
 }
 
@@ -761,27 +994,73 @@ fn paint_rows(
         }
         // A folded heading wears its state: a gutter marker and a trailing
         // ellipsis. Decoration only — neither is in the text, so search and
-        // selection never see them.
-        let node = app.doc.node_for_block(block);
-        if skip == 0
-            && y > first_y
-            && matches!(node.kind, NodeKind::Heading { .. })
-            && app.folded.contains(&node.id)
-        {
-            let buf = frame.buffer_mut();
-            buf.set_stringn(area.x.saturating_sub(2), first_y, "▸", 1, theme::dim());
-            let text = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
+        // selection never see them. A `<details>` summary wears the same.
+        if skip == 0 && y > first_y {
+            paint_fold_markers(frame, app, block, area, first_y);
+        }
+        // Spotlight (`S`): a block that does not hold the viewport's centre
+        // row falls into shadow. Applied AFTER the block paints, over every
+        // cell it touched, so text and decoration dim together. Kitty-protocol
+        // pixels cannot take a cell modifier and stay bright — accepted.
+        if app.focus {
+            let center = full.y + full.height / 2;
+            if !(first_y..y).contains(&center) {
+                let buf = frame.buffer_mut();
+                for yy in first_y..y {
+                    for xx in area.x..area.right() {
+                        let cell = &mut buf[(xx, yy)];
+                        let st = cell.style();
+                        cell.set_style(st.add_modifier(Modifier::DIM));
+                    }
+                }
+            }
+        }
+        skip = 0;
+        block = BlockIdx(block.0 + 1);
+    }
+}
+
+/// The fold-state markers on a heading or `<details>` summary row: `▸ …`
+/// when folded away, `▾` alone when open. Decoration only — none of it is
+/// in the text, so search and selection never see any of it.
+fn paint_fold_markers(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect, first_y: u16) {
+    let node = app.doc.node_for_block(block);
+    let buf = frame.buffer_mut();
+    if matches!(node.kind, NodeKind::Heading { .. }) && app.folded.contains(&node.id) {
+        buf.set_stringn(area.x.saturating_sub(2), first_y, "▸", 1, theme::dim());
+        let text = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
+        let after = area
+            .x
+            .saturating_add(node.indent)
+            .saturating_add(carrel_core::display_width(text))
+            .saturating_add(1);
+        if after < area.right() {
+            buf.set_stringn(after, first_y, "…", 1, theme::dim());
+        }
+    }
+    for (i, region) in app.doc.details.iter().enumerate() {
+        if !node.doc.contains(&region.summary.start) {
+            continue;
+        }
+        let folded = app.folded_details.contains(&(i as u32));
+        let marker = if folded { "▸" } else { "▾" };
+        buf.set_stringn(area.x.saturating_sub(2), first_y, marker, 1, theme::dim());
+        if folded {
+            // The ellipsis trails the summary text itself, which may sit
+            // after other stripped text in the same block.
+            let before = &app.doc.text[node.doc.start as usize..region.summary.start as usize];
+            let summary = &app.doc.text[region.summary.start as usize..region.summary.end as usize];
             let after = area
                 .x
                 .saturating_add(node.indent)
-                .saturating_add(carrel_core::display_width(text))
+                .saturating_add(carrel_core::display_width(before))
+                .saturating_add(carrel_core::display_width(summary))
                 .saturating_add(1);
             if after < area.right() {
                 buf.set_stringn(after, first_y, "…", 1, theme::dim());
             }
         }
-        skip = 0;
-        block = BlockIdx(block.0 + 1);
+        break; // one summary per block is the shape that exists
     }
 }
 
@@ -1767,6 +2046,43 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
         t.draw(|f| draw(f, app)).unwrap();
         t.backend().buffer().clone()
+    }
+
+    #[test]
+    fn spotlight_dims_every_block_but_the_centred_one() {
+        // Enough paragraphs that some sit away from the middle.
+        let mut src = String::new();
+        for i in 0..12 {
+            let _ = write!(src, "paragraph {i} of the long scroll\n\n");
+        }
+        let mut app = App::new("s.md".into(), Document::parse(&src), 40, 14);
+        app.breadcrumb = false;
+        let plain = buffer_of(&app, 40, 14);
+
+        app.focus = true;
+        app.on_resize(40, 14);
+        let lit = buffer_of(&app, 40, 14);
+
+        // Some cells dimmed, none brightened, and the text itself unmoved.
+        let dims = |b: &Buffer| {
+            let mut n = 0usize;
+            for y in 0_u16..14 {
+                for x in 0_u16..40 {
+                    let cell = &b[(x, y)];
+                    if cell.symbol().chars().all(char::is_whitespace) {
+                        continue;
+                    }
+                    if cell.modifier.contains(Modifier::DIM) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        assert_eq!(dims(&plain), 0, "off by default");
+        assert!(dims(&lit) > 0, "spotlight dims something");
+        let text = || (0..14).map(|y| line(&lit, y) + "\n").collect::<String>();
+        assert!(text().contains("paragraph"), "content survives: {}", text());
     }
 
     #[test]

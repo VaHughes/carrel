@@ -42,6 +42,9 @@ USAGE:
     carrel --plain <FILE> [W]    the document as plain text (screen readers,
                                  pipes; a bare pipe does this by default)
     carrel --plain - [W]         piped input as plain text
+    carrel --tasks <FILE>        the task list as checkbox lines, then exit
+    carrel --render <FILE> [W]   styled ANSI text (attributes and links,
+                                 never colours) for embedding elsewhere
     carrel --help
     carrel --version
 
@@ -69,6 +72,7 @@ KEYS (while reading):
     T                            cycle themes    q Ctrl-C        quit
     h F1                         help            Ctrl-O          back
     ] [                          next / previous code block
+    X                            jump to the next task
     y                            copy the code block
     F                            follow a document that is still arriving
     mouse: drag selects and copies; double-click a word, triple-click a block
@@ -119,6 +123,7 @@ fn main() -> ExitCode {
     }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let diff_forced = take_diff_flag(&mut args);
+
     // Pager mode: git hands its pager flags it does not expect to be
     // understood (`-R`, `-F`, `-X`, …). Ignore unknown single-dash flags
     // when stdin is a pipe, and keep erroring on them otherwise — silently
@@ -143,6 +148,13 @@ fn main() -> ExitCode {
         [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
         [flag, a] if flag == "--plain" && a == "-" => print_plain_stdin(80),
         [flag, a, w] if flag == "--plain" && a == "-" => print_plain_stdin(w.parse().unwrap_or(80)),
+        [flag, file] if flag == "--tasks" => print_tasks(Path::new(file)),
+        [flag, a] if flag == "--render" && a == "-" => print_ansi(None, 80),
+        [flag, a, w] if flag == "--render" && a == "-" => print_ansi(None, w.parse().unwrap_or(80)),
+        [flag, file] if flag == "--render" => print_ansi(Some(Path::new(file)), 80),
+        [flag, file, w] if flag == "--render" => {
+            print_ansi(Some(Path::new(file)), w.parse().unwrap_or(80))
+        }
         [flag, file] if flag == "--plain" => print_plain(Path::new(file), 80),
         [flag, file, w] if flag == "--plain" => {
             let width = w.parse().unwrap_or(80);
@@ -152,6 +164,57 @@ fn main() -> ExitCode {
         [file, pattern] => open(Path::new(file), Some(pattern)),
         _ => {
             eprint!("{USAGE}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `--render`: styled linear text to stdout. Attributes and OSC 8 links,
+/// never colours — `NO_COLOR` reduces it to `--plain` exactly.
+fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
+    let src = match path {
+        Some(p) => {
+            if let Err(e) = carrel::app::check_document_size(p) {
+                eprintln!("carrel: {e}");
+                return ExitCode::FAILURE;
+            }
+            std::fs::read_to_string(p)
+        }
+        None => read_stdin_capped(),
+    };
+    match src {
+        Ok(src) => {
+            let doc = carrel_core::Document::parse(&src);
+            print!("{}", carrel::ansi::render(&doc, width));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("carrel: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `--tasks`: the report goes to stdout and the process exits. A file that
+/// fails to read or parse says so on stderr rather than printing nothing.
+fn print_tasks(path: &Path) -> ExitCode {
+    if carrel::app::check_document_size(path).is_err() {
+        eprintln!("carrel: cannot read {}", path.display());
+        return ExitCode::FAILURE;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(src) => {
+            let doc = carrel_core::Document::parse(&src);
+            let report = carrel::plain::task_report(&doc);
+            if report.is_empty() {
+                eprintln!("carrel: no task lists in {}", path.display());
+                return ExitCode::FAILURE;
+            }
+            print!("{report}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("carrel: cannot read {}: {e}", path.display());
             ExitCode::FAILURE
         }
     }
@@ -282,6 +345,9 @@ fn set_home_prefs(app: &mut App) {
     let titles = config::load_titles().unwrap_or(false);
     if let Some(h) = app.home_mut() {
         h.show_titles = titles;
+        h.places = config::config_dir()
+            .map(|d| config::load_places_in(&d))
+            .unwrap_or_default();
     }
 }
 
@@ -806,6 +872,7 @@ fn run_loop(
     // closes — which is what stops an abandoned walk on its next send.
     let mut backlinks: Option<Receiver<carrel::links::Msg>> = None;
     let mut backlinks_for: Option<PathBuf> = None;
+    let mut next_auto: Option<Instant> = None;
 
     loop {
         drive_backlinks(&mut app, &mut backlinks, &mut backlinks_for);
@@ -815,10 +882,22 @@ fn run_loop(
         diagrams.drain(&mut app);
         paint(&mut terminal, &app, &mut links, &mut images.protocols)?;
 
-        // Wake in time to apply a debounced resize even with no input arriving.
-        let timeout = deadline.map_or(Duration::from_millis(100), |d| {
+        // Auto-read's heartbeat: schedule on the same wake budget as the
+        // resize debounce, so one `poll` timeout serves both clocks.
+        if app.auto_read && next_auto.is_none() {
+            next_auto = Some(Instant::now() + Duration::from_millis(carrel::app::AUTO_READ_MS));
+        } else if !app.auto_read {
+            next_auto = None;
+        }
+        let auto_timeout = next_auto.map_or(Duration::MAX, |d| {
             d.saturating_duration_since(Instant::now())
         });
+        // Wake in time to apply a debounced resize even with no input arriving.
+        let timeout = deadline
+            .map_or(Duration::from_millis(100), |d| {
+                d.saturating_duration_since(Instant::now())
+            })
+            .min(auto_timeout);
 
         if event::poll(timeout)? {
             // A read error means the input stream is gone. Exit rather than
@@ -828,6 +907,10 @@ fn run_loop(
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     let action = if app.backlinks.is_some() {
                         Keys::map_backlinks(k)
+                    } else if app.forward.is_some() {
+                        Keys::map_forward(k)
+                    } else if app.mark_list.is_some() {
+                        Keys::map_marks(k)
                     } else if app.outline.is_some() {
                         Keys::map_outline(k)
                     } else {
@@ -869,6 +952,15 @@ fn run_loop(
             && let Some((w, h)) = pending.take()
         {
             deadline = None;
+
+            if let Some(t) = next_auto
+                && Instant::now() >= t
+            {
+                next_auto = Some(Instant::now() + Duration::from_millis(carrel::app::AUTO_READ_MS));
+                if update(&mut app, carrel::action::Action::AutoTick) == Outcome::Quit {
+                    break;
+                }
+            }
             app.on_resize(w, h);
         }
     }

@@ -12,11 +12,13 @@
 //! injected violation.
 
 pub mod action;
+pub mod ansi;
 pub mod app;
 pub mod breadcrumb;
 pub mod config;
 pub mod diagrams;
 pub mod footer;
+pub mod fuzzy;
 pub mod grep;
 pub mod home;
 pub mod images;

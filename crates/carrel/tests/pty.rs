@@ -282,7 +282,13 @@ fn the_man_page_documents_every_key_the_help_overlay_does() {
         else {
             continue;
         };
-        let cleaned = rest.replace("\\-", "-").replace('\\', "").replace('"', " ");
+        // The `", "` runs separate keys inside one .BR line; a lone quote is
+        // now also a key (`"` lists bookmarks), so only the separator form
+        // may be eaten.
+        let cleaned = rest
+            .replace("\\-", "-")
+            .replace('\\', "")
+            .replace("\", \"", " ");
         for tok in cleaned.split([' ', ',']) {
             let t = tok.trim();
             if !t.is_empty() {

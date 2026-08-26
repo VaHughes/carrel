@@ -87,15 +87,31 @@ impl Keys {
             KeyCode::Char('h') | KeyCode::F(1) => Some(Action::HelpToggle),
             KeyCode::Char('H') => Some(Action::HintsToggle),
             KeyCode::Char('B') => Some(Action::BreadcrumbToggle),
+            // `g` is the gg prefix, so the info card takes `I`, beside the
+            // other capital toggles.
+            KeyCode::Char('I') => Some(Action::InfoToggle),
+            KeyCode::Char('S') => Some(Action::FocusToggle),
             // `m` is the mark key (vim), so rendered-blocks moved to `r`
             // — a better mnemonic for "render" than `m` ever was.
             KeyCode::Char('r') => Some(Action::RenderedToggle),
             KeyCode::Char('m') => Some(Action::MarkToggle),
             KeyCode::Char('\'') => Some(Action::MarkNext),
+            // `'` walks the marks blind; `"` — its keyboard neighbour, and
+            // vim's register-quote — shows the whole list.
+            KeyCode::Char('"') => Some(Action::MarkListToggle),
+            // Vim's "go to match", applied to footnotes: reference ↔
+            // definition, with Ctrl-O as the way back.
+            KeyCode::Char('%') => Some(Action::FootnoteJump),
             KeyCode::Char('F') => Some(Action::FollowToggle),
+            KeyCode::Char('A') => Some(Action::AutoToggle),
             KeyCode::Char('L') => Some(Action::BacklinksToggle),
+            // The mirror: `L` asks who points here, `l` asks what this
+            // points at.
+            KeyCode::Char('l') => Some(Action::ForwardToggle),
             KeyCode::Char(']') => Some(Action::CodeStep(self.take())),
             KeyCode::Char('[') => Some(Action::CodeStep(-self.take())),
+            // eXecute-point: the next unchecked-or-checked task in the file.
+            KeyCode::Char('X') => Some(Action::TaskStep(self.take())),
             KeyCode::Char('y') => Some(Action::YankBlock),
 
             KeyCode::Char('j') | KeyCode::Down => Some(Action::Scroll(Span::Line, self.take())),
@@ -254,6 +270,39 @@ impl Keys {
         }
     }
 
+    /// Forward-links bindings — the backlinks pane's mirror, so the two
+    /// feel like one pane read in either direction.
+    #[must_use]
+    pub fn map_forward(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::ForwardMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::ForwardMove(-1)),
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::ForwardMove(1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::ForwardMove(-1)),
+            KeyCode::Enter => Some(Action::ForwardOpen),
+            KeyCode::Char('l' | 'q') | KeyCode::Esc => Some(Action::ForwardToggle),
+            _ => None,
+        }
+    }
+
+    /// Bookmark-list bindings: the same short list shape as the link panes.
+    #[must_use]
+    pub fn map_marks(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::MarkListMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::MarkListMove(-1)),
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::MarkListMove(1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::MarkListMove(-1)),
+            KeyCode::Enter => Some(Action::MarkListJump),
+            KeyCode::Char('"' | '\'') | KeyCode::Esc => Some(Action::MarkListToggle),
+            _ => None,
+        }
+    }
+
     /// Outline-picker bindings: the home screen's idiom exactly — printable
     /// keys type, arrows and Ctrl-N/P move, Enter commits, Esc backs out.
     #[must_use]
@@ -318,13 +367,20 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("h F1", "this help"),
     ("H", "hide / show the key hints"),
     ("B", "hide / show the breadcrumb"),
+    ("I", "document info"),
+    ("S", "spotlight the paragraph"),
     ("q", "close file (or quit)"),
     ("Q Ctrl-C", "quit"),
     ("m '", "bookmark here / go to next"),
+    ("\"", "list bookmarks — enter jumps"),
+    ("%", "footnote ↔ its definition"),
     ("L", "what links here"),
+    ("l", "what this points at"),
     ("] [", "next / previous code block"),
+    ("X", "jump to the next task"),
     ("y", "copy the code block"),
     ("F", "follow a growing document"),
+    ("A", "auto-read: drift down"),
     ("§", "mouse"),
     ("drag", "select — copies on release"),
     ("2× click", "select word, 3× the block"),
@@ -938,12 +994,20 @@ mod tests {
                 A::RenderedToggle => "r",
                 A::MarkToggle => "m",
                 A::MarkNext => "'",
+                A::MarkListToggle => "\"",
+                A::MarkListMove(_) | A::MarkListJump => "\"",
+                A::FootnoteJump => "%",
                 A::FollowToggle => "F",
+                A::AutoToggle => "A",
+                A::AutoTick => return None,
                 A::CodeStep(_) => "] [",
+                A::TaskStep(_) => "X",
                 A::YankBlock => "y",
                 A::HelpToggle => "h F1",
                 A::HintsToggle => "H",
                 A::BreadcrumbToggle => "B",
+                A::InfoToggle => "I",
+                A::FocusToggle => "S",
                 A::FoldToggle => "za",
                 A::FoldAll => "zM",
                 A::UnfoldAll => "zR",
@@ -958,6 +1022,8 @@ mod tests {
                 A::OutlineJumpTo(_) => "click",
                 A::BacklinksToggle => "L",
                 A::BacklinksMove(_) | A::BacklinksOpen => "L",
+                A::ForwardToggle => "l",
+                A::ForwardMove(_) | A::ForwardOpen => "l",
                 // Deliberately undocumented: internal or pointer-driven.
                 // (The mouse gestures ARE documented — as prose rows in the
                 // help table's mouse group, not as key bindings.)

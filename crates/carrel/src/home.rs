@@ -203,6 +203,9 @@ pub struct Picker {
 
 #[derive(Debug)]
 pub struct Home {
+    /// Favourite roots (`place = …` config lines), newest first. Offered
+    /// by the picker ahead of the filesystem's guesses.
+    pub places: Vec<PathBuf>,
     pub root: PathBuf,
     /// Newest-modified first, always.
     pub entries: Vec<Entry>,
@@ -257,6 +260,7 @@ impl Home {
         let mut entries = cached;
         entries.sort_by_key(|e| std::cmp::Reverse(e.mtime));
         let mut h = Self {
+            places: Vec::new(),
             root,
             entries,
             filtered: Vec::new(),
@@ -372,17 +376,26 @@ impl Home {
     }
 
     /// Rebuild `filtered` and clamp `selected` so it can never dangle.
+    ///
+    /// An empty filter is every entry, in the scan's own newest-first order.
+    /// A typed filter ranks fuzzily instead — best match first, ties keeping
+    /// that same mtime order, because a stable sort never reorders equals.
     pub fn refilter(&mut self) {
-        let needle = self.filter.to_lowercase();
-        self.filtered = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| {
-                needle.is_empty() || e.path.to_string_lossy().to_lowercase().contains(&needle)
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let needle = self.filter.trim().to_lowercase();
+        if needle.is_empty() {
+            self.filtered = (0..self.entries.len()).collect();
+        } else {
+            let mut scored: Vec<(i32, usize)> = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    crate::fuzzy::score(&e.path.to_string_lossy(), &needle).map(|s| (s, i))
+                })
+                .collect();
+            scored.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
+            self.filtered = scored.into_iter().map(|(_, i)| i).collect();
+        }
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
         self.top = self.top.min(self.filtered.len().saturating_sub(1));
     }

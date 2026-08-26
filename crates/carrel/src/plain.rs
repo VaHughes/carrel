@@ -75,6 +75,36 @@ pub fn render(doc: &Document, width: u16) -> String {
     out
 }
 
+/// The `--tasks` report: one checkbox line per GFM task, in reading order,
+/// ASCII-safe exactly like the rest of this module. A reader's answer to
+/// "what is left to do in here", without ever writing to the file.
+#[must_use]
+pub fn task_report(doc: &carrel_core::Document) -> String {
+    let mut out = String::new();
+    for t in doc.tasks() {
+        let node = doc.node_for_block(doc.block_at_doc(carrel_core::DocByte(t.at)));
+        let first = doc.text[node.doc.start as usize..node.doc.end as usize]
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim();
+        out.push_str(if t.done { "- [x] " } else { "- [ ] " });
+        out.push_str(first);
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod task_report_tests {
+    #[test]
+    fn the_report_is_checkbox_lines_in_reading_order() {
+        let doc = carrel_core::Document::parse("- a\n- [ ] open\n- [x] done\n");
+        let out = super::task_report(&doc);
+        assert_eq!(out, "- [ ] open\n- [x] done\n", "{out}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

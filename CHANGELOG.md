@@ -2,6 +2,76 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **A `<details>` block folds like a section.** The summary line wears the same markers a
+  folded heading does — a dim `▸ …` folded, a `▾` open — and folds the same way: `za` at
+  the top of the view, click the summary, `zM` to collapse every one of them at once.
+  Search always unfolds its way in, exactly as it does for sections. Nested details fold
+  independently; a `<details>` with no visible summary text offers no fold at all, because
+  a fold with nothing to keep visible is not a fold. The regions are recorded in the core's
+  document model as byte ranges, so they survive a resize by the same construction that
+  keeps search hits and bookmarks alive.
+
+- **`%` jumps between a footnote reference and its definition.** Under a reference, `%`
+  takes you to that reference's definition; inside one, back to its first reference; above
+  everything, to the first pair in the document. Either way a history entry is pushed, so
+  `Ctrl-O` returns — a jump is a link follow in spirit. References inside code samples are
+  prose about footnotes, not footnotes, and are skipped.
+
+- **`l` asks what this note points at** — the mirror of backlinks `L`. Every distinct
+  destination in the document, in reading order: wikilinks resolved the way the reader
+  resolves them, relative links against the file's own directory, external URLs shown but
+  never opened. Enter follows a local target through the ordinary history machinery;
+  pressing it on an external link says so instead of fetching.
+
+- **`"` lists your bookmarks.** `'` walks them blind; this shows every mark in the document
+  with its context line, pre-selected at or after where you are reading, Enter jumps,
+  Ctrl-O comes back. Rows derive from the live list each frame, so clearing a mark under
+  the open pane is reflected before your next keystroke.
+
+- **The pickers fuzzy-match now, ranked best-first.** The home screen's name filter and the
+  outline picker both took exact substrings; both now take an in-order subsequence and rank
+  by alignment — matches at word boundaries (`/`, `_`, `-`, `.`, camel humps) beat word
+  interiors, tight runs beat scattered ones, and the *best* alignment wins rather than the
+  first: `xaabbx` queried for `ab` finds the adjacent pair, skipping the leftmost `a` that
+  strands the rest. A hand-rolled dynamic program, two rows of cells, no dependency — a
+  folder of 100,000 notes still refilters on every keystroke. Ties keep the mtime order
+  they had.
+
+- **`I` shows the document card**: words, total reading time, headings, code blocks,
+  tables, images, math, links local and external, tasks done-of-total, footnote counts,
+  bookmarks, when the file last changed. Derived fresh every frame it shows, so nothing on
+  it can go stale. (`g` was considered and declined — it owns the `gg` prefix.)
+
+- **`S` spotlights the paragraph.** Everything outside the block nearest the centre of the
+  view dims; the measure stays put, positions stay put, only the paint changes. Purely
+  presentation — layout never hears about it.
+
+- **`A` reads to you.** Auto-read drifts the view down one row every 300 ms — two hundred
+  rows a minute, brisk enough to feel like reading. Any deliberate scroll takes the wheel
+  back immediately, `gg`/`G` included, and reaching the end stops it gently with a note.
+  The heartbeat lives in the event loop; state stays pure.
+
+- **Task lists are navigable and reportable, still never editable.** `X` jumps to the next
+  GFM task item, wrapping, count-multiplied, saying which and whether it is ticked.
+  `carrel --tasks FILE` prints every task as checkbox lines and exits — the file untouched.
+  The info card carries the done-of-total count. Home-screen progress glyphs were tried on
+  paper and left out: counting honestly means reading whole files, and a number read from
+  the first 2 KB would be a lie with a font on it.
+
+- **`carrel --render` styles a pipe.** The document as linear text with weight, slant,
+  strike and real OSC 8 hyperlinks — for embedding carrel's rendering in another tool's
+  output, the thing agents and build logs want. Never an SGR colour: a non-interactive pipe
+  has no palette, and guessing one would fight whatever theme surrounds it. `NO_COLOR`
+  reduces it to `--plain` exactly. Widths work like `--plain`, stdin included.
+
+- **Places: the directories you keep coming back to are remembered.** Choosing a root in
+  the directory picker now records it as a `place = …` line in the config, newest first,
+  duplicates collapsing onto their newest visit, capped at eight so it stays a short menu
+  rather than a history. The picker offers them ahead of the filesystem's own completions
+  whenever the typed path is empty.
+
 ## 2026.8.22
 
 - **Scrolling fast no longer eats or strands characters.** A line containing an emoji

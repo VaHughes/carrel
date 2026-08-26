@@ -554,3 +554,71 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
     );
     assert!(checked > 0, "the picker painted nothing to click");
 }
+
+#[test]
+fn a_filter_ranks_fuzzily_instead_of_substring_order() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("unread-note.md"), "# U").unwrap();
+    std::fs::write(d.path().join("readme.md"), "# R").unwrap();
+
+    let (cached, _) = scan::walk_blocking(d.path());
+    let mut app = App::new_home(d.path().into(), cached.clone(), 60, 16);
+
+    // `read` lives inside both paths; the one that starts the word ranks first.
+    for c in "read".chars() {
+        update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+    }
+    let h = app.home().unwrap();
+    assert_eq!(h.filtered.len(), 2);
+    let first = h.filtered[0];
+    assert!(
+        h.entries[first].path.ends_with("readme.md"),
+        "{:?}",
+        h.entries[first].path
+    );
+
+    // And a subsequence that is not a substring still finds its file.
+    let mut app2 = App::new_home(d.path().into(), cached, 60, 16);
+    for c in "udn".chars() {
+        update(&mut app2, Action::HomeKey(SearchKey::Char(c)));
+    }
+    let h2 = app2.home().unwrap();
+    assert_eq!(h2.filtered.len(), 1);
+    assert!(h2.entries[h2.filtered[0]].path.ends_with("unread-note.md"));
+}
+
+#[test]
+fn places_lead_the_picker_menu_and_a_choice_becomes_one() {
+    let d = tempfile::tempdir().unwrap();
+    let cfg = tempfile::tempdir().unwrap();
+    std::fs::write(cfg.path().join("config"), "place = /fav/notes\n").unwrap();
+
+    let mut app = App::new_home(d.path().into(), vec![], 60, 16);
+    app.config_dir = Some(cfg.path().into());
+    // Startup prefs load places; drive the same path the binary uses.
+    if let Some(h) = app.home_mut() {
+        h.places = carrel::config::load_places_in(cfg.path());
+    }
+    update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
+    update(&mut app, Action::PickerOpen);
+    let h = app.home().unwrap();
+    assert_eq!(
+        h.picker.roots.first(),
+        Some(&std::path::PathBuf::from("/fav/notes"))
+    );
+
+    // Choosing a directory records it as a place, newest first.
+    update(&mut app, Action::PickerCancel);
+    let target = d.path().join("elsewhere");
+    std::fs::create_dir_all(&target).unwrap();
+    update(&mut app, Action::PickerOpen);
+    if let Some(h) = app.home_mut() {
+        h.picker.typed = format!("{}", target.display());
+        h.picker.roots = vec![target.clone()];
+        h.picker.selected = 0;
+    }
+    update(&mut app, Action::PickerChoose);
+    let places = carrel::config::load_places_in(cfg.path());
+    assert_eq!(places.first(), Some(&target), "{places:?}");
+    assert!(places.contains(&std::path::PathBuf::from("/fav/notes")));
+}

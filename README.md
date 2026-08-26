@@ -154,8 +154,8 @@ diffs stays a document. `--diff` forces the reading, `--no-diff` refuses it.
 ## Configuration
 
 Optional. Carrel writes `$XDG_CONFIG_HOME/carrel/config` (or `~/.config/carrel/config`) itself
-when you change a setting in the app, and you can edit it by hand. One `key = value` per line;
-unknown keys and `#` comments are ignored.
+when you change a setting in the app, and you can edit it by hand. One `key = value` per line
+(`place` may repeat); unknown keys and `#` comments are ignored.
 
 | Key | Default | What it does |
 |---|---|---|
@@ -166,6 +166,7 @@ unknown keys and `#` comments are ignored.
 | `outline_margin` | `false` | The section tree pinned in the left margin, current section lit, on terminals wide enough to spare the columns. Click a heading to jump. Off by default because it moves the text column. |
 | `breadcrumb` | `true` | The section path pinned atop the page while you scroll — `The Book ▸ Chapter ▸ Detail` — with a rule under it. `B` toggles it. Documents with no headings never show one. |
 | `root` | — | The directory the home screen lists. `d` picks one in the app. |
+| `place` | — | A remembered favourite root, offered by the directory picker. This key repeats, newest first, capped at eight; choosing a root with `d` records it. |
 
 ```ini
 # ~/.config/carrel/config
@@ -242,6 +243,39 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Follow mode for a growing pipe; copy a code block with `y`
 - [x] Continue reading, bookmarks, backlinks, the outline in the margin
 - [x] Packaging: Homebrew, Fedora COPR, the shell installer, crates.io
+- [ ] Marginalia — highlights and notes made while reading, stored in the state directory
+      and never in the document; anchored on byte offsets, so they survive a resize by
+      construction, re-finding themselves after an edit by the quoted text; walked like
+      bookmarks, reviewed from an overlay, exported as quote-and-note markdown
+- [x] Focus dimming (`S`) — everything outside the paragraph at the centre of the view
+      falls into shadow; the quiet place, made literal
+- [x] `<details>`/`<summary>` folds natively — the summary becomes a fold point, reusing
+      section folding wholesale
+- [ ] Search results read as a document — a section per file with context lines,
+      searchable again, on the same machinery that reads a diff
+- [ ] Image lightbox — Enter opens an image full-screen, kitty protocol first and
+      half-block fallback everywhere; `[`/`]` walks the images of the document
+- [x] Fuzzy matching for the home filter and the outline picker — best alignment wins,
+      ranked; substring no longer
+- [ ] Word-level colour inside changed diff lines, so a prose review reads as prose
+- [x] Task-list awareness without editing — task-jumping in the reader (`X`), a
+      `--tasks` report, the count on the info card; ticking a box is editor creep.
+      Home-screen progress glyphs stay out: counting honestly means reading whole files.
+- [ ] Tags — frontmatter `tags:` indexed lazily the way titles are, tag-filtered views
+- [ ] A bookmark list overlay — `'` cycles today; this shows every mark with its line
+- [x] Forward links (`l`) — what this note points at, the mirror of backlinks `L`
+- [ ] Wide-table horizontal scrolling — cards and wrapping both lose past some width
+- [x] Footnote jump-and-return — `%`, to the definition and back
+- [x] `carrel --render` — styled ANSI output even when piped: weight, slant, strike and
+      OSC 8 hyperlinks, never a colour, `NO_COLOR` reduces it to `--plain`; still never
+      fetching anything itself
+- [x] Document info card (`I`; `g` belongs to the gg prefix) — words, minutes, structure,
+      links, when it last changed
+- [x] Places — favourite roots remembered by the picker, newest first, capped at eight;
+      choosing a directory records it
+- [ ] Hyphenation at narrow measures — pattern-based breaks below roughly 70 columns
+- [x] Auto-read mode (`A`) — the view drifts down a row every 300 ms; any deliberate
+      motion takes the wheel back, and the end of the document stops it gently
 - [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 

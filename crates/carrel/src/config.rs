@@ -1,4 +1,7 @@
-//! The one persisted setting: which directory the home screen scans.
+//! Persisted settings: the home screen's root, theme, footer and breadcrumb
+//! preferences, the reading measure, titles — flat `key = value` lines —
+//! plus `place`, the one key that legitimately REPEATS (favourite roots,
+//! newest first; see [`add_place_in`]).
 //!
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 //!
@@ -77,10 +80,9 @@ fn parse_key(text: &str, key: &str) -> Option<String> {
 /// Write or replace ONE key, preserving every other line.
 ///
 /// With more than one key, "write only mine" done naively destroys the
-/// others — the original `save_root` rewrote the whole file. (Key count is
-/// now seven — root, theme, hints, `max_width`, breadcrumb, `outline_margin`, titles — the top of the module-doc's stated TOML
-/// trigger zone; the format stays hand-rolled while every key is one flat
-/// string, and the trigger becomes real the moment one wants structure.)
+/// others — the original `save_root` rewrote the whole file.
+/// Repeated keys (`place`) do not belong here; they have their own
+/// append-and-promote path in [`add_place_in`].
 fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("config");
@@ -105,6 +107,74 @@ fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
     if !written {
         let _ = writeln!(out, "{key} = {value}");
     }
+    std::fs::write(path, out)
+}
+
+/// Saved favourite roots, newest first. The one key that legitimately
+/// repeats: each visit to a directory appends a `place = …` line ahead of
+/// its elders, duplicates collapse onto the newcomer, and the list caps at
+/// eight so it stays a short menu rather than a history.
+pub const PLACE_CAP: usize = 8;
+
+#[must_use]
+pub fn load_places_in(dir: &Path) -> Vec<PathBuf> {
+    let text = std::fs::read_to_string(dir.join("config")).unwrap_or_default();
+    let mut out: Vec<PathBuf> = Vec::new();
+    for line in text.lines() {
+        let Some(v) = place_value(line) else { continue };
+        let p = PathBuf::from(v);
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out.truncate(PLACE_CAP);
+    out
+}
+
+fn place_value(line: &str) -> Option<&str> {
+    let (k, v) = line.trim().split_once('=')?;
+    (k.trim() == "place")
+        .then(|| v.trim())
+        .filter(|v| !v.is_empty())
+}
+
+pub fn add_place_in(dir: &Path, root: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("config");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let me = root.display().to_string();
+    let mut kept_places = 0usize;
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| {
+            let is_mine = place_value(l).is_some_and(|v| v == me);
+            let is_place = place_value(l).is_some();
+            if is_mine {
+                return false; // dedupe: the newcomer replaces its elder
+            }
+            if is_place {
+                kept_places += 1;
+                // Drop the OLDEST once the menu would outgrow itself.
+                if kept_places > PLACE_CAP - 1 {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(String::from)
+        .collect();
+    // Newest first: ahead of every elder place line, or at the end when the
+    // file has none yet.
+    let first_place = lines.iter().position(|l| place_value(l).is_some());
+    match first_place {
+        Some(i) => lines.insert(i, format!("place = {me}")),
+        None => lines.push(format!("place = {me}")),
+    }
+    let mut out = lines.join(
+        "
+",
+    );
+    out.push('\n');
     std::fs::write(path, out)
 }
 
@@ -239,6 +309,40 @@ pub fn save_max_width_in(dir: &Path, w: u16) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn places_round_trip_newest_first_and_dedupe() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(load_places_in(d.path()).is_empty());
+        add_place_in(d.path(), Path::new("/a")).unwrap();
+        add_place_in(d.path(), Path::new("/b")).unwrap();
+        assert_eq!(
+            load_places_in(d.path()),
+            vec![PathBuf::from("/b"), PathBuf::from("/a")],
+            "newest first"
+        );
+        // Re-visiting /a promotes it, not duplicates it.
+        add_place_in(d.path(), Path::new("/a")).unwrap();
+        assert_eq!(
+            load_places_in(d.path()),
+            vec![PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+    }
+
+    #[test]
+    fn the_place_menu_caps_at_eight() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..12 {
+            add_place_in(d.path(), Path::new(&format!("/p{i}"))).unwrap();
+        }
+        let places = load_places_in(d.path());
+        assert_eq!(places.len(), PLACE_CAP);
+        assert_eq!(places[0], PathBuf::from("/p11"), "newest kept");
+        // Other keys survive the rewriting.
+        save_root_in(d.path(), Path::new("/root")).unwrap();
+        add_place_in(d.path(), Path::new("/zz")).unwrap();
+        assert_eq!(load_root_in(d.path()), Some(PathBuf::from("/root")));
+    }
 
     #[test]
     fn breadcrumb_round_trip_and_default_on() {
