@@ -37,8 +37,9 @@ sudo dnf install carrel
 Publishing a new version, from a machine with no Fedora tooling at all:
 
 ```bash
-pipx install copr-cli                      # token lives in ~/.config/copr, chmod 600
-copr-cli buildscm carrel \
+uvx --from copr-cli copr-cli whoami        # token lives in ~/.config/copr, chmod 600;
+                                           # pipx install copr-cli works too
+uvx --from copr-cli copr-cli buildscm carrel \
   --clone-url https://github.com/VaHughes/carrel \
   --commit main \
   --spec contrib/packaging/carrel.spec \
