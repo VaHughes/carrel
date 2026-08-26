@@ -1,4 +1,4 @@
-.TH CARREL 1 "2026-08-15" "carrel" "User Commands"
+.TH CARREL 1 "2026-08-26" "carrel" "User Commands"
 .SH NAME
 carrel \- a quiet place to read your markdown
 .SH SYNOPSIS
@@ -17,6 +17,16 @@ carrel \- a quiet place to read your markdown
 .br
 .B carrel \-\-plain \-
 .RI [ WIDTH ]
+.br
+.B carrel \-\-render
+.RI { FILE | \- "} [" WIDTH ]
+.br
+.B carrel \-\-tasks
+.I FILE
+.br
+.B carrel
+.RB [ \-\-diff | \-\-no\-diff ]
+.I FILE
 .br
 .B carrel \-\-help
 .br
@@ -194,7 +204,10 @@ view.
 .TP
 .BR za ", " zM ", " zR
 Fold the current section behind its heading; fold every section; open all.
-Clicking a heading toggles its fold. Search and links unfold their targets.
+A
+.B <details>
+block folds the same way behind its summary. Clicking a heading or a
+summary toggles its fold. Search and links unfold their targets.
 .TP
 .B %
 Jump to the footnote definition of the reference nearest above the view;
@@ -213,13 +226,15 @@ Quit outright, whatever is open.
 .SS Home screen
 .TP
 .B i
-Filter by name; type to narrow, escape to leave.
+Filter by name; type to narrow, escape to leave. The match is fuzzy \(em an
+in\-order subsequence, ranked best\-first \(em as it is in the outline picker.
 .TP
 .B /
 Search inside every file; enter opens at the match.
 .TP
 .B d
-Choose a directory. Type a path to complete it against the filesystem;
+Choose a directory. Remembered places are offered first; type a path to
+complete it against the filesystem;
 arrows, \fBCtrl\-J\fR/\fBCtrl\-K\fR or \fBCtrl\-N\fR/\fBCtrl\-P\fR move,
 enter chooses. Typing owns the letters here, so \fBj\fR and \fBk\fR are
 part of the path.

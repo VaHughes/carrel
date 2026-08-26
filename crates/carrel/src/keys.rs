@@ -359,7 +359,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("Esc", "clear selection & search"),
     ("§", "view"),
     ("o", "outline: jump to a section"),
-    ("za", "fold / unfold this section"),
+    ("za", "fold this section / <details>"),
     ("zM zR", "fold all / open all"),
     ("t", "tables: cards / wrapped"),
     ("r", "diagrams & math: art / source"),

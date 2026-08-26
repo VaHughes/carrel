@@ -65,10 +65,14 @@ KEYS (while reading):
     / ?                          search          n N             next / previous
     zz zt zb                     put the current match middle / top / bottom
     o                            outline: jump to a section
+    za zM zR                     fold this section or <details> / all / none
     t                            tables: cards ↔ wrapped
     r                            mermaid, math: rendered ↔ source
-    m '                          set a bookmark / go to the next
-    L                            what links here (backlinks)
+    m ' \"                        set a bookmark / go to the next / list them
+    %                            footnote reference ↔ its definition
+    L l                          what links here / what this points at
+    I S                          document info card / spotlight the paragraph
+    A                            auto-read: drift down until you scroll
     T                            cycle themes    q Ctrl-C        quit
     h F1                         help            Ctrl-O          back
     ] [                          next / previous code block

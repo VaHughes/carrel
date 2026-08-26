@@ -127,7 +127,9 @@ an-agent --stream | carrel     # content appears as it arrives
 ```
 
 `carrel -` forces stdin mode, and `cmd | carrel - pattern` prints a match report. Piping
-*out* still produces plain text, so `cmd | carrel | grep` behaves. While a producer is
+*out* produces plain text, so `cmd | carrel | grep` behaves; `carrel --render FILE` keeps
+weight, slant, strike and OSC 8 links (never a colour) for embedding in another tool's
+output, and `carrel --tasks FILE` prints the document's task list as checkbox lines. While a producer is
 still writing, the reader is already open — and your position and search matches hold as
 content arrives, because positions never depend on the screen. Press `F` to pin the view
 to the end while it grows, and `y` to copy the code block you are looking at
@@ -262,7 +264,8 @@ The rules that keep the second frontend possible are enforced mechanically:
       `--tasks` report, the count on the info card; ticking a box is editor creep.
       Home-screen progress glyphs stay out: counting honestly means reading whole files.
 - [ ] Tags — frontmatter `tags:` indexed lazily the way titles are, tag-filtered views
-- [ ] A bookmark list overlay — `'` cycles today; this shows every mark with its line
+- [x] A bookmark list overlay (`"`) — every mark with its context line, Enter jumps,
+      Ctrl-O comes back
 - [x] Forward links (`l`) — what this note points at, the mirror of backlinks `L`
 - [ ] Wide-table horizontal scrolling — cards and wrapping both lose past some width
 - [x] Footnote jump-and-return — `%`, to the definition and back
