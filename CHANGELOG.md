@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.8.26
 
 - **A `<details>` block folds like a section.** The summary line wears the same markers a
   folded heading does — a dim `▸ …` folded, a `▾` open — and folds the same way: `za` at

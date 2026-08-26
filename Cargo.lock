@@ -158,7 +158,7 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "carrel"
-version = "2026.8.22"
+version = "2026.8.26"
 dependencies = [
  "carrel-core",
  "criterion",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "carrel-core"
-version = "2026.8.22"
+version = "2026.8.26"
 dependencies = [
  "criterion",
  "proptest",
