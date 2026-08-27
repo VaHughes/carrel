@@ -80,10 +80,31 @@ for f in $(grep -ohE 'install -Dm[0-9]+ (contrib|LICENSE)[^ ]*' \
   if [ -e "$f" ]; then ok "$f"; else note "$f — named by a recipe, not in the tree"; fi
 done
 
+# --- the README's links, as crates.io will resolve them ---
+#
+# `cargo package` records `path_in_vcs` (here `crates/carrel`) in
+# `.cargo_vcs_info.json`, and crates.io resolves every RELATIVE link in the
+# rendered readme against `repository` + that path. Our readme lives at the
+# REPO ROOT and is inherited by both crates, so a relative link lands one
+# directory too deep and 404s: `assets/demo.gif` was served as
+# `.../crates/carrel/assets/demo.gif` from launch until 2026-08-27, which is
+# why both logo and demo were broken on the crate page while rendering fine
+# on GitHub. Absolute URLs are the only form correct in both places.
+echo
+echo "README links as crates.io will resolve them"
+readme_bad=$(grep -nP '(\]\(|<img[^>]*\ssrc=")(?!https?:|#|mailto:)' README.md || true)
+if [ -n "$readme_bad" ]; then
+  while IFS= read -r line; do
+    note "README.md:${line%%:*} — relative link; crates.io resolves it under crates/carrel/"
+  done <<<"$readme_bad"
+else
+  ok "every README link and image is absolute"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
-  echo "Packaging recipes match what ships."
+  echo "Packaging recipes match what ships, and the README reads right off the repo."
 else
-  echo "Packaging recipes would install files that will not exist."
+  echo "Something above would break for someone downstream — see the ✗ lines."
 fi
 exit "$fail"

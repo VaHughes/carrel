@@ -2,6 +2,16 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **The logo and the demo render on the crate page.** They had been broken on
+  <https://crates.io/crates/carrel> since launch while rendering correctly on GitHub, and
+  three ordinary links were broken beside them. crates.io resolves a relative link in a
+  readme against the crate's own directory in the repository, not the repository root —
+  and carrel's readme lives at the root and is inherited by both crates, so every relative
+  path was served one directory too deep. They are absolute URLs now, which is the only
+  form that is correct in both places. `check-packaging.sh` fails on a relative one.
+
 ## 2026.8.26
 
 - **A `<details>` block folds like a section.** The summary line wears the same markers a

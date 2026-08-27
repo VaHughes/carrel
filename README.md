@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo-pixel.png" alt="Carrel" width="220">
+<img src="https://raw.githubusercontent.com/VaHughes/carrel/main/assets/logo-pixel.png" alt="Carrel" width="220">
 
 # carrel
 
@@ -21,7 +21,7 @@ Everything below installs the terminal reader.
 
 <div align="center">
 
-<img src="assets/demo.gif" alt="Carrel listing the markdown files in a directory, filtering to README.md, and scrolling through it" width="800">
+<img src="https://raw.githubusercontent.com/VaHughes/carrel/main/assets/demo.gif" alt="Carrel listing the markdown files in a directory, filtering to README.md, and scrolling through it" width="800">
 
 </div>
 
@@ -60,7 +60,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
 | **Clickable links** | Real OSC 8 hyperlinks, with graceful degradation. |
 | **Correct emoji and wide characters** | Measured per grapheme cluster, never per codepoint. |
-| **Complete markdown** | CommonMark + GFM, footnotes, tables, definition lists, frontmatter, and LaTeX math as terminal box art. Every claim here is [a test](crates/carrel/tests/conformance.rs). |
+| **Complete markdown** | CommonMark + GFM, footnotes, tables, definition lists, frontmatter, and LaTeX math as terminal box art. Every claim here is [a test](https://github.com/VaHughes/carrel/blob/main/crates/carrel/tests/conformance.rs). |
 | **A GUI, eventually** | Planned and designed for, **not yet built.** So that people who don't use terminals can read markdown too. |
 
 ## Install
@@ -103,7 +103,7 @@ existence has **under a hundred stars**, because nobody can find it. In this nic
 packaging beats code.
 
 **Open `.md` files from your file manager** (optional, Linux): install
-[`contrib/carrel.desktop`](contrib/carrel.desktop) (it is also inside every release archive)
+[`contrib/carrel.desktop`](https://github.com/VaHughes/carrel/blob/main/contrib/carrel.desktop) (it is also inside every release archive)
 and make carrel your markdown handler *if you want it* — carrel never takes the default by
 itself:
 
@@ -284,7 +284,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: contributions are welcome inside the
+See [CONTRIBUTING.md](https://github.com/VaHughes/carrel/blob/main/CONTRIBUTING.md). The short version: contributions are welcome inside the
 one-coordinate-space invariant above, and `./scripts/check-discipline.sh` is the referee.
 
 ## License
