@@ -46,6 +46,18 @@ cargo test --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Wed Aug 26 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.26-1
+- <details> blocks fold like sections; % jumps between a footnote and its
+  definition; l lists what a note links out to, " lists your bookmarks
+- Fuzzy-matching pickers; document card (I); paragraph spotlight (S);
+  read-aloud (A); navigable task lists; carrel --render styles a pipe
+
+* Sat Aug 22 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.22-1
+- Continue reading on the home screen; bookmarks; the outline in the margin
+- Backlinks (L) and frontmatter titles in the file list
+- Scrolling fast no longer eats characters; every frame is one synchronized
+  update; the man page documents every reader key again
+
 * Fri Aug 21 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.21-1
 - Diffs read as documents; git pager support
 - Follow mode for growing documents; copy a code block with y

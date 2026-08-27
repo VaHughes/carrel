@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.8.27
 
 - **The logo and the demo render on the crate page.** They had been broken on
   <https://crates.io/crates/carrel> since launch while rendering correctly on GitHub, and
@@ -11,6 +11,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   and carrel's readme lives at the root and is inherited by both crates, so every relative
   path was served one directory too deep. They are absolute URLs now, which is the only
   form that is correct in both places. `check-packaging.sh` fails on a relative one.
+
+- **The AUR recipe would have failed its integrity check.** `.SRCINFO` is a flattened copy
+  of the `PKGBUILD`, so a hand-edited version number left the source line fetching the
+  v2026.8.21 tarball while the checksum beside it was v2026.8.26's. It has never been
+  installable from the AUR — registration there is still closed — but it is correct now,
+  and `check-packaging.sh` fails if the two files disagree again. The Fedora spec's
+  changelog also regained the two releases it had skipped.
 
 ## 2026.8.26
 

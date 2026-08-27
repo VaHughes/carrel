@@ -27,7 +27,7 @@ cargo test --workspace                             # every test
 cargo clippy --workspace --all-targets             # ZERO warnings is the bar
 cargo fmt --all --check
 ./scripts/check-discipline.sh                      # the architectural guard
-./scripts/check-packaging.sh                       # recipes name files that ship
+./scripts/check-packaging.sh                       # what we publish still resolves
 ```
 
 ## How changes happen here

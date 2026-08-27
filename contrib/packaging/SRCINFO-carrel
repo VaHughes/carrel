@@ -8,7 +8,7 @@ pkgbase = carrel
 	license = MIT OR Apache-2.0
 	makedepends = cargo
 	depends = gcc-libs
-	source = carrel-2026.8.21.tar.gz::https://github.com/VaHughes/carrel/archive/v2026.8.21.tar.gz
+	source = carrel-2026.8.26.tar.gz::https://github.com/VaHughes/carrel/archive/v2026.8.26.tar.gz
 	sha256sums = 111c97311451bb4e0b5a85489efb0bf04470fa9e04e1a29b4b03dcf535918b7e
 
 pkgname = carrel

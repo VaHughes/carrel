@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Do the packaging recipes install files that will actually be there?
+# Will what we publish still resolve for the person downstream?
+#
+# Three checks: the recipes against what actually ships, .SRCINFO against
+# its PKGBUILD, and the README's links as crates.io will rewrite them.
 #
 # `carrel-bin` on the AUR unpacks a RELEASE ARCHIVE and installs files out of
 # it. Nothing else in CI builds that recipe, so until 2026-08-16 it installed
@@ -79,6 +82,49 @@ for f in $(grep -ohE 'install -Dm[0-9]+ (contrib|LICENSE)[^ ]*' \
   [ -z "$f" ] && continue
   if [ -e "$f" ]; then ok "$f"; else note "$f — named by a recipe, not in the tree"; fi
 done
+
+# --- .SRCINFO against its PKGBUILD ---
+#
+# `.SRCINFO` is a FLATTENED copy of the PKGBUILD: makepkg expands
+# `$pkgname-$pkgver` when it generates the file, so hand-editing `pkgver` alone
+# leaves the `source` line pointing at the previous tag. That is exactly what
+# happened between 2026.8.21 and 2026.8.26 — pkgver said 2026.8.26, the source
+# line fetched the v2026.8.21 tarball, and the sha256 was 2026.8.26's, so AUR
+# would have failed the integrity check on the first build. Regenerate with
+# `makepkg --printsrcinfo > contrib/packaging/SRCINFO-carrel`, never by hand.
+# This check needs no makepkg, so it runs on any CI runner.
+echo
+echo ".SRCINFO against its PKGBUILD"
+srcinfo=contrib/packaging/SRCINFO-carrel
+pkgbuild=contrib/packaging/PKGBUILD-carrel
+si_ver=$(awk -F'= ' '/^\tpkgver = /{print $2; exit}' "$srcinfo")
+pb_ver=$(awk -F= '/^pkgver=/{print $2; exit}' "$pkgbuild")
+si_sum=$(awk -F'= ' '/^\tsha256sums = /{print $2; exit}' "$srcinfo")
+pb_sum=$(sed -n "s/^sha256sums=('\([a-f0-9]*\)').*/\1/p" "$pkgbuild" | head -1)
+
+if [ -z "$si_ver" ] || [ -z "$pb_ver" ]; then
+  note "cannot read pkgver from $srcinfo or $pkgbuild"
+elif [ "$si_ver" != "$pb_ver" ]; then
+  note "pkgver: .SRCINFO says $si_ver, PKGBUILD says $pb_ver"
+else
+  ok "pkgver $si_ver matches"
+fi
+
+# The expansion the flattening gets wrong.
+if printf '%s\n' "$si_ver" | grep -q .; then
+  if awk '/^\tsource = /' "$srcinfo" | grep -qF "v$si_ver.tar.gz" \
+     && awk '/^\tsource = /' "$srcinfo" | grep -qF "carrel-$si_ver.tar.gz"; then
+    ok "source line names v$si_ver"
+  else
+    note ".SRCINFO source line does not name v$si_ver — regenerate with makepkg --printsrcinfo"
+  fi
+fi
+
+if [ -n "$si_sum" ] && [ "$si_sum" != "$pb_sum" ]; then
+  note "sha256sums: .SRCINFO and PKGBUILD disagree"
+elif [ -n "$si_sum" ]; then
+  ok "sha256sums match"
+fi
 
 # --- the README's links, as crates.io will resolve them ---
 #
