@@ -37,8 +37,10 @@ sudo dnf install carrel
 Publishing a new version, from a machine with no Fedora tooling at all:
 
 ```bash
-uvx --from copr-cli copr-cli whoami        # token lives in ~/.config/copr, chmod 600;
-                                           # pipx install copr-cli works too
+uvx --from copr-cli copr-cli whoami        # token lives in ~/.config/copr, chmod 600.
+                                           # No uvx or pipx? A venv needs no root:
+                                           #   python3 -m venv /tmp/copr
+                                           #   /tmp/copr/bin/pip install copr-cli
 uvx --from copr-cli copr-cli buildscm carrel \
   --clone-url https://github.com/VaHughes/carrel \
   --commit main \
@@ -92,8 +94,8 @@ than trusting this copy.
   commit, push.
 - **`PKGBUILD-carrel-bin`** — AUR prebuilt package, same flow into `carrel-bin.git`; sums come
   from the release's `.sha256` files.
-- **`carrel.spec`** — Fedora COPR. Publish: `copr-cli create carrel --chroot fedora-42-x86_64
-  --chroot fedora-42-aarch64` (plus current releases/EPEL as desired), then
-  `copr-cli build carrel carrel.spec`. The same spec seeds an openSUSE OBS home project later.
+- **`carrel.spec`** — Fedora COPR. The project already exists (F43 and F44, x86_64 and
+  aarch64); each release is the `buildscm` command above, **not** `copr-cli build` — see
+  point 1. The same spec seeds an openSUSE OBS home project later.
 
 The full launch order lives in RELEASING.md in the private notes repo.
