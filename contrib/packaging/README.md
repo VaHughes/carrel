@@ -1,6 +1,6 @@
 # Packaging templates
 
-**The AUR and COPR recipes are stamped for v2026.8.26; `carrel-package.nix` still says
+**The AUR and COPR recipes are stamped for v2026.8.27; `carrel-package.nix` still says
 v2026.8.17.** The stamp is bumped in a commit *after* each tag, because the spec reads its
 version from the commit but fetches `Source0` from the tag tarball. `carrel` (AUR) and
 `carrel.spec` (COPR) build from the GitHub **source** tarball, which carries `contrib/` and

@@ -1,7 +1,7 @@
 # Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.8.26
+Version:        2026.8.27
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -46,6 +46,12 @@ cargo test --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Thu Aug 27 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.27-1
+- The logo, the demo and three links render on the crates.io page again;
+  they had resolved against the crate's subdirectory, not the repo root
+- The AUR .SRCINFO no longer disagrees with its PKGBUILD about which tag
+  to fetch; this spec's changelog regained two skipped releases
+
 * Wed Aug 26 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.26-1
 - <details> blocks fold like sections; % jumps between a footnote and its
   definition; l lists what a note links out to, " lists your bookmarks
