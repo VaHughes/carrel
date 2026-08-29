@@ -405,7 +405,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("/", "search inside files"),
     ("Esc", "clear filter, then leave it"),
     ("§", "other"),
-    ("d", "directory: type, it completes"),
+    ("d", "directory: type, from here"),
     ("T", "cycle themes"),
     ("h F1", "this help (normal mode)"),
     ("H", "hide / show the key hints"),

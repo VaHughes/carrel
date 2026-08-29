@@ -233,8 +233,11 @@ in\-order subsequence, ranked best\-first \(em as it is in the outline picker.
 Search inside every file; enter opens at the match.
 .TP
 .B d
-Choose a directory. Remembered places are offered first; type a path to
-complete it against the filesystem;
+Choose a directory. The input opens on the directory you are already in, so
+\fBlive\fR and \fB/live\fR both mean a subdirectory of it rather than a path
+from the filesystem root; \fBEsc\fR clears it back to empty, which is how an
+unrelated absolute path is typed. Remembered places are offered first; typing
+completes against the filesystem;
 arrows, \fBCtrl\-J\fR/\fBCtrl\-K\fR or \fBCtrl\-N\fR/\fBCtrl\-P\fR move,
 enter chooses. Typing owns the letters here, so \fBj\fR and \fBk\fR are
 part of the path.

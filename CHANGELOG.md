@@ -4,6 +4,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **The directory picker opens where you already are.** `d` used to open on an empty input,
+  so `/live` meant the filesystem root and reaching a sibling of the directory on screen
+  meant typing the whole path from `/`. It now opens holding the current directory, and
+  both `live` and `/live` continue from there. Remembered places still lead the list until
+  you type. Esc clears the input back to empty, which is how you head somewhere unrelated.
+
 - **A file you just wrote appears in the list without a restart.** The home screen walked
   the tree once, at startup, so a document created while it was up stayed invisible until
   you quit and reopened. It now takes another quiet look every couple of seconds: a new

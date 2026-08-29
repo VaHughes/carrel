@@ -1749,14 +1749,23 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::PickerOpen => {
+            // Opens on where you already are (`home::picker_prefill`), so what
+            // you type continues from here instead of from `/`. Remembered
+            // places still lead the list on open, as they always have — they
+            // step aside on the first keystroke, which is the rule the typing
+            // arm already follows.
+            let prefill = app
+                .home()
+                .map(|h| crate::home::picker_prefill(&h.root))
+                .unwrap_or_default();
             let places = app.home().map(|h| h.places.clone()).unwrap_or_default();
-            let mut roots = merge_places(places, Home::matches_for(""));
+            let mut roots = merge_places(places, Home::matches_for(&prefill));
             roots.dedup();
             if let Some(h) = app.home_mut() {
                 h.picker.roots = roots;
                 h.picker.selected = 0;
                 h.picker.top = 0;
-                h.picker.typed.clear();
+                h.picker.typed = prefill;
                 h.mode = HomeMode::Picker;
             }
             return Outcome::Redraw;

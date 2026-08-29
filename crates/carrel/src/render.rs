@@ -2465,7 +2465,7 @@ mod tests {
         let buf = buffer_of(&app, 60, 20);
         let text: String = (0..20).map(|y| line(&buf, y) + "\n").collect();
         assert!(
-            text.contains("directory: type, it completes"),
+            text.contains("directory: type, from here"),
             "home rows painted:\n{text}"
         );
     }
@@ -2813,6 +2813,9 @@ mod tests {
     fn the_picker_overlays_the_list() {
         let mut app = home_app(4, 60, 20);
         crate::app::update(&mut app, Action::PickerOpen);
+        // Esc clears the prefilled current directory, so this frame does not
+        // depend on whether the fixture's root exists on the host machine.
+        crate::app::update(&mut app, Action::HomeKey(SearchKey::Cancel));
         crate::app::update(&mut app, Action::HomeKey(SearchKey::Char('/')));
         let buf = buffer_of(&app, 60, 20);
         let all: String = (0..20)

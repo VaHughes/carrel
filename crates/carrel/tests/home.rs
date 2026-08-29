@@ -83,12 +83,91 @@ mod picker {
     use carrel::home::HomeMode;
     use carrel_core::Document;
 
+    /// The picker as `d` leaves it: prefilled with the current directory.
     fn picker_app(d: &tempfile::TempDir) -> App {
         let mut app = App::new_home(d.path().into(), vec![], 60, 16);
         update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
         update(&mut app, Action::PickerOpen);
         assert_eq!(app.home().unwrap().mode, HomeMode::Picker);
         app
+    }
+
+    /// The picker with the prefill cleared — one Esc, which is what someone
+    /// heading somewhere unrelated presses before typing an absolute path.
+    fn picker_app_cleared(d: &tempfile::TempDir) -> App {
+        let mut app = picker_app(d);
+        update(&mut app, Action::HomeKey(SearchKey::Cancel));
+        assert!(app.home().unwrap().picker.typed.is_empty());
+        assert_eq!(app.home().unwrap().mode, HomeMode::Picker);
+        app
+    }
+
+    /// The maintainer's report, 2026-08-29: `d` opened on an empty input, so
+    /// `/live` meant the filesystem root and reaching a sibling of the
+    /// directory already on screen meant typing the whole path from `/`.
+    #[test]
+    fn the_picker_opens_on_the_directory_you_are_already_in() {
+        let d = tempfile::tempdir().unwrap();
+        for sub in ["live", "archive"] {
+            std::fs::create_dir(d.path().join(sub)).unwrap();
+        }
+        let app = picker_app(&d);
+        let h = app.home().unwrap();
+        assert_eq!(
+            h.picker.typed,
+            format!("{}/", d.path().display()),
+            "the input opens on the current directory, slash and all",
+        );
+        assert_eq!(
+            h.picker.roots,
+            vec![d.path().join("archive"), d.path().join("live")],
+            "so it opens listing where you can go from here",
+        );
+    }
+
+    /// Both typing styles have to continue from here — the leading slash is a
+    /// separator, not a jump to `/`.
+    #[test]
+    fn typing_continues_from_the_current_directory_with_or_without_a_slash() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("live")).unwrap();
+        std::fs::write(d.path().join("live").join("x.md"), "# x").unwrap();
+
+        for typed in ["/live", "live"] {
+            let mut app = picker_app(&d);
+            for c in typed.chars() {
+                update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+            }
+            assert_eq!(
+                app.home().unwrap().picker.roots,
+                vec![d.path().join("live")],
+                "{typed:?} must resolve under the current directory",
+            );
+            assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
+            assert_eq!(app.home().unwrap().root, d.path().join("live"));
+        }
+    }
+
+    /// The prefill's escape hatch. Somewhere unrelated is still one Esc away,
+    /// and this is the only way to reach it — the input is text, so an
+    /// absolute path typed after the prefill would hang off the end of it.
+    #[test]
+    fn escape_clears_the_prefill_so_an_unrelated_path_can_still_be_typed() {
+        let d = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let mut app = picker_app(&d);
+        assert!(!app.home().unwrap().picker.typed.is_empty());
+
+        update(&mut app, Action::HomeKey(SearchKey::Cancel));
+        let h = app.home().unwrap();
+        assert!(h.picker.typed.is_empty(), "first Esc clears the prefill");
+        assert_eq!(h.mode, HomeMode::Picker, "and the picker stays up");
+
+        for c in target.path().to_str().unwrap().chars() {
+            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+        }
+        update(&mut app, Action::PickerChoose);
+        assert_eq!(app.home().unwrap().root, target.path());
     }
 
     #[test]
@@ -116,7 +195,7 @@ mod picker {
         let target = tempfile::tempdir().unwrap();
         std::fs::write(target.path().join("x.md"), "# x").unwrap();
 
-        let mut app = picker_app(&d);
+        let mut app = picker_app_cleared(&d);
         for c in target.path().to_str().unwrap().chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
@@ -152,7 +231,7 @@ mod picker {
         let target = tempfile::tempdir().unwrap();
         std::fs::write(target.path().join("x.md"), "# x").unwrap();
 
-        let mut app = picker_app(&d);
+        let mut app = picker_app_cleared(&d);
         for c in target.path().to_str().unwrap().chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
@@ -168,15 +247,18 @@ mod picker {
         for sub in ["alpha", "album", "beta"] {
             std::fs::create_dir(d.path().join(sub)).unwrap();
         }
+        // Two letters, because the picker already holds the directory they
+        // are a prefix of.
         let mut app = picker_app(&d);
-        for c in format!("{}/al", d.path().display()).chars() {
+        for c in "al".chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
         assert_eq!(
             app.home().unwrap().picker.roots,
             vec![d.path().join("album"), d.path().join("alpha")],
         );
-        // Backspacing widens the list again — the completion is live.
+        // Backspacing widens the list again — the completion is live, and it
+        // bottoms out at the prefill rather than at nothing.
         update(&mut app, Action::HomeKey(SearchKey::Backspace));
         update(&mut app, Action::HomeKey(SearchKey::Backspace));
         assert_eq!(
@@ -214,7 +296,7 @@ mod picker {
             std::fs::create_dir(d.path().join(sub)).unwrap();
         }
         let mut app = picker_app(&d);
-        for c in format!("{}/al", d.path().display()).chars() {
+        for c in "al".chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
         update(&mut app, Action::HomeMove(1)); // down to the second match
@@ -227,7 +309,7 @@ mod picker {
     #[test]
     fn a_typed_path_that_is_not_a_directory_is_refused_out_loud() {
         let d = tempfile::tempdir().unwrap();
-        let mut app = picker_app(&d);
+        let mut app = picker_app_cleared(&d);
         let before = app.home().unwrap().root.clone();
         // Nothing matches, so Enter falls through to the typed text — which
         // has to be complained about rather than silently doing nothing.
@@ -270,7 +352,7 @@ mod picker {
     #[test]
     fn picker_keys_never_leak_into_the_filter_behind_the_overlay() {
         let d = tempfile::tempdir().unwrap();
-        let mut app = picker_app(&d);
+        let mut app = picker_app_cleared(&d);
         update(&mut app, Action::HomeKey(SearchKey::Char('z')));
         let h = app.home().unwrap();
         assert!(

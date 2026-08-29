@@ -196,6 +196,10 @@ pub struct Picker {
     pub roots: Vec<PathBuf>,
     pub selected: usize,
     /// The path being typed. Empty means "offer the defaults".
+    ///
+    /// Opens **prefilled with the directory you are already in** — see
+    /// [`picker_prefill`]. Esc clears it back to empty, which is how an
+    /// unrelated absolute path still gets typed.
     pub typed: String,
     /// First visible row of `roots`; see [`window_first`].
     pub top: usize,
@@ -715,6 +719,31 @@ pub fn directory_matches(query: &str, cwd: &Path) -> Vec<PathBuf> {
     }
     let (dir, prefix) = split_query(q, cwd);
     list_dirs(&dir, &prefix)
+}
+
+/// What the picker's input opens with: where you are, with the trailing slash
+/// that makes it a **prefix** rather than a destination.
+///
+/// Without it the input opened empty, so `/live` meant the filesystem root and
+/// every path had to be typed from `/` even to reach a sibling of the
+/// directory already on screen (maintainer report, 2026-08-29). With it both
+/// `/live` and `live` continue from here: `Path` folds the doubled separator,
+/// so `…/Work//live` and `…/Work/live` name the same file. The trailing slash
+/// also means the picker opens **listing where you can go from here**, which
+/// an input holding a bare directory name would not.
+///
+/// A root that is no longer a directory prefills nothing, so the default menu
+/// still has something to offer.
+#[must_use]
+pub fn picker_prefill(root: &Path) -> String {
+    if !root.is_dir() {
+        return String::new();
+    }
+    let mut s = root.to_string_lossy().into_owned();
+    if !s.ends_with('/') {
+        s.push('/');
+    }
+    s
 }
 
 /// With nothing typed: where you are, then the top level of your home.
@@ -1614,6 +1643,49 @@ mod tests {
             directory_matches("~", Path::new("/tmp")),
             list_dirs(&home, "")
         );
+    }
+
+    #[test]
+    fn the_prefill_is_the_current_directory_with_a_trailing_slash() {
+        let d = tempfile::tempdir().unwrap();
+        let p = picker_prefill(d.path());
+        assert_eq!(p, format!("{}/", d.path().display()));
+        assert!(
+            picker_prefill(Path::new(&p)).ends_with('/') && !p.ends_with("//"),
+            "an already-slashed root does not grow a second one: {p}"
+        );
+    }
+
+    /// The whole reason the prefill can end in a slash: the doubled separator
+    /// a typed `/live` produces has to name the same directory `live` does.
+    #[test]
+    fn a_typed_slash_after_the_prefill_resolves_under_it_not_at_the_root() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("live")).unwrap();
+        let prefill = picker_prefill(d.path());
+        for typed in ["/live", "live"] {
+            assert_eq!(
+                directory_matches(&format!("{prefill}{typed}"), Path::new("/")),
+                vec![d.path().join("live")],
+                "{typed:?} after the prefill must stay under it",
+            );
+        }
+        // And the prefill alone lists what is under it.
+        assert_eq!(
+            directory_matches(&prefill, Path::new("/")),
+            vec![d.path().join("live")],
+        );
+    }
+
+    /// A root that has been deleted out from under the reader prefills
+    /// nothing, so the default menu still has something to offer.
+    #[test]
+    fn a_root_that_is_not_a_directory_prefills_nothing() {
+        assert!(picker_prefill(Path::new("/no/such/place/at/all")).is_empty());
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.md");
+        std::fs::write(&f, "# a").unwrap();
+        assert!(picker_prefill(&f).is_empty(), "a file is not a directory");
     }
 
     #[test]
