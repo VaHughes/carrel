@@ -290,8 +290,8 @@ impl Home {
 
     /// One entry from the live walk. Test convenience — the event loop drains
     /// into [`Self::push_many`], which reconciles a whole batch in one pass.
-    pub fn push(&mut self, e: Entry) {
-        self.push_many(vec![e]);
+    pub fn push(&mut self, e: Entry) -> bool {
+        self.push_many(vec![e])
     }
 
     /// Reconcile a batch of walk results in one pass.
@@ -307,7 +307,16 @@ impl Home {
     /// One retain + one sort + one refilter per batch, **not per entry** — the
     /// per-entry version was O(N²) across a scan and froze the home screen for
     /// the documented 68,775-file case the async design exists to serve.
-    pub fn push_many(&mut self, batch: Vec<Entry>) {
+    ///
+    /// And **an entry already held with the same mtime is not fresh at all**.
+    /// A rescan ([`Self::begin_rescan`]) re-reports every file in the tree; if
+    /// each one cost a sort and a fuzzy refilter over the whole list, a home
+    /// screen sitting idle over a large tree would burn a core. Re-reports
+    /// that changed nothing cost one pass and stop there.
+    ///
+    /// Returns whether the list actually moved — the event loop writes the
+    /// index cache back only when it did.
+    pub fn push_many(&mut self, batch: Vec<Entry>) -> bool {
         let mut fresh: Vec<Entry> = Vec::with_capacity(batch.len());
         for e in batch {
             if self.seen.insert(e.path.clone()) {
@@ -315,7 +324,23 @@ impl Home {
             }
         }
         if fresh.is_empty() {
-            return;
+            return false;
+        }
+        // Paths already listed with exactly this mtime. Keyed off `entries`,
+        // so the borrow of `fresh` ends with the inner map and `retain` below
+        // is free to take it mutably.
+        let unchanged: HashSet<&Path> = {
+            let reported: HashMap<&Path, std::time::SystemTime> =
+                fresh.iter().map(|e| (e.path.as_path(), e.mtime)).collect();
+            self.entries
+                .iter()
+                .filter(|e| reported.get(e.path.as_path()) == Some(&e.mtime))
+                .map(|e| e.path.as_path())
+                .collect()
+        };
+        fresh.retain(|e| !unchanged.contains(e.path.as_path()));
+        if fresh.is_empty() {
+            return false;
         }
         // Captured BEFORE `entries` moves, because the anchor is read through
         // `filtered`, whose indices the sort below invalidates.
@@ -326,6 +351,7 @@ impl Home {
         self.entries.sort_by_key(|e| std::cmp::Reverse(e.mtime));
         self.refilter();
         self.restore_selection(anchor.as_deref());
+        true
     }
 
     /// The file the selection is on, to be put back after the list moves.
@@ -364,15 +390,37 @@ impl Home {
     }
 
     /// The walk finished. Anything it did not rediscover is gone from disk.
-    pub fn finish_scan(&mut self, unreadable: usize) {
+    ///
+    /// Returns whether the list moved, like [`Self::push_many`].
+    pub fn finish_scan(&mut self, unreadable: usize) -> bool {
         let anchor = self.selection_anchor();
         let seen = std::mem::take(&mut self.seen);
+        let before = self.entries.len();
         self.entries.retain(|e| seen.contains(&e.path));
         self.seen = seen;
         self.scanning = false;
         self.unreadable = unreadable;
+        // Nothing dropped and nothing added means `filtered` already describes
+        // `entries` exactly. Same reason as `push_many`: a rescan that found
+        // no change must cost no fuzzy pass over the whole list.
+        if self.entries.len() == before {
+            return false;
+        }
         self.refilter();
         self.restore_selection(anchor.as_deref());
+        true
+    }
+
+    /// Walk the same root again, quietly, to pick up files created since.
+    ///
+    /// `seen` must be cleared: it is what [`Self::finish_scan`] retains
+    /// against, so carrying the previous walk's set forward would make a
+    /// deleted file immortal and would mask every changed mtime as a
+    /// duplicate. Nothing else is touched — the list on screen stays exactly
+    /// as it is until the walk has something to say about it, and `scanning`
+    /// stays false so the status bar does not blink `⟳ scanning…` on a timer.
+    pub fn begin_rescan(&mut self) {
+        self.seen.clear();
     }
 
     /// Rebuild `filtered` and clamp `selected` so it can never dangle.
@@ -1153,6 +1201,139 @@ mod tests {
         h.finish_scan(0);
         let names: Vec<_> = h.entries.iter().map(|x| x.path.to_str().unwrap()).collect();
         assert_eq!(names, ["/root/real.md"], "the stale cache entry must go");
+        assert!(!h.scanning);
+    }
+
+    /// The whole point of the rescan: a file written while the home screen is
+    /// up must arrive on it without a restart. The maintainer's report,
+    /// 2026-08-29 — the walk ran once at startup and never again.
+    #[test]
+    fn a_rescan_surfaces_a_file_created_after_the_first_walk() {
+        let mut h = home();
+        h.push_many(vec![
+            e("alpha.md", 10),
+            e("beta.md", 30),
+            e("docs/gamma.md", 20),
+        ]);
+        h.finish_scan(0);
+
+        h.begin_rescan();
+        h.push_many(vec![
+            e("alpha.md", 10),
+            e("beta.md", 30),
+            e("docs/gamma.md", 20),
+            e("brand-new.md", 99),
+        ]);
+        h.finish_scan(0);
+
+        assert_eq!(h.entries.len(), 4);
+        assert_eq!(
+            h.entries[0].path,
+            PathBuf::from("/root/brand-new.md"),
+            "newest first, so a file just written is at the top",
+        );
+        assert_eq!(
+            h.filtered.len(),
+            4,
+            "and it is in the list actually painted, not only in `entries`",
+        );
+    }
+
+    /// `begin_rescan` clears `seen` for this: carrying the previous walk's set
+    /// forward would make a deleted file immortal.
+    #[test]
+    fn a_rescan_drops_a_file_deleted_since_the_first_walk() {
+        let mut h = home();
+        h.push_many(vec![
+            e("alpha.md", 10),
+            e("beta.md", 30),
+            e("docs/gamma.md", 20),
+        ]);
+        h.finish_scan(0);
+
+        h.begin_rescan();
+        h.push_many(vec![e("alpha.md", 10), e("docs/gamma.md", 20)]);
+        h.finish_scan(0);
+
+        let names: Vec<_> = h.entries.iter().map(|x| x.path.to_str().unwrap()).collect();
+        assert_eq!(names, ["/root/docs/gamma.md", "/root/alpha.md"]);
+        assert_eq!(h.filtered.len(), 2);
+    }
+
+    /// An edit reorders the list, because the list is newest-first.
+    #[test]
+    fn a_rescan_moves_a_file_whose_mtime_changed() {
+        let mut h = home();
+        h.push_many(vec![
+            e("alpha.md", 10),
+            e("beta.md", 30),
+            e("docs/gamma.md", 20),
+        ]);
+        h.finish_scan(0);
+        assert_eq!(h.entries[0].path, PathBuf::from("/root/beta.md"));
+
+        h.begin_rescan();
+        h.push_many(vec![
+            e("alpha.md", 50),
+            e("beta.md", 30),
+            e("docs/gamma.md", 20),
+        ]);
+        h.finish_scan(0);
+
+        assert_eq!(
+            h.entries[0].path,
+            PathBuf::from("/root/alpha.md"),
+            "the file just touched leads the list",
+        );
+        assert_eq!(h.entries.len(), 3, "and it did not arrive twice");
+    }
+
+    /// The rescan runs on a timer forever, so a walk that finds nothing must
+    /// cost nothing visible: no reorder, no reported change, and therefore no
+    /// rewrite of a 110k-line index cache every few seconds.
+    #[test]
+    fn a_rescan_that_finds_nothing_new_reports_no_change() {
+        let mut h = Home::new(PathBuf::from("/root"), Vec::new());
+        let walk = || vec![e("alpha.md", 10), e("beta.md", 30), e("docs/gamma.md", 20)];
+        let first = h.push_many(walk()) | h.finish_scan(0);
+        assert!(first, "the first walk did move the list");
+
+        h.selected = 2;
+        h.begin_rescan();
+        let again = h.push_many(walk()) | h.finish_scan(0);
+
+        assert!(!again, "an unchanged tree is not a change");
+        assert_eq!(h.selected, 2, "and the selection did not move under it");
+        assert_eq!(h.entries.len(), 3);
+
+        // Same reasoning one step earlier: a cache that already matches disk
+        // is rediscovered, not rewritten.
+        let mut warm = home();
+        assert!(
+            !(warm.push_many(walk()) | warm.finish_scan(0)),
+            "the cache was already right"
+        );
+    }
+
+    /// `scanning` drives `⟳ scanning…` in the status bar and `Looking…` in an
+    /// empty list. A walk on a timer must not blink either of them.
+    #[test]
+    fn a_rescan_never_raises_the_scanning_indicator() {
+        let mut h = home();
+        h.push_many(vec![
+            e("alpha.md", 10),
+            e("beta.md", 30),
+            e("docs/gamma.md", 20),
+        ]);
+        h.finish_scan(0);
+        assert!(!h.scanning);
+
+        h.begin_rescan();
+        assert!(
+            !h.scanning,
+            "a rescan is quiet; only the user's own walk shows"
+        );
+        h.push(e("new.md", 40));
         assert!(!h.scanning);
     }
 

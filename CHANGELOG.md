@@ -2,6 +2,16 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **A file you just wrote appears in the list without a restart.** The home screen walked
+  the tree once, at startup, so a document created while it was up stayed invisible until
+  you quit and reopened. It now takes another quiet look every couple of seconds: a new
+  file arrives at the top of the list, a deleted one leaves it, and a file you have just
+  edited moves up to where its new modified time puts it. Nothing blinks while it happens —
+  no `⟳ scanning…`, no jumped selection — and a walk that finds nothing changed costs
+  nothing, so the list stays current without the index cache being rewritten on a timer.
+
 ## 2026.8.27
 
 - **The logo and the demo render on the crate page.** They had been broken on

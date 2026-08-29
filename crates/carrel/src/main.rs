@@ -694,6 +694,89 @@ enum Reload {
     Vanished,
 }
 
+/// How long after a walk finishes before the home screen quietly walks the
+/// tree again, so a file created while it is up appears without a restart.
+///
+/// Measured from the END of the previous walk, not the start: a slow root — a
+/// cold cache, a network mount — then backs itself off instead of queueing
+/// walks nose to tail. Two seconds reads as "immediately" to a person, and the
+/// walk itself is 6 ms warm over 110k files (see `scan.rs`).
+const RESCAN_EVERY: Duration = Duration::from_secs(2);
+
+/// The home screen's background walk, and what the event loop remembers about
+/// it. Loop bookkeeping, so it lives here rather than in `Home` — same reason
+/// the theme and the click streak do.
+struct Scan {
+    rx: Option<std::sync::mpsc::Receiver<scan::Msg>>,
+    /// A walk nobody asked for: it reports nothing to the screen and does not
+    /// hurry the loop along.
+    quiet: bool,
+    /// The list moved during this walk, so the index cache is worth rewriting.
+    changed: bool,
+    /// When the next quiet rescan falls due.
+    next: Instant,
+}
+
+impl Scan {
+    fn start(root: &Path) -> Self {
+        Self {
+            rx: Some(scan::spawn(root)),
+            quiet: false,
+            changed: false,
+            next: Instant::now() + RESCAN_EVERY,
+        }
+    }
+
+    /// A new root: throw the old walk away and start the new one openly.
+    fn restart(&mut self, root: &Path) {
+        *self = Self::start(root);
+    }
+
+    /// Walk the same root again, quietly.
+    fn rescan(&mut self, root: &Path) {
+        self.rx = Some(scan::spawn(root));
+        self.quiet = true;
+        self.changed = false;
+    }
+
+    /// Idle, and due for another look at the tree.
+    fn due(&self) -> bool {
+        self.rx.is_none() && Instant::now() >= self.next
+    }
+
+    /// Worth waking often for. A quiet rescan is not: the list is already
+    /// painted, so there is nothing to stream into view and no reason to
+    /// repaint at 60 Hz every couple of seconds.
+    fn busy(&self) -> bool {
+        self.rx.is_some() && !self.quiet
+    }
+
+    /// The walk ended. Time the next rescan from HERE, not from its start, so
+    /// a slow root — a cold cache, a network mount — backs itself off instead
+    /// of queueing walks nose to tail.
+    fn ended(&mut self) {
+        self.rx = None;
+        self.quiet = false;
+        self.next = Instant::now() + RESCAN_EVERY;
+    }
+}
+
+/// Files created while the home screen is up should appear on it.
+///
+/// There is no notify dependency: the reader watches its own file by polling
+/// mtime for the reasons in the wave-D spec, and this is that same decision
+/// applied to the list. Never while a content search is running — the grep is
+/// already walking this tree — and never from the reader, where the list is
+/// not on screen and the walk would be work for nobody.
+fn maybe_rescan(app: &mut App, scan: &mut Scan, root: &Path, grep: &Grep) {
+    if !scan.due() || !app.is_home() || grep.busy() {
+        return;
+    }
+    let Some(h) = app.home_mut() else { return };
+    h.begin_rescan();
+    scan.rescan(root);
+}
+
 /// Live reload by polling mtime+len once a second — chosen over inotify
 /// deliberately: one syscall a second costs nothing, needs no platform
 /// backend dependency, and works on network mounts where inotify is
@@ -1200,7 +1283,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     let mut clicks = Clicks::default();
     let mut reloader = Reloader::new();
     let mut diagrams = Diagrams::new();
-    let mut scan_rx = Some(scan::spawn(&root));
+    let mut scan = Scan::start(&root);
     let mut scan_root = root;
 
     // Content search (wave E): see `Grep`.
@@ -1221,12 +1304,14 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         fill_titles(&mut app);
         paint(&mut terminal, &app, &mut links, &mut images.protocols)?;
 
-        drain_scan(&mut app, &mut scan_rx);
+        drain_scan(&mut app, &mut scan);
 
         grep.tick(&mut app);
 
+        maybe_rescan(&mut app, &mut scan, &scan_root, &grep);
+
         // While a scan or search is live, wake often enough to stream.
-        let busy = scan_rx.is_some() || grep.busy();
+        let busy = scan.busy() || grep.busy();
         let idle = if busy { 16 } else { 100 };
         let timeout = deadline.map_or(Duration::from_millis(idle), |d| {
             d.saturating_duration_since(Instant::now())
@@ -1289,7 +1374,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
             && h.root != scan_root
         {
             scan_root.clone_from(&h.root);
-            scan_rx = Some(scan::spawn(&scan_root));
+            scan.restart(&scan_root);
         }
     }
     Ok(())
@@ -1404,20 +1489,27 @@ fn cycle_theme_now(app: &mut App) {
 /// Drain the background walk into ONE batch per frame. Per-entry
 /// reconciliation was O(N²) across a scan and froze the home screen on
 /// large trees.
-fn drain_scan(app: &mut App, scan_rx: &mut Option<std::sync::mpsc::Receiver<scan::Msg>>) {
-    let Some(rx) = scan_rx.as_ref() else { return };
+///
+/// A quiet rescan ([`Scan::quiet`]) reports nothing to the screen: interrupted,
+/// it leaves the list it could not improve on standing, with no note. And the
+/// index cache is rewritten only when the list actually moved — a rescan that
+/// finds nothing must not rewrite a 110k-line file every couple of seconds.
+fn drain_scan(app: &mut App, scan: &mut Scan) {
+    let Some(rx) = scan.rx.as_ref() else { return };
     let mut batch: Vec<scan::Entry> = Vec::new();
     loop {
         match rx.try_recv() {
             Ok(scan::Msg::Found(e)) => batch.push(e),
             Ok(scan::Msg::Done { unreadable }) => {
                 if let Some(h) = app.home_mut() {
-                    h.push_many(std::mem::take(&mut batch));
-                    h.finish_scan(unreadable);
-                    scan::save_cache(&h.root, &h.entries);
+                    scan.changed |= h.push_many(std::mem::take(&mut batch));
+                    scan.changed |= h.finish_scan(unreadable);
+                    if scan.changed {
+                        scan::save_cache(&h.root, &h.entries);
+                    }
                 }
-                *scan_rx = None;
-                break;
+                scan.ended();
+                return;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => break,
             // The walker died mid-scan. Keep everything — the cached entries
@@ -1425,18 +1517,20 @@ fn drain_scan(app: &mut App, scan_rx: &mut Option<std::sync::mpsc::Receiver<scan
             // pruning down to whatever it reported.
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 if let Some(h) = app.home_mut() {
-                    h.push_many(std::mem::take(&mut batch));
-                    h.abort_scan();
+                    scan.changed |= h.push_many(std::mem::take(&mut batch));
+                    if !scan.quiet {
+                        h.abort_scan();
+                    }
                 }
-                *scan_rx = None;
-                break;
+                scan.ended();
+                return;
             }
         }
     }
     if let Some(h) = app.home_mut()
         && !batch.is_empty()
     {
-        h.push_many(batch);
+        scan.changed |= h.push_many(batch);
     }
 }
 

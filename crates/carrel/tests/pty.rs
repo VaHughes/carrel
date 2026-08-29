@@ -233,6 +233,56 @@ fn the_home_screen_survives_a_pty_round_trip_too() {
     );
 }
 
+/// The home screen's list must pick up a file written while it is up.
+///
+/// The unit tests cover the reconciliation ([`carrel::home::Home::begin_rescan`]
+/// and friends); nothing but a real run covers the *timer* that fires it, which
+/// is the half that was missing — the walk ran once at startup and never again,
+/// so a new document needed a restart to appear (maintainer report, 2026-08-29).
+#[test]
+fn a_file_created_while_the_home_screen_is_up_appears_on_it() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("already-here.md"), "# Already\n").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    let cfg = d.path().join("cfg");
+    let state = d.path().join("state");
+    // The same subshell that eventually types Ctrl-C writes the file first, a
+    // beat after the startup walk has finished — so the only thing that can
+    // put it on screen is a later walk.
+    let cmd = format!(
+        "( sleep 2; : > written-later.md; sleep 3; printf '\\003' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' \
+         script -qec 'stty rows 20 cols 76; {bin}' '{}' >/dev/null 2>&1",
+        cfg.display(),
+        state.display(),
+        out.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+
+    assert!(
+        raw.contains("already-here"),
+        "the startup walk found the file that was there"
+    );
+    assert!(
+        raw.contains("written-later"),
+        "a file created while the list was up must arrive without a restart"
+    );
+    assert!(raw.contains("\x1b[?1049l"), "and it exits cleanly");
+}
+
 // --- CLI surface (2026-08-15) ---
 
 #[test]

@@ -60,7 +60,7 @@ fn the_live_walk_reconciles_with_the_cache() {
         match msg {
             scan::Msg::Found(e) => app.home_mut().unwrap().push(e),
             scan::Msg::Done { unreadable } => app.home_mut().unwrap().finish_scan(unreadable),
-        }
+        };
     }
 
     let h = app.home().unwrap();
