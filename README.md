@@ -276,6 +276,9 @@ The rules that keep the second frontend possible are enforced mechanically:
       links, when it last changed
 - [x] Places — favourite roots remembered by the picker, newest first, capped at eight;
       choosing a directory records it
+- [x] A home list that keeps up — the tree is walked again while the list is on screen, so
+      a file written elsewhere appears without a restart; and `d` opens the picker on the
+      directory you are already in, so a typed path continues from there
 - [ ] Hyphenation at narrow measures — pattern-based breaks below roughly 70 columns
 - [x] Auto-read mode (`A`) — the view drifts down a row every 300 ms; any deliberate
       motion takes the wheel back, and the end of the document stops it gently
