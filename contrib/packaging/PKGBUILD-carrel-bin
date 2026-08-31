@@ -1,8 +1,10 @@
 # AUR package: carrel-bin (repacks the static musl release artifact).
-# BUILD-TESTED 2026-08-20 against the real v2026.8.20 artifact: `makepkg -f`
-# produces a package carrying all eight installed files and a binary that
-# reports `carrel 2026.8.20`. (The docs long said recipes could not be
-# build-tested here; that was the old Mint machine — this one is Arch.)
+# BUILD-TESTED 2026-08-31 against the real v2026.8.31 artifact: `makepkg -f`
+# passes the integrity check and produces a package carrying all eight
+# installed files and a binary that reports `carrel 2026.8.31`. (The docs
+# long said recipes could not be build-tested here; that was the old Mint
+# machine — this one is Arch.) Re-run this on the stamp commit each release:
+# it is what catches a bad sha256 before the AUR would.
 # Publishing still waits on AUR account registration reopening.
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel-bin
