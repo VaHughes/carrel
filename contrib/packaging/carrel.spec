@@ -1,7 +1,7 @@
 # Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.8.27
+Version:        2026.8.31
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -46,6 +46,12 @@ cargo test --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Mon Aug 31 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.31-1
+- The home screen notices files written while it is up: a new document
+  appears, a deleted one leaves, an edited one moves up the list
+- The directory picker opens holding the directory you are already in,
+  instead of an empty input meaning the filesystem root
+
 * Thu Aug 27 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.27-1
 - The logo, the demo and three links render on the crates.io page again;
   they had resolved against the crate's subdirectory, not the repo root
