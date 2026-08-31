@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.8.31
 
 - **The directory picker opens where you already are.** `d` used to open on an empty input,
   so `/live` meant the filesystem root and reaching a sibling of the directory on screen
