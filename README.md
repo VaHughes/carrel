@@ -31,9 +31,10 @@ Everything below installs the terminal reader.
 
 ### It never fetches anything
 
-Carrel reads only the directory you point it at. The default is the directory you are standing in;
-anything wider is a root you choose yourself — `d` opens on that directory and its subdirectories,
-and any other path is typed. It
+Carrel reads only the directory you point it at: the one named on the command line, else the
+`root` you last chose, else the directory you are standing in. Anything wider is a root you
+choose yourself — `d` opens on the directory you ran `carrel` in, offering it and its
+subdirectories, and any other path is typed. It
 sends nothing anywhere — remote images in documents are never fetched; they render as their alt
 text. The index it caches lives under `$XDG_CACHE_HOME/carrel` and holds file paths and
 modification times, nothing else.

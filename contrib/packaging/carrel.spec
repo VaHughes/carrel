@@ -1,4 +1,5 @@
-# Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
+# Fedora COPR spec. Build with `copr-cli buildscm` — NOT `copr-cli build`, which wants an
+# .src.rpm and so needs rpmbuild locally. The exact command is in ../packaging/README.md.
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
 Version:        2026.9.1

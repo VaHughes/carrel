@@ -10,8 +10,11 @@ stay that way.
 > from `(document, width)` — recomputed on resize, never stored.
 
 Every design decision follows from that sentence. The mechanical consequences are what
-`./scripts/check-discipline.sh` enforces: no UI dependency in the core, no ANSI or RGBA leaving
-it, no width-dependent quantity in its public API, positions as byte offsets everywhere.
+`./scripts/check-discipline.sh` enforces: no UI dependency in the core, no ANSI escapes leaving
+it, no width-dependent quantity in its public API, positions as byte offsets everywhere, and a
+state layer free of ratatui. Colour is a convention rather than a check — the core emits
+semantic scopes and the frontend resolves them — so nothing mechanical stops an RGBA value
+being added to the core's API. Don't.
 
 Contributions are welcome **inside** the invariant. A change that stores a display coordinate,
 adds a UI dependency to the core, or makes search state width-dependent will be declined however
@@ -35,6 +38,11 @@ cargo fmt --all --check
 CI adds two steps these five do not name: `cargo check --workspace --all-targets`, which
 keeps the benches compiling, and the same check on the declared MSRV, which is the only
 thing that has ever verified it. Run the first before touching `carrel-core`.
+
+`release.yml` runs those same five against the *tagged* commit, and it is **hand-edited** —
+do not regenerate it with `dist init`, which would unpin its actions and delete that gate.
+See [contrib/packaging/README.md](contrib/packaging/README.md) if you are changing it or
+bumping `cargo-dist-version`.
 
 ## Test it as the command, not just as a test
 
