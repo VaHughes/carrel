@@ -101,7 +101,8 @@ Print usage and exit.
 Scroll by a line.
 .TP
 .BR Ctrl\-E ", " Ctrl\-Y
-Scroll by a line without moving the reading position.
+Scroll by a line, the same as
+.BR j ", " k .
 .TP
 .BR Space ", " b ", " PgDn ", " PgUp ", " Ctrl\-F ", " Ctrl\-B
 Page forward and back.
@@ -109,7 +110,7 @@ Page forward and back.
 .BR Ctrl\-D ", " Ctrl\-U
 Half a page forward and back.
 .TP
-.BR gg ", " G
+.BR gg ", " G ", " Home ", " End
 Jump to the start or the end.
 .TP
 .B 42G
@@ -121,8 +122,9 @@ Move to the previous or next block.
 .B zz zt zb
 Put the current match in the middle, at the top, or at the bottom.
 .TP
-.B /
-Search. Matches survive reflow and resize by construction.
+.BR / ", " ?
+Search forward and backward. Matches survive reflow and resize by
+construction.
 .TP
 .BR n ", " N
 Next and previous match.
@@ -171,8 +173,10 @@ between sessions and survive a resize; they do not survive an edit to the file.
 .B '
 Go to the next bookmark, wrapping at the end.
 .TP
-.B "
+.B \(dq
 List every bookmark with its line; enter jumps to one.
+.RB ( q " or " Esc
+closes this pane, and the two link panes below.)
 .TP
 .BR Tab ", " Shift\-Tab
 Select the next or previous link.
@@ -262,6 +266,44 @@ or to bring it back \(em the same as
 .BR H .
 .SS Home screen
 .TP
+.BR j ", " k ", " \(ua ", " \(da
+Move down and up the list.
+.BR Ctrl\-N / Ctrl\-P
+and
+.BR Ctrl\-J / Ctrl\-K
+do the same while you are typing in the filter, the search or the picker,
+where the plain letters are part of what you are typing.
+.TP
+.BR gg ", " G ", " Home ", " End
+The first or the last document.
+.TP
+.B Enter
+Open the selected document.
+.TP
+.BR 1 ", " 2 ", " 3
+Continue reading \(em reopen one of the three most recent documents at the
+line you left it on.
+.TP
+.B T
+Cycle themes.
+.TP
+.B H
+Hide or show the key hints.
+.TP
+.BR h ", " F1
+This help.
+.B F1
+works from any mode;
+.B h
+is a letter, so it only works when you are not typing.
+.TP
+.BR q ", " Ctrl\-C
+Quit.
+.TP
+.B Esc
+Clear the filter, then leave it. In the picker it clears the typed path first
+and closes the picker only when there is nothing left to clear.
+.TP
 .B i
 Filter by name; type to narrow, escape to leave. The match is fuzzy \(em an
 in\-order subsequence, ranked best\-first \(em as it is in the outline picker.
@@ -314,22 +356,33 @@ expect to be understood; interactively it is an error.
 .TP
 .B NO_COLOR
 Honoured: colours off, weight and emphasis kept.
+.TP
+.BR XDG_CONFIG_HOME ", " XDG_STATE_HOME ", " XDG_CACHE_HOME ", " HOME
+Where the config, the reading positions and the index cache live; see
+.BR FILES .
+Each falls back to the usual place under
+.B HOME
+when it is unset or empty.
 .SH FILES
 .TP
-.I $XDG_CONFIG_HOME/carrel
+.I $XDG_CONFIG_HOME/carrel/config
 One
 .I key = value
 per line. Carrel writes it itself when you change a setting in the app, and it
 is safe to edit by hand: unknown keys and
 .B #
-comments are ignored, so a config written for another version still opens.
-The eight keys are
+comments are ignored, so a config written for another version still opens. Of
+a key repeated by hand the FIRST line wins, except
+.BR place ,
+where every line counts. The eight keys are
 .RS
 .TP
 .B max_width
 The reading measure in columns \(em prose wraps here and centres on the page.
-Default 90; 0 turns it off and lets prose fill the terminal. Tables, code,
-images and diagrams ignore it and use the full width.
+Default 90; 0 turns it off and lets prose fill the terminal. Any other value
+below 20 is raised to 20, a measure narrower than that being unreadable rather
+than merely narrow. Tables, code, images and diagrams ignore it and use the
+full width.
 .TP
 .B theme
 The palette, by name:

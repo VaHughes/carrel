@@ -589,7 +589,14 @@ fn the_man_page_documents_every_key_the_help_overlay_does() {
         // The `", "` runs separate keys inside one .BR line; a lone quote is
         // now also a key (`"` lists bookmarks), so only the separator form
         // may be eaten.
+        //
+        // `"` has to be written `\(dq` in the man page: troff reads a bare
+        // one as the start of a quoted argument and renders the tag column
+        // EMPTY, which is what it did until 2026-09-01. Undo the escape
+        // before the generic backslash strip, or the key vanishes here too
+        // and this test demands the broken spelling back.
         let cleaned = rest
+            .replace("\\(dq", "\"")
             .replace("\\-", "-")
             .replace('\\', "")
             .replace("\", \"", " ");
@@ -616,6 +623,15 @@ fn the_man_page_documents_every_key_the_help_overlay_does() {
     assert!(
         missing.is_empty(),
         "contrib/carrel.1 documents no entry for: {missing:?}"
+    );
+
+    // …and it must be spelled so that it RENDERS. A tag line of exactly `.B "`
+    // is read by troff as an empty quoted argument: the description paints
+    // with no key beside it, which is how the bookmark-list key was invisible
+    // in the man page while passing the loop above.
+    assert!(
+        !man.lines().any(|l| l.trim_end() == r#".B ""#),
+        r#"contrib/carrel.1 has a bare `.B "` — troff renders that tag empty; write `.B \(dq`"#
     );
 }
 

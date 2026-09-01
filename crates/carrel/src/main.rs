@@ -45,13 +45,17 @@ USAGE:
     carrel --tasks <FILE>        the task list as checkbox lines, then exit
     carrel --render <FILE> [W]   styled ANSI text (attributes and links,
                                  never colours) for embedding elsewhere
-    carrel --help
-    carrel --version
+    carrel --render - [W]        piped input as styled ANSI text
+    carrel --help                (-h)
+    carrel --version             (-V)
 
     NO_COLOR is honoured: colours off, weight and emphasis kept.
-    `--` ends the options, for a file whose name starts with a dash.
-    Exit 1 on an unreadable file, an unknown option, or a search with
-    no matches — so `if carrel FILE PATTERN; then` behaves like grep.
+    Options come first; --diff and --no-diff are the exception and may
+    appear anywhere. `--` ends the options, for a file whose name starts
+    with a dash.
+    Exit 1 on an unreadable file, an unknown or misplaced option, a [W]
+    that is not a column count, or a search with no matches — so
+    `if carrel FILE PATTERN; then` behaves like grep.
 
 KEYS (home screen):
     j k ↓ ↑                      move           enter open
@@ -64,7 +68,7 @@ KEYS (home screen):
 KEYS (while reading):
     j k ↓ ↑ Ctrl-E Ctrl-Y        line            gg G Home End   start / end
     Ctrl-D Ctrl-U                half page       { }             block
-    Space b Ctrl-F Ctrl-B        page            42G             go to row 42
+    Space b PgDn PgUp Ctrl-F Ctrl-B   page       42G             go to row 42
     / ?                          search          n N             next / previous
     zz zt zb                     put the current match middle / top / bottom
     o                            outline: jump to a section
@@ -78,7 +82,11 @@ KEYS (while reading):
     A                            auto-read: drift down until you scroll
     T                            cycle themes    q               close file
     h F1                         help            Q Ctrl-C        quit
+    Tab Shift-Tab                select the next / previous link
+    Enter                        follow the selected link
     Ctrl-O                       back
+    Esc                          close an overlay / drop the selection
+    H B                          hide the key hints / the breadcrumb
     ] [                          next / previous code block
     X                            jump to the next task
     y                            copy the code block

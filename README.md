@@ -32,7 +32,8 @@ Everything below installs the terminal reader.
 ### It never fetches anything
 
 Carrel reads only the directory you point it at. The default is the directory you are standing in;
-anything wider is a root you choose yourself — from the list `d` offers, or by typing a path. It
+anything wider is a root you choose yourself — `d` opens on that directory and its subdirectories,
+and any other path is typed. It
 sends nothing anywhere — remote images in documents are never fetched; they render as their alt
 text. The index it caches lives under `$XDG_CACHE_HOME/carrel` and holds file paths and
 modification times, nothing else.
@@ -177,7 +178,7 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 | `outline_margin` | `false` | The section tree pinned in the left margin, current section lit, on terminals wide enough to spare the columns. Click a heading to jump. Off by default because it moves the text column. |
 | `breadcrumb` | `true` | The section path pinned atop the page while you scroll — `The Book ▸ Chapter ▸ Detail` — with a rule under it. `B` toggles it. Documents with no headings never show one. |
 | `root` | — | The directory the home screen lists. `d` picks one in the app. |
-| `place` | — | A remembered favourite root, offered by the directory picker. This key repeats, newest first, capped at eight; choosing a root with `d` records it. |
+| `place` | — | A remembered favourite root. `d` opens on the working directory; one `Esc` clears that input and the places are what it offers instead. This key repeats, newest first, capped at eight; choosing a root with `d` records it. |
 
 ```ini
 # ~/.config/carrel/config
@@ -334,10 +335,11 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Document info card (`I`; `g` belongs to the gg prefix) — words, minutes, structure,
       links, when it last changed
 - [x] Places — favourite roots remembered by the picker, newest first, capped at eight;
-      choosing a directory records it
+      choosing a directory records it, and `Esc` in the picker is what offers them
 - [x] A home list that keeps up — the tree is walked again while the list is on screen, so
       a file written elsewhere appears without a restart; and `d` opens the picker on the
-      directory you are already in, so a typed path continues from there
+      directory you ran `carrel` in, highlight and all, so enter alone reads where you are
+      and a typed path continues from there
 - [ ] Hyphenation at narrow measures — pattern-based breaks below roughly 70 columns
 - [x] Auto-read mode (`A`) — the view drifts down a row every 300 ms; any deliberate
       motion takes the wheel back, and the end of the document stops it gently

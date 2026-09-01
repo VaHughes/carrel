@@ -416,7 +416,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("§", "other"),
     ("d", "directory: type, from here"),
     ("T", "cycle themes"),
-    ("h F1", "this help (normal mode)"),
+    ("h F1", "this help (F1 while typing)"),
     ("H", "hide / show the key hints"),
     ("q Ctrl-C", "quit"),
 ];
