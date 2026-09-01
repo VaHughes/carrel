@@ -1374,13 +1374,19 @@ impl App {
             let Some(expr) = carrel_core::math::parse(src) else {
                 continue;
             };
-            self.math_art.insert(
-                b,
-                MathArt {
-                    display: math_art::lay_out(&expr, math_art::Mode::Display),
-                    inline: math_art::lay_out(&expr, math_art::Mode::Inline),
-                },
-            );
+            // Take the honest refusal rather than the encoded one: art over
+            // the size or depth budget is the same outcome as art that would
+            // not parse — absent from the map, rendered as literal source.
+            // `lay_out` stays total for callers that want a box regardless,
+            // but it has to encode "no fit" as a `u16::MAX`-wide blank, and
+            // this is the one caller that can just decline.
+            let (Some(display), Some(inline)) = (
+                math_art::try_lay_out(&expr, math_art::Mode::Display),
+                math_art::try_lay_out(&expr, math_art::Mode::Inline),
+            ) else {
+                continue;
+            };
+            self.math_art.insert(b, MathArt { display, inline });
         }
     }
 

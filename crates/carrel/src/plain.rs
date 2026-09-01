@@ -7,16 +7,84 @@
 //! and a bare pipe gets it by default.
 //!
 //! ASCII-safe by policy: quote bars are `> `, no box drawing, and never an
-//! escape byte. Tables stay aligned (never cards — card gutter labels are
-//! paint decoration, which plain output by definition omits). NO RATATUI —
-//! `scripts/check-discipline.sh` rule 6.
+//! escape byte — nor any other control character, which [`push_text`] strips
+//! from the document's own text on the way out. Tables stay aligned (never
+//! cards — card gutter labels are paint decoration, which plain output by
+//! definition omits). NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
-use carrel_core::{BlockIdx, Document, Row, RowKind};
+use carrel_core::{BlockIdx, Document, Node, Row, RowKind};
 
 use crate::layout::Layout;
+
+/// Append document text to an output line with control characters removed.
+///
+/// The contract above promises never an escape byte, but what this module
+/// copies out is the DOCUMENT's own text, and a raw ESC in a markdown file
+/// survives `Document::parse` into `Document::text` untouched. The screen is
+/// safe only incidentally — `ratatui::text::Span` drops control characters —
+/// and a pipe inherits nothing of the sort, so without this a file you merely
+/// READ could set the title of the terminal `--plain` was piped into, or
+/// repaint it. The filter lives at the single point where document text
+/// becomes an output line, rather than at each call site that might forget;
+/// [`crate::ansi`] copies the same text out and shares it.
+///
+/// Tabs need no exception here: `carrel_core`'s `expand_tabs` turns them into
+/// spaces before they can reach `Document::text`. Newlines are kept, because
+/// nothing later in the walk would put back a line ending that a row's own
+/// text carried.
+pub(crate) fn push_text(out: &mut String, text: &str) {
+    out.extend(text.chars().filter(|c| !c.is_control() || *c == '\n'));
+}
+
+/// Open one text row: push the block separator into `out`, and return the
+/// opening of the line itself — quote bars, indent, and the list prefix.
+///
+/// [`crate::ansi`] walks these same rows, and its header defends duplicating
+/// the walk on the grounds that the two differ in every line BODY. They do —
+/// but this part of it does not, and the copies had already drifted: that
+/// module grew no quote bars at all, while documenting its `NO_COLOR` output
+/// as reducing to this module's exactly. Only the identical part is shared;
+/// the two body loops stay separate, as that argument intends.
+///
+/// The separator goes into `out` while the opening comes back as a value
+/// because the caller trims each finished line's tail, and a blank separator
+/// must survive that trim — it belongs to the output, not to the line.
+pub(crate) fn open_row(
+    out: &mut String,
+    pending_blanks: &mut u32,
+    node: &Node,
+    row: &Row,
+    first_text: bool,
+) -> String {
+    // Blank separators only BETWEEN content, never trailing, and never piled.
+    if *pending_blanks > 0 {
+        out.push('\n');
+    }
+    *pending_blanks = 0;
+    let mut line = String::new();
+    // Quote bars, speech-friendly, at their recorded columns.
+    for &col in &node.quote_cols {
+        while line.len() < col as usize {
+            line.push(' ');
+        }
+        line.push_str("> ");
+    }
+    while line.len() < row.indent as usize {
+        line.push(' ');
+    }
+    // The prefix occupies the tail of the first row's inset, exactly as the
+    // painter places it. It is document text too — a footnote definition's
+    // label is `[^name]: ` with the name taken from the file — so it is
+    // filtered like any other.
+    if first_text && let Some(p) = &node.prefix {
+        let at = row.indent.saturating_sub(p.width) as usize;
+        line.truncate(at);
+        push_text(&mut line, &p.text);
+    }
+    line
+}
 
 /// Render the whole document at `width` as plain text lines.
 #[must_use]
@@ -37,33 +105,10 @@ pub fn render(doc: &Document, width: u16) -> String {
             match row.kind {
                 RowKind::Decoration => pending_blanks += 1,
                 RowKind::Text { .. } => {
-                    // Blank separators only BETWEEN content, never trailing.
-                    for _ in 0..pending_blanks.min(1) {
-                        out.push('\n');
-                    }
-                    pending_blanks = 0;
-                    let mut line = String::new();
-                    // Quote bars, speech-friendly, at their recorded columns.
-                    for &col in &node.quote_cols {
-                        while line.len() < col as usize {
-                            line.push(' ');
-                        }
-                        line.push_str("> ");
-                    }
-                    while line.len() < row.indent as usize {
-                        line.push(' ');
-                    }
-                    // The prefix occupies the tail of the first row's inset,
-                    // exactly as the painter places it.
-                    if first_text && let Some(p) = &node.prefix {
-                        let at = row.indent.saturating_sub(p.width) as usize;
-                        line.truncate(at);
-                        line.push_str(&p.text);
-                    }
-                    let _ = write!(
-                        line,
-                        "{}",
-                        &doc.text[row.doc.start as usize..row.doc.end as usize]
+                    let mut line = open_row(&mut out, &mut pending_blanks, node, row, first_text);
+                    push_text(
+                        &mut line,
+                        &doc.text[row.doc.start as usize..row.doc.end as usize],
                     );
                     out.push_str(line.trim_end());
                     out.push('\n');
@@ -94,6 +139,25 @@ pub fn task_report(doc: &carrel_core::Document) -> String {
     }
     out
 }
+
+/// A corpus that actually CONTAINS control bytes, shared with [`crate::ansi`]
+/// because both exporters copy the same document text out.
+///
+/// Every existing `!contains('\u{1b}')` assertion in this crate ran over a
+/// corpus with no escape byte anywhere in it, so it passed whatever the
+/// renderer did with one. A raw ESC survives `Document::parse` into
+/// `Document::text`; a footnote's label — which the document names — reaches
+/// the output through `node.prefix.text` rather than through a row, so both
+/// paths are exercised here.
+#[cfg(test)]
+pub(crate) const CONTROL_BYTES: &str = concat!(
+    "# t\n\n",
+    "\u{1b}[31mRED\u{1b}[0m \u{7}bell \u{1b}]0;PWNED\u{7}\n\n",
+    "- \u{0}nul item\n\n",
+    "> \u{1b}]8;;http://evil\u{1b}\\quoted\n\n",
+    "| a\u{1b}b | c |\n| --- | --- |\n| \u{7}d | e |\n\n",
+    "text[^e\u{1b}x]\n\n[^e\u{1b}x]: the definition\n",
+);
 
 #[cfg(test)]
 mod task_report_tests {
@@ -131,6 +195,27 @@ mod tests {
             "hanging indent survives: {:?}",
             &lines[item..=item + 1]
         );
+    }
+
+    #[test]
+    fn control_bytes_in_the_document_never_reach_the_output() {
+        let doc = Document::parse(crate::plain::CONTROL_BYTES);
+        assert!(
+            doc.text.contains('\u{1b}'),
+            "the corpus must actually carry an escape byte, or this proves nothing"
+        );
+        let s = render(&doc, 40);
+        for c in s.chars() {
+            assert!(
+                !c.is_control() || c == '\n',
+                "control byte {c:?} reached plain output: {s:?}"
+            );
+        }
+        // The surrounding text is kept — this filters bytes, it does not drop
+        // the line that carried them.
+        assert!(s.contains("RED"), "{s:?}");
+        assert!(s.contains("nul item"), "{s:?}");
+        assert!(s.contains("the definition"), "{s:?}");
     }
 
     #[test]

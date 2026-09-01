@@ -239,12 +239,113 @@ fn plain_output_adds_no_escape_bytes_and_no_box_drawing() {
     );
 }
 
+/// The corpus above contains no control byte, so the assertion in
+/// `plain_output_adds_no_escape_bytes_and_no_box_drawing` could never have
+/// failed. This one supplies a document that does — which is what a hostile
+/// markdown file supplies — and checks both linear exporters.
+///
+/// A raw ESC in the source survives `Document::parse` into `Document::text`,
+/// so an unfiltered copy lets a file you merely READ set the terminal title
+/// of whatever `--plain` was piped into.
+#[test]
+fn neither_exporter_passes_the_documents_control_bytes_through() {
+    let src = concat!(
+        "# t\n\n",
+        "\u{1b}[31mRED\u{1b}[0m \u{7}bell \u{1b}]0;PWNED\u{7}\n\n",
+        "- \u{0}nul item\n\n",
+        "> \u{1b}]8;;http://evil\u{1b}\\quoted\n\n",
+        "text[^e\u{1b}x]\n\n[^e\u{1b}x]: the definition\n",
+    );
+    let d = Document::parse(src);
+    assert!(d.text.contains('\u{1b}'), "the corpus must carry one");
+
+    let plain = carrel::plain::render(&d, 72);
+    for c in plain.chars() {
+        assert!(
+            !c.is_control() || c == '\n',
+            "control byte {c:?} in --plain output: {plain:?}"
+        );
+    }
+    assert!(plain.contains("RED"), "the text survives: {plain:?}");
+
+    // `--render` may emit ITS OWN escapes; what it may not do is pass the
+    // document's through. The OSC-title INTRODUCER is the tell, not the word
+    // `PWNED` — with the escape byte gone the payload is ordinary printable
+    // text, which is exactly the right outcome: nothing is silently deleted
+    // from the page, it simply stops being a command.
+    let rendered = carrel::ansi::render_with(&d, 72, true);
+    assert!(
+        !rendered.contains("\u{1b}]0;"),
+        "an OSC title reached --render output: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains('\u{7}') && !rendered.contains('\u{0}'),
+        "--render passed a BEL or a NUL through: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("PWNED"),
+        "the text survives: {rendered:?}"
+    );
+}
+
+/// `ansi`'s header promises that `NO_COLOR` reduces `--render` to `--plain`'s
+/// output "exactly". Over the whole corpus is where that promise is worth
+/// something: the unit test beside it can only carry the constructs someone
+/// remembered to put in its string, and it was blockquotes — in the corpus
+/// here from the start — that the two walks had already disagreed about.
+#[test]
+fn no_color_render_is_byte_identical_to_plain_over_the_whole_corpus() {
+    let d = doc();
+    for w in [20u16, 40, 72, 200] {
+        assert_eq!(
+            carrel::ansi::render_with(&d, w, false),
+            carrel::plain::render(&d, w),
+            "width {w}"
+        );
+    }
+}
+
+/// Wide enough that `plain::render`'s own `width.max(20)` floor does not
+/// swallow the case.
 #[test]
 fn the_whole_corpus_renders_without_panicking_at_every_plausible_width() {
     let d = doc();
-    for w in [1u16, 2, 3, 10, 40, 72, 200] {
+    for w in [20u16, 40, 72, 200] {
         let out = carrel::plain::render(&d, w);
         assert!(!out.is_empty(), "width {w} produced nothing");
+    }
+}
+
+/// The narrow end, which `plain::render` cannot reach: it opens with
+/// `width.max(20)`, so widths 1, 2, 3 and 10 all became 20 and the loop above
+/// ran width 20 four times. Layout itself has no such floor — `App` clamps
+/// elsewhere — so it is driven directly here, which is the only way to
+/// exercise arithmetic like `card_gutter`'s `.min(width / 3).max(2)` where
+/// the gutter can exceed the whole width.
+#[test]
+fn layout_survives_widths_below_the_plain_renderers_floor() {
+    let d = doc();
+    let mut rows = Vec::new();
+    for w in 1u16..20 {
+        for wrap_tables in [false, true] {
+            let layout = carrel::layout::Layout::with_images(
+                &d,
+                w,
+                std::collections::HashMap::new(),
+                wrap_tables,
+            );
+            for i in 0..d.block_count() {
+                let b = carrel_core::BlockIdx(i as u32);
+                layout.rows_for(&d, b, &mut rows);
+                for row in &rows {
+                    assert!(
+                        row.doc.start <= row.doc.end && (row.doc.end as usize) <= d.text.len(),
+                        "width {w}: row range {:?} is not a slice of the text",
+                        row.doc
+                    );
+                }
+            }
+        }
     }
 }
 

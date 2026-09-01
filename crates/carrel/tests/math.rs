@@ -21,11 +21,17 @@ fn math_block(a: &App) -> BlockIdx {
 /// NOT "pure ASCII" — space 2 legitimately holds non-ASCII content, and has
 /// since smart punctuation shipped: `"x"` is already U+201C/U+201D. The policy
 /// is about what plain output ADDS, not what the document contains.
+/// The escape byte is only the loudest control character; a BEL rings the
+/// terminal and a NUL confuses a braille display just as effectively, and a
+/// screen reader is not helped by any of them. So the check is the whole
+/// class, minus the newline that separates the lines themselves.
 fn assert_plain_safe(out: &str) {
-    assert!(
-        !out.contains('\u{1b}'),
-        "plain output never contains an escape byte:\n{out}"
-    );
+    for c in out.chars() {
+        assert!(
+            !c.is_control() || c == '\n',
+            "plain output never contains a control character, found {c:?}:\n{out}"
+        );
+    }
     assert!(
         !out.chars().any(|c| ('\u{2500}'..='\u{257f}').contains(&c)),
         "plain output never contains box drawing:\n{out}"
@@ -140,4 +146,21 @@ fn plain_mode_emits_latex_source_not_box_art() {
         "Q17: speakable source, not a box-drawing rule:\n{out}"
     );
     assert_plain_safe(&out);
+}
+
+/// Math is the sharpest case for the control-byte filter: a display math
+/// block's plain rendering is its LaTeX SOURCE, copied out of the document
+/// verbatim, so whatever the author put between the `$$` is what a pipe
+/// receives. The assertion above only bites when the corpus carries one.
+#[test]
+fn a_math_block_cannot_smuggle_an_escape_out_through_its_source() {
+    let doc = Document::parse("$$\\text{\u{1b}]0;PWNED\u{7}}$$\n");
+    assert!(
+        doc.text.contains('\u{1b}'),
+        "the corpus must carry one: {:?}",
+        doc.text
+    );
+    let out = carrel::plain::render(&doc, 72);
+    assert_plain_safe(&out);
+    assert!(out.contains("PWNED"), "only the escape goes: {out}");
 }

@@ -37,12 +37,34 @@ pub enum Mode {
 }
 
 impl MathBox {
-    fn sym(s: &str) -> Self {
-        Self {
+    /// A one-row box holding `s`, or `None` when `s` cannot be measured into
+    /// a `u16` without saturating.
+    ///
+    /// A UTF-8 string's display width never exceeds its byte length — the
+    /// narrowest encoding of a printing cluster is one byte for one cell — so
+    /// the byte test is conservative in the safe direction, and past it
+    /// [`cluster_width`] cannot silently cap. See [`MAX_DEPTH`] for what
+    /// refusal means.
+    fn sym(s: &str) -> Option<Self> {
+        u16::try_from(s.len()).ok().map(|_| Self {
             rows: vec![s.to_string()],
             baseline: 0,
             width: cluster_width(s),
-        }
+        })
+    }
+
+    /// The box substituted for an expression that exceeded the budget: blank,
+    /// and as wide as the type can express, so `App::math_form` compares it
+    /// against the terminal, finds it fits nothing, and drops to the
+    /// literal-source rung.
+    ///
+    /// It is an encoding, not a rendering, and [`try_lay_out`]'s `None` is
+    /// the thing itself — a terminal exactly `u16::MAX` columns wide would
+    /// paint this blank instead of the source. Nothing narrower can, and
+    /// nothing that narrow exists, but the honest call is the one that says
+    /// "no art" rather than "art this wide".
+    fn no_fit() -> Self {
+        Self::blank(u16::MAX)
     }
 
     fn blank(width: u16) -> Self {
@@ -85,38 +107,58 @@ impl MathBox {
         self
     }
 
-    /// Horizontal concatenation with baselines aligned.
+    /// Horizontal concatenation of a whole row, with baselines aligned.
     ///
     /// Height is `max(ascent) + max(descent)`; each operand is padded with
     /// blank rows above and below so the result stays rectangular. Ragged rows
     /// would break paint, which writes rows without measuring them.
     ///
-    /// By value, not by reference, because a `Row` folds with
-    /// `.reduce(MathBox::beside)`, and `reduce` requires `(Self, Self) -> Self`.
-    #[allow(clippy::needless_pass_by_value)]
-    fn beside(self, other: Self) -> Self {
-        let ascent = self.ascent().max(other.ascent());
-        let descent = self.descent().max(other.descent());
-        let width = self.width.saturating_add(other.width);
+    /// **Takes the whole row at once, deliberately.** Folding pairwise with
+    /// `.reduce(MathBox::beside)` rebuilt every accumulated row string at each
+    /// step, so a row of *n* atoms copied O(n²) characters: 20,000 atoms took
+    /// 6.3 ms and 60,000 took 59.2 ms, measured release, and
+    /// `App::rebuild_math_art` runs on the UI thread on open, resize and
+    /// reload. Appending into one buffer per output row makes the work
+    /// proportional to the output.
+    ///
+    /// `None` when the concatenation would be wider than a `u16` — the
+    /// summation is done in `u32` precisely so that saturation is visible
+    /// here rather than baked into a box that then misreports itself.
+    fn row_of(boxes: &[Self]) -> Option<Self> {
+        if boxes.is_empty() {
+            return Self::sym("");
+        }
+        let ascent = boxes.iter().map(Self::ascent).max().unwrap_or(0);
+        let descent = boxes.iter().map(Self::descent).max().unwrap_or(0);
+        let width: u32 = boxes.iter().map(|b| u32::from(b.width)).sum();
+        let width = u16::try_from(width).ok()?;
         let mut rows = Vec::with_capacity(ascent + descent);
         for i in 0..ascent + descent {
-            let mut row = String::new();
-            row.push_str(&pick(&self, i, ascent));
-            row.push_str(&pick(&other, i, ascent));
+            let mut row = String::with_capacity(usize::from(width));
+            for b in boxes {
+                push_row(&mut row, b, i, ascent);
+            }
             rows.push(row);
         }
-        Self {
+        Some(Self {
             rows,
             baseline: ascent,
             width,
-        }
+        })
     }
 
-    /// Stack `self` above `below`, with `self`'s rows first. The baseline is
-    /// given explicitly because only the caller knows which row it is.
+    /// Vertical composition: the boxes' rows in order, centred to the widest.
+    /// The baseline is given explicitly because only the caller knows which
+    /// row it is.
+    ///
+    /// Total, unlike [`Self::row_of`]: stacking takes the widest width rather
+    /// than the sum, so it cannot overflow a width that already fits.
     fn stack(boxes: Vec<Self>, baseline: usize) -> Self {
         let width = boxes.iter().map(|b| b.width).max().unwrap_or(0);
-        let mut rows = Vec::new();
+        // One allocation for the whole stack, and the row strings move into
+        // it rather than being cloned; `centred` does nothing at all to a box
+        // that is already the full width.
+        let mut rows = Vec::with_capacity(boxes.iter().map(Self::height).sum());
         for b in boxes {
             rows.extend(b.centred(width).rows);
         }
@@ -129,23 +171,71 @@ impl MathBox {
     }
 }
 
-/// The row of `b` that belongs at output row `i`, given the output ascent.
-/// Rows outside the box are blank padding.
-fn pick(b: &MathBox, i: usize, ascent: usize) -> String {
+/// Append the row of `b` that belongs at output row `i`, given the output
+/// ascent. Rows outside the box are blank padding.
+///
+/// Appends rather than returning a `String`: the old `pick` cloned the row it
+/// had just found, which is half of what made a wide row quadratic.
+fn push_row(out: &mut String, b: &MathBox, i: usize, ascent: usize) {
     let top = ascent - b.ascent();
     if i < top || i >= top + b.height() {
-        " ".repeat(b.width as usize)
+        out.extend(std::iter::repeat_n(' ', usize::from(b.width)));
     } else {
-        b.rows[i - top].clone()
+        out.push_str(&b.rows[i - top]);
     }
 }
 
-/// Lay an expression out as box art.
+/// How deep [`try_lay_out`] follows an expression before refusing to lay it
+/// out at all.
+///
+/// The walk below is unguarded recursion, and it does not merely get slow: a
+/// fraction nested 2,000 deep overflows the stack of a debug test binary
+/// outright, and the release binary is `panic = "abort"`. Cost is the other
+/// half — each nesting level re-pads every row inside it, so nested `\frac`
+/// measured 116 ms at depth 800 and 1.63 s at depth 2,000 (release), on the
+/// UI thread, for every math block, on open, resize and reload.
+///
+/// This is defence in depth rather than the only guard: `carrel_core`'s
+/// `math::parse` is gaining a depth cap of its own in the same sweep, so a
+/// tree this deep should not arrive through a document at all. The two limits
+/// answer different questions — the core's is about parsing safely, this one
+/// is about art worth painting — and 64 is the display answer: a fraction
+/// nested 64 deep is 129 rows tall, far past any terminal, so the
+/// literal-source rung is the honest outcome long before the limit bites.
+const MAX_DEPTH: usize = 64;
+
+/// Lay an expression out as box art, or `None` when it exceeds the budget.
 ///
 /// Takes no width: art is a function of the expression alone. See the module
 /// docs for why that matters.
+///
+/// `None` is a designed outcome, not an error: it means "no art for this
+/// one", which is exactly the state `App::rebuild_math_art` already produces
+/// for math that will not parse, and which `App::math_form` renders as
+/// literal LaTeX source. It happens when the expression nests past
+/// [`MAX_DEPTH`], or when a box would be wider than the `u16` that
+/// [`MathBox::width`] — and every width comparison in `App` — is made of.
+#[must_use]
+pub fn try_lay_out(expr: &MathExpr, mode: Mode) -> Option<MathBox> {
+    lay(expr, mode, 0)
+}
+
+/// The total form of [`try_lay_out`], for callers that hold a `MathBox` and
+/// not an `Option<MathBox>`.
+///
+/// A refused expression becomes [`MathBox::no_fit`], which is wider than any
+/// terminal and so takes `App::math_form`'s source rung — the same rendering
+/// the honest `None` would produce. Prefer [`try_lay_out`]: it says what
+/// happened instead of encoding it in a width.
 #[must_use]
 pub fn lay_out(expr: &MathExpr, mode: Mode) -> MathBox {
+    try_lay_out(expr, mode).unwrap_or_else(MathBox::no_fit)
+}
+
+fn lay(expr: &MathExpr, mode: Mode, depth: usize) -> Option<MathBox> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
     // The one-row form is a text transformation with no width input, so it
     // lives in the core beside entity decoding — one implementation, shared
     // with the parser, which is what lets inline math enter `Document::text`
@@ -164,26 +254,28 @@ pub fn lay_out(expr: &MathExpr, mode: Mode) -> MathBox {
                 MathBox::sym(text)
             }
         }
-        MathExpr::Row(parts) => parts
-            .iter()
-            .map(|p| lay_out(p, mode))
-            .reduce(MathBox::beside)
-            .unwrap_or_else(|| MathBox::sym("")),
-        MathExpr::Frac { num, den } => frac(num, den, mode),
-        MathExpr::Sqrt { radicand, index } => sqrt(radicand, index.as_deref(), mode),
+        MathExpr::Row(parts) => {
+            let mut boxes = Vec::with_capacity(parts.len());
+            for p in parts {
+                boxes.push(lay(p, mode, depth + 1)?);
+            }
+            MathBox::row_of(&boxes)
+        }
+        MathExpr::Frac { num, den } => frac(num, den, mode, depth),
+        MathExpr::Sqrt { radicand, index } => sqrt(radicand, index.as_deref(), mode, depth),
         MathExpr::Script {
             base,
             sub,
             sup,
             limits,
-        } => script(base, sub.as_deref(), sup.as_deref(), *limits, mode),
-        MathExpr::Matrix { rows, delim } => matrix(rows, *delim, mode),
+        } => script(base, sub.as_deref(), sup.as_deref(), *limits, mode, depth),
+        MathExpr::Matrix { rows, delim } => matrix(rows, *delim, mode, depth),
     }
 }
 
-fn frac(num: &MathExpr, den: &MathExpr, mode: Mode) -> MathBox {
-    let n = lay_out(num, mode);
-    let d = lay_out(den, mode);
+fn frac(num: &MathExpr, den: &MathExpr, mode: Mode, depth: usize) -> Option<MathBox> {
+    let n = lay(num, mode, depth + 1)?;
+    let d = lay(den, mode, depth + 1)?;
     if mode == Mode::Inline {
         // One row only, so a stacked rule is not available: fall back to a
         // solidus, parenthesising either operand that would otherwise change
@@ -196,31 +288,41 @@ fn frac(num: &MathExpr, den: &MathExpr, mode: Mode) -> MathBox {
     // or the two stack into one ambiguous ladder: TeX distinguishes the levels
     // by rule length and so must we.
     let nested = matches!(num, MathExpr::Frac { .. }) || matches!(den, MathExpr::Frac { .. });
+    // Checked, not saturating: a rule that stops growing while the operands
+    // do not is exactly the mismeasurement this budget exists to refuse.
     let width = n
         .width
         .max(d.width)
-        .saturating_add(if nested { 2 } else { 0 });
-    let rule = MathBox::sym(&"─".repeat(width as usize));
+        .checked_add(if nested { 2 } else { 0 })?;
+    let rule = MathBox::sym(&"─".repeat(width as usize))?;
     let baseline = n.height();
-    MathBox::stack(vec![n, rule, d], baseline)
+    Some(MathBox::stack(vec![n, rule, d], baseline))
 }
 
-fn sqrt(radicand: &MathExpr, index: Option<&MathExpr>, mode: Mode) -> MathBox {
-    let r = lay_out(radicand, mode);
+fn sqrt(
+    radicand: &MathExpr,
+    index: Option<&MathExpr>,
+    mode: Mode,
+    depth: usize,
+) -> Option<MathBox> {
+    let r = lay(radicand, mode, depth + 1)?;
     if mode == Mode::Inline {
         let inner = if radicand.is_compound() {
             format!("({})", one_row(&r))
         } else {
             one_row(&r)
         };
-        let idx = index.map_or_else(String::new, |i| one_row(&lay_out(i, mode)));
+        let idx = match index {
+            Some(i) => one_row(&lay(i, mode, depth + 1)?),
+            None => String::new(),
+        };
         return MathBox::sym(&format!("{idx}√{inner}"));
     }
     // The overbar spans the radicand; the radical sign sits on the baseline.
-    let bar = MathBox::sym(&format!(" {}", "‾".repeat(r.width as usize)));
-    let sign = MathBox::sym("√").beside(r);
+    let bar = MathBox::sym(&format!(" {}", "‾".repeat(r.width as usize)))?;
+    let sign = MathBox::row_of(&[MathBox::sym("√")?, r])?;
     let baseline = bar.height() + sign.baseline;
-    MathBox::stack(vec![bar, sign], baseline)
+    Some(MathBox::stack(vec![bar, sign], baseline))
 }
 
 fn script(
@@ -229,23 +331,24 @@ fn script(
     sup: Option<&MathExpr>,
     limits: bool,
     mode: Mode,
-) -> MathBox {
-    let b = lay_out(base, mode);
+    depth: usize,
+) -> Option<MathBox> {
+    let b = lay(base, mode, depth + 1)?;
 
     if limits && mode == Mode::Display {
         // A big operator carries its limits above and below, centred.
         let mut boxes = Vec::new();
         let mut baseline = 0;
         if let Some(s) = sup {
-            let sb = lay_out(s, mode);
+            let sb = lay(s, mode, depth + 1)?;
             baseline += sb.height();
             boxes.push(sb);
         }
         boxes.push(b);
         if let Some(s) = sub {
-            boxes.push(lay_out(s, mode));
+            boxes.push(lay(s, mode, depth + 1)?);
         }
-        return MathBox::stack(boxes, baseline);
+        return Some(MathBox::stack(boxes, baseline));
     }
 
     // Prefer the Unicode forms: they keep the expression one row tall, which
@@ -266,14 +369,14 @@ fn script(
     if mode == Mode::Inline {
         let mut out = one_row(&b);
         if let Some(s) = sub {
-            let sb = lay_out(s, mode);
+            let sb = lay(s, mode, depth + 1)?;
             out.push('_');
-            out.push_str(&wrap_if_compound(s, &sb));
+            out.push_str(&paren_if_compound(s, &sb));
         }
         if let Some(s) = sup {
-            let sb = lay_out(s, mode);
+            let sb = lay(s, mode, depth + 1)?;
             out.push('^');
-            out.push_str(&wrap_if_compound(s, &sb));
+            out.push_str(&paren_if_compound(s, &sb));
         }
         return MathBox::sym(&out);
     }
@@ -283,13 +386,13 @@ fn script(
     let mut boxes = Vec::new();
     let mut baseline = 0;
     if let Some(s) = sup {
-        let sb = lay_out(s, mode);
+        let sb = lay(s, mode, depth + 1)?;
         baseline += sb.height();
         boxes.push(sb);
     }
     boxes.push(MathBox::blank(0));
     if let Some(s) = sub {
-        boxes.push(lay_out(s, mode));
+        boxes.push(lay(s, mode, depth + 1)?);
     }
     let scripts = MathBox::stack(boxes, baseline);
     // Align the base's baseline with the script stack's blank middle row.
@@ -300,24 +403,23 @@ fn script(
             .collect(),
         baseline,
     );
-    lifted.beside(scripts)
+    MathBox::row_of(&[lifted, scripts])
 }
 
-fn matrix(rows: &[Box<[MathExpr]>], delim: MatrixDelim, mode: Mode) -> MathBox {
-    let laid: Vec<Vec<MathBox>> = rows
-        .iter()
-        .map(|r| r.iter().map(|c| lay_out(c, mode)).collect())
-        .collect();
-    let cols = laid.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<u16> = (0..cols)
-        .map(|c| {
-            laid.iter()
-                .filter_map(|r| r.get(c))
-                .map(|b| b.width)
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
+fn matrix(
+    rows: &[Box<[MathExpr]>],
+    delim: MatrixDelim,
+    mode: Mode,
+    depth: usize,
+) -> Option<MathBox> {
+    let mut laid: Vec<Vec<MathBox>> = Vec::with_capacity(rows.len());
+    for r in rows {
+        let mut cells = Vec::with_capacity(r.len());
+        for c in r {
+            cells.push(lay(c, mode, depth + 1)?);
+        }
+        laid.push(cells);
+    }
 
     if mode == Mode::Inline {
         let body = laid
@@ -329,20 +431,32 @@ fn matrix(rows: &[Box<[MathExpr]>], delim: MatrixDelim, mode: Mode) -> MathBox {
         return MathBox::sym(&format!("{l}{body}{r}"));
     }
 
-    // Each grid row is its cells side by side, padded to the column widths.
-    let mut body: Vec<MathBox> = Vec::new();
+    // Below the early return, because the inline form has no columns to align
+    // and so never read these.
+    let cols = laid.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<u16> = (0..cols)
+        .map(|c| {
+            laid.iter()
+                .filter_map(|r| r.get(c))
+                .map(|b| b.width)
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+
+    // Each grid row is its cells side by side, padded to the column widths,
+    // and assembled in one pass for the reason [`MathBox::row_of`] gives.
+    let mut body: Vec<MathBox> = Vec::with_capacity(laid.len());
     for row in laid {
-        let mut acc: Option<MathBox> = None;
+        let mut pieces: Vec<MathBox> = Vec::with_capacity(row.len() * 2);
         for (c, cell) in row.into_iter().enumerate() {
-            let padded = cell.centred(widths[c]);
-            let piece = match acc {
-                None => padded,
-                Some(a) => a.beside(MathBox::sym(" ")).beside(padded),
-            };
-            acc = Some(piece);
+            if c > 0 {
+                pieces.push(MathBox::sym(" ")?);
+            }
+            pieces.push(cell.centred(widths[c]));
         }
-        if let Some(a) = acc {
-            body.push(a);
+        if !pieces.is_empty() {
+            body.push(MathBox::row_of(&pieces)?);
         }
     }
     let height: usize = body.iter().map(MathBox::height).sum();
@@ -352,9 +466,9 @@ fn matrix(rows: &[Box<[MathExpr]>], delim: MatrixDelim, mode: Mode) -> MathBox {
 
 /// Wrap a grid in stretched delimiters. Two-row grids use the two-piece forms;
 /// taller ones get a middle piece repeated.
-fn fence(grid: MathBox, delim: MatrixDelim) -> MathBox {
+fn fence(grid: MathBox, delim: MatrixDelim) -> Option<MathBox> {
     let Some((top, mid, bot)) = fence_pieces(delim) else {
-        return grid;
+        return Some(grid);
     };
     let h = grid.height();
     let left: Vec<String> = (0..h)
@@ -387,11 +501,14 @@ fn fence(grid: MathBox, delim: MatrixDelim) -> MathBox {
         .zip(right)
         .map(|((l, m), r)| format!("{l}{m}{r}"))
         .collect::<Vec<_>>();
-    MathBox {
+    Some(MathBox {
         baseline: grid.baseline,
-        width: grid.width.saturating_add(2),
+        // Checked for the same reason `frac`'s rule is: two fence columns that
+        // the declared width does not account for are two columns of paint
+        // nobody reserved.
+        width: grid.width.checked_add(2)?,
         rows,
-    }
+    })
 }
 
 type FencePair = (char, char);
@@ -426,10 +543,6 @@ fn paren_if_compound(expr: &MathExpr, laid: &MathBox) -> String {
     } else {
         one_row(laid)
     }
-}
-
-fn wrap_if_compound(expr: &MathExpr, laid: &MathBox) -> String {
-    paren_if_compound(expr, laid)
 }
 
 const SUPERS: [(char, char); 14] = [
@@ -673,9 +786,48 @@ mod tests {
         }
     }
 
+    /// Expressions deeper and wider than `sample_expressions`, which reaches
+    /// two levels at most and so never exercises the arithmetic that only
+    /// goes wrong under nesting.
+    fn deep_expressions() -> Vec<MathExpr> {
+        let mut out = Vec::new();
+        let mut frac = sym("x");
+        let mut sqrt = sym("y");
+        let mut script = sym("z");
+        for _ in 0..12 {
+            frac = MathExpr::Frac {
+                num: Box::new(frac),
+                den: Box::new(row(vec![sym("a"), sym("+"), num("1")])),
+            };
+            sqrt = MathExpr::Sqrt {
+                radicand: Box::new(row(vec![sqrt, sym("+"), num("2")])),
+                index: Some(Box::new(num("3"))),
+            };
+            script = MathExpr::Script {
+                base: Box::new(script),
+                sub: Some(Box::new(row(vec![sym("i"), sym("+"), num("1")]))),
+                sup: Some(Box::new(frac.clone())),
+                limits: true,
+            };
+        }
+        out.push(frac);
+        out.push(sqrt);
+        out.push(script.clone());
+        out.push(MathExpr::Matrix {
+            rows: (0..6)
+                .map(|_| {
+                    vec![script.clone(), sym("b"), row(vec![sym("c"), sym("d")])].into_boxed_slice()
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            delim: MatrixDelim::Brace,
+        });
+        out
+    }
+
     #[test]
     fn every_box_measures_what_it_claims() {
-        for expr in sample_expressions() {
+        for expr in sample_expressions().into_iter().chain(deep_expressions()) {
             for mode in [Mode::Display, Mode::Inline] {
                 let b = lay_out(&expr, mode);
                 assert!(b.baseline < b.rows.len(), "baseline outside the box: {b:?}");
@@ -686,6 +838,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_expression_too_wide_for_the_type_is_refused_not_mismeasured() {
+        // 70,000 atoms is one row of 70,000 cells, which `u16` cannot hold.
+        // Saturating the declared width there is the worst outcome: the box
+        // claims 65535, `App::math_form` compares that against the terminal
+        // and can answer "fits" for a row that is 4,465 cells wider.
+        let wide = row((0..70_000).map(|_| sym("x")).collect());
+        assert_eq!(try_lay_out(&wide, Mode::Display), None, "over the budget");
+        let b = lay_out(&wide, Mode::Display);
+        assert_eq!(
+            cluster_width(&b.rows[0]),
+            b.width,
+            "the substituted box measures what it claims"
+        );
+        assert!(
+            b.width > 4096,
+            "and cannot fit a terminal, so the source rung takes it"
+        );
+    }
+
+    #[test]
+    fn nesting_past_the_budget_is_refused_rather_than_recursed() {
+        let mut deep = sym("x");
+        for _ in 0..MAX_DEPTH + 2 {
+            deep = MathExpr::Frac {
+                num: Box::new(deep),
+                den: Box::new(sym("y")),
+            };
+        }
+        assert_eq!(try_lay_out(&deep, Mode::Display), None);
+        // One inside the budget still lays out, so the guard is not simply
+        // refusing everything.
+        let mut shallow = sym("x");
+        for _ in 0..MAX_DEPTH - 2 {
+            shallow = MathExpr::Frac {
+                num: Box::new(shallow),
+                den: Box::new(sym("y")),
+            };
+        }
+        assert!(try_lay_out(&shallow, Mode::Display).is_some());
     }
 
     // --- inline mode ---

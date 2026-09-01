@@ -9,10 +9,13 @@
 //! surrounding tool already chose. `NO_COLOR` strips even those, reducing
 //! the output to [`crate::plain`]'s exactly.
 //!
-//! The row walk is [`crate::plain`]'s skeleton, deliberately duplicated
-//! rather than parameterised: the two differ in every line body, and a mode
-//! flag threaded through ten match arms would be harder to read than two
-//! honest functions. NO RATATUI — rule 6.
+//! The row walk is [`crate::plain`]'s skeleton, and the two line BODIES are
+//! deliberately duplicated rather than parameterised: they differ in every
+//! branch, and a mode flag threaded through ten match arms would be harder to
+//! read than two honest functions. What opens a row does not differ, so it is
+//! not duplicated — [`crate::plain::open_row`] emits the block separator,
+//! quote bars, indent and prefix for both, after the copies here had already
+//! drifted out from under the `NO_COLOR` promise above. NO RATATUI — rule 6.
 
 use std::collections::HashMap;
 
@@ -71,7 +74,19 @@ impl Attrs {
 const RESET: &str = "\u{1b}[0m";
 const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
 
+/// The OSC 8 opener for `url`, with control characters stripped out of the
+/// destination.
+///
+/// Stripping happens HERE rather than at the call site so that no caller can
+/// forget it — `render.rs`'s OSC pass has its own copy of this policy, and
+/// this collection point had gone without one. It matters because
+/// `CommonMark` entity-decodes link destinations: `[c](&#27;]8;;http://evil)`
+/// reaches `doc.links` holding a raw ESC, which hands the document's author
+/// the rest of the escape sequence, and `&#7;` terminates the OSC early on
+/// xterm-family terminals. Reference definitions (`[r]: <&#27;x>`) decode the
+/// same way.
 fn osc8_open(url: &str) -> String {
+    let url: String = url.chars().filter(|c| !c.is_control()).collect();
     format!("\u{1b}]8;;{url}\u{1b}\\")
 }
 
@@ -106,17 +121,17 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
             match row.kind {
                 RowKind::Decoration => pending_blanks += 1,
                 RowKind::Text { .. } => {
-                    for _ in 0..pending_blanks.min(1) {
-                        out.push('\n');
-                    }
-                    pending_blanks = 0;
-                    // Prefix first, unstyled — a bullet needs no weight.
-                    if first_text && let Some(p) = &node.prefix {
-                        out.push_str(&" ".repeat(row.indent.saturating_sub(p.width) as usize));
-                        out.push_str(&p.text);
-                    } else {
-                        out.push_str(&" ".repeat(row.indent as usize));
-                    }
+                    // Separator, quote bars, indent and prefix are [`plain`]'s
+                    // to decide — see [`crate::plain::open_row`] for why the
+                    // duplication this module's header defends stops there.
+                    // The prefix comes back unstyled: a bullet needs no weight.
+                    let mut line = crate::plain::open_row(
+                        &mut out,
+                        &mut pending_blanks,
+                        node,
+                        row,
+                        first_text,
+                    );
                     let text = &doc.text[row.doc.start as usize..row.doc.end as usize];
                     for seg in segments(
                         text,
@@ -126,26 +141,33 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
                         heading_bold,
                     ) {
                         let (bytes, attrs, url) = seg;
+                        // The body is document text, so it goes through the
+                        // same filter plain output uses: this module owns the
+                        // escapes it emits itself and none of the file's.
                         let body = &text[bytes.start..bytes.end];
                         if !styled {
-                            out.push_str(body);
+                            crate::plain::push_text(&mut line, body);
                             continue;
                         }
                         if let Some(url) = &url {
-                            out.push_str(&osc8_open(url));
+                            line.push_str(&osc8_open(url));
                         }
                         let seq = attrs.sgr();
                         if !seq.is_empty() {
-                            out.push_str(&seq);
+                            line.push_str(&seq);
                         }
-                        out.push_str(body);
+                        crate::plain::push_text(&mut line, body);
                         if !seq.is_empty() {
-                            out.push_str(RESET);
+                            line.push_str(RESET);
                         }
                         if url.is_some() {
-                            out.push_str(OSC8_CLOSE);
+                            line.push_str(OSC8_CLOSE);
                         }
                     }
+                    // Trimmed like plain output's lines, which is half of what
+                    // `NO_COLOR` byte-identity needs; a styled line ends in a
+                    // reset or a link terminator, so the trim finds nothing.
+                    out.push_str(line.trim_end());
                     out.push('\n');
                     first_text = false;
                 }
@@ -244,12 +266,72 @@ mod tests {
 
     #[test]
     fn no_color_reduces_this_to_plain_output() {
-        let doc = Document::parse(SRC);
+        // A nested blockquote is in the corpus deliberately: quote bars are
+        // the concrete way the two walks had already drifted apart, so
+        // without one this equality asserts nothing about them.
+        let src = format!("{SRC}\n> quoted words here\n>\n> > deeper quote\n\n- item one\n");
+        let doc = Document::parse(&src);
         let ansi = render_with(&doc, 80, false);
         let plain = crate::plain::render(&doc, 80);
-        // The prefix path differs by construction order only; text identical.
-        let strip = |s: &str| s.replace('\u{1b}', "").replace("[1m", "").replace('[', "");
         assert!(!ansi.contains('\u{1b}'));
-        assert_eq!(strip(&ansi), strip(&plain));
+        // Byte-identical, with nothing stripped from either side: a `strip`
+        // closure that erases `[` would hide exactly the differences this
+        // test exists to catch.
+        assert_eq!(ansi, plain);
+        assert!(plain.contains("> > deeper quote"), "{plain:?}");
+    }
+
+    #[test]
+    fn control_bytes_in_the_document_never_reach_the_output() {
+        let doc = Document::parse(crate::plain::CONTROL_BYTES);
+        for styled in [true, false] {
+            let out = render_with(&doc, 40, styled);
+            // Strip the sequences this module emits ITSELF, then nothing
+            // controlling may remain — the document's own escapes are what
+            // this is about, and they are indistinguishable once printed.
+            let mut rest = out.replace(RESET, "").replace(OSC8_CLOSE, "");
+            while let Some(i) = rest.find("\u{1b}]8;;") {
+                let end = rest[i..].find("\u{1b}\\").expect("an opener closes");
+                rest.replace_range(i..i + end + 2, "");
+            }
+            for seq in ["\u{1b}[1m", "\u{1b}[2m", "\u{1b}[3m", "\u{1b}[9m"] {
+                rest = rest.replace(seq, "");
+            }
+            for c in rest.chars() {
+                assert!(
+                    !c.is_control() || c == '\n',
+                    "control byte {c:?} reached --render output: {out:?}"
+                );
+            }
+            assert!(out.contains("RED"), "the text itself survives: {out:?}");
+        }
+    }
+
+    #[test]
+    fn an_entity_encoded_escape_in_a_link_destination_is_stripped() {
+        // CommonMark entity-decodes link destinations, so these reach
+        // `doc.links` holding a raw ESC or BEL — an author-controlled escape
+        // sequence in the middle of our OSC 8 opener.
+        for src in [
+            "[c](&#27;]8;;http://evil)\n",
+            "[b](&#7;bel)\n",
+            "[r]\n\n[r]: <&#27;x>\n",
+        ] {
+            let doc = Document::parse(src);
+            assert!(
+                doc.links.iter().any(|u| u.chars().any(char::is_control)),
+                "the corpus must reach us holding a control byte: {:?}",
+                doc.links
+            );
+            let out = render_with(&doc, 80, true);
+            let opener = "\u{1b}]8;;";
+            let i = out.find(opener).expect("an OSC 8 opener");
+            let url = &out[i + opener.len()..];
+            let url = &url[..url.find("\u{1b}\\").expect("its terminator")];
+            assert!(
+                !url.chars().any(char::is_control),
+                "destination smuggled a control byte from {src:?}: {url:?}"
+            );
+        }
     }
 }

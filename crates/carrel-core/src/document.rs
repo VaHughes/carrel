@@ -1082,9 +1082,16 @@ impl<'a> Builder<'a> {
                 self.push_scripted(&t[cursor..range.start], src.clone(), ProvKind::Substituted);
             }
             let id = LinkId(self.links.len() as u32);
-            // Raw, exactly like the explicit-link path above: control
-            // characters are stripped at OSC 8 collection, which is the one
-            // place that policy lives.
+            // Raw, exactly like the explicit-link path above. Every consumer
+            // that writes a destination INTO an escape sequence strips control
+            // characters itself — `render.rs`'s OSC 8 pass and
+            // `ansi::osc8_open` each do, because a destination that reaches
+            // two emitters cannot have one owner. This comment used to claim
+            // there was a single such place; there were two, and the second
+            // did not strip, so an entity-encoded `&#27;` in a destination put
+            // a raw ESC into `--render` output. Consumers that merely paint it
+            // inherit ratatui's own filtering. Storing it raw keeps this
+            // buffer a faithful record of the document.
             self.links.push(url.into_boxed_str());
             self.wiki.push(false);
             let prev_link = self.current_link;
