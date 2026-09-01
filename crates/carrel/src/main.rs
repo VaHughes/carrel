@@ -1009,6 +1009,15 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
     app.file = Some(path.to_path_buf());
     app.note = theme_note;
     app.state_dir = carrel::state::state_dir();
+    // Rooted at the document's own directory: links inside the project follow
+    // silently, links out of it ask first. See `App::escapes_library`.
+    // `Path::new("doc.md").parent()` is `Some("")`, which canonicalizes to an
+    // error and would silently disable containment — the working directory is
+    // what an empty parent means.
+    app.library_root = Some(match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    });
     apply_config(&mut app);
     app.on_resize(app.cols, app.rows);
     // A direct open builds the App by hand rather than via open_path, so the
@@ -1222,6 +1231,7 @@ fn run_stdin(rx: &Receiver<String>) -> std::io::Result<()> {
     app.piped = Some(String::new());
     app.note = theme_note;
     // No state_dir: a pathless document has no position to resume or save.
+    app.library_root = std::env::current_dir().ok();
     apply_config(&mut app);
     app.on_resize(app.cols, app.rows);
     run_loop(terminal, app, images, Some(rx))
@@ -1349,6 +1359,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     let cached = scan::load_cache(&root);
     let mut app = App::new_home(root.clone(), cached, size.width, size.height);
     app.state_dir = carrel::state::state_dir();
+    app.library_root = Some(root.clone());
     apply_config(&mut app);
     load_resume(&mut app);
     set_home_prefs(&mut app);

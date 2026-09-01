@@ -200,6 +200,17 @@ pub struct App {
     /// The BINARY sets this at startup; forgetting that shows up in the pty
     /// smoke, not as a stomped developer config. (A home.rs test once wrote
     /// `root = /tmp/.tmpXXXXXX` into the real config on every test run.)
+    /// The directory this reading session is rooted at — the home screen's
+    /// root, or the directory the opened file came from. Injected by the
+    /// binary like [`Self::config_dir`], and fixed for the session: a link
+    /// followed out of it does not move it.
+    ///
+    /// `None` disables containment, which is what the state layer's own
+    /// tests want; the binary always sets it.
+    pub library_root: Option<std::path::PathBuf>,
+    /// A link that leaves the library, waiting for a second Enter. One-shot:
+    /// cleared by stepping to another link or by changing document.
+    pending_open: Option<(LinkId, std::path::PathBuf)>,
     pub config_dir: Option<std::path::PathBuf>,
     /// Where reading positions persist. Same contract as `config_dir`:
     /// `None` in every constructor, set by the BINARY at startup, so no test
@@ -456,6 +467,8 @@ impl App {
             show_rendered: true,
             font_px: (8, 16),
             note: None,
+            library_root: None,
+            pending_open: None,
             config_dir: None,
             state_dir: None,
             wrap_tables: false,
@@ -633,6 +646,43 @@ impl App {
         Ok(())
     }
 
+    /// Does following this link leave the library?
+    ///
+    /// A markdown file is untrusted input — a shared vault, a downloaded
+    /// README — and `Path::join` with an absolute component discards the base
+    /// entirely, so `[x](/etc/passwd)` needed no `..` at all to read it. The
+    /// README states in bold that carrel "reads only the directory you point
+    /// it at"; this is the half of that claim that was not being kept.
+    ///
+    /// Both paths are canonicalized, so a symlink pointing out of the tree is
+    /// caught too. A target that cannot be canonicalized does not exist, and
+    /// the open that follows reports that itself.
+    #[must_use]
+    pub fn escapes_library(&self, target: &Path) -> bool {
+        let Some(root) = self.library_root.as_deref() else {
+            return false;
+        };
+        let (Ok(root), Ok(target)) = (root.canonicalize(), target.canonicalize()) else {
+            return false;
+        };
+        !target.starts_with(&root)
+    }
+
+    /// The second Enter on the same link: `true` once, then forgotten.
+    fn confirmed_open(&mut self, id: LinkId, target: &Path) -> bool {
+        matches!(self.pending_open.take(), Some((prev, ref path)) if prev == id && path == target)
+    }
+
+    /// Ask for a second Enter before leaving the library.
+    fn ask_before_leaving(&mut self, id: LinkId, target: &Path) -> Outcome {
+        self.note = Some(format!(
+            "outside the library — Enter again to open {}",
+            target.display()
+        ));
+        self.pending_open = Some((id, target.to_path_buf()));
+        Outcome::Redraw
+    }
+
     /// Forget every piece of state whose bytes or block indices belong to a
     /// parse that is about to be replaced.
     ///
@@ -648,6 +698,7 @@ impl App {
     /// rather than dropped, and `open_path` alone clears the panes that
     /// answer questions about a file it is leaving.
     fn forget_derived_state(&mut self) {
+        self.pending_open = None;
         self.selection = None;
         self.sel_anchor = None;
         self.selected_link = None;
@@ -2739,6 +2790,8 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
 }
 
 fn link_step(app: &mut App, n: i32, h: u16) -> Outcome {
+    // Moving off the link abandons any pending confirmation.
+    app.pending_open = None;
     let Ok(len) = i64::try_from(app.doc.links.len()) else {
         return Outcome::Idle;
     };
@@ -2803,6 +2856,9 @@ fn link_follow(app: &mut App) -> Outcome {
         return Outcome::Redraw;
     }
     let target = here.parent().unwrap_or(Path::new(".")).join(bare);
+    if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
+        return app.ask_before_leaving(id, &target);
+    }
     let anchor = app.view.anchor;
     match app.open_path(&target) {
         Ok(()) => {
@@ -2889,6 +2945,11 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         app.note = Some(format!("no note named '{bare}' here"));
         return Outcome::Redraw;
     };
+    // A wikilink's first resolution rule is `here_dir.join(name)`, so
+    // `[[../../etc/passwd]]` escapes exactly as a markdown link does.
+    if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
+        return app.ask_before_leaving(id, &target);
+    }
     let anchor = app.view.anchor;
     match app.open_path(&target) {
         Ok(()) => {
@@ -4734,6 +4795,88 @@ diff --git a/x.rs b/x.rs
                 "sanity: the old index was a real block in the old document"
             );
         }
+    }
+
+    #[test]
+    fn a_link_out_of_the_library_asks_before_it_opens() {
+        // `Path::join` with an absolute component discards the base, so this
+        // needed no `..` at all to read any file on the system.
+        let inside = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.md");
+        std::fs::write(&secret, "# Secret\n\nnot yours\n").unwrap();
+        let neighbour = inside.path().join("neighbour.md");
+        std::fs::write(&neighbour, "# Neighbour\n\nfine\n").unwrap();
+
+        let src = format!(
+            "# Doc\n\n[out]({})\n\n[in](neighbour.md)\n",
+            secret.display()
+        );
+        let mut a = App::new("doc.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(inside.path().join("doc.md"));
+        a.library_root = Some(inside.path().to_path_buf());
+
+        // First Enter on the escaping link: a note, and nothing opened.
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow);
+        assert!(
+            a.note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("outside the library"),
+            "expected a confirmation note, got {:?}",
+            a.note
+        );
+        assert!(
+            !a.doc.text.contains("not yours"),
+            "the document must NOT have opened on the first Enter"
+        );
+
+        // Second Enter on the same link opens it: containment is a speed
+        // bump for a deliberate reader, not a wall.
+        update(&mut a, Action::LinkFollow);
+        assert!(
+            a.doc.text.contains("not yours"),
+            "a confirmed open must go through"
+        );
+
+        // A link that stays inside never asks.
+        let mut a = App::new("doc.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(inside.path().join("doc.md"));
+        a.library_root = Some(inside.path().to_path_buf());
+        update(&mut a, Action::LinkStep(1)); // lands on link 0
+        update(&mut a, Action::LinkStep(1)); // …then link 1, the in-library one
+        update(&mut a, Action::LinkFollow);
+        assert!(
+            a.doc.text.contains("fine"),
+            "an in-library link opens on the first Enter: {:?}",
+            a.note
+        );
+    }
+
+    #[test]
+    fn stepping_to_another_link_abandons_a_pending_escape() {
+        let inside = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.md");
+        std::fs::write(&secret, "# Secret\n").unwrap();
+        let src = format!("# D\n\n[a]({})\n\n[b](x.md)\n", secret.display());
+        let mut a = App::new("doc.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(inside.path().join("doc.md"));
+        a.library_root = Some(inside.path().to_path_buf());
+
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow); // arms the confirmation
+        update(&mut a, Action::LinkStep(1)); // …and moves off it
+        update(&mut a, Action::LinkStep(-1)); // back again
+        update(&mut a, Action::LinkFollow);
+        assert!(
+            a.note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("outside the library"),
+            "the confirmation must not survive a trip through another link"
+        );
     }
 
     #[test]
