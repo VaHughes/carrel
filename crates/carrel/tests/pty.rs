@@ -179,6 +179,56 @@ fn the_reader_enters_the_alternate_screen_paints_and_leaves() {
 }
 
 #[test]
+fn auto_read_drifts_to_the_end_without_a_resize() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    // A little longer than the 20-row pty, so reaching the end takes real
+    // ticks (AUTO_READ_MS is 300) but not many of them.
+    let body = "a paragraph to scroll past\n\n".repeat(12);
+    std::fs::write(d.path().join("doc.md"), format!("# Drift\n\n{body}")).unwrap();
+
+    // Press `A`, wait for the drift, then quit. No resize event is ever
+    // delivered — which is the whole point: the tick used to be nested inside
+    // the debounced-resize branch, so auto-read advanced only while a window
+    // was being dragged, and the end-of-document note never arrived at all.
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    let cfg = d.path().join("cfg");
+    let state = d.path().join("state");
+    let cache = d.path().join("cache");
+    let cmd = format!(
+        "( sleep 1; printf 'A'; sleep 6; printf 'q' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 40 script -qec 'stty rows 20 cols 76; {bin} doc.md' '{}' >/dev/null 2>&1",
+        cfg.display(),
+        state.display(),
+        cache.display(),
+        d.path().display(),
+        out.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+
+    assert!(
+        raw.contains("auto-read"),
+        "pressing A must announce itself: {raw:?}"
+    );
+    assert!(
+        raw.contains("the end"),
+        "auto-read must reach the end on its own clock, with no resize to ride"
+    );
+}
+
+#[test]
 fn every_frame_is_bracketed_in_a_synchronized_update() {
     if !script_available() {
         eprintln!("SKIP: `script`(1) not available — pty smoke not run");

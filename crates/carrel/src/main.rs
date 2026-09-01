@@ -1117,19 +1117,26 @@ fn run_loop(
         poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
         desktop.poll();
 
+        // Auto-read's own clock, and NOT nested in the resize branch below:
+        // `pending` is only ever set by `Event::Resize`, so a tick guarded by
+        // it fires only while a window is being dragged. That is where this
+        // block used to live, which made `A` scroll nothing and — because
+        // `next_auto` then never advanced — drove `auto_timeout` to zero and
+        // spun the poll at 100% of a core. The unit tests could not see it:
+        // they call `update(.., AutoTick)` directly.
+        if let Some(t) = next_auto
+            && Instant::now() >= t
+        {
+            next_auto = Some(Instant::now() + Duration::from_millis(carrel::app::AUTO_READ_MS));
+            if update(&mut app, carrel::action::Action::AutoTick) == Outcome::Quit {
+                break;
+            }
+        }
+
         if deadline.is_some_and(|d| Instant::now() >= d)
             && let Some((w, h)) = pending.take()
         {
             deadline = None;
-
-            if let Some(t) = next_auto
-                && Instant::now() >= t
-            {
-                next_auto = Some(Instant::now() + Duration::from_millis(carrel::app::AUTO_READ_MS));
-                if update(&mut app, carrel::action::Action::AutoTick) == Outcome::Quit {
-                    break;
-                }
-            }
             app.on_resize(w, h);
         }
     }
