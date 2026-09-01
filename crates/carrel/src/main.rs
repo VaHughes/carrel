@@ -960,14 +960,27 @@ impl Desktop {
     fn new() -> Self {
         Self {
             last: Instant::now(),
-            present: carrel::theme::omarchy_available(),
+            // Latch on whether the PATH resolves — a pure environment lookup,
+            // no I/O — rather than on whether a palette parsed. The old test
+            // meant "a palette installed at startup", so a reader launched
+            // during an `omarchy theme set`, or before the file was first
+            // generated, read `None` once and never looked again for the life
+            // of the process.
+            present: carrel::omarchy::path().is_some(),
         }
     }
 
     /// Re-read the desktop palette. Nothing to return: the loop repaints on
     /// every wake anyway, and ratatui writes only the cells that moved.
     fn poll(&mut self) {
-        if !self.present || self.last.elapsed() < RELOAD_POLL {
+        // Only re-read what something is actually reading FROM. `DESKTOP` is
+        // consulted only while the omarchy palette is active, so a reader on
+        // gruvbox was opening and parsing a file 3600 times an hour for a
+        // value nothing looked at — and defeating idle detection with it.
+        if !self.present
+            || carrel::theme::current_name() != carrel::theme::OMARCHY
+            || self.last.elapsed() < RELOAD_POLL
+        {
             return;
         }
         self.last = Instant::now();
@@ -1058,6 +1071,15 @@ fn doc_span_at(app: &App, col: u16, row: u16) -> Option<(u32, u32)> {
 /// Copy to the system clipboard via OSC 52. Terminals without it ignore the
 /// sequence — the same graceful degradation as OSC 8.
 fn osc52(text: &str) -> std::io::Result<()> {
+    // `copy_selection` caps a DRAG at 100 KiB, but `YankBlock` copies a whole
+    // code block with no bound — a generated document with a 2 MB embedded
+    // blob produced a ~2.7 MB escape sequence written synchronously to the tty
+    // from the UI thread. Terminals cap OSC string length and truncate or fall
+    // back to printing the tail as literal text, so the large case was never
+    // going to work; refusing it is the honest outcome.
+    if text.len() > carrel::app::CLIPBOARD_MAX {
+        return Ok(());
+    }
     let mut out = std::io::stdout();
     write!(out, "\x1b]52;c;{}\x07", b64(text.as_bytes()))?;
     out.flush()

@@ -166,6 +166,11 @@ pub struct App {
     /// hood, gone when the document is re-parsed.
     pub folded_details: std::collections::BTreeSet<u32>,
     /// Where we came from: `(file, anchor)` pairs. `Ctrl-O` pops.
+    ///
+    /// Capped, like every other remembered list here — auto-repeat on `%` or
+    /// Tab+Enter reaches thousands of entries in seconds, and this was the
+    /// only structure in the state layer that grew without a bound or a
+    /// sentence saying why it need not.
     pub history: Vec<(PathBuf, u32)>,
     /// The link `Tab` has selected, if any.
     pub selected_link: Option<LinkId>,
@@ -680,6 +685,26 @@ impl App {
         ));
         self.pending_open = Some((id, target.to_path_buf()));
         Outcome::Redraw
+    }
+
+    /// Remember where we came from, dropping the oldest when the trail gets
+    /// long. Going back a few hundred documents is a trail; going back ten
+    /// thousand is a leak.
+    fn push_history(&mut self, from: PathBuf, anchor: u32) {
+        const HISTORY_CAP: usize = 256;
+        // Repeated `%` between the same two points would otherwise push a
+        // duplicate per press.
+        if self
+            .history
+            .last()
+            .is_some_and(|e| *e == (from.clone(), anchor))
+        {
+            return;
+        }
+        if self.history.len() >= HISTORY_CAP {
+            self.history.remove(0);
+        }
+        self.history.push((from, anchor));
     }
 
     /// Forget every piece of state whose bytes or block indices belong to a
@@ -1745,7 +1770,7 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
             app.outline = None;
             // A jump is a link follow in spirit: Ctrl-O comes back.
             if let Some(here) = app.file.clone() {
-                app.history.push((here, app.view.anchor));
+                app.push_history(here, app.view.anchor);
             }
             let byte = app.doc.node_for_block(block).doc.start;
             let h = app.text_h();
@@ -2296,7 +2321,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             };
             app.mark_list = None;
             if let Some(from) = app.file.clone() {
-                app.history.push((from, app.view.anchor));
+                app.push_history(from, app.view.anchor);
             }
             app.reveal_byte(at, h, crate::action::Where::Top);
             Outcome::Redraw
@@ -2362,7 +2387,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.backlinks = None;
             let here = app.view.anchor;
             if let Some(from) = app.file.clone() {
-                app.history.push((from, here));
+                app.push_history(from, here);
             }
             match app.open_path(&path) {
                 Ok(()) => Outcome::Redraw,
@@ -2418,7 +2443,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.forward = None;
             let here = app.view.anchor;
             if let Some(from) = app.file.clone() {
-                app.history.push((from, here));
+                app.push_history(from, here);
             }
             match app.open_path(&path) {
                 Ok(()) => Outcome::Redraw,
@@ -2433,7 +2458,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             let here = app.view.anchor;
             if app.file.is_some() || app.piped.is_some() {
                 let from = app.file.clone().unwrap_or_default();
-                app.history.push((from, here));
+                app.push_history(from, here);
             }
             let byte = app.doc.node_for_block(b).doc.start;
             app.reveal_byte(byte, h, Where::Top);
@@ -2507,6 +2532,15 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.code_focus = Some(b);
             let node = app.doc.node_for_block(b);
             let text = app.doc.text[node.doc.start as usize..node.doc.end as usize].to_string();
+            // The same ceiling `copy_selection` applies to a drag, for the
+            // same reason: terminals cap OSC 52 string length and truncate or
+            // print the tail as literal text, so a 2 MB embedded blob was
+            // never going to arrive — and writing it synchronously to the tty
+            // from the UI thread made the failure slow as well as silent.
+            if text.len() > CLIPBOARD_MAX {
+                app.note = Some("code block too large to copy".into());
+                return Outcome::Redraw;
+            }
             let lines = text.lines().count();
             app.clipboard = Some(text);
             app.note = Some(format!(
@@ -2752,7 +2786,7 @@ fn footnote_jump(app: &mut App, h: u16) -> Outcome {
     };
     if app.file.is_some() || app.piped.is_some() {
         let from = app.file.clone().unwrap_or_default();
-        app.history.push((from, app.view.anchor));
+        app.push_history(from, app.view.anchor);
     }
     app.reveal_byte(target, h, crate::action::Where::Top);
     Outcome::Redraw
@@ -2948,7 +2982,7 @@ fn link_follow(app: &mut App) -> Outcome {
         };
         let anchor = app.view.anchor;
         if jump_to_fragment(app, frag) {
-            app.history.push((here, anchor));
+            app.push_history(here, anchor);
         }
         return Outcome::Redraw;
     }
@@ -2959,7 +2993,7 @@ fn link_follow(app: &mut App) -> Outcome {
     let anchor = app.view.anchor;
     match app.open_path(&target) {
         Ok(()) => {
-            app.history.push((here, anchor));
+            app.push_history(here, anchor);
             // A missing fragment in an opened file is not an error: you are
             // in the right document, at the top, and the note says why.
             if let Some(f) = frag.filter(|f| !f.is_empty()) {
@@ -2974,9 +3008,15 @@ fn link_follow(app: &mut App) -> Outcome {
     }
 }
 
+/// What a single OSC 52 write may carry.
+///
+/// Terminals cap the length of an OSC string; past it they truncate, or drop
+/// back to printing the tail as literal text on the user's screen. A copy
+/// this large is a mis-drag or a generated blob, not something anyone is
+/// pasting.
+pub const CLIPBOARD_MAX: usize = 100_000;
+
 /// Fill the clipboard outbox from the current selection — or say why not.
-/// The 100 KiB cap respects terminal OSC length limits; a selection that
-/// large is a mis-drag, not a copy.
 fn copy_selection(app: &mut App) {
     let Some(sel) = app.selection.clone() else {
         return;
@@ -2984,7 +3024,7 @@ fn copy_selection(app: &mut App) {
     if sel.is_empty() {
         return;
     }
-    if sel.end - sel.start > 100_000 {
+    if (sel.end - sel.start) as usize > CLIPBOARD_MAX {
         app.note = Some("selection too large to copy".into());
         return;
     }
@@ -3034,7 +3074,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         };
         let anchor = app.view.anchor;
         if jump_to_wiki_fragment(app, frag) {
-            app.history.push((here, anchor));
+            app.push_history(here, anchor);
         }
         return Outcome::Redraw;
     }
@@ -3050,7 +3090,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
     let anchor = app.view.anchor;
     match app.open_path(&target) {
         Ok(()) => {
-            app.history.push((here, anchor));
+            app.push_history(here, anchor);
             if let Some(f) = frag.filter(|f| !f.is_empty()) {
                 jump_to_wiki_fragment(app, f);
             }

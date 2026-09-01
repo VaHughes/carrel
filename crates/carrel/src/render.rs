@@ -1520,9 +1520,15 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area);
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
-    let rw = u16::try_from(right.chars().count()).unwrap_or(0);
+    // Display width, never a scalar count — `right` is an arbitrary URL when a
+    // link is selected and `left` is a user's filename, so either can carry
+    // CJK or emoji. `put` nine lines down already measures this way, and
+    // breadcrumb.rs names the rule outright: "never per-char sums (the ZWJ
+    // rule)". This was the one place in the paint layer that broke it, which
+    // both mis-anchored a wide URL and let the two ends collide.
+    let rw = carrel_core::display_width(&right);
     let rx = area.right().saturating_sub(rw);
-    if rx > lx + u16::try_from(left.chars().count()).unwrap_or(0) {
+    if rx > lx + carrel_core::display_width(&left) {
         buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
     }
 }
@@ -1910,9 +1916,15 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect) {
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area);
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
-    let rw = u16::try_from(right.chars().count()).unwrap_or(0);
+    // Display width, never a scalar count — `right` is an arbitrary URL when a
+    // link is selected and `left` is a user's filename, so either can carry
+    // CJK or emoji. `put` nine lines down already measures this way, and
+    // breadcrumb.rs names the rule outright: "never per-char sums (the ZWJ
+    // rule)". This was the one place in the paint layer that broke it, which
+    // both mis-anchored a wide URL and let the two ends collide.
+    let rw = carrel_core::display_width(&right);
     let rx = area.right().saturating_sub(rw);
-    if rx > lx + u16::try_from(left.chars().count()).unwrap_or(0) {
+    if rx > lx + carrel_core::display_width(&left) {
         buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
     }
 }
