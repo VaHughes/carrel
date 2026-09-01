@@ -11,11 +11,142 @@
 //! tracks `regex`'s 1.59 MB as its single largest binary cost. One
 //! `key = value` per line needs thirty lines and no dependency.
 //!
-//! **Migration trigger: past three or four keys, switch to TOML.** Hand-rolled
-//! config formats ossify — replace this before it grows a syntax.
+//! # The migration trigger, revised
+//!
+//! This used to read: **"past three or four keys, switch to TOML."** That
+//! trigger has fired — there are eight — and it is still the wrong call,
+//! because the number of keys was never what the cost depends on. What makes
+//! a hand-rolled format ossify is *syntax*: nesting, lists, quoting, types,
+//! comments that have to survive a rewrite. This format has none. Every key
+//! is one line of `key = value`; values are a path, a name, a boolean or a
+//! small integer; the only structure is that `place` may repeat, and that is
+//! read as "the lines in order" rather than as a list literal. Eight of those
+//! is not eight times the format, it is the same format eight times.
+//!
+//! So the trigger is restated as the shape it was always about. **Switch to
+//! TOML the first time a value needs to be anything but a scalar** — a
+//! per-theme override, a keybinding table, a list that must be written on one
+//! line, or any value whose spelling needs quoting to survive. At that point
+//! the 300 KB buys something. Until then it buys a dependency.
+//!
+//! Booleans accept `true`/`false`, `1`/`0` and `yes`/`no`, in any case; see
+//! [`flag`], which is the ONE reading of a boolean this file has.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+use crate::state::write_atomic;
+
+/// Every setting in the file, from ONE read of it.
+///
+/// `None` means the key is absent and the caller applies its own default; the
+/// defaults are not baked in here because two of them (`max_width`, the
+/// booleans) mean genuinely different things to different callers.
+///
+/// This exists because startup read the config file EIGHT times through six
+/// near-identical wrappers, each one `read_to_string`-ing and re-scanning the
+/// whole thing to answer a single key. That is not a measurable cost at this
+/// size, and it is not the reason to fix it: six copies of "find a key, trim
+/// it, decide what its value means" is six places for the readings to drift
+/// apart, and they did — see [`flag`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Config {
+    pub root: Option<PathBuf>,
+    pub theme: Option<String>,
+    pub hints: Option<bool>,
+    pub breadcrumb: Option<bool>,
+    pub outline_margin: Option<bool>,
+    pub titles: Option<bool>,
+    /// Already clamped by [`MIN_MEASURE`]; `Some(0)` still means OFF.
+    pub max_width: Option<u16>,
+    /// Newest first, deduped, capped at [`PLACE_CAP`].
+    pub places: Vec<PathBuf>,
+}
+
+/// Read the whole config in one pass. A missing or unreadable file is
+/// [`Config::default`] — every key absent, never an error.
+#[must_use]
+pub fn load_all_in(dir: &Path) -> Config {
+    parse_all(&std::fs::read_to_string(dir.join("config")).unwrap_or_default())
+}
+
+/// `key = value` per line. Unknown keys and `#` comments are ignored, so a
+/// newer version's file cannot break an older binary.
+fn parse_all(text: &str) -> Config {
+    let mut c = Config::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let (k, v) = (k.trim(), v.trim());
+        if v.is_empty() {
+            continue;
+        }
+        // `place` repeats and every line counts; every other key takes the
+        // FIRST line that sets it, which is what `parse_key` did by returning
+        // early and what an already-written file therefore expects.
+        if k == "place" {
+            let p = PathBuf::from(v);
+            if c.places.len() < PLACE_CAP && !c.places.contains(&p) {
+                c.places.push(p);
+            }
+            continue;
+        }
+        match k {
+            "root" if c.root.is_none() => c.root = Some(PathBuf::from(v)),
+            "theme" if c.theme.is_none() => c.theme = Some(v.to_string()),
+            "hints" if c.hints.is_none() => c.hints = Some(flag(v, true)),
+            "breadcrumb" if c.breadcrumb.is_none() => c.breadcrumb = Some(flag(v, true)),
+            "outline_margin" if c.outline_margin.is_none() => {
+                c.outline_margin = Some(flag(v, false));
+            }
+            "titles" if c.titles.is_none() => c.titles = Some(flag(v, false)),
+            "max_width" if c.max_width.is_none() => {
+                // Unparseable stays absent rather than becoming zero: zero is
+                // a real setting here, meaning "no measure at all".
+                c.max_width = v
+                    .parse::<u16>()
+                    .ok()
+                    .map(|raw| if raw == 0 { 0 } else { raw.max(MIN_MEASURE) });
+            }
+            _ => {}
+        }
+    }
+    c
+}
+
+/// The whole config from the real config directory, or all-absent when there
+/// is no directory to read.
+#[must_use]
+pub fn load_all() -> Config {
+    config_dir().map(|d| load_all_in(&d)).unwrap_or_default()
+}
+
+/// The ONE reading of a boolean value.
+///
+/// There were two. `hints` and `breadcrumb` took `v != "false"`, so anything
+/// that was not the exact word `false` — including `0` — was ON. `titles` and
+/// `outline_margin` took `v == "true"`, so anything that was not the exact
+/// word `true` — including `1` — was OFF. The same file therefore answered
+/// `breadcrumb = 1` and `titles = 1` differently, and neither spelling was
+/// written down anywhere for a reader to check.
+///
+/// `true`/`false`, `1`/`0` and `yes`/`no` are accepted in any case. Anything
+/// else is not an answer, so the key falls back to `default` — which is what
+/// both old readings did by accident (`hints = wibble` was on, `titles =
+/// wibble` was off, each its own default) and is worth keeping on purpose: a
+/// typo should leave the reader's screen as they have always seen it.
+fn flag(v: &str, default: bool) -> bool {
+    match v.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => true,
+        "false" | "0" | "no" => false,
+        _ => default,
+    }
+}
 
 /// `$XDG_CONFIG_HOME/carrel`, else `~/.config/carrel`.
 #[must_use]
@@ -45,36 +176,11 @@ pub fn load_root() -> Option<PathBuf> {
 /// means "no saved root".
 #[must_use]
 pub fn load_root_in(dir: &Path) -> Option<PathBuf> {
-    parse(&std::fs::read_to_string(dir.join("config")).ok()?)
+    load_all_in(dir).root
 }
 
 pub fn save_root_in(dir: &Path, root: &Path) -> std::io::Result<()> {
     upsert_key_in(dir, "root", &root.display().to_string())
-}
-
-/// `key = value` per line. Unknown keys and `#` comments are ignored, so a
-/// newer version's file cannot break an older binary.
-fn parse(text: &str) -> Option<PathBuf> {
-    parse_key(text, "root").map(PathBuf::from)
-}
-
-fn parse_key(text: &str, key: &str) -> Option<String> {
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        if k.trim() == key {
-            let v = v.trim();
-            if !v.is_empty() {
-                return Some(v.to_string());
-            }
-        }
-    }
-    None
 }
 
 /// Write or replace ONE key, preserving every other line.
@@ -107,7 +213,7 @@ fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
     if !written {
         let _ = writeln!(out, "{key} = {value}");
     }
-    std::fs::write(path, out)
+    write_atomic(&path, &out)
 }
 
 /// Saved favourite roots, newest first. The one key that legitimately
@@ -118,17 +224,7 @@ pub const PLACE_CAP: usize = 8;
 
 #[must_use]
 pub fn load_places_in(dir: &Path) -> Vec<PathBuf> {
-    let text = std::fs::read_to_string(dir.join("config")).unwrap_or_default();
-    let mut out: Vec<PathBuf> = Vec::new();
-    for line in text.lines() {
-        let Some(v) = place_value(line) else { continue };
-        let p = PathBuf::from(v);
-        if !out.contains(&p) {
-            out.push(p);
-        }
-    }
-    out.truncate(PLACE_CAP);
-    out
+    load_all_in(dir).places
 }
 
 fn place_value(line: &str) -> Option<&str> {
@@ -146,20 +242,16 @@ pub fn add_place_in(dir: &Path, root: &Path) -> std::io::Result<()> {
     let mut kept_places = 0usize;
     let mut lines: Vec<String> = existing
         .lines()
-        .filter(|l| {
-            let is_mine = place_value(l).is_some_and(|v| v == me);
-            let is_place = place_value(l).is_some();
-            if is_mine {
-                return false; // dedupe: the newcomer replaces its elder
-            }
-            if is_place {
+        .filter(|l| match place_value(l) {
+            // Dedupe: the newcomer replaces its elder.
+            Some(v) if v == me => false,
+            Some(_) => {
                 kept_places += 1;
-                // Drop the OLDEST once the menu would outgrow itself.
-                if kept_places > PLACE_CAP - 1 {
-                    return false;
-                }
+                // Drop the OLDEST once the menu would outgrow itself. The
+                // newcomer inserted below needs the last slot.
+                kept_places < PLACE_CAP
             }
-            true
+            None => true,
         })
         .map(String::from)
         .collect();
@@ -170,12 +262,9 @@ pub fn add_place_in(dir: &Path, root: &Path) -> std::io::Result<()> {
         Some(i) => lines.insert(i, format!("place = {me}")),
         None => lines.push(format!("place = {me}")),
     }
-    let mut out = lines.join(
-        "
-",
-    );
+    let mut out = lines.join("\n");
     out.push('\n');
-    std::fs::write(path, out)
+    write_atomic(&path, &out)
 }
 
 /// The saved theme name, if any.
@@ -186,7 +275,7 @@ pub fn load_theme() -> Option<String> {
 
 #[must_use]
 pub fn load_theme_in(dir: &Path) -> Option<String> {
-    parse_key(&std::fs::read_to_string(dir.join("config")).ok()?, "theme")
+    load_all_in(dir).theme
 }
 
 pub fn save_theme(name: &str) -> std::io::Result<()> {
@@ -207,7 +296,7 @@ pub fn load_hints() -> Option<bool> {
 
 #[must_use]
 pub fn load_hints_in(dir: &Path) -> Option<bool> {
-    parse_key(&std::fs::read_to_string(dir.join("config")).ok()?, "hints").map(|v| v != "false")
+    load_all_in(dir).hints
 }
 
 pub fn save_hints_in(dir: &Path, on: bool) -> std::io::Result<()> {
@@ -222,11 +311,7 @@ pub fn load_breadcrumb() -> Option<bool> {
 
 #[must_use]
 pub fn load_breadcrumb_in(dir: &Path) -> Option<bool> {
-    parse_key(
-        &std::fs::read_to_string(dir.join("config")).ok()?,
-        "breadcrumb",
-    )
-    .map(|v| v != "false")
+    load_all_in(dir).breadcrumb
 }
 
 pub fn save_breadcrumb_in(dir: &Path, on: bool) -> std::io::Result<()> {
@@ -242,11 +327,7 @@ pub fn load_outline_margin() -> Option<bool> {
 
 #[must_use]
 pub fn load_outline_margin_in(dir: &Path) -> Option<bool> {
-    parse_key(
-        &std::fs::read_to_string(dir.join("config")).ok()?,
-        "outline_margin",
-    )
-    .map(|v| v == "true")
+    load_all_in(dir).outline_margin
 }
 
 pub fn save_outline_margin_in(dir: &Path, on: bool) -> std::io::Result<()> {
@@ -263,7 +344,7 @@ pub fn load_titles() -> Option<bool> {
 
 #[must_use]
 pub fn load_titles_in(dir: &Path) -> Option<bool> {
-    parse_key(&std::fs::read_to_string(dir.join("config")).ok()?, "titles").map(|v| v == "true")
+    load_all_in(dir).titles
 }
 
 pub fn save_titles_in(dir: &Path, on: bool) -> std::io::Result<()> {
@@ -293,13 +374,7 @@ pub fn load_max_width() -> Option<u16> {
 
 #[must_use]
 pub fn load_max_width_in(dir: &Path) -> Option<u16> {
-    let raw: u16 = parse_key(
-        &std::fs::read_to_string(dir.join("config")).ok()?,
-        "max_width",
-    )?
-    .parse()
-    .ok()?;
-    Some(if raw == 0 { 0 } else { raw.max(MIN_MEASURE) })
+    load_all_in(dir).max_width
 }
 
 pub fn save_max_width_in(dir: &Path, w: u16) -> std::io::Result<()> {
@@ -427,14 +502,17 @@ mod tests {
 
     #[test]
     fn parses_a_root_line() {
-        assert_eq!(parse("root = /tmp/x\n"), Some(PathBuf::from("/tmp/x")));
+        assert_eq!(
+            parse_all("root = /tmp/x\n").root,
+            Some(PathBuf::from("/tmp/x"))
+        );
     }
 
     #[test]
     fn tolerates_whitespace_and_missing_spaces() {
-        assert_eq!(parse("root=/tmp/x"), Some(PathBuf::from("/tmp/x")));
+        assert_eq!(parse_all("root=/tmp/x").root, Some(PathBuf::from("/tmp/x")));
         assert_eq!(
-            parse("  root   =   /tmp/x   "),
+            parse_all("  root   =   /tmp/x   ").root,
             Some(PathBuf::from("/tmp/x"))
         );
     }
@@ -443,14 +521,14 @@ mod tests {
     fn ignores_unknown_keys_and_comments() {
         // A newer version's file must not break an older binary.
         let text = "# a comment\ntheme = dark\nroot = /tmp/x\nfuture_key = 3\n";
-        assert_eq!(parse(text), Some(PathBuf::from("/tmp/x")));
+        assert_eq!(parse_all(text).root, Some(PathBuf::from("/tmp/x")));
     }
 
     #[test]
     fn malformed_input_yields_no_root_rather_than_an_error() {
-        assert_eq!(parse(""), None);
-        assert_eq!(parse("garbage"), None);
-        assert_eq!(parse("root ="), None);
+        assert_eq!(parse_all("").root, None);
+        assert_eq!(parse_all("garbage").root, None);
+        assert_eq!(parse_all("root =").root, None);
     }
 
     #[test]
@@ -486,5 +564,96 @@ mod tests {
     #[test]
     fn a_missing_directory_is_not_an_error_on_load() {
         assert_eq!(load_root_in(Path::new("/nonexistent/xyzzy")), None);
+    }
+
+    /// One file, two readings of a boolean: `hints`/`breadcrumb` took
+    /// `v != "false"` and `titles`/`outline_margin` took `v == "true"`, so
+    /// `breadcrumb = 1` was on while `titles = 1` was off. Nothing documented
+    /// either spelling, so both were guesses a reader had to make twice.
+    #[test]
+    fn every_boolean_key_reads_the_same_spellings() {
+        let d = tempfile::tempdir().unwrap();
+        for (on, off) in [
+            ("true", "false"),
+            ("1", "0"),
+            ("yes", "no"),
+            ("TRUE", "False"),
+        ] {
+            std::fs::write(
+                d.path().join("config"),
+                format!(
+                    "hints = {on}\nbreadcrumb = {off}\ntitles = {on}\noutline_margin = {off}\n"
+                ),
+            )
+            .unwrap();
+            assert_eq!(load_hints_in(d.path()), Some(true), "hints = {on}");
+            assert_eq!(
+                load_breadcrumb_in(d.path()),
+                Some(false),
+                "breadcrumb = {off}"
+            );
+            assert_eq!(load_titles_in(d.path()), Some(true), "titles = {on}");
+            assert_eq!(
+                load_outline_margin_in(d.path()),
+                Some(false),
+                "outline_margin = {off}"
+            );
+        }
+    }
+
+    /// A value that is not a spelling of either is not an answer, so each key
+    /// falls back to its OWN default — which is what both old readings did by
+    /// accident, and is the behaviour worth keeping deliberately.
+    #[test]
+    fn an_unreadable_boolean_falls_back_to_that_keys_default() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("config"),
+            "hints = wibble\nbreadcrumb = wibble\ntitles = wibble\noutline_margin = wibble\n",
+        )
+        .unwrap();
+        assert_eq!(load_hints_in(d.path()), Some(true), "hints default on");
+        assert_eq!(
+            load_breadcrumb_in(d.path()),
+            Some(true),
+            "breadcrumb default on"
+        );
+        assert_eq!(load_titles_in(d.path()), Some(false), "titles default off");
+        assert_eq!(
+            load_outline_margin_in(d.path()),
+            Some(false),
+            "outline_margin default off"
+        );
+    }
+
+    /// Startup read the file eight times through six near-identical wrappers,
+    /// each `read_to_string`-ing and re-scanning all of it. One pass answers
+    /// every key, and answers them from the same bytes — so a file rewritten
+    /// mid-startup cannot be read half one way and half the other.
+    #[test]
+    fn one_read_answers_every_key() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("config"),
+            "# mine\nroot = /r\ntheme = paper\nhints = false\nbreadcrumb = 0\n\
+             outline_margin = yes\ntitles = 1\nmax_width = 72\nplace = /p1\nplace = /p2\n\
+             future_key = 3\n",
+        )
+        .unwrap();
+        let c = load_all_in(d.path());
+        assert_eq!(c.root, Some(PathBuf::from("/r")));
+        assert_eq!(c.theme.as_deref(), Some("paper"));
+        assert_eq!(c.hints, Some(false));
+        assert_eq!(c.breadcrumb, Some(false));
+        assert_eq!(c.outline_margin, Some(true));
+        assert_eq!(c.titles, Some(true));
+        assert_eq!(c.max_width, Some(72));
+        assert_eq!(c.places, vec![PathBuf::from("/p1"), PathBuf::from("/p2")]);
+
+        // And an absent file answers "nothing set" for all of them at once.
+        let empty = load_all_in(Path::new("/nonexistent/xyzzy"));
+        assert_eq!(empty.root, None);
+        assert_eq!(empty.hints, None);
+        assert!(empty.places.is_empty());
     }
 }

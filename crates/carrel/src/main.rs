@@ -326,12 +326,10 @@ fn drive_backlinks(
 
 /// Home-screen preferences that live on `Home` rather than `App`.
 fn set_home_prefs(app: &mut App) {
-    let titles = config::load_titles().unwrap_or(false);
+    let c = config::load_all();
     if let Some(h) = app.home_mut() {
-        h.show_titles = titles;
-        h.places = config::config_dir()
-            .map(|d| config::load_places_in(&d))
-            .unwrap_or_default();
+        h.show_titles = c.titles.unwrap_or(false);
+        h.places = c.places;
     }
 }
 
@@ -351,7 +349,7 @@ fn fill_titles(app: &mut App) {
         .map(|e| ((e.path.clone(), e.mtime), scan::title_of(&e.path)))
         .collect();
     if let Some(h) = app.home_mut() {
-        h.titles.extend(read);
+        h.cache_titles(read);
     }
 }
 
@@ -1589,12 +1587,15 @@ fn mouse_action(m: MouseEvent, app: &App, ptr: &mut Pointer) -> Option<carrel::a
 /// has no reading position to resume or save, and the entry point that knows
 /// that is the one that must say so.
 fn apply_config(app: &mut App) {
+    // ONE read of the config file. Six wrappers each used to open and rescan
+    // it independently, so startup read the same small file eight times.
+    let c = config::load_all();
     app.config_dir = config::config_dir();
-    app.hints = config::load_hints().unwrap_or(true);
-    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
-    app.outline_margin = config::load_outline_margin().unwrap_or(false);
+    app.hints = c.hints.unwrap_or(true);
+    app.breadcrumb = c.breadcrumb.unwrap_or(true);
+    app.outline_margin = c.outline_margin.unwrap_or(false);
     // The reading measure. Absent means the default; an explicit 0 means off.
-    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    app.max_width = c.max_width.unwrap_or(config::DEFAULT_MEASURE);
 }
 
 /// Apply the saved theme. An unknown name falls back to `terminal` with a

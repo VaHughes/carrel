@@ -158,6 +158,14 @@ pub struct Resume {
 /// you are in the middle of, not a history.
 pub const RESUME_ROWS: usize = 3;
 
+/// How many read titles [`Home::titles`] holds before it is dropped whole.
+///
+/// Generous on purpose: it is a bound, not a working set. Fourteen rows are
+/// painted at a time, so anything above a few hundred already means the cache
+/// never costs a re-read in practice, and 4096 short strings is a rounding
+/// error next to the index this screen is listing.
+pub const TITLE_CACHE_CAP: usize = 4096;
+
 /// A continue row for a remembered position, or `None` if it is not one.
 ///
 /// **A document at 0% was opened and not read; at 100% it is finished.**
@@ -230,8 +238,19 @@ pub struct Home {
     /// Titles read from the head of a file, keyed by `(path, mtime)`.
     ///
     /// **Filled lazily for the rows actually painted.** Reading 110k file
-    /// heads to fill fourteen rows is not affordable; reading fourteen is
-    /// free. The mtime is part of the key so an edited file re-reads.
+    /// heads to fill fourteen rows is not affordable. The mtime is part of the
+    /// key so an edited file re-reads — which is also why the map needs
+    /// [`TITLE_CACHE_CAP`]: every edit adds a key rather than replacing one.
+    ///
+    /// **Filling it blocks the frame, and "reading fourteen is free" was not
+    /// true where it mattered.** `main.rs::fill_titles` runs up to fourteen
+    /// `File::open` + `read` calls on the UI thread *before every frame*, so
+    /// the claim held exactly as far as the warm page cache did — and this
+    /// module's own header says in bold that cold caches, spinning disks and
+    /// network mounts are not measured. On an NFS or sshfs vault, holding `j`
+    /// down is fourteen cold round-trips per frame, every frame. The honest
+    /// fix is to read them off the UI thread, the way the walk and the grep
+    /// already are; the cap here is the half that lives in the state layer.
     pub titles: HashMap<(PathBuf, std::time::SystemTime), Option<String>>,
     /// Show frontmatter titles instead of file names (config `titles`).
     pub show_titles: bool,
@@ -509,6 +528,28 @@ impl Home {
             .to_string()
     }
 
+    /// Remember titles just read, dropping the lot first if the map has grown
+    /// past [`TITLE_CACHE_CAP`].
+    ///
+    /// **The whole cache is cleared rather than an LRU evicted**, and for a
+    /// fourteen-row screen that is the right shape: the next frame re-reads
+    /// only the rows it is painting, so the cost of being wrong is fourteen
+    /// file heads once, and an LRU here would be more bookkeeping than the
+    /// thing it manages. A batch bigger than the cap is still stored whole —
+    /// it is exactly what the frame about to be painted needs.
+    ///
+    /// Callers must come through here rather than reaching for `titles`
+    /// directly, or the cap is not a cap.
+    pub fn cache_titles(
+        &mut self,
+        read: impl IntoIterator<Item = ((PathBuf, std::time::SystemTime), Option<String>)>,
+    ) {
+        if self.titles.len() >= TITLE_CACHE_CAP {
+            self.titles.clear();
+        }
+        self.titles.extend(read);
+    }
+
     /// The entries currently painted, whose titles are worth reading.
     #[must_use]
     pub fn visible_entries(&self, cols: u16, rows: u16, hints: bool) -> Vec<Entry> {
@@ -713,11 +754,25 @@ const MAX_MATCHES: usize = 200;
 /// keeps them somewhere else. Listing beats guessing.
 #[must_use]
 pub fn directory_matches(query: &str, cwd: &Path) -> Vec<PathBuf> {
+    directory_matches_in(query, cwd, home_dir().as_deref())
+}
+
+/// [`directory_matches`] against an explicit home directory.
+///
+/// The `_in` convention of `config.rs` and `state.rs`, and here for the same
+/// reason those have it: the three tests that cover `~` used to read the
+/// developer's REAL `$HOME` and `read_dir` it, guarded by
+/// `let Some(home) = home_dir() else { return }`. In a container with no HOME
+/// — CI, a sandbox — that guard made all three pass while asserting nothing
+/// at all, which is worse than not having them. A tempdir stands in now and
+/// the guards are assertions.
+#[must_use]
+pub fn directory_matches_in(query: &str, cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
     let q = query.trim();
     if q.is_empty() {
-        return default_roots(cwd);
+        return default_roots(cwd, home);
     }
-    let (dir, prefix) = split_query(q, cwd);
+    let (dir, prefix) = split_query(q, cwd, home);
     list_dirs(&dir, &prefix)
 }
 
@@ -747,10 +802,10 @@ pub fn picker_prefill(root: &Path) -> String {
 }
 
 /// With nothing typed: where you are, then the top level of your home.
-fn default_roots(cwd: &Path) -> Vec<PathBuf> {
+fn default_roots(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
     let mut out = vec![cwd.to_path_buf()];
-    if let Some(home) = home_dir() {
-        out.extend(list_dirs(&home, ""));
+    if let Some(home) = home {
+        out.extend(list_dirs(home, ""));
     }
     out.retain(|p| p.is_dir());
     let mut seen = HashSet::new();
@@ -765,8 +820,8 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// `(directory to list, name prefix to match)` for a typed query.
-fn split_query(q: &str, cwd: &Path) -> (PathBuf, String) {
-    let expanded = expand_typed(q);
+fn split_query(q: &str, cwd: &Path, home: Option<&Path>) -> (PathBuf, String) {
+    let expanded = expand_typed_in(q, home);
     // The trailing slash has to be read off the STRING: a `PathBuf` drops it,
     // and it is the whole difference between "list this directory" and
     // "match this name in its parent".
@@ -790,18 +845,25 @@ fn split_query(q: &str, cwd: &Path) -> (PathBuf, String) {
 /// does in the match list.
 #[must_use]
 pub fn expand_typed(q: &str) -> PathBuf {
+    expand_typed_in(q, home_dir().as_deref())
+}
+
+/// [`expand_typed`] against an explicit home directory; see
+/// [`directory_matches_in`] for why that is injectable.
+#[must_use]
+pub fn expand_typed_in(q: &str, home: Option<&Path>) -> PathBuf {
     let Some(rest) = q.strip_prefix('~') else {
         return PathBuf::from(q);
     };
     if !rest.is_empty() && !rest.starts_with('/') {
         return PathBuf::from(q); // ~user — not ours to resolve
     }
-    let Some(home) = home_dir() else {
+    let Some(home) = home else {
         return PathBuf::from(q);
     };
     match rest.strip_prefix('/').filter(|r| !r.is_empty()) {
         Some(r) => home.join(r),
-        None => home,
+        None => home.to_path_buf(),
     }
 }
 
@@ -1492,6 +1554,44 @@ mod tests {
         assert!(h.visible_entries(100, 20, true).is_empty());
     }
 
+    /// Nothing ever evicted from `titles`: a session that scrolls a large
+    /// vault accumulates an entry per `(path, mtime)` ever painted, and an
+    /// edited file adds another rather than replacing one. Fourteen rows do
+    /// not need a memory of thousands.
+    #[test]
+    fn the_title_cache_does_not_grow_without_bound() {
+        let mut h = home();
+        for i in 0..(TITLE_CACHE_CAP * 2) {
+            h.cache_titles(vec![(
+                (
+                    PathBuf::from(format!("/root/f{i}.md")),
+                    SystemTime::UNIX_EPOCH,
+                ),
+                Some(format!("title {i}")),
+            )]);
+            assert!(
+                h.titles.len() <= TITLE_CACHE_CAP,
+                "grew to {} after {i}",
+                h.titles.len(),
+            );
+        }
+        // A batch larger than the cap is still stored — it is what the frame
+        // about to be painted needs, and dropping it would mean no titles.
+        let batch: Vec<_> = (0..TITLE_CACHE_CAP + 5)
+            .map(|i| {
+                (
+                    (
+                        PathBuf::from(format!("/root/g{i}.md")),
+                        SystemTime::UNIX_EPOCH,
+                    ),
+                    None,
+                )
+            })
+            .collect();
+        h.cache_titles(batch);
+        assert_eq!(h.titles.len(), TITLE_CACHE_CAP + 5);
+    }
+
     // --- continue reading (2026-08-21) ---
 
     #[test]
@@ -1556,26 +1656,58 @@ mod tests {
         assert!(roots.iter().all(|r| r.is_dir()), "{roots:?}");
     }
 
+    /// A stand-in `$HOME`: `<tmp>/{alpha,beta,.cache}`. The three tests below
+    /// used the developer's real one, behind a guard that returned early when
+    /// there was none — so in a container they passed having asserted nothing.
+    fn fake_home() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        for sub in ["alpha", "beta", ".cache"] {
+            std::fs::create_dir(d.path().join(sub)).unwrap();
+        }
+        d
+    }
+
     #[test]
     fn the_home_directory_itself_is_never_offered() {
         // Scanning all of ~ descends into every cache, container and virtualenv
         // on the machine. It must not be one keystroke away by accident;
         // typing `~` is there for anyone who really means it.
-        let Some(home) = home_dir() else { return };
-        let roots = directory_matches("", Path::new("/tmp"));
-        assert!(!roots.contains(&home), "offered $HOME: {roots:?}");
+        let h = fake_home();
+        let cwd = tempfile::tempdir().unwrap();
+        let roots = directory_matches_in("", cwd.path(), Some(h.path()));
+        assert!(
+            !roots.contains(&h.path().to_path_buf()),
+            "offered $HOME: {roots:?}"
+        );
     }
 
     #[test]
     fn nothing_typed_offers_the_home_directorys_subdirectories() {
         // The replacement for the hard-coded ~/Documents/GitHub probe, which
         // found nothing at all on a machine that keeps repositories elsewhere.
-        let Some(home) = home_dir() else { return };
-        let Some(first_sub) = list_dirs(&home, "").into_iter().next() else {
-            return; // a home with no visible subdirectory: nothing to assert
-        };
-        let roots = directory_matches("", Path::new("/tmp"));
-        assert!(roots.contains(&first_sub), "{roots:?}");
+        let h = fake_home();
+        let cwd = tempfile::tempdir().unwrap();
+        let roots = directory_matches_in("", cwd.path(), Some(h.path()));
+        assert_eq!(
+            roots,
+            vec![
+                cwd.path().to_path_buf(),
+                h.path().join("alpha"),
+                h.path().join("beta"),
+            ],
+            "where you are, then the top level of your home — and not `.cache`",
+        );
+    }
+
+    /// With no home to read — a container with no HOME — the picker still
+    /// offers where you are, rather than nothing.
+    #[test]
+    fn no_home_at_all_still_offers_the_current_directory() {
+        let cwd = tempfile::tempdir().unwrap();
+        assert_eq!(
+            directory_matches_in("", cwd.path(), None),
+            vec![cwd.path().to_path_buf()],
+        );
     }
 
     #[test]
@@ -1633,15 +1765,21 @@ mod tests {
 
     #[test]
     fn a_tilde_expands_to_the_home_directory() {
-        let Some(home) = home_dir() else { return };
-        assert_eq!(expand_typed("~"), home);
-        assert_eq!(expand_typed("~/notes"), home.join("notes"));
+        let h = fake_home();
+        let home = h.path();
+        assert_eq!(expand_typed_in("~", Some(home)), home);
+        assert_eq!(expand_typed_in("~/notes", Some(home)), home.join("notes"));
         // `~user` is the shell's job, not ours — it must stay literal rather
         // than silently resolving to the wrong person's home.
-        assert_eq!(expand_typed("~root/x"), PathBuf::from("~root/x"));
         assert_eq!(
-            directory_matches("~", Path::new("/tmp")),
-            list_dirs(&home, "")
+            expand_typed_in("~root/x", Some(home)),
+            PathBuf::from("~root/x")
+        );
+        // With no home there is nothing to expand to, so `~` stays literal.
+        assert_eq!(expand_typed_in("~/notes", None), PathBuf::from("~/notes"));
+        assert_eq!(
+            directory_matches_in("~", Path::new("/tmp"), Some(home)),
+            vec![home.join("alpha"), home.join("beta")],
         );
     }
 
