@@ -131,6 +131,9 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
     let bytes = text.as_bytes();
     let mut out: Vec<ScriptRun> = Vec::new();
     let mut at = 0usize;
+    // The whitespace-delimited token `at` currently sits in — see rule 5.
+    let mut tok_end = 0usize;
+    let mut tok_urlish = false;
     while at < bytes.len() {
         let delim = bytes[at];
         if delim != b'^' && delim != b'~' {
@@ -172,12 +175,34 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
             at += 1; // empty content
             continue;
         }
-        // Rule 5, last because it is the only check that walks: a long line
-        // with no whitespace would otherwise cost a token scan per `~` in it.
-        // By here we have a complete candidate, so this runs once per run,
-        // not once per delimiter.
-        if let Some(token_end) = url_token_end(bytes, at) {
-            at = token_end;
+        // Rule 5, last because it is the only check that walks.
+        //
+        // The whitespace-delimited token containing `at` is CACHED and
+        // recomputed only when `at` leaves it. `at` never moves backwards, so
+        // the line is scanned once in total. Recomputing per candidate — which
+        // is what calling `url_token_end` here used to do — was quadratic on a
+        // line with no ASCII whitespace, because both of its scans walked to
+        // the end of the line every time. The old comment bounded the number
+        // of scans by the number of runs, but a complete candidate can occur
+        // every four bytes (`a^1^a^1^…`), so that bound is Θ(n) scans of Θ(n).
+        // Measured through `--tasks`: 32 KB 144 ms, 64 KB 551 ms,
+        // 256 KB 8631 ms, against 12 ms for the same bytes with spaces in.
+        if at >= tok_end {
+            let start = bytes[..at]
+                .iter()
+                .rposition(u8::is_ascii_whitespace)
+                .map_or(0, |p| p + 1);
+            tok_end = bytes[at..]
+                .iter()
+                .position(u8::is_ascii_whitespace)
+                .map_or(bytes.len(), |p| at + p);
+            let token = &bytes[start..tok_end];
+            tok_urlish = token.windows(3).any(|w| w == b"://")
+                || token.starts_with(b"www.")
+                || token.starts_with(b"mailto:");
+        }
+        if tok_urlish {
+            at = tok_end;
             continue;
         }
         out.push(ScriptRun {
@@ -193,24 +218,6 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
         at = close + 1;
     }
     out
-}
-
-/// If `at` falls inside a URL-shaped whitespace-delimited token, where that
-/// token ends. Used to skip the token whole — see [`attached_scripts`] rule 5.
-fn url_token_end(bytes: &[u8], at: usize) -> Option<usize> {
-    let start = bytes[..at]
-        .iter()
-        .rposition(u8::is_ascii_whitespace)
-        .map_or(0, |p| p + 1);
-    let end = bytes[at..]
-        .iter()
-        .position(u8::is_ascii_whitespace)
-        .map_or(bytes.len(), |p| at + p);
-    let token = &bytes[start..end];
-    let urlish = token.windows(3).any(|w| w == b"://")
-        || token.starts_with(b"www.")
-        || token.starts_with(b"mailto:");
-    urlish.then_some(end)
 }
 
 fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {

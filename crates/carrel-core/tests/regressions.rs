@@ -253,3 +253,40 @@ fn a_huge_paragraph_wraps_in_linear_time() {
         b / a
     );
 }
+
+/// Parsing a line with no ASCII whitespace must be LINEAR in its length.
+///
+/// `attached_scripts` rule 5 skips a `^`/`~` that sits inside a URL-shaped
+/// token. It found that token by scanning backwards to the previous
+/// whitespace and forwards to the next — and it did that per candidate run.
+/// A complete candidate can occur every four bytes (`a^1^a^1^…`), so on a
+/// line with no whitespace both scans walked the whole line every time.
+/// Measured through `--tasks` before the fix: 32 KB 144 ms, 64 KB 551 ms,
+/// 256 KB 8631 ms; the same bytes with spaces took 12 ms. After: 3, 4, 8 ms.
+///
+/// The realistic triggers are ordinary — a CJK paragraph with embedded ASCII,
+/// a pasted minified or base64 run — and a 1 MB such line was minutes of
+/// frozen UI on open with no cancellation path.
+#[test]
+fn a_line_without_whitespace_parses_in_linear_time() {
+    use std::time::Instant;
+
+    let small = "a^1^".repeat(16_384); // 64 KB, no ASCII whitespace at all
+    let large = "a^1^".repeat(65_536); // 256 KB
+
+    let time = |src: &str| {
+        let t = Instant::now();
+        let doc = Document::parse(src);
+        assert!(!doc.text.is_empty());
+        t.elapsed().as_secs_f64()
+    };
+    time(&small);
+    let (a, b) = (time(&small), time(&large));
+
+    assert!(
+        b < a * 12.0,
+        "4x the line took {:.1}x the time ({a:.4}s -> {b:.4}s). \
+         Linear is ~4x; the quadratic this guards was 16x.",
+        b / a
+    );
+}
