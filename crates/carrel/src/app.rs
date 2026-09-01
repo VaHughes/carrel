@@ -599,7 +599,6 @@ impl App {
         self.matches = None;
         self.forward = None;
         self.mode = Mode::Normal;
-        self.selected_link = None;
         self.view = ViewState::new();
         self.layout = Layout::with_measure(
             &self.doc,
@@ -614,8 +613,11 @@ impl App {
             .to_string_lossy()
             .into_owned();
         self.file = Some(path.to_path_buf());
-        self.image_dims.clear();
-        self.diagram_art.clear();
+        self.forget_derived_state();
+        // A different document: the panes that answered questions about the
+        // one we are leaving would otherwise keep answering them.
+        self.backlinks = None;
+        self.mark_list = None;
         self.rebuild_math_art();
         self.words = word_count(&self.doc.text);
         self.has_headings = self
@@ -623,14 +625,37 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
-        self.folded.clear();
-        self.folded_details.clear();
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
         self.resolve_wikilinks();
         self.restore_position();
         Ok(())
+    }
+
+    /// Forget every piece of state whose bytes or block indices belong to a
+    /// parse that is about to be replaced.
+    ///
+    /// Both `open_path` and `reload_from` must do this, and having it written
+    /// out twice is exactly how they drifted: `reload_from` learned to clear
+    /// the selection ("its bytes indexed the old text") and `open_path` never
+    /// did, and neither ever cleared `code_focus` — so stepping to a late
+    /// code block, following a link to a shorter document and pressing `y`
+    /// indexed a block that no longer existed and aborted the process.
+    ///
+    /// What is NOT here is anything the two disagree about on purpose:
+    /// `matches` survives a reload and is re-run, `forward` is re-derived
+    /// rather than dropped, and `open_path` alone clears the panes that
+    /// answer questions about a file it is leaving.
+    fn forget_derived_state(&mut self) {
+        self.selection = None;
+        self.sel_anchor = None;
+        self.selected_link = None;
+        self.code_focus = None;
+        self.folded.clear();
+        self.folded_details.clear();
+        self.image_dims.clear();
+        self.diagram_art.clear();
     }
 
     /// Re-read the open file in place: same document identity, new content.
@@ -668,8 +693,7 @@ impl App {
             HashMap::new(),
             false,
         );
-        self.image_dims.clear();
-        self.diagram_art.clear();
+        self.forget_derived_state();
         self.rebuild_math_art();
         self.words = word_count(&self.doc.text);
         self.has_headings = self
@@ -677,11 +701,6 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
-        self.folded.clear();
-        self.folded_details.clear();
-        self.selection = None;
-        self.sel_anchor = None;
-        self.selected_link = None;
         if self.forward.is_some() {
             // The rows indexed the old parse; re-derive rather than lie.
             let rows = forward_rows(self);
@@ -4678,6 +4697,56 @@ diff --git a/x.rs b/x.rs
         update(&mut a, Action::CodeStep(1));
         assert_eq!(a.code_focus, Some(two));
         assert!(a.note.is_some());
+    }
+
+    #[test]
+    fn a_document_change_forgets_the_block_cursor_and_the_selection() {
+        // Both of these index the OLD parse. `code_focus` surviving an open
+        // was a reachable panic: step to a late code block, follow a link to
+        // a shorter document, press `y`, and `node_for_block` indexed a block
+        // that no longer existed. The selection surviving was quieter — the
+        // copy took bytes from the new document at the old offsets.
+        let src =
+            "intro\n\n```sh\none\n```\n\nmid\n\n```sh\ntwo\n```\n\nmore\n\n```sh\nthree\n```\n";
+        let d = tempfile::tempdir().unwrap();
+        let small = d.path().join("small.md");
+        std::fs::write(&small, "# Small\n").unwrap();
+
+        for step in 1..=3 {
+            let mut a = App::new("t.md".into(), Document::parse(src), 40, 20);
+            for _ in 0..step {
+                update(&mut a, Action::CodeStep(1));
+            }
+            let focused = a.code_focus.expect("a code block is focused");
+            a.selection = Some(0..5);
+            a.sel_anchor = Some((0, 5));
+
+            a.open_path(&small).expect("the small document opens");
+
+            assert_eq!(a.code_focus, None, "the block cursor indexed the old parse");
+            assert_eq!(a.selection, None, "the selection indexed the old text");
+            assert_eq!(a.sel_anchor, None);
+
+            // The reported crash, exactly: `y` with a stale cursor.
+            update(&mut a, Action::YankBlock);
+            assert!(
+                focused.get() < 12,
+                "sanity: the old index was a real block in the old document"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reload_forgets_the_block_cursor_too() {
+        let src = "a\n\n```sh\none\n```\n\nb\n\n```sh\ntwo\n```\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 40, 20);
+        update(&mut a, Action::CodeStep(1));
+        update(&mut a, Action::CodeStep(1));
+        assert!(a.code_focus.is_some());
+
+        a.reload_from("# tiny\n");
+        assert_eq!(a.code_focus, None);
+        update(&mut a, Action::YankBlock); // must not panic
     }
 
     #[test]

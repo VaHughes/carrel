@@ -38,6 +38,14 @@ permissions:
 #
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
+#
+# LOCAL EDITS, which `dist init` will delete when it regenerates this file —
+# put them back, the same way dist-workspace.toml's comments have to be put
+# back (it happened once already, 2026-08-17):
+#
+#   1. the `gate` job below, and the `needs: gate` on `plan` and on
+#      `build-local-artifacts`;
+#   2. every third-party action pinned to a commit SHA rather than a tag.
 on:
   pull_request:
   push:
