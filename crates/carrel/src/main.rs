@@ -139,13 +139,9 @@ fn main() -> ExitCode {
     match args.as_slice() {
         [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
-        [a] if a == "-h" || a == "--help" => {
-            print!("{USAGE}");
-            ExitCode::SUCCESS
-        }
+        [a] if a == "-h" || a == "--help" => emit(USAGE),
         [a] if a == "-V" || a == "--version" => {
-            println!("carrel {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+            emit(&format!("carrel {}\n", env!("CARGO_PKG_VERSION")))
         }
         [a] if a == "-" => open_stdin(None, true),
         [a, pattern] if a == "-" => open_stdin(Some(pattern), true),
@@ -189,8 +185,7 @@ fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
     match src {
         Ok(src) => {
             let doc = carrel_core::Document::parse(&src);
-            print!("{}", carrel::ansi::render(&doc, width));
-            ExitCode::SUCCESS
+            emit(&carrel::ansi::render(&doc, width))
         }
         Err(e) => {
             eprintln!("carrel: {e}");
@@ -214,8 +209,7 @@ fn print_tasks(path: &Path) -> ExitCode {
                 eprintln!("carrel: no task lists in {}", path.display());
                 return ExitCode::FAILURE;
             }
-            print!("{report}");
-            ExitCode::SUCCESS
+            emit(&report)
         }
         Err(e) => {
             eprintln!("carrel: cannot read {}: {e}", path.display());
@@ -253,10 +247,7 @@ fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
     // files — stdout's tty-ness notwithstanding.
     if let Some(p) = pattern {
         return match read_stdin_capped() {
-            Ok(src) => {
-                report(Path::new("(stdin)"), &src, p);
-                ExitCode::SUCCESS
-            }
+            Ok(src) => emit(&report(Path::new("(stdin)"), &src, p)),
             Err(e) => {
                 eprintln!("carrel: {e}");
                 ExitCode::FAILURE
@@ -283,8 +274,7 @@ fn run_stdin_or_fallback() -> ExitCode {
         // — it reads to EOF regardless, so this is the whole document.
         let src: String = rx.iter().collect();
         let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
-        print!("{}", carrel::plain::render(&doc, 80));
-        ExitCode::SUCCESS
+        emit(&carrel::plain::render(&doc, 80))
     }
 }
 
@@ -419,8 +409,7 @@ fn print_plain_stdin(width: u16) -> ExitCode {
     match read_stdin_capped() {
         Ok(src) => {
             let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
-            print!("{}", carrel::plain::render(&doc, width));
-            ExitCode::SUCCESS
+            emit(&carrel::plain::render(&doc, width))
         }
         Err(e) => {
             eprintln!("carrel: {e}");
@@ -451,15 +440,15 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         let (entries, _) = scan::walk_blocking(&root);
-        println!(
-            "{} markdown file(s) under {}",
+        let mut out = format!(
+            "{} markdown file(s) under {}\n",
             entries.len(),
             root.display()
         );
         for e in entries.iter().take(50) {
-            println!("  {}", e.path.display());
+            out.push_str(&format!("  {}\n", e.path.display()));
         }
-        return ExitCode::SUCCESS;
+        return emit(&out);
     }
 
     match run_home(root, note) {
@@ -487,8 +476,7 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
     // With a pattern, stay non-interactive: useful for scripting and for
     // checking the core without a terminal.
     if let Some(p) = pattern {
-        report(path, &src, p);
-        return ExitCode::SUCCESS;
+        return emit(&report(path, &src, p));
     }
 
     // No terminal, no TUI. `less` behaves the same way, and the alternative is
@@ -500,8 +488,7 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
         // Piping implies plain (Q17): a pipe wants the document, not a
         // summary — and linear text is also what a screen reader can use.
         let doc = carrel::app::adapt(&src, diff_ok_for(path));
-        print!("{}", carrel::plain::render(&doc, 80));
-        return ExitCode::SUCCESS;
+        return emit(&carrel::plain::render(&doc, 80));
     }
 
     match run(path, &src) {
@@ -1832,12 +1819,43 @@ fn emit_osc8(links: &[OscLink]) -> std::io::Result<()> {
 /// pattern is given.
 /// `--plain`: the document as linear text on stdout — the accessible
 /// rendering, and the pipe-friendly one. See `plain.rs` and the Q17 design.
+/// Write to stdout, treating a closed pipe as success.
+///
+/// Rust ignores SIGPIPE, so `print!` PANICS on `EPIPE` — and `carrel doc.md |
+/// head`, `carrel --plain x.md | less` and `git show | carrel | head` are all
+/// ordinary invocations, the last especially since the README recommends
+/// `git config core.pager carrel`. What the user saw was an internal Rust
+/// panic and a backtrace hint:
+///
+/// ```text
+/// $ carrel --plain big.md | head -2
+/// thread 'main' panicked at library/std/src/io/stdio.rs:
+/// failed printing to stdout: Broken pipe (os error 32)
+/// note: run with `RUST_BACKTRACE=1` …
+/// ```
+///
+/// A small document does not reproduce it: the whole thing fits the pipe
+/// buffer and the write never fails. It needs an output larger than 64 KiB,
+/// which is why this survived so long.
+fn emit(s: &str) -> ExitCode {
+    use std::io::Write;
+    match std::io::stdout().lock().write_all(s.as_bytes()) {
+        // The reader downstream stopped listening. That is `head` doing its
+        // job, not an error, and every well-behaved Unix filter exits 0.
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("carrel: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn print_plain(path: &Path, width: u16) -> ExitCode {
     match std::fs::read_to_string(path) {
         Ok(src) => {
             let doc = carrel::app::adapt(&src, diff_ok_for(path));
-            print!("{}", carrel::plain::render(&doc, width));
-            ExitCode::SUCCESS
+            emit(&carrel::plain::render(&doc, width))
         }
         Err(e) => {
             eprintln!("carrel: {}: {e}", path.display());
@@ -1846,7 +1864,9 @@ fn print_plain(path: &Path, width: u16) -> ExitCode {
     }
 }
 
-fn report(path: &Path, src: &str, pattern: &str) {
+fn report(path: &Path, src: &str, pattern: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     let doc = Document::parse(src);
     let width: u16 = 80;
 
@@ -1855,18 +1875,18 @@ fn report(path: &Path, src: &str, pattern: &str) {
         rows_total += wrap(&doc, BlockIdx(i as u32), width, &cluster_width, |_| {});
     }
 
-    println!("{}", path.display());
-    println!("  {} bytes source", src.len());
-    println!("  {} bytes display text", doc.text.len());
-    println!("  {} blocks", doc.block_count());
-    println!("  {rows_total} rows at width {width}");
+    let _ = writeln!(out, "{}", path.display());
+    let _ = writeln!(out, "  {} bytes source", src.len());
+    let _ = writeln!(out, "  {} bytes display text", doc.text.len());
+    let _ = writeln!(out, "  {} blocks", doc.block_count());
+    let _ = writeln!(out, "  {rows_total} rows at width {width}");
 
     if pattern.is_empty() {
-        return;
+        return out;
     }
 
     let matches = search(&doc, pattern, true);
-    println!("\n  {} match(es) for {pattern:?}", matches.len());
+    let _ = writeln!(out, "\n  {} match(es) for {pattern:?}", matches.len());
 
     for (n, r) in matches.ranges.iter().take(10).enumerate() {
         let b = doc.block_at_doc(carrel_core::DocByte(r.start));
@@ -1879,12 +1899,13 @@ fn report(path: &Path, src: &str, pattern: &str) {
             }
         });
         if let Some((text, (c0, c1))) = hit {
-            println!("    {}. cols {c0}..{c1}  │ {}", n + 1, text.trim());
+            let _ = writeln!(out, "    {}. cols {c0}..{c1}  │ {}", n + 1, text.trim());
         }
     }
     if matches.len() > 10 {
-        println!("    … and {} more", matches.len() - 10);
+        let _ = writeln!(out, "    … and {} more", matches.len() - 10);
     }
+    out
 }
 
 #[cfg(test)]

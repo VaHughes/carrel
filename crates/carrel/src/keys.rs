@@ -325,6 +325,15 @@ impl Keys {
     }
 
     fn map_search(key: KeyEvent) -> Option<Action> {
+        // Ctrl-C first, and BEFORE the `Char(c)` arm: raw mode clears ISIG, so
+        // the terminal generates no SIGINT and this is the only place the
+        // reflex can be honoured. Every other dispatcher already carries it;
+        // this one did not, and the modifier was never inspected — so Ctrl-C
+        // typed a literal `c` into the query and the user's universal escape
+        // did nothing visible.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Some(Action::Quit);
+        }
         let k = match key.code {
             KeyCode::Char(c) => SearchKey::Char(c),
             KeyCode::Backspace => SearchKey::Backspace,
@@ -515,6 +524,32 @@ pub fn drag_target(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ctrl_c_quits_from_every_dispatcher() {
+        // Raw mode clears ISIG, so the terminal never generates SIGINT and a
+        // dispatcher that does not handle Ctrl-C leaves the user's universal
+        // escape doing nothing. `map_search` was the one that did not: it
+        // matched `Char(c)` without inspecting the modifier, so Ctrl-C typed
+        // a literal `c` into the query.
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut keys = Keys::new();
+        let dispatchers: [(&str, Option<Action>); 7] = [
+            ("map", keys.map(ctrl_c, false)),
+            ("map (searching)", Keys::map_search(ctrl_c)),
+            (
+                "map_home",
+                keys.map_home(ctrl_c, crate::home::HomeMode::Normal),
+            ),
+            ("map_backlinks", Keys::map_backlinks(ctrl_c)),
+            ("map_forward", Keys::map_forward(ctrl_c)),
+            ("map_marks", Keys::map_marks(ctrl_c)),
+            ("map_outline", Keys::map_outline(ctrl_c)),
+        ];
+        for (name, got) in dispatchers {
+            assert_eq!(got, Some(Action::Quit), "Ctrl-C must quit from {name}");
+        }
+    }
+
     use super::*;
 
     fn k(c: char) -> KeyEvent {
