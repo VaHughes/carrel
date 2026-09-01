@@ -1698,6 +1698,9 @@ fn apply_config(app: &mut App) {
     // it independently, so startup read the same small file eight times.
     let c = config::load_all();
     app.config_dir = config::config_dir();
+    // Read once, at startup, and never again: the picker's "here" has to be
+    // the directory the command was typed in, and it must not drift.
+    app.launch_dir = std::env::current_dir().ok().filter(|d| d.is_dir());
     app.hints = c.hints.unwrap_or(true);
     app.breadcrumb = c.breadcrumb.unwrap_or(true);
     app.outline_margin = c.outline_margin.unwrap_or(false);

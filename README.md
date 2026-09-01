@@ -220,6 +220,32 @@ cargo test --workspace
 cargo run -p carrel -- README.md "search"
 ```
 
+### Running your own build as `carrel`
+
+While working on Carrel you want the `carrel` command to be *your* build, not the released one
+a package manager installed. Symlink it rather than copying — a copy is a snapshot that goes
+stale the moment you rebuild, and a stale binary that still answers to `carrel` will have you
+debugging a fix you already made:
+
+```bash
+cargo build                                                    # debug, ~2s incremental
+ln -sfn "$PWD/target/debug/carrel" ~/.local/bin/carrel         # once
+```
+
+From then on `cargo build` *is* the install step, and `carrel --version` reports the workspace
+version. Two things to know:
+
+- **`cargo clean` breaks the link** until the next `cargo build`, and so does a build that fails
+  — the symlink keeps pointing at a file that is gone. `carrel: command not found` after a clean
+  means exactly this, not a broken PATH.
+- **The debug build is not the shipping build.** It is roughly twenty times the size and starts
+  noticeably slower on a large library; syntax highlighting and the initial walk are where you
+  will feel it. Point the link at `target/release/carrel` and `cargo build --release` if you are
+  judging performance rather than behaviour.
+
+To go back to the packaged binary, remove the symlink and reinstall by whichever route
+[Install](#install) describes for your system.
+
 ## Architecture
 
 Two crates, one seam.

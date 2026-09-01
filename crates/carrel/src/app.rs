@@ -217,6 +217,16 @@ pub struct App {
     /// cleared by stepping to another link or by changing document.
     pending_open: Option<(LinkId, std::path::PathBuf)>,
     pub config_dir: Option<std::path::PathBuf>,
+    /// The directory `carrel` was run from, as it was at startup. Same
+    /// contract as [`Self::config_dir`]: `None` in every constructor, set by
+    /// the BINARY, so no test's picker ever reads the developer's real
+    /// working directory.
+    ///
+    /// This is where `d` opens (maintainer report, 2026-09-01), and it is
+    /// deliberately NOT the home screen's root: with a saved `root =` in the
+    /// config the two differ from the first frame, and the one the reader
+    /// means by "here" is the one they typed the command in.
+    pub launch_dir: Option<std::path::PathBuf>,
     /// Where reading positions persist. Same contract as `config_dir`:
     /// `None` in every constructor, set by the BINARY at startup, so no test
     /// can ever write the real state file.
@@ -475,6 +485,7 @@ impl App {
             library_root: None,
             pending_open: None,
             config_dir: None,
+            launch_dir: None,
             state_dir: None,
             wrap_tables: false,
             hints: true,
@@ -1930,17 +1941,38 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::PickerOpen => {
-            // Opens on where you already are (`home::picker_prefill`), so what
-            // you type continues from here instead of from `/`. Remembered
-            // places still lead the list on open, as they always have — they
-            // step aside on the first keystroke, which is the rule the typing
-            // arm already follows.
-            let prefill = app
-                .home()
-                .map(|h| crate::home::picker_prefill(&h.root))
+            // Opens on the directory `carrel` was run from — `App::launch_dir`
+            // — so what you type continues from here instead of from `/`, and
+            // the highlight is already on "here" before a single keystroke.
+            //
+            // It used to open on the home screen's ROOT with the remembered
+            // places leading the list, which meant that with a saved `root =`
+            // in the config the first thing `d` offered was the last directory
+            // you read in, not the one you had just `cd`-ed to (maintainer
+            // report, 2026-09-01). Places are the EMPTY menu's job now, the
+            // rule the typing arm already followed: one Esc clears the prefill
+            // and brings them back.
+            //
+            // The launch directory leads its own children rather than being
+            // merely typed above them, because `directory_matches` reads a
+            // trailing slash as "list what is INSIDE" — without this row the
+            // path in the input would be the one thing Enter could not choose.
+            let start = app
+                .launch_dir
+                .clone()
+                .or_else(|| app.home().map(|h| h.root.clone()));
+            let prefill = start
+                .as_deref()
+                .map(crate::home::picker_prefill)
                 .unwrap_or_default();
-            let places = app.home().map(|h| h.places.clone()).unwrap_or_default();
-            let mut roots = merge_places(places, Home::matches_for(&prefill));
+            let lead = if prefill.is_empty() {
+                // Nowhere to continue from: fall back to the remembered places
+                // ahead of the default menu, which is what `d` always did.
+                app.home().map(|h| h.places.clone()).unwrap_or_default()
+            } else {
+                start.into_iter().collect()
+            };
+            let mut roots = merge_places(lead, Home::matches_for(&prefill));
             roots.dedup();
             if let Some(h) = app.home_mut() {
                 h.picker.roots = roots;

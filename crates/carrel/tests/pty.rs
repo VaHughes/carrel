@@ -351,6 +351,61 @@ fn the_home_screen_survives_a_pty_round_trip_too() {
     );
 }
 
+/// The picker opens on the directory the command was run in, through the real
+/// binary — the half `App::launch_dir` cannot cover, because nothing but a
+/// real run sets it.
+///
+/// The maintainer's report, 2026-09-01: with a saved `root =` on file, `d`
+/// offered the last directory read in, so Enter left the directory you had
+/// just `cd`-ed to. The unit tests inject `launch_dir`; if the binary ever
+/// stops setting it, only this test notices.
+#[test]
+fn the_picker_opens_on_the_directory_the_command_was_run_in() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.md"), "# A\n").unwrap();
+    // A saved root pointing somewhere else entirely — a sibling tempdir, not
+    // a subdirectory, so neither path is a substring of the other and the
+    // assertions below cannot pass by accident.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let elsewhere = elsewhere.path();
+    let cfg = d.path().join("cfg").join("carrel");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(
+        cfg.join("config"),
+        format!(
+            "root = {}\nplace = {}\n",
+            elsewhere.display(),
+            elsewhere.display()
+        ),
+    )
+    .unwrap();
+
+    // `d` opens the picker, Ctrl-C leaves.
+    let raw = pty_run("", "d\\003", d.path());
+
+    // Compared by name, not by whole path: `/tmp` is a symlink on some hosts
+    // and `current_dir` hands back the resolved one.
+    let name = d.path().file_name().unwrap().to_string_lossy().into_owned();
+    let saved = elsewhere
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(raw.contains("choose a directory"), "the picker must be up");
+    assert!(
+        raw.contains(&format!("{name}/")),
+        "the input must open on the working directory {name}/",
+    );
+    assert!(
+        !raw.contains(&format!("{saved}/")),
+        "and never on the saved root {saved}/",
+    );
+}
+
 /// The home screen's list must pick up a file written while it is up.
 ///
 /// The unit tests cover the reconciliation ([`carrel::home::Home::begin_rescan`]

@@ -83,9 +83,14 @@ mod picker {
     use carrel::home::HomeMode;
     use carrel_core::Document;
 
-    /// The picker as `d` leaves it: prefilled with the current directory.
+    /// The picker as `d` leaves it: prefilled with the launch directory.
+    ///
+    /// `launch_dir` is set explicitly, exactly as the binary sets it — a test
+    /// that left it `None` would fall through to the home root and so never
+    /// exercise the path a reader actually walks.
     fn picker_app(d: &tempfile::TempDir) -> App {
         let mut app = App::new_home(d.path().into(), vec![], 60, 16);
+        app.launch_dir = Some(d.path().into());
         update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
         update(&mut app, Action::PickerOpen);
         assert_eq!(app.home().unwrap().mode, HomeMode::Picker);
@@ -106,7 +111,7 @@ mod picker {
     /// `/live` meant the filesystem root and reaching a sibling of the
     /// directory already on screen meant typing the whole path from `/`.
     #[test]
-    fn the_picker_opens_on_the_directory_you_are_already_in() {
+    fn the_picker_opens_on_the_directory_carrel_was_run_from() {
         let d = tempfile::tempdir().unwrap();
         for sub in ["live", "archive"] {
             std::fs::create_dir(d.path().join(sub)).unwrap();
@@ -116,12 +121,73 @@ mod picker {
         assert_eq!(
             h.picker.typed,
             format!("{}/", d.path().display()),
-            "the input opens on the current directory, slash and all",
+            "the input opens on the launch directory, slash and all",
         );
         assert_eq!(
             h.picker.roots,
-            vec![d.path().join("archive"), d.path().join("live")],
-            "so it opens listing where you can go from here",
+            vec![
+                d.path().to_path_buf(),
+                d.path().join("archive"),
+                d.path().join("live"),
+            ],
+            "the launch directory leads what you can reach from it",
+        );
+    }
+
+    /// The maintainer's report, 2026-09-01: with a saved `root =` in the
+    /// config, `d` opened on the last directory read in rather than the one
+    /// the command had just been typed in — and Enter went there.
+    #[test]
+    fn the_launch_directory_beats_the_saved_root_the_screen_opens_on() {
+        let launched_in = tempfile::tempdir().unwrap();
+        std::fs::create_dir(launched_in.path().join("notes")).unwrap();
+        let saved_root = tempfile::tempdir().unwrap();
+
+        // What startup does with `root = …` on file: the screen opens on the
+        // saved root, the shell is somewhere else entirely.
+        let mut app = App::new_home(saved_root.path().into(), vec![], 60, 16);
+        app.launch_dir = Some(launched_in.path().into());
+        update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
+        update(&mut app, Action::PickerOpen);
+
+        let h = app.home().unwrap();
+        assert_eq!(
+            h.picker.typed,
+            format!("{}/", launched_in.path().display()),
+            "the input opens where the command was typed",
+        );
+        assert_eq!(
+            h.picker.roots.first(),
+            Some(&launched_in.path().to_path_buf()),
+            "and the highlight is already on it: {:?}",
+            h.picker.roots,
+        );
+
+        // So Enter alone — no typing — reads where you are.
+        update(&mut app, Action::PickerChoose);
+        assert_eq!(app.home().unwrap().root, launched_in.path());
+    }
+
+    /// The fallback for a reader whose working directory has been deleted out
+    /// from under them: no prefill, so the default menu still has something.
+    #[test]
+    fn a_launch_directory_that_is_gone_falls_back_to_the_default_menu() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = App::new_home(d.path().into(), vec![], 60, 16);
+        app.launch_dir = Some(std::path::PathBuf::from("/no/such/place/at/all"));
+        if let Some(h) = app.home_mut() {
+            h.places = vec![std::path::PathBuf::from("/fav/notes")];
+        }
+        update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
+        update(&mut app, Action::PickerOpen);
+
+        let h = app.home().unwrap();
+        assert!(h.picker.typed.is_empty(), "nothing to continue from");
+        assert_eq!(
+            h.picker.roots.first(),
+            Some(&std::path::PathBuf::from("/fav/notes")),
+            "so the remembered places lead: {:?}",
+            h.picker.roots,
         );
     }
 
@@ -669,20 +735,31 @@ fn a_filter_ranks_fuzzily_instead_of_substring_order() {
     assert!(h2.entries[h2.filtered[0]].path.ends_with("unread-note.md"));
 }
 
+/// Places lead the EMPTY menu — the picker opens on the launch directory, and
+/// Esc clears that prefill to reach the remembered places. Leading the opened
+/// list was what put the last directory read in ahead of the one the command
+/// was typed in; see `the_launch_directory_beats_the_saved_root…`.
 #[test]
-fn places_lead_the_picker_menu_and_a_choice_becomes_one() {
+fn places_lead_the_empty_picker_menu_and_a_choice_becomes_one() {
     let d = tempfile::tempdir().unwrap();
     let cfg = tempfile::tempdir().unwrap();
     std::fs::write(cfg.path().join("config"), "place = /fav/notes\n").unwrap();
 
     let mut app = App::new_home(d.path().into(), vec![], 60, 16);
     app.config_dir = Some(cfg.path().into());
+    app.launch_dir = Some(d.path().into());
     // Startup prefs load places; drive the same path the binary uses.
     if let Some(h) = app.home_mut() {
         h.places = carrel::config::load_places_in(cfg.path());
     }
     update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
     update(&mut app, Action::PickerOpen);
+    assert_eq!(
+        app.home().unwrap().picker.roots.first(),
+        Some(&d.path().to_path_buf()),
+        "the launch directory leads the opened list, not a place",
+    );
+    update(&mut app, Action::HomeKey(SearchKey::Cancel)); // clear the prefill
     let h = app.home().unwrap();
     assert_eq!(
         h.picker.roots.first(),

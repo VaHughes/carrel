@@ -36,6 +36,23 @@ CI adds two steps these five do not name: `cargo check --workspace --all-targets
 keeps the benches compiling, and the same check on the declared MSRV, which is the only
 thing that has ever verified it. Run the first before touching `carrel-core`.
 
+## Test it as the command, not just as a test
+
+The gates prove the code is right; they do not prove it is what you are *running*. Make the
+`carrel` on your PATH a symlink to your own build, so `cargo build` is the only install step
+there is:
+
+```bash
+cargo build
+ln -sfn "$PWD/target/debug/carrel" ~/.local/bin/carrel
+```
+
+A copied binary is the trap here. It goes stale on the next rebuild while still answering to
+`carrel`, so a fix that is green in `cargo test` appears to do nothing when you try it by hand —
+which is a bug hunt for something already fixed. See
+[Running your own build as `carrel`](README.md#running-your-own-build-as-carrel) for the two
+caveats (`cargo clean`, and debug-build speed).
+
 ## How changes happen here
 
 - **Tests first.** Every bug fix starts with a test that fails against the current code. If you

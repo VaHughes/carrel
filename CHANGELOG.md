@@ -7,10 +7,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 An adversarial audit of the whole tree — every module read line by line, then
 attacked with hostile documents, malformed input and a real pty. Fifteen
 changes; every fix carries a regression test that was watched failing first.
+Alongside them, one maintainer report the audit did not find: what the
+directory picker means by "here".
 
 ### Things that behave differently
 
-Four changes you may notice, listed first because they are the ones that could
+Five changes you may notice, listed first because they are the ones that could
 surprise you:
 
 - **A link that leaves your library asks before it opens.** Carrel is rooted at
@@ -23,6 +25,13 @@ surprise you:
   filename or a search pattern, and a `[W]` argument that is not a number says
   so instead of silently using 80. `--` ends the options, so a file whose name
   begins with a dash is openable for the first time.
+- **`d` opens on the directory you ran `carrel` in.** It used to open on the
+  directory the home screen was showing, with your remembered places leading
+  the list — so with a saved `root = …` on file, the first thing the picker
+  offered was the last place you read in, not the one you had just `cd`-ed to,
+  and enter went there. The working directory now leads its own subdirectories,
+  so enter alone reads where you are. Remembered places lead the *empty* menu:
+  one `Esc` clears the input and brings them back, as it always has.
 - **The minimum supported Rust is 1.95**, not the 1.90 three files claimed. The
   floor comes from `merman`, a dependency pinned exactly; 1.90 could never have
   resolved, so a `cargo install` on it failed for the user rather than for us.

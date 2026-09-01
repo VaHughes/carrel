@@ -205,9 +205,10 @@ pub struct Picker {
     pub selected: usize,
     /// The path being typed. Empty means "offer the defaults".
     ///
-    /// Opens **prefilled with the directory you are already in** — see
+    /// Opens **prefilled with the directory `carrel` was run from** — see
     /// [`picker_prefill`]. Esc clears it back to empty, which is how an
-    /// unrelated absolute path still gets typed.
+    /// unrelated absolute path still gets typed, and how the remembered
+    /// places are reached.
     pub typed: String,
     /// First visible row of `roots`; see [`window_first`].
     pub top: usize,
@@ -776,8 +777,9 @@ pub fn directory_matches_in(query: &str, cwd: &Path, home: Option<&Path>) -> Vec
     list_dirs(&dir, &prefix)
 }
 
-/// What the picker's input opens with: where you are, with the trailing slash
-/// that makes it a **prefix** rather than a destination.
+/// What the picker's input opens with: the directory `carrel` was run from
+/// (`App::launch_dir`), with the trailing slash that makes it a **prefix**
+/// rather than a destination.
 ///
 /// Without it the input opened empty, so `/live` meant the filesystem root and
 /// every path had to be typed from `/` even to reach a sibling of the
@@ -785,10 +787,12 @@ pub fn directory_matches_in(query: &str, cwd: &Path, home: Option<&Path>) -> Vec
 /// `/live` and `live` continue from here: `Path` folds the doubled separator,
 /// so `…/Work//live` and `…/Work/live` name the same file. The trailing slash
 /// also means the picker opens **listing where you can go from here**, which
-/// an input holding a bare directory name would not.
+/// an input holding a bare directory name would not. `PickerOpen` puts the
+/// directory itself back at the head of that listing, so the path in the
+/// input is still the row Enter chooses.
 ///
-/// A root that is no longer a directory prefills nothing, so the default menu
-/// still has something to offer.
+/// A directory that is gone prefills nothing, so the default menu — the
+/// remembered places, then where you are — still has something to offer.
 #[must_use]
 pub fn picker_prefill(root: &Path) -> String {
     if !root.is_dir() {

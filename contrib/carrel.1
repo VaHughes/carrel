@@ -270,11 +270,16 @@ in\-order subsequence, ranked best\-first \(em as it is in the outline picker.
 Search inside every file; enter opens at the match.
 .TP
 .B d
-Choose a directory. The input opens on the directory you are already in, so
+Choose a directory. The input opens on the directory
+.B carrel
+was run from \(em highlight and all, so enter alone reads where you are \(em and
 \fBlive\fR and \fB/live\fR both mean a subdirectory of it rather than a path
-from the filesystem root; \fBEsc\fR clears it back to empty, which is how an
-unrelated absolute path is typed. Remembered places are offered first; typing
-completes against the filesystem;
+from the filesystem root. A saved
+.B root
+does not change that: the working directory is what \fBd\fR means by "here".
+\fBEsc\fR clears the input back to empty, which is how an unrelated absolute
+path is typed and how the remembered places are reached; they lead the empty
+menu. Typing completes against the filesystem;
 arrows, \fBCtrl\-J\fR/\fBCtrl\-K\fR or \fBCtrl\-N\fR/\fBCtrl\-P\fR move,
 enter chooses. Typing owns the letters here, so \fBj\fR and \fBk\fR are
 part of the path.
