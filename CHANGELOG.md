@@ -4,6 +4,155 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+An adversarial audit of the whole tree — every module read line by line, then
+attacked with hostile documents, malformed input and a real pty. Fifteen
+changes; every fix carries a regression test that was watched failing first.
+
+### Things that behave differently
+
+Four changes you may notice, listed first because they are the ones that could
+surprise you:
+
+- **A link that leaves your library asks before it opens.** Carrel is rooted at
+  the home screen's root, the opened document's own directory, or the working
+  directory for a pipe. Links inside it follow exactly as before; one resolving
+  outside names the path and waits for a second Enter. See below for why.
+- **`carrel FILE PATTERN` exits 1 when nothing matched**, as grep, rg and ag
+  all do. If you scripted around the old always-zero exit, that changes.
+- **An unknown or misplaced option is now an error** instead of being read as a
+  filename or a search pattern, and a `[W]` argument that is not a number says
+  so instead of silently using 80. `--` ends the options, so a file whose name
+  begins with a dash is openable for the first time.
+- **The minimum supported Rust is 1.95**, not the 1.90 three files claimed. The
+  floor comes from `merman`, a dependency pinned exactly; 1.90 could never have
+  resolved, so a `cargo install` on it failed for the user rather than for us.
+  CI now builds on 1.95 so the claim stays honest.
+
+### Fixed
+
+- **Auto-read never worked, and pinned a CPU core when you pressed it.** The
+  `A` tick was nested inside the debounced-resize branch, so it fired only
+  while a window was being dragged: the page never drifted, and because the
+  clock therefore never advanced the event loop spun at 100% of a core until
+  you noticed the fan. Measured at 399 CPU ticks per four seconds against 0 for
+  any other key. The unit tests could not see it — they call the action
+  directly, which is the one caller that worked — so the guard is now a pty
+  test that presses `A` and waits with no resize in sight.
+
+- **Pressing `y` after following a link could abort the reader.** The block
+  cursor is an index into the document it was set against, and neither opening
+  a document nor reloading one cleared it, so a copy after following a link to
+  a shorter file indexed a block that no longer existed. The selection had the
+  same shape and was already half-fixed: reload cleared it with a comment
+  saying why, and open never learned. Both now go through one function, which
+  is what stops them drifting apart a third time.
+
+- **Any markdown file could read any file on the system.** `[x](/etc/passwd)`
+  rendered it — no `..` required, because joining an absolute path discards the
+  base entirely. The README says in bold that carrel reads only the directory
+  you point it at; the sending half of that was true and well defended, and the
+  reading half was not. A markdown file is untrusted input: a shared vault, a
+  downloaded README, anything you did not write yourself. Wikilinks went
+  through the same hole. Both are contained now, and both canonicalize, so a
+  symlink pointing out of the tree is caught too.
+
+- **Large documents open in a fraction of the time.** Two separate quadratics,
+  both on the path you reach by opening a file. The chunking that exists to
+  *bound* work on a huge paragraph was itself recomputing its boundaries once
+  per chunk, so a block of k chunks paid k+1 full scans of it — and that is the
+  resize path, walked twice per relayout. And a line with no ASCII whitespace
+  (a CJK paragraph with embedded ASCII, a pasted minified or base64 run) made
+  the script scanner rescan to the start of the line for every candidate.
+
+  |            | before | after |
+  |---|---|---|
+  | 8 MB single paragraph | 6361 ms | 138 ms |
+  | 20 MB single paragraph | never finished | 321 ms |
+  | 256 KB whitespace-free line | 8631 ms | 11 ms |
+
+- **The terminal comes back however carrel exits.** A default-disposition
+  signal ran neither the guard nor the panic hook, so `pkill carrel`, a session
+  manager at logout, or killing a wedged reader left the alternate screen up,
+  mouse capture on and the cursor hidden — needing `reset`. All four of
+  SIGTERM, SIGHUP, SIGINT and SIGQUIT restore fully now. A panic mid-frame also
+  left synchronized-update mode set, so the shell prompt might never appear.
+  And `carrel doc.md | head` panicked with a Rust backtrace note: Rust ignores
+  SIGPIPE, so a closed pipe was a panic rather than the ordinary end of a
+  filter. It exits 0 now, like every other Unix tool of its shape.
+
+- **Ctrl-C in the search prompt typed a `c` into the query.** It was the only
+  one of seven key dispatchers without the binding, and it never inspected the
+  modifier. Raw mode clears ISIG, so no SIGINT was generated either and the
+  reflex did nothing at all.
+
+- **A link to a FIFO wedged the reader forever.** The size guard measured with
+  `metadata().len()`, which is zero for a FIFO, `/dev/zero` and most of
+  `/proc`, so the guard passed and the unbounded read behind it ran anyway —
+  with the terminal already in raw mode and the event loop stalled, so no
+  keystroke could reach it. `/dev/zero` read until the OOM killer arrived.
+
+- **Clicking a wide table selected the wrong text.** Paint put tables, code,
+  math and images in the bleed column and re-centred a wide table; the
+  hit-test bounded every click by the prose column. They agreed for prose and
+  diverged for everything else at 95 columns or wider — any maximized
+  terminal — so a click landed thirteen columns from the pointer and the outer
+  thirds were rejected outright. Geometry lives in one function now.
+
+- **`--plain` and `--render` passed a document's escape bytes to your
+  terminal.** `plain.rs` promised "never an escape byte" and then copied
+  document text straight out, so a markdown file you merely read could set the
+  terminal title of whatever it was piped into. The TUI was safe only
+  incidentally. An entity-encoded `&#27;` in a link destination could also
+  smuggle an escape into `--render`'s OSC 8 hyperlinks. Both are stripped now,
+  at one shared point each, and `NO_COLOR --render` really is byte-identical
+  to `--plain` as documented — it had been dropping blockquote bars.
+
+- **State on disk survives a crash and a second reader.** All four files were
+  read-modify-write through a call that truncates in place, so two carrels
+  interleaving lost one's whole session and a crash mid-write destroyed the
+  file. They are written to a temp sibling and renamed now. A path containing
+  a TAB also corrupted the bookmarks file permanently, appending one line per
+  save forever, and the comment arguing that could not happen had the argument
+  backwards.
+
+- **An ignore file above your root no longer empties the home screen.** The
+  walk read `.gitignore` in every ancestor directory and `core.excludesFile`
+  from your global git config, so a `*.md` line anywhere above the root
+  silently showed you nothing, with no note and no way to find out why.
+
+- **`X` walked tasks out of order**, skipping the first and looping wrong in
+  both directions — its test asserted only that three distinct tasks appeared,
+  which the broken walk satisfied.
+
+- **`math_art` was quadratic per row and cubic on nested fractions**, laid out
+  for every equation on the UI thread on open and resize, and its width could
+  silently cap while the content kept growing. Nested fractions at depth 2,000
+  took 1.63 s and are now refused in microseconds, falling through to the
+  literal-source rendering that already existed for maths that will not parse.
+
+- **The release workflow published without running a single test.** CI triggers
+  on pushes to a branch, which a tag push does not match, so `dist` built and
+  uploaded six target archives with nothing having checked them. The packaging
+  recipes at the tag also built the *previous* release — one of them five
+  releases stale — because the version stamp landed in a commit after the tag,
+  and the guard compared the recipes only to each other.
+
+- **Documentation that was not true.** The README's only config example named a
+  theme that does not exist, and the seventeen real palette names appeared in
+  no user-facing document at all. `--help` said `q` quits when it closes the
+  file, and never mentioned `Q`. The `.desktop` entry passed multiple files, so
+  selecting two markdown files in a file manager searched the first for the
+  second's filename and vanished. The man page was missing three config keys
+  and the entire mouse section that a test exempted it from carrying.
+
+- **Bounded what was not.** The navigation trail, the OSC 52 clipboard write,
+  the index cache directory and the bookmarks file all grew without a limit in
+  a project that caps everything else and says why. The index cache was also
+  named by a hash std documents as unstable across releases, so a toolchain
+  upgrade silently orphaned every one of them.
+
+### Also
+
 - **On Omarchy, carrel wears what the desktop is wearing.** The `terminal` theme inherited
   your terminal's background and foreground, but every accent — headings, links, the search
   lamp, the syntax colours — was carrel's own house green and amber whatever theme the rest

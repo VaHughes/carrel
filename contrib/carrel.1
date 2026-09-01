@@ -282,6 +282,29 @@ part of the path.
 .B Mouse
 Click a file to select it, double\-click to open it. The same works in the
 directory picker, and on the results of a file search.
+.SH EXIT STATUS
+.TP
+.B 0
+Success. For
+.IR "carrel FILE PATTERN" ,
+at least one match.
+.TP
+.B 1
+A file that could not be read, an unknown or misplaced option, a
+.RI [ W ]
+argument that is not a column count, or a search that found nothing \(em so
+.B if carrel doc.md pattern; then
+behaves as it does with grep.
+.TP
+.B 128+N
+Killed by signal N. The terminal is restored first.
+.PP
+.B \-\-
+ends the options, so
+.B carrel \-\- ./\-weird.md
+opens a file whose name begins with a dash. An unknown single\-dash flag is
+ignored when stdin is a pipe, because git hands its pager flags it does not
+expect to be understood; interactively it is an error.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
@@ -363,15 +386,29 @@ terminal palette, carrel derives a
 .B omarchy
 palette from it and uses it as the default when no
 .B theme
-is on record. Re\-read once a second, so
+is on record. Re\-read once a second while that palette is the active one, so
 .B omarchy theme set
-restyles an open reader without a restart.
+restyles an open reader without a restart; carrel does not read the file at
+all while you are on a fixed palette.
 .TP
 .I $XDG_STATE_HOME/carrel
-Reading positions, so a document reopens where you left it.
+Two tab\-separated files, written atomically so a crash cannot truncate them.
+.B positions
+holds reading positions, so a document reopens where you left it;
+.B bookmarks
+holds the marks
+.B m
+sets. Both keep the 500 most recent documents and drop the oldest beyond that
+\(em they are a convenience, not a database. A tab or a newline in a path is
+escaped, so no filename can corrupt either file.
 .TP
 .I $XDG_CACHE_HOME/carrel
-The file index: paths and modification times, nothing else.
+The file index: paths and modification times, nothing else. One
+.BI index\-1\- hash
+file per root ever opened, the 32 most recent kept. The
+.B 1
+is a format version, so a change to the format invalidates the caches
+deliberately rather than by accident.
 .SH PRIVACY
 carrel reads only the directory you point it at and sends nothing anywhere.
 Remote images in documents are never fetched; they render as their alt text.

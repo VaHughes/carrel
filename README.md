@@ -37,6 +37,14 @@ sends nothing anywhere — remote images in documents are never fetched; they re
 text. The index it caches lives under `$XDG_CACHE_HOME/carrel` and holds file paths and
 modification times, nothing else.
 
+That first sentence is **enforced, not merely intended**. A markdown file is untrusted input — a
+shared vault, a downloaded README, anything you did not write — and a link in one can name any
+path on the machine. Links resolving inside your library follow as they always have; one
+resolving outside names the path and waits for a second Enter, so leaving is something you do
+rather than something a document does to you. Both paths are canonicalised, so a symlink out of
+the tree is caught too. The walk itself never follows symlinks and never reads an ignore file
+above your root.
+
 **This is a decision, not an omission.** Other readers will fetch a URL you hand them, or
 pull a GitHub README, and that is genuinely convenient. Carrel will not, and is not going
 to: a document is a thing you already have, and a reader that opens network connections on
@@ -126,7 +134,8 @@ git show HEAD:README.md | carrel
 an-agent --stream | carrel     # content appears as it arrives
 ```
 
-`carrel -` forces stdin mode, and `cmd | carrel - pattern` prints a match report. Piping
+`carrel -` forces stdin mode, and `cmd | carrel - pattern` prints a match report — exiting 1
+when nothing matched, so `if carrel doc.md pattern; then` behaves like grep. Piping
 *out* produces plain text, so `cmd | carrel | grep` behaves; `carrel --render FILE` keeps
 weight, slant, strike and OSC 8 links (never a colour) for embedding in another tool's
 output, and `carrel --tasks FILE` prints the document's task list as checkbox lines. While a producer is

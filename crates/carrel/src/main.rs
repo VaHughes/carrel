@@ -49,6 +49,9 @@ USAGE:
     carrel --version
 
     NO_COLOR is honoured: colours off, weight and emphasis kept.
+    `--` ends the options, for a file whose name starts with a dash.
+    Exit 1 on an unreadable file, an unknown option, or a search with
+    no matches — so `if carrel FILE PATTERN; then` behaves like grep.
 
 KEYS (home screen):
     j k ↓ ↑                      move           enter open
@@ -73,8 +76,9 @@ KEYS (while reading):
     L l                          what links here / what this points at
     I S                          document info card / spotlight the paragraph
     A                            auto-read: drift down until you scroll
-    T                            cycle themes    q Ctrl-C        quit
-    h F1                         help            Ctrl-O          back
+    T                            cycle themes    q               close file
+    h F1                         help            Q Ctrl-C        quit
+    Ctrl-O                       back
     ] [                          next / previous code block
     X                            jump to the next task
     y                            copy the code block
