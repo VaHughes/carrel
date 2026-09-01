@@ -136,6 +136,21 @@ fn main() -> ExitCode {
         args.retain(|a| !is_foreign_pager_flag(a));
     }
     DIFF_FORCED.set(diff_forced).ok();
+    // `--` ends the options, so `carrel -- ./-weird.md` opens a file whose
+    // name begins with a dash. Without it such a file was unopenable. Only
+    // what precedes it is checked for flags.
+    let operands_from = match args.iter().position(|a| a == "--") {
+        Some(i) => {
+            args.remove(i);
+            i
+        }
+        None => args.len(),
+    };
+    if let Some(complaint) = flag_complaint(&args[..operands_from]) {
+        eprintln!("carrel: {complaint}");
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    }
     match args.as_slice() {
         [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
@@ -147,19 +162,26 @@ fn main() -> ExitCode {
         [a, pattern] if a == "-" => open_stdin(Some(pattern), true),
         [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
         [flag, a] if flag == "--plain" && a == "-" => print_plain_stdin(80),
-        [flag, a, w] if flag == "--plain" && a == "-" => print_plain_stdin(w.parse().unwrap_or(80)),
+        [flag, a, w] if flag == "--plain" && a == "-" => match width_arg(w) {
+            Ok(w) => print_plain_stdin(w),
+            Err(code) => code,
+        },
         [flag, file] if flag == "--tasks" => print_tasks(Path::new(file)),
         [flag, a] if flag == "--render" && a == "-" => print_ansi(None, 80),
-        [flag, a, w] if flag == "--render" && a == "-" => print_ansi(None, w.parse().unwrap_or(80)),
+        [flag, a, w] if flag == "--render" && a == "-" => match width_arg(w) {
+            Ok(w) => print_ansi(None, w),
+            Err(code) => code,
+        },
         [flag, file] if flag == "--render" => print_ansi(Some(Path::new(file)), 80),
-        [flag, file, w] if flag == "--render" => {
-            print_ansi(Some(Path::new(file)), w.parse().unwrap_or(80))
-        }
+        [flag, file, w] if flag == "--render" => match width_arg(w) {
+            Ok(w) => print_ansi(Some(Path::new(file)), w),
+            Err(code) => code,
+        },
         [flag, file] if flag == "--plain" => print_plain(Path::new(file), 80),
-        [flag, file, w] if flag == "--plain" => {
-            let width = w.parse().unwrap_or(80);
-            print_plain(Path::new(file), width)
-        }
+        [flag, file, w] if flag == "--plain" => match width_arg(w) {
+            Ok(w) => print_plain(Path::new(file), w),
+            Err(code) => code,
+        },
         [file] => open(Path::new(file), None),
         [file, pattern] => open(Path::new(file), Some(pattern)),
         _ => {
@@ -167,6 +189,56 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A `[W]` argument, or a refusal.
+///
+/// `w.parse().unwrap_or(80)` silently rendered at 80 columns for `10O` (letter
+/// O), `-5`, or a number past `u16` — so a typo produced plausible-looking but
+/// wrong output and exited 0, with nothing to notice.
+fn width_arg(w: &str) -> Result<u16, ExitCode> {
+    w.parse::<u16>().map_err(|_| {
+        eprintln!("carrel: {w:?} is not a width — expected a column count like 72");
+        ExitCode::FAILURE
+    })
+}
+
+/// Every option carrel knows. All of them lead: there is no form where one
+/// follows a path.
+const KNOWN_FLAGS: &[&str] = &[
+    "-h",
+    "--help",
+    "-V",
+    "--version",
+    "--plain",
+    "--render",
+    "--tasks",
+    "--diff",
+    "--no-diff",
+];
+
+/// Why `args` cannot be dispatched, if it cannot.
+///
+/// Every one- and two-argument typo used to be swallowed by the `[file]` and
+/// `[file, pattern]` arms before it could reach the usage fallback:
+/// `carrel --verbose` reported "No such file or directory", and
+/// `carrel doc.md --plain` printed a search report for the literal pattern
+/// `--plain` and exited 0 — a typo producing output that looks real.
+///
+/// `-` is the stdin marker, and `--` has already been stripped by the caller
+/// along with everything after it, so a file named `./-weird.md` stays
+/// openable.
+fn flag_complaint(args: &[String]) -> Option<String> {
+    if let Some(bad) = args
+        .iter()
+        .find(|a| a.len() > 1 && a.starts_with('-') && !KNOWN_FLAGS.contains(&a.as_str()))
+    {
+        return Some(format!("unknown option {bad}"));
+    }
+    args.iter()
+        .skip(1)
+        .find(|a| KNOWN_FLAGS.contains(&a.as_str()))
+        .map(|f| format!("{f} is an option, and options come first"))
 }
 
 /// `--render`: styled linear text to stdout. Attributes and OSC 8 links,
@@ -237,7 +309,14 @@ fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
     // files — stdout's tty-ness notwithstanding.
     if let Some(p) = pattern {
         return match read_stdin_capped() {
-            Ok(src) => emit(&report(Path::new("(stdin)"), &src, p)),
+            Ok(src) => {
+                let (text, found) = report(Path::new("(stdin)"), &src, p);
+                let code = emit(&text);
+                // Exit 1 on no match, as grep, rg and ag all do — the README
+                // sells this mode for scripting, and `if carrel - pat; then`
+                // was always true.
+                if found { code } else { ExitCode::FAILURE }
+            }
             Err(e) => {
                 eprintln!("carrel: {e}");
                 ExitCode::FAILURE
@@ -461,7 +540,9 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
     // With a pattern, stay non-interactive: useful for scripting and for
     // checking the core without a terminal.
     if let Some(p) = pattern {
-        return emit(&report(path, &src, p));
+        let (text, found) = report(path, &src, p);
+        let code = emit(&text);
+        return if found { code } else { ExitCode::FAILURE };
     }
 
     // No terminal, no TUI. `less` behaves the same way, and the alternative is
@@ -1852,7 +1933,7 @@ fn print_plain(path: &Path, width: u16) -> ExitCode {
     }
 }
 
-fn report(path: &Path, src: &str, pattern: &str) -> String {
+fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
     use std::fmt::Write as _;
     let mut out = String::new();
     let doc = Document::parse(src);
@@ -1870,10 +1951,11 @@ fn report(path: &Path, src: &str, pattern: &str) -> String {
     let _ = writeln!(out, "  {rows_total} rows at width {width}");
 
     if pattern.is_empty() {
-        return out;
+        return (out, true);
     }
 
     let matches = search(&doc, pattern, true);
+    let found = !matches.is_empty();
     let _ = writeln!(out, "\n  {} match(es) for {pattern:?}", matches.len());
 
     for (n, r) in matches.ranges.iter().take(10).enumerate() {
@@ -1893,7 +1975,7 @@ fn report(path: &Path, src: &str, pattern: &str) -> String {
     if matches.len() > 10 {
         let _ = writeln!(out, "    … and {} more", matches.len() - 10);
     }
-    out
+    (out, found)
 }
 
 #[cfg(test)]

@@ -2477,10 +2477,21 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 .doc
                 .start;
             let len = tasks.len();
-            let span = i32::try_from(len).unwrap_or(i32::MAX);
-            let steps = usize::try_from(n.rem_euclid(span)).unwrap_or(0);
-            let start = tasks.partition_point(|t| t.at <= here);
-            let i = (start + steps) % len;
+            // `partition_point` already yields "the next task after the
+            // cursor", so adding the whole step count on top of it landed one
+            // too far — in BOTH directions. From the top of a three-task
+            // document, five presses of `X` walked 2, 1, 3, 2, 1 instead of
+            // 1, 2, 3, 1, 2. `MarkNext` twenty lines up is the model: it takes
+            // the first mark strictly after the cursor and adds nothing.
+            let count = usize::try_from(n.unsigned_abs()).unwrap_or(1).max(1);
+            let i = if n >= 0 {
+                (tasks.partition_point(|t| t.at <= here) + count - 1) % len
+            } else {
+                // The last task strictly before the cursor — `len - 1` when
+                // there is none, which is the wrap — then back the rest.
+                let last_before = (tasks.partition_point(|t| t.at < here) + len - 1) % len;
+                (last_before + len - ((count - 1) % len)) % len
+            };
             let t = &tasks[i];
             app.reveal_byte(t.at, h, crate::action::Where::Top);
             let state = if t.done { "done" } else { "open" };
@@ -4363,11 +4374,24 @@ mod tests {
                 "landed on a task: {note}"
             );
         }
-        assert_eq!(
-            seen.iter().collect::<std::collections::HashSet<_>>().len(),
-            3,
-            "{seen:?}"
-        );
+        // The ORDER, not just the distinctness — a set of three passed while
+        // `X` was walking 2, 1, 3, 2 and skipping the first task entirely.
+        assert_eq!(seen, vec![1, 2, 3, 1], "X must walk tasks in order");
+
+        // And backwards, from the top: the last task, then back through them.
+        let mut a = App::new("t.md".into(), Document::parse(&src), 40, 40);
+        let mut back = Vec::new();
+        for _ in 0..4 {
+            update(&mut a, Action::TaskStep(-1));
+            let note = a.note.clone().expect("a note per jump");
+            back.push(
+                note.split_whitespace()
+                    .nth(1)
+                    .and_then(|w| w.parse::<usize>().ok())
+                    .expect("task N of M"),
+            );
+        }
+        assert_eq!(back, vec![3, 2, 1, 3], "N-style stepping walks back");
     }
 
     #[test]
