@@ -1,7 +1,7 @@
 # AUR package: carrel-bin (repacks the static musl release artifact).
-# BUILD-TESTED 2026-08-31 against the real v2026.8.31 artifact: `makepkg -f`
+# BUILD-TESTED 2026-09-01 against the real v2026.9.1 artifact: `makepkg -f`
 # passes the integrity check and produces a package carrying all eight
-# installed files and a binary that reports `carrel 2026.8.31`. (The docs
+# installed files and a binary that reports `carrel 2026.9.1`. (The docs
 # long said recipes could not be build-tested here; that was the old Mint
 # machine — this one is Arch.) Re-run this on the stamp commit each release:
 # it is what catches a bad sha256 before the AUR would.
@@ -18,8 +18,8 @@ provides=('carrel')
 conflicts=('carrel')
 source_x86_64=("$url/releases/download/v$pkgver/carrel-x86_64-unknown-linux-musl.tar.xz")
 source_aarch64=("$url/releases/download/v$pkgver/carrel-aarch64-unknown-linux-musl.tar.xz")
-sha256sums_x86_64=('fdd7cbd7e3368d28b0f38fc73e6ca1dde908c4250349216b27f06b42bd6dd9e7')
-sha256sums_aarch64=('6ae011f2619d1d52497f507cd332065516521ca015c465d1d66f8ce8d6317b36')
+sha256sums_x86_64=('5c54c7c0335440244e0c727dcd9510cfdc0cc35a71f447d22b1f9e117467dd9f')
+sha256sums_aarch64=('21f0064fa80def588a32c19d5e6dc1fee638daacaed7b3100af53f85d6f5dbe5')
 
 # dist FLATTENS every `include` entry to the archive root: `contrib/carrel.1`
 # arrives as `carrel.1`. The flat paths below were verified against the real
