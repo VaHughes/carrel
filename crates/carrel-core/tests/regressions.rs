@@ -209,3 +209,47 @@ fn prose_and_lists_wrap_exactly_as_they_did_before_continuations() {
         }
     }
 }
+
+/// Wrapping one huge paragraph must be LINEAR in its size.
+///
+/// `wrap` computed `chunk_starts` for the loop and then threw it away,
+/// calling `chunk_range` per chunk — which recomputed it, a full UAX #14 pass
+/// over the whole block each time. So the chunking that exists to bound work
+/// on a pathological paragraph was itself quadratic: k chunks cost k+1 scans.
+/// Measured through `--plain` before the fix: 1 MB 93 ms, 2 MB 337 ms,
+/// 4 MB 1240 ms, 8 MB 6361 ms, and a 20 MB document never finished. After:
+/// 19, 35, 67, 125 and 297 ms.
+///
+/// The assertion is a RATIO rather than a wall-clock bound, so it calibrates
+/// itself against whatever machine it runs on: quadrupling the input should
+/// roughly quadruple the time, and the 12x ceiling catches the 16x-and-worse
+/// growth of the quadratic while leaving room for a loaded CI runner.
+#[test]
+fn a_huge_paragraph_wraps_in_linear_time() {
+    use std::time::Instant;
+
+    let small = Document::parse(&"word ".repeat(200_000)); // ~1 MB, 1 block
+    let large = Document::parse(&"word ".repeat(800_000)); // ~4 MB, 1 block
+    assert_eq!(small.block_count(), 1, "the fixture must be ONE block");
+    assert_eq!(large.block_count(), 1);
+
+    let time = |doc: &Document| {
+        let t = Instant::now();
+        let rows = wrap(doc, BlockIdx(0), 80, &cluster_width, |_| {});
+        assert!(rows > 0);
+        t.elapsed().as_secs_f64()
+    };
+
+    // One warm pass each: the first touch of a fresh allocation is not what
+    // this test is about.
+    time(&small);
+    time(&large);
+    let (a, b) = (time(&small), time(&large));
+
+    assert!(
+        b < a * 12.0,
+        "4x the paragraph took {:.1}x the time ({a:.4}s -> {b:.4}s). \
+         Linear is ~4x; the quadratic this guards was 13x and grew.",
+        b / a
+    );
+}

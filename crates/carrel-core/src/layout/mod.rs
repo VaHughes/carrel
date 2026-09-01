@@ -256,8 +256,16 @@ pub fn wrap<F: FnMut(Row)>(
     let text = doc.block_text(block);
     let mut first = true;
     let mut rows = 0u32;
-    for (i, start) in chunk_starts(text).iter().enumerate() {
-        let end = chunk_range(text, i as u32).end;
+    // `chunk_starts` runs a full UAX #14 pass over the block, so it is
+    // computed ONCE and windowed over. Calling `chunk_range` per chunk
+    // recomputed it every time, which made the chunking that exists to BOUND
+    // work on a huge paragraph itself quadratic: a block of k chunks paid
+    // k+1 full scans. Measured on one paragraph, `--plain`: 1 MB 93 ms,
+    // 2 MB 337 ms, 4 MB 1240 ms, 8 MB 6361 ms — and this is the resize path,
+    // walked twice per relayout (the height pass and the row pass).
+    let starts = chunk_starts(text);
+    for (i, start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).map_or(text.len(), |&e| e as usize);
         let at = Slice {
             doc_base: node.doc.start + start,
             block,
@@ -416,8 +424,9 @@ pub(crate) fn wrap_text<F: FnMut(Row)>(
 ) -> u32 {
     let mut first = true;
     let mut rows = 0u32;
-    for (i, start) in chunk_starts(text).iter().enumerate() {
-        let end = chunk_range(text, i as u32).end;
+    let starts = chunk_starts(text);
+    for (i, start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).map_or(text.len(), |&e| e as usize);
         let at = Slice {
             doc_base: doc_base + start,
             block,
