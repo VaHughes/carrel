@@ -1,4 +1,14 @@
-# The same five gates that run locally before every commit, and nothing else.
+# The five gates CONTRIBUTING names, in its order, and one step more.
+#
+# The extra step is `cargo check --workspace --all-targets`. The benches are
+# not RUN here — that is the packaging cycle's business, and a timing number
+# from a shared runner would be noise anyway — but nothing else compiles them,
+# and a bench that stopped compiling should not reach main.
+#
+# Clippy is spelled with `-D warnings`, which is the machine form of
+# CONTRIBUTING's "ZERO warnings is the bar": the same bar, enforced instead of
+# read. A local run without it prints the warnings and exits 0.
+#
 # The project has required "CI must run check-discipline.sh" since the first
 # commit; this is that requirement made real.
 #
@@ -7,6 +17,11 @@
 # anything. Bump the pin deliberately, together with the local toolchain.
 #
 # Release-artifact builds belong to the packaging cycle, not here.
+#
+# Note that `push: branches: [main]` does NOT match a tag push. release.yml
+# therefore carries its own `gate` job running these same five, and that job is
+# the only thing standing between a tag and six published archives — keep the
+# two toolchain pins equal.
 
 name: ci
 
@@ -58,3 +73,23 @@ jobs:
       # publishing a binary package.
       - name: Packaging recipes match what ships
         run: ./scripts/check-packaging.sh
+
+  # The MSRV is a claim in three files (Cargo.toml, the README, the Fedora
+  # spec) and until now was built by nothing — it said 1.90, which `merman`'s
+  # own 1.95 floor made impossible, so a `cargo install` on 1.90 failed for a
+  # user rather than here. `--locked` because the point is the committed
+  # resolve, not whatever cargo would pick today.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Toolchain (the declared MSRV)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08
+        with:
+          toolchain: "1.95"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: It builds on the version we tell people to have
+        run: cargo check --workspace --all-targets --locked

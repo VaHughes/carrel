@@ -1,4 +1,6 @@
-.TH CARREL 1 "2026-08-31" "carrel" "User Commands"
+.\" The version in the .TH line is the footer every reader sees; keep it equal
+.\" to [workspace.package] version in Cargo.toml, stamped with the recipes.
+.TH CARREL 1 "2026-09-01" "carrel 2026.8.31" "User Commands"
 .SH NAME
 carrel \- a quiet place to read your markdown
 .SH SYNOPSIS
@@ -225,6 +227,39 @@ otherwise quit.
 .TP
 .BR Q ", " Ctrl\-C
 Quit outright, whatever is open.
+.SS Mouse
+The reader takes the mouse, so the terminal's own selection is not available
+while it is up. What replaces it copies the document's text and nothing else:
+no scrollbar column, no fold markers, no margin outline.
+.TP
+.B drag
+Select. The selection is copied when the button comes up, so there is no
+second gesture to remember.
+.TP
+.BR click ", " double\-click ", " triple\-click
+One click sets where a selection starts, two select the word under the
+pointer, three the whole block. A click that never became a drag lands where
+it fell: on a heading, or on a
+.B <details>
+summary, it folds that section \(em the same toggle
+.B za
+gives. Where the margin outline is on, a click in its columns jumps to that
+section instead of starting a selection.
+.TP
+.B wheel
+Scroll. Three lines a notch, and more when the notches keep arriving \(em spin
+it and the page keeps up, to twelve lines a notch. A pause, or a change of
+direction, drops straight back to three, so a correction stays precise.
+.TP
+.B scrollbar
+Dragging the thumb tracks the pointer and keeps hold of the point on the thumb
+you took it by, so the view does not jump when the hand lands. Clicking the
+empty track pages one screen toward the click rather than teleporting there.
+.TP
+.B lamp
+The lamp on the bottom row is a switch: click it to fold the hint footer away,
+or to bring it back \(em the same as
+.BR H .
 .SS Home screen
 .TP
 .B i
@@ -254,11 +289,73 @@ Honoured: colours off, weight and emphasis kept.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/carrel
-Theme, chosen root directory, footer preference, favourite places (repeated
+One
+.I key = value
+per line. Carrel writes it itself when you change a setting in the app, and it
+is safe to edit by hand: unknown keys and
+.B #
+comments are ignored, so a config written for another version still opens.
+The eight keys are
+.RS
+.TP
+.B max_width
+The reading measure in columns \(em prose wraps here and centres on the page.
+Default 90; 0 turns it off and lets prose fill the terminal. Tables, code,
+images and diagrams ignore it and use the full width.
+.TP
+.B theme
+The palette, by name:
+.BR terminal ", " carrel\-dark ", " carrel\-light ", " catppuccin\-mocha ", "
+.BR catppuccin\-latte ", " gruvbox\-dark ", " gruvbox\-light ", " tokyo\-night ", "
+.BR nord ", " dracula ", " solarized\-dark ", " solarized\-light ", " everforest ", "
+.BR rose\-pine ", " kanagawa ", " synthwave ", " oceanic .
+.B dark
+and
+.B light
+are aliases for the two carrel palettes, and
+.B omarchy
+is offered where the desktop publishes one (below).
+.B terminal
+is the default and inherits the terminal's own colours. A name carrel does not
+know is not an error: it opens on
+.B terminal
+and says so.
+.B T
+cycles them and saves the choice.
+.TP
+.B hints
+The lamplight hint row along the bottom. Default true;
+.B H
+toggles it.
+.TP
+.B titles
+Show each document's own title on the home screen \(em
+.B title:
+from its frontmatter, else its first heading \(em instead of its file name.
+Default false; a file with neither keeps its name.
+.TP
+.B breadcrumb
+The section path pinned atop the page while you scroll, with a rule under it.
+Default true;
+.B B
+toggles it. A document with no headings never shows one.
+.TP
+.B outline_margin
+The section tree pinned in the left margin, the current section lit, on
+terminals wide enough to spare the columns. Default false, because it moves
+the text column.
+.TP
+.B root
+The directory the home screen lists.
+.B d
+picks one in the app.
+.TP
 .B place
-lines, newest first), and
-.BR max_width ,
-the reading measure in columns (default 90; 0 turns it off).
+A remembered favourite root, offered by the directory picker. This key
+repeats, newest first, capped at eight; choosing a root with
+.B d
+records it.
+.RE
 .TP
 .I $XDG_STATE_HOME/omarchy/current/theme/colors.toml
 Read, never written. Where Omarchy publishes the active desktop theme as a

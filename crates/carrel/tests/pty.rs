@@ -443,10 +443,10 @@ fn version_flag_prints_the_version_and_exits_zero() {
 /// match forces that; the man page has no such compiler.
 #[test]
 fn the_man_page_documents_every_key_the_help_overlay_does() {
-    // Rows the man page deliberately does not carry: the mouse gestures, which
-    // it covers as prose under MOUSE. A NEW key is in neither list and fails
-    // until someone decides which it is.
-    const NOT_IN_MAN: &[&str] = &["drag", "2× click", "wheel", "click", "double-click"];
+    // Nothing is exempt any more: `.SS Mouse` names drag, click, double-click,
+    // triple-click, wheel, the scrollbar and the lamp, so every reader row has
+    // a real entry. A NEW gesture goes in the man page or it fails here.
+    const NOT_IN_MAN: &[&str] = &[];
 
     let man = std::fs::read_to_string("../../contrib/carrel.1").expect("man page");
     // Section headers (`§`) are grouping, and prose rows like "double-click"

@@ -20,15 +20,21 @@ before a human has to.
 
 ## The gates
 
-CI runs exactly what local development runs. All five must be green:
+These five must be green before every commit. CI runs the same five — on `main`, on every
+pull request, and now on the release tag too, because a tag push matches no branch and
+`release.yml` was publishing archives no test had ever seen:
 
 ```bash
-cargo test --workspace                             # every test
-cargo clippy --workspace --all-targets             # ZERO warnings is the bar
+cargo test --workspace                                  # every test
+cargo clippy --workspace --all-targets -- -D warnings   # ZERO warnings is the bar
 cargo fmt --all --check
-./scripts/check-discipline.sh                      # the architectural guard
-./scripts/check-packaging.sh                       # what we publish still resolves
+./scripts/check-discipline.sh                           # the architectural guard
+./scripts/check-packaging.sh                            # what we publish still resolves
 ```
+
+CI adds two steps these five do not name: `cargo check --workspace --all-targets`, which
+keeps the benches compiling, and the same check on the declared MSRV, which is the only
+thing that has ever verified it. Run the first before touching `carrel-core`.
 
 ## How changes happen here
 

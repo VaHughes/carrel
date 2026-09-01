@@ -83,6 +83,70 @@ for f in $(grep -ohE 'install -Dm[0-9]+ (contrib|LICENSE)[^ ]*' \
   if [ -e "$f" ]; then ok "$f"; else note "$f — named by a recipe, not in the tree"; fi
 done
 
+# --- every recipe against the workspace version ---
+#
+# The .SRCINFO check below compares two recipes to EACH OTHER, so it stays
+# quiet whenever both are stale together, and nothing compared the spec or the
+# nix expression to anything at all. `carrel-package.nix` sat at 2026.8.17
+# while the workspace said 2026.8.31 — six stamp commits walked past it, and no
+# check here could have caught that, because none of them ever looked at the
+# file. `[workspace.package] version` in Cargo.toml is the one source of truth;
+# measure every recipe against it, BY NAME, so that a recipe added later and
+# then forgotten fails loudly rather than drifting quietly.
+#
+# The consequence for the release flow: the VERSION stamp belongs in the
+# release commit, *before* the tag. Only the sha256sums have to wait, because
+# they check a tarball GitHub does not serve until the tag exists. Stamping the
+# version after the tag leaves the tagged tree — the tree release.yml's gate
+# now runs this script against — naming the previous release, which is
+# precisely the drift this check refuses.
+echo
+echo "recipe versions against Cargo.toml"
+ws_ver=$(awk '/^\[workspace\.package\]/{f=1; next} /^\[/{f=0}
+              f && /^version = /{gsub(/["[:space:]]/, "", $3); print $3; exit}' Cargo.toml)
+
+recipe_version() {
+  case $1 in
+  *carrel.spec) sed -n 's/^Version:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" | head -1 ;;
+  *PKGBUILD-*) sed -n 's/^pkgver=\(.*\)$/\1/p' "$1" | head -1 ;;
+  *SRCINFO-*) awk -F'= ' '/^\tpkgver = /{print $2; exit}' "$1" ;;
+  *.nix) sed -n 's/^[[:space:]]*version = "\([^"]*\)".*/\1/p' "$1" | head -1 ;;
+  esac
+}
+
+if [ -z "$ws_ver" ]; then
+  note "cannot read [workspace.package] version from Cargo.toml"
+else
+  for recipe in contrib/packaging/carrel.spec \
+    contrib/packaging/PKGBUILD-carrel \
+    contrib/packaging/PKGBUILD-carrel-bin \
+    contrib/packaging/carrel-package.nix \
+    contrib/packaging/SRCINFO-carrel; do
+    name=$(basename "$recipe")
+    v=$(recipe_version "$recipe")
+    if [ -z "$v" ]; then
+      note "$name — no version found in it; did its shape change?"
+    elif [ "$v" != "$ws_ver" ]; then
+      note "$name says $v, Cargo.toml says $ws_ver — stamp the recipes in the release commit, before the tag"
+    else
+      ok "$name $v"
+    fi
+  done
+
+  # The man page's .TH line is the version in the footer of every `man carrel`,
+  # and it ships in the release archive alongside the binary that prints its
+  # own. A version added by hand and checked by nothing is the recipe drift
+  # again in a different file, so it is stamped and checked with the recipes.
+  man_ver=$(sed -n 's/^\.TH .* "carrel \([^"]*\)".*/\1/p' contrib/carrel.1 | head -1)
+  if [ -z "$man_ver" ]; then
+    note "contrib/carrel.1 — the .TH line names no version"
+  elif [ "$man_ver" != "$ws_ver" ]; then
+    note "contrib/carrel.1 says $man_ver, Cargo.toml says $ws_ver"
+  else
+    ok "carrel.1 $man_ver"
+  fi
+fi
+
 # --- .SRCINFO against its PKGBUILD ---
 #
 # `.SRCINFO` is a FLATTENED copy of the PKGBUILD: makepkg expands

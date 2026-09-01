@@ -1,11 +1,26 @@
+# %f, not %F: carrel's SECOND argument is a search PATTERN, not a second
+# document — `carrel a.md b.md` searches a.md for the string "b.md" and exits
+# without ever opening a reader. Handed a multi-file selection, %F made that
+# the behaviour of double-clicking two documents in a file manager: a window
+# that flashed and vanished. %f asks the launcher for one file per invocation,
+# which is what a reader that opens one document at a time can honestly accept.
+#
+# There is deliberately no Icon= line. An icon name has to resolve to an entry
+# in an installed icon theme, and no packaging recipe installs one, so
+# `Icon=carrel` resolved to nothing wherever carrel is installed from a
+# package. The desktop falls back to a generic icon either way, so the only
+# thing the line added was a claim that is not true. Restore it in the same
+# change that installs share/icons/hicolor/<size>/apps/carrel.png from all four
+# recipes AND adds that file to dist-workspace.toml's `include` list —
+# carrel-bin installs out of the release archive and can reach nothing the
+# archive does not carry.
 [Desktop Entry]
 Type=Application
 Name=Carrel
 GenericName=Markdown Reader
 Comment=A quiet place to read your markdown
-Exec=carrel %F
+Exec=carrel %f
 Terminal=true
-Icon=carrel
 Categories=Office;Viewer;
 MimeType=text/markdown;text/x-markdown;
 Keywords=markdown;reader;viewer;md;

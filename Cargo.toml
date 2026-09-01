@@ -8,7 +8,12 @@ members = ["crates/carrel-core", "crates/carrel"]
 # ride `v{version}` tags. Packaging spec §3.
 version = "2026.8.31"
 edition = "2024"
-rust-version = "1.90"
+# The floor is set by `merman`, a direct dependency pinned exactly, which
+# declares 1.95 — so does its `merman-core`/`merman-ascii`. With resolver 3
+# cargo refuses to resolve below it, meaning the 1.90 this said for several
+# releases could never have built. Verified: `cargo +1.95 check --workspace
+# --all-targets --locked` passes, and ci.yml now runs exactly that.
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/VaHughes/carrel"
 homepage = "https://github.com/VaHughes/carrel"

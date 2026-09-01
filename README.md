@@ -162,7 +162,7 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 | Key | Default | What it does |
 |---|---|---|
 | `max_width` | `90` | The reading measure: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
-| `theme` | `terminal`, or `omarchy` where there is one | Palette name. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` cycles them in the app and saves your choice. |
+| `theme` | `terminal`, or `omarchy` where there is one | Palette name — one of the seventeen listed under the example. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` cycles them in the app and saves your choice. |
 | `hints` | `true` | The lamplight hint row along the bottom. `H` toggles it. |
 | `titles` | `false` | Show each document's own title — `title:` from frontmatter, else its first heading — instead of its file name. Falls back to the name for a file that has neither. |
 | `outline_margin` | `false` | The section tree pinned in the left margin, current section lit, on terminals wide enough to spare the columns. Click a heading to jump. Off by default because it moves the text column. |
@@ -173,8 +173,19 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 ```ini
 # ~/.config/carrel/config
 max_width = 72
-theme = paper
+theme = gruvbox-dark
 ```
+
+**The palettes**, in the order `T` walks them:
+
+`terminal`, `carrel-dark`, `carrel-light`, `catppuccin-mocha`, `catppuccin-latte`,
+`gruvbox-dark`, `gruvbox-light`, `tokyo-night`, `nord`, `dracula`, `solarized-dark`,
+`solarized-light`, `everforest`, `rose-pine`, `kanagawa`, `synthwave`, `oceanic`.
+
+`dark` and `light` are accepted as aliases for `carrel-dark` and `carrel-light`, and on a
+desktop that publishes a palette `omarchy` rides at the end of the rotation (below). A name
+carrel does not know is not an error: it opens on `terminal` and says so in the status bar,
+so a config written for a future version still starts.
 
 ### On Omarchy, it wears what the desktop is wearing
 
@@ -191,7 +202,7 @@ simply is not offered and `terminal` remains the default.
 
 ## Build from source
 
-Requires Rust 1.90+.
+Requires Rust 1.95+.
 
 ```bash
 git clone https://github.com/VaHughes/carrel

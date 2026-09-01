@@ -1,17 +1,30 @@
 # Packaging templates
 
-**The AUR and COPR recipes are stamped for v2026.8.31; `carrel-package.nix` still says
-v2026.8.17.** The stamp is bumped in a commit *after* each tag, because the spec reads its
-version from the commit but fetches `Source0` from the tag tarball. `carrel` (AUR) and
+**All five recipes are stamped for v2026.8.31**, and `scripts/check-packaging.sh` now
+asserts every one of them against `[workspace.package] version` in `Cargo.toml`.
+`carrel-package.nix` had not been touched since the commit that added it, and six stamp
+commits walked straight past it: the only version check here compared `.SRCINFO` to its own
+PKGBUILD, so a recipe compared to nothing could drift for a fortnight without one ✗.
+
+**The version stamp goes in the release commit, before the tag. Only the checksums are
+stamped after it** — a sha256 of a tarball GitHub does not serve until the tag exists
+cannot be computed any earlier, and nothing else in the recipes has that excuse. Stamping
+the version afterwards left the tagged tree naming the *previous* release, which is what
+the check above now refuses; it is also the tree `release.yml`'s gate runs this script
+against. COPR still builds `--commit main` rather than the tag, because the spec is read
+from the commit while `Source0` is fetched from the tag tarball — the two agree once the
+stamp is in the release commit.
+
+`carrel` (AUR) and
 `carrel.spec` (COPR) build from the GitHub **source** tarball, which carries `contrib/` and
 `Cargo.lock`. `carrel-bin` (AUR, prebuilt) is no longer blocked: v2026.8.17 is the first
 release whose archives carry the man page and completions it installs. Note that **dist
 flattens `include` paths to the archive root**: `contrib/carrel.1` arrives as `carrel.1`.
 AUR publishing itself still waits on Arch reopening account registration.
 
-**`carrel-package.nix`** is the nixpkgs by-name package, ready except for its two hashes
-and a version bump. The hashes need nix, which `docker run --rm nixos/nix` provides — the
-fill-in steps are in the file's header comment.
+**`carrel-package.nix`** is the nixpkgs by-name package, ready except for its two hashes.
+The hashes need nix, which `docker run --rm nixos/nix` provides — the fill-in steps are in
+the file's header comment.
 
 ## Checksums
 

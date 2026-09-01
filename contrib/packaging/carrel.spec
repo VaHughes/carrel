@@ -8,7 +8,7 @@ License:        MIT OR Apache-2.0
 URL:            https://github.com/VaHughes/carrel
 Source0:        %{url}/archive/v%{version}/carrel-%{version}.tar.gz
 BuildRequires:  cargo
-BuildRequires:  rust >= 1.90
+BuildRequires:  rust >= 1.95
 
 %description
 Carrel is a free and open-source terminal markdown reader: search that
@@ -20,7 +20,14 @@ around you.
 %autosetup -n carrel-%{version} -p1
 
 %build
-cargo build --release -p carrel
+# --locked, because this build has NETWORK ACCESS: COPR needs `--enable-net on`
+# to fetch the dependency tree at all (see the packaging README), and without
+# --locked cargo happily re-resolves against crates.io and ignores the
+# Cargo.lock that ships in the source tarball. That is how a Fedora package
+# ends up built from a dependency set nobody tested — a semver-compatible
+# release of any transitive crate is enough. PKGBUILD-carrel uses --frozen for
+# the same reason; --locked is its half that does not also forbid the fetch.
+cargo build --release --locked -p carrel
 
 %install
 install -Dm755 target/release/carrel %{buildroot}%{_bindir}/carrel
@@ -29,11 +36,15 @@ install -Dm644 contrib/carrel.1 %{buildroot}%{_mandir}/man1/carrel.1
 install -Dm644 contrib/completions/carrel.bash %{buildroot}%{_datadir}/bash-completion/completions/carrel
 install -Dm644 contrib/completions/carrel.zsh %{buildroot}%{_datadir}/zsh/site-functions/_carrel
 install -Dm644 contrib/completions/carrel.fish %{buildroot}%{_datadir}/fish/vendor_completions.d/carrel.fish
-install -Dm644 LICENSE-MIT %{buildroot}%{_datadir}/licenses/%{name}/LICENSE-MIT
-install -Dm644 LICENSE-APACHE %{buildroot}%{_datadir}/licenses/%{name}/LICENSE-APACHE
+# The licences are NOT installed here. `%%license` in %%files below copies them
+# out of the build directory itself, to %%{_defaultlicensedir}/%%{name} — the
+# same /usr/share/licenses/carrel/ these two lines used to write by hand. Both
+# is not belt and braces: it is two writers to one path, and the only reason it
+# never broke is that the paths happened to agree. `%%license` is the one that
+# also marks the files as licence text for `rpm -qL`.
 
 %check
-cargo test --workspace
+cargo test --locked --workspace
 
 %files
 %{_bindir}/carrel
