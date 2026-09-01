@@ -94,4 +94,64 @@ fn switching() {
     );
     theme::set_mono(false);
     assert!(theme::set_theme("terminal"));
+
+    // --- The desktop palette ------------------------------------------------
+    // Last, because installing it lengthens the cycle lap the assertions
+    // above measure.
+
+    // Not on offer until the desktop has published one: a config carried over
+    // from an Omarchy machine must fail the same way any stale name does.
+    assert!(!theme::set_theme(theme::OMARCHY), "nothing to follow yet");
+
+    let desktop = carrel::omarchy::parse(AETHER).expect("aether parses");
+    assert!(
+        theme::install_omarchy(&desktop),
+        "installing one is a change"
+    );
+    assert!(
+        !theme::install_omarchy(&desktop),
+        "installing the same one again is not — this is what stops the \
+         once-a-second poll repainting the screen forever"
+    );
+
+    assert!(theme::set_theme(theme::OMARCHY));
+    assert_eq!(theme::current_name(), "omarchy");
+    assert_eq!(theme::body().bg, Some(Color::Rgb(0x0e, 0x09, 0x1d)));
+    assert_eq!(theme::body().fg, Some(Color::Rgb(0xdc, 0x8f, 0x7c)));
+    // The point of the whole exercise: headings wear the desktop's accent,
+    // not carrel's house green.
+    assert_eq!(theme::heading(1).fg, Some(Color::Rgb(0x6e, 0x60, 0x80)));
+
+    let buf = frame(30, 8);
+    assert_eq!(
+        buf[(0, 0)].bg,
+        Color::Rgb(0x0e, 0x09, 0x1d),
+        "the desktop's page colour reaches real cells"
+    );
+
+    // And it takes its place at the end of the rotation, so `T` still walks
+    // every theme and still comes home to `terminal`.
+    assert!(theme::set_theme("terminal"));
+    let lap: Vec<&str> = (0..PALETTES.len()).map(|_| theme::cycle_theme()).collect();
+    assert_eq!(
+        lap.last().copied(),
+        Some(theme::OMARCHY),
+        "the desktop palette closes the lap"
+    );
+    assert_eq!(theme::cycle_theme(), "terminal", "and wraps home");
 }
+
+/// The palette Omarchy's `aether` theme publishes, verbatim.
+const AETHER: &str = r##"
+accent = "#6e6080"
+foreground = "#dc8f7c"
+background = "#0e091d"
+selection_background = "#6e6080"
+color0 = "#0e091d"
+color1 = "#c53253"
+color2 = "#a68e5a"
+color3 = "#ff6565"
+color4 = "#6e6080"
+color5 = "#a45782"
+color6 = "#8c9785"
+"##;

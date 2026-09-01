@@ -2,6 +2,37 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **On Omarchy, carrel wears what the desktop is wearing.** The `terminal` theme inherited
+  your terminal's background and foreground, but every accent — headings, links, the search
+  lamp, the syntax colours — was carrel's own house green and amber whatever theme the rest
+  of the desktop had on. On a purple desktop that read as a window that had not been told.
+  Omarchy publishes the active theme as a terminal palette at
+  `~/.local/state/omarchy/current/theme/colors.toml`, the same file its alacritty, btop and
+  helix themes are generated from; carrel now derives a palette from it, offers it as
+  `omarchy` in the `T` rotation, and opens wearing it when no `theme` is on record. It is
+  re-read once a second, so `omarchy theme set` restyles a reader that is already open —
+  no restart, no keypress. Everything derived is blended toward the page or toward the ink
+  rather than toward black or white, so a light Omarchy theme comes out light; and a slot
+  whose colour would be illegible against that theme's own background falls through to one
+  that is not, because an invisible link is not a link. Nothing outside that one file is
+  consulted, and on a machine without Omarchy the option is not offered.
+
+- **A spun wheel scrolls faster.** Every wheel notch moved exactly three lines, so crossing
+  a long README meant a great many of them. Notches arriving in quick succession now
+  compound, three lines at a time up to twelve; a pause, or a change of direction, drops
+  straight back to three so a correction stays precise. The home screen is deliberately not
+  accelerated — the wheel moves the selection there, and a selection that gathers speed
+  overshoots the row you were aiming for.
+
+- **The search counts matches while you are still typing.** The hits were found and
+  highlighted on every keystroke, but the status bar kept showing the scroll percentage
+  until you pressed Enter, so the one question you have while typing a needle — is this
+  finding anything — went unanswered until you had committed to it. It now reads
+  `12 matches` as you type, and `no matches` when there are none. `3 of 12` still takes the
+  slot back the moment you accept one.
+
 ## 2026.8.31
 
 - **The directory picker opens where you already are.** `d` used to open on an empty input,

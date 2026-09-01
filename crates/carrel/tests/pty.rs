@@ -283,6 +283,85 @@ fn a_file_created_while_the_home_screen_is_up_appears_on_it() {
     assert!(raw.contains("\x1b[?1049l"), "and it exits cleanly");
 }
 
+#[test]
+fn the_reader_wears_the_desktop_palette_and_follows_it_when_it_changes() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("doc.md"), "# Heading\n\nbody\n").unwrap();
+
+    // A desktop palette in the scratch state dir. `XDG_STATE_HOME` is what
+    // the harness already redirects, so this can never see — or disturb —
+    // the real one.
+    let theme_dir = d.path().join("state/omarchy/current/theme");
+    std::fs::create_dir_all(&theme_dir).unwrap();
+    let colors = theme_dir.join("colors.toml");
+    std::fs::write(
+        &colors,
+        "background = \"#0e091d\"\nforeground = \"#dc8f7c\"\naccent = \"#6e6080\"\n",
+    )
+    .unwrap();
+    // What `omarchy theme set` will look like from in here.
+    std::fs::write(
+        d.path().join("next.toml"),
+        "background = \"#102030\"\nforeground = \"#e0e0e0\"\naccent = \"#40c0a0\"\n",
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    let cfg = d.path().join("cfg");
+    let state = d.path().join("state");
+    // The subshell swaps the palette a beat after the reader is up, then
+    // gives the once-a-second poll time to notice before quitting.
+    let cmd = format!(
+        "( sleep 2; cp next.toml '{}'; sleep 3; printf 'q' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' \
+         script -qec 'stty rows 20 cols 76; {bin} doc.md' '{}' >/dev/null 2>&1",
+        colors.display(),
+        cfg.display(),
+        state.display(),
+        out.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+
+    // No `theme` in the (scratch, empty) config, so the desktop's palette is
+    // what a fresh reader opens wearing.
+    assert!(
+        raw.contains("48;2;14;9;29"),
+        "the page takes the desktop's background (#0e091d)"
+    );
+    assert!(
+        raw.contains("38;2;110;96;128"),
+        "and the heading its accent (#6e6080)"
+    );
+    assert!(
+        !raw.contains("38;2;122;168;116"),
+        "carrel's house green must not be painted over a desktop that never \
+         asked for it"
+    );
+
+    // And it followed the swap without a restart.
+    assert!(
+        raw.contains("48;2;16;32;48"),
+        "the new background (#102030) arrived while the reader was up"
+    );
+    assert!(
+        raw.contains("38;2;64;192;160"),
+        "and the new accent (#40c0a0) with it"
+    );
+    assert!(raw.contains("\x1b[?1049l"), "and it exits cleanly");
+}
+
 // --- CLI surface (2026-08-15) ---
 
 #[test]

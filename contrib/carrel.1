@@ -182,7 +182,9 @@ Follow the selected link.
 Go back where you came from.
 .TP
 .B T
-Cycle themes.
+Cycle themes. On an Omarchy desktop the rotation includes
+.BR omarchy ,
+the palette derived from the theme the rest of the desktop is wearing.
 .TP
 .BR h ", " F1
 Help.
@@ -257,6 +259,16 @@ Theme, chosen root directory, footer preference, favourite places (repeated
 lines, newest first), and
 .BR max_width ,
 the reading measure in columns (default 90; 0 turns it off).
+.TP
+.I $XDG_STATE_HOME/omarchy/current/theme/colors.toml
+Read, never written. Where Omarchy publishes the active desktop theme as a
+terminal palette, carrel derives a
+.B omarchy
+palette from it and uses it as the default when no
+.B theme
+is on record. Re\-read once a second, so
+.B omarchy theme set
+restyles an open reader without a restart.
 .TP
 .I $XDG_STATE_HOME/carrel
 Reading positions, so a document reopens where you left it.

@@ -828,6 +828,92 @@ impl Reloader {
     }
 }
 
+/// `omarchy theme set` restyles the whole desktop; this is how a reader that
+/// is already open follows it rather than staying on last week's colours.
+///
+/// The file is re-read and re-parsed rather than stat'ed. It is under 500
+/// bytes; `current` is a symlink Omarchy swaps, so an mtime belongs to
+/// whichever file it now points at rather than to the change itself; and two
+/// themes written by the same installer in the same second with the same
+/// length would be indistinguishable by stat. Parsing costs less than the
+/// extra syscall that would try to avoid it.
+struct Desktop {
+    last: Instant,
+    /// No palette file when the reader opened. Checked once, so a machine
+    /// without Omarchy never opens a file it does not have.
+    present: bool,
+}
+
+impl Desktop {
+    fn new() -> Self {
+        Self {
+            last: Instant::now(),
+            present: carrel::theme::omarchy_available(),
+        }
+    }
+
+    /// Re-read the desktop palette. Nothing to return: the loop repaints on
+    /// every wake anyway, and ratatui writes only the cells that moved.
+    fn poll(&mut self) {
+        if !self.present || self.last.elapsed() < RELOAD_POLL {
+            return;
+        }
+        self.last = Instant::now();
+        if let Some(c) = carrel::omarchy::load() {
+            carrel::theme::install_omarchy(&c);
+        }
+    }
+}
+
+/// A wheel notch is three lines; spinning faster than this makes it more.
+///
+/// A terminal cannot scroll by a fraction of a row, so the smooth curve a GUI
+/// uses is not available — but the part of it a hand actually feels is the
+/// velocity, not the interpolation. Notches arriving inside this window
+/// compound the step; a pause, or a reversal, drops straight back to three so
+/// that a correction stays precise.
+const WHEEL_WINDOW: Duration = Duration::from_millis(80);
+const WHEEL_STEP: i32 = 3;
+const WHEEL_MAX: i32 = 12;
+
+#[derive(Default)]
+struct Wheel {
+    /// When the last notch arrived, and which way it went.
+    last: Option<(Instant, bool)>,
+    step: i32,
+}
+
+impl Wheel {
+    /// The number of lines this notch should move.
+    fn notch(&mut self, down: bool) -> i32 {
+        let now = Instant::now();
+        let fast = self
+            .last
+            .is_some_and(|(t, d)| d == down && now.duration_since(t) < WHEEL_WINDOW);
+        self.step = if fast {
+            (self.step + WHEEL_STEP).min(WHEEL_MAX)
+        } else {
+            WHEEL_STEP
+        };
+        self.last = Some((now, down));
+        self.step
+    }
+}
+
+/// Everything the event loop remembers about the pointer between events.
+///
+/// Presentation state, so it lives here rather than in `App` — the same rule
+/// that keeps the active palette out of the state layer. Bundled because all
+/// three are threaded through the same two handlers.
+#[derive(Default)]
+struct Pointer {
+    /// Where on the scrollbar thumb the hand took hold, while a drag is in
+    /// flight. `None` when nothing is being dragged.
+    dragging: Option<u16>,
+    clicks: Clicks,
+    wheel: Wheel,
+}
+
 /// Press streak tracking for double/triple click. Presentation state, so it
 /// lives in the event loop like the theme — never in `App`.
 #[derive(Default)]
@@ -922,13 +1008,8 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
     app.diff_forced = diff_forced();
     app.file = Some(path.to_path_buf());
     app.note = theme_note;
-    app.config_dir = config::config_dir();
     app.state_dir = carrel::state::state_dir();
-    app.hints = config::load_hints().unwrap_or(true);
-    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
-    app.outline_margin = config::load_outline_margin().unwrap_or(false);
-    // The reading measure. Absent means the default; an explicit 0 means off.
-    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    apply_config(&mut app);
     app.on_resize(app.cols, app.rows);
     // A direct open builds the App by hand rather than via open_path, so the
     // saved reading position needs restoring explicitly. Its note outranks
@@ -951,9 +1032,9 @@ fn run_loop(
     let mut pending: Option<(u16, u16)> = None;
     let mut deadline: Option<Instant> = None;
     let mut links: Vec<OscLink> = Vec::new();
-    let mut dragging: Option<u16> = None;
-    let mut clicks = Clicks::default();
+    let mut ptr = Pointer::default();
     let mut reloader = Reloader::new();
+    let mut desktop = Desktop::new();
     let mut diagrams = Diagrams::new();
     // The backlinks query: started when the pane opens, dropped when it
     // closes — which is what stops an abandoned walk on its next send.
@@ -1012,7 +1093,7 @@ fn run_loop(
                     }
                 }
                 Event::Mouse(m) => {
-                    if let Some(action) = mouse_action(m, &app, &mut dragging, &mut clicks)
+                    if let Some(action) = mouse_action(m, &app, &mut ptr)
                         && update(&mut app, action) == Outcome::Quit
                     {
                         break;
@@ -1034,6 +1115,7 @@ fn run_loop(
 
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
         poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
+        desktop.poll();
 
         if deadline.is_some_and(|d| Instant::now() >= d)
             && let Some((w, h)) = pending.take()
@@ -1132,12 +1214,8 @@ fn run_stdin(rx: &Receiver<String>) -> std::io::Result<()> {
     app.diff_forced = diff_forced();
     app.piped = Some(String::new());
     app.note = theme_note;
-    app.config_dir = config::config_dir();
     // No state_dir: a pathless document has no position to resume or save.
-    app.hints = config::load_hints().unwrap_or(true);
-    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
-    app.outline_margin = config::load_outline_margin().unwrap_or(false);
-    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    apply_config(&mut app);
     app.on_resize(app.cols, app.rows);
     run_loop(terminal, app, images, Some(rx))
 }
@@ -1263,13 +1341,8 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     // The cache paints before any syscall; the walk refines it.
     let cached = scan::load_cache(&root);
     let mut app = App::new_home(root.clone(), cached, size.width, size.height);
-    app.config_dir = config::config_dir();
     app.state_dir = carrel::state::state_dir();
-    app.hints = config::load_hints().unwrap_or(true);
-    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
-    app.outline_margin = config::load_outline_margin().unwrap_or(false);
-    // The reading measure. Absent means the default; an explicit 0 means off.
-    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+    apply_config(&mut app);
     load_resume(&mut app);
     set_home_prefs(&mut app);
     app.on_resize(app.cols, app.rows);
@@ -1279,9 +1352,9 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         h.note = Some(n);
     }
     let mut keys = Keys::new();
-    let mut dragging: Option<u16> = None;
-    let mut clicks = Clicks::default();
+    let mut ptr = Pointer::default();
     let mut reloader = Reloader::new();
+    let mut desktop = Desktop::new();
     let mut diagrams = Diagrams::new();
     let mut scan = Scan::start(&root);
     let mut scan_root = root;
@@ -1338,7 +1411,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
                     }
                 }
                 Event::Mouse(m) => {
-                    if let Some(a) = home_mouse_action(m, &app, &mut dragging, &mut clicks)
+                    if let Some(a) = home_mouse_action(m, &app, &mut ptr)
                         && update(&mut app, a) == Outcome::Quit
                     {
                         break;
@@ -1359,8 +1432,9 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         }
 
         // And the same live reload (a no-op while the home screen is up —
-        // there is no open file to watch).
+        // there is no open file to watch), and the same desktop palette.
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
+        desktop.poll();
 
         if deadline.is_some_and(|d| Instant::now() >= d)
             && let Some((w, h)) = pending.take()
@@ -1387,12 +1461,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
 /// the pointer 1:1, preserving where on the thumb the hand took hold;
 /// clicking the empty **track pages** toward the click rather than
 /// teleporting the document.
-fn mouse_action(
-    m: MouseEvent,
-    app: &App,
-    dragging: &mut Option<u16>,
-    clicks: &mut Clicks,
-) -> Option<carrel::action::Action> {
+fn mouse_action(m: MouseEvent, app: &App, ptr: &mut Pointer) -> Option<carrel::action::Action> {
     use carrel::action::{Action, Span};
     use carrel::keys::{drag_target, thumb_geometry};
 
@@ -1406,8 +1475,8 @@ fn mouse_action(
     let bar_y = move |row: u16| row.saturating_sub(top);
 
     match m.kind {
-        MouseEventKind::ScrollDown => Some(Action::Scroll(Span::Line, 3)),
-        MouseEventKind::ScrollUp => Some(Action::Scroll(Span::Line, -3)),
+        MouseEventKind::ScrollDown => Some(Action::Scroll(Span::Line, ptr.wheel.notch(true))),
+        MouseEventKind::ScrollUp => Some(Action::Scroll(Span::Line, -ptr.wheel.notch(false))),
         // The lamp — lit on the footer, folded on the status row — is the
         // switch. Both live on the bottom row's first cells.
         MouseEventKind::Down(MouseButton::Left) if m.row + 1 == app.rows && m.column < 3 => {
@@ -1418,7 +1487,7 @@ fn mouse_action(
             let row = bar_y(m.row);
             if row >= top && row < top + len {
                 // Grab. The view does not move until the hand does.
-                *dragging = Some(row - top);
+                ptr.dragging = Some(row - top);
                 None
             } else {
                 // Track click: one gentle page toward the pointer.
@@ -1435,13 +1504,13 @@ fn mouse_action(
                 return Some(Action::OutlineJumpTo(b));
             }
             let span = doc_span_at(app, m.column, m.row)?;
-            match clicks.press(m.column, m.row) {
+            match ptr.clicks.press(m.column, m.row) {
                 2 => Some(Action::SelectWord(span.0)),
                 3 => Some(Action::SelectBlock(span.0)),
                 _ => Some(Action::SelectAnchor(span)),
             }
         }
-        MouseEventKind::Drag(MouseButton::Left) => match *dragging {
+        MouseEventKind::Drag(MouseButton::Left) => match ptr.dragging {
             Some(grab) => Some(Action::ScrollTo(drag_target(
                 bar_y(m.row),
                 grab,
@@ -1452,8 +1521,8 @@ fn mouse_action(
             None => doc_span_at(app, m.column, m.row).map(Action::SelectDrag),
         },
         MouseEventKind::Up(MouseButton::Left) => {
-            if dragging.is_some() {
-                *dragging = None;
+            if ptr.dragging.is_some() {
+                ptr.dragging = None;
                 None
             } else {
                 Some(Action::SelectRelease)
@@ -1463,10 +1532,37 @@ fn mouse_action(
     }
 }
 
+/// The preferences every entry point applies to a fresh `App`.
+///
+/// `state_dir` is deliberately not here: a piped document has no path, so it
+/// has no reading position to resume or save, and the entry point that knows
+/// that is the one that must say so.
+fn apply_config(app: &mut App) {
+    app.config_dir = config::config_dir();
+    app.hints = config::load_hints().unwrap_or(true);
+    app.breadcrumb = config::load_breadcrumb().unwrap_or(true);
+    app.outline_margin = config::load_outline_margin().unwrap_or(false);
+    // The reading measure. Absent means the default; an explicit 0 means off.
+    app.max_width = config::load_max_width().unwrap_or(config::DEFAULT_MEASURE);
+}
+
 /// Apply the saved theme. An unknown name falls back to `terminal` with a
 /// status note — a stale config is never an error.
+///
+/// The desktop's own palette is installed first, so that `theme omarchy`
+/// resolves and so that a reader with no theme on record opens wearing what
+/// the rest of the desktop is wearing.
 fn startup_theme() -> Option<String> {
-    let name = config::load_theme()?;
+    if let Some(c) = carrel::omarchy::load() {
+        carrel::theme::install_omarchy(&c);
+    }
+    let Some(name) = config::load_theme() else {
+        // Nothing chosen yet. Follow the desktop where there is one to
+        // follow; `set_theme` declines and leaves `terminal` where there is
+        // not, which is the same default carrel has always opened with.
+        carrel::theme::set_theme(carrel::theme::OMARCHY);
+        return None;
+    };
     if carrel::theme::set_theme(&name) {
         None
     } else {
@@ -1539,14 +1635,17 @@ fn drain_scan(app: &mut App, scan: &mut Scan) {
 fn home_mouse_action(
     m: MouseEvent,
     app: &App,
-    dragging: &mut Option<u16>,
-    clicks: &mut Clicks,
+    ptr: &mut Pointer,
 ) -> Option<carrel::action::Action> {
     use carrel::action::Action;
     if !app.is_home() {
-        return mouse_action(m, app, dragging, clicks);
+        return mouse_action(m, app, ptr);
     }
     match m.kind {
+        // Deliberately not accelerated: this moves the SELECTION, and a
+        // selection that gathers speed overshoots the row you were aiming
+        // for. Acceleration belongs to scrolling, where nothing is being
+        // pointed at.
         MouseEventKind::ScrollDown => Some(Action::HomeMove(3)),
         MouseEventKind::ScrollUp => Some(Action::HomeMove(-3)),
         // Same lamp, same switch as the reader's bottom row.
@@ -1564,7 +1663,7 @@ fn home_mouse_action(
             let home = app.home()?;
             if home.mode == carrel::home::HomeMode::Picker {
                 let i = home.picker_row_at(m.column, m.row, app.cols, app.rows)?;
-                return Some(match clicks.press(m.column, m.row) {
+                return Some(match ptr.clicks.press(m.column, m.row) {
                     1 => Action::PickerSelect(i),
                     _ => Action::PickerChoose,
                 });
@@ -1577,7 +1676,7 @@ fn home_mouse_action(
                 return Some(Action::HomeResume(i));
             }
             let i = home.row_at(m.row, app.cols, app.rows, app.hints)?;
-            match clicks.press(m.column, m.row) {
+            match ptr.clicks.press(m.column, m.row) {
                 1 => Some(Action::HomeSelect(i)),
                 // The first press of the pair already selected it.
                 _ => Some(Action::HomeOpen),
@@ -1772,5 +1871,24 @@ mod tests {
         assert_eq!(c.press(5, 5), 3);
         assert_eq!(c.press(5, 5), 1, "a fourth click starts over");
         assert_eq!(c.press(9, 5), 1, "a different cell starts over");
+    }
+
+    #[test]
+    fn a_spun_wheel_gathers_speed_and_a_reversed_one_does_not() {
+        let mut w = Wheel::default();
+        // A sustained spin compounds, and stops compounding at the cap.
+        assert_eq!(w.notch(true), 3);
+        assert_eq!(w.notch(true), 6);
+        assert_eq!(w.notch(true), 9);
+        assert_eq!(w.notch(true), 12);
+        assert_eq!(w.notch(true), 12, "and no faster than the cap");
+
+        // Turning back is a correction, and a correction must be precise.
+        assert_eq!(w.notch(false), 3, "reversing drops to a single step");
+        assert_eq!(w.notch(false), 6);
+
+        // So is picking the wheel up again after a pause.
+        w.last = Some((Instant::now().checked_sub(WHEEL_WINDOW * 2).unwrap(), false));
+        assert_eq!(w.notch(false), 3, "a pause drops to a single step");
     }
 }

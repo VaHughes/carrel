@@ -162,7 +162,7 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 | Key | Default | What it does |
 |---|---|---|
 | `max_width` | `90` | The reading measure: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
-| `theme` | `terminal` | Palette name — the default inherits your terminal's own colours. `T` cycles all 17 in the app and saves your choice. |
+| `theme` | `terminal`, or `omarchy` where there is one | Palette name. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` cycles them in the app and saves your choice. |
 | `hints` | `true` | The lamplight hint row along the bottom. `H` toggles it. |
 | `titles` | `false` | Show each document's own title — `title:` from frontmatter, else its first heading — instead of its file name. Falls back to the name for a file that has neither. |
 | `outline_margin` | `false` | The section tree pinned in the left margin, current section lit, on terminals wide enough to spare the columns. Click a heading to jump. Off by default because it moves the text column. |
@@ -175,6 +175,19 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 max_width = 72
 theme = paper
 ```
+
+### On Omarchy, it wears what the desktop is wearing
+
+Omarchy publishes the active theme as a terminal palette at
+`~/.local/state/omarchy/current/theme/colors.toml` — the same file its alacritty, btop and
+helix themes are generated from. Where that file exists, carrel reads it and derives a palette
+from it, and a reader with no `theme` on record opens wearing it. Run `omarchy theme set` and an
+open carrel follows within a second; no restart, no keypress.
+
+It is one more entry in the `T` rotation, named `omarchy`, so you can leave it for a fixed
+palette whenever you like — and `theme = omarchy` in the config pins it. Nothing is read over the
+network and nothing outside that one file is consulted; on a machine without Omarchy the option
+simply is not offered and `terminal` remains the default.
 
 ## Build from source
 
@@ -230,7 +243,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] OSC 8 hyperlinks, relative-link traversal with a history stack
 - [x] Syntax highlighting (syntect, semantic scopes not colours)
 - [x] Images (kitty protocol first, half-block fallback everywhere)
-- [x] Themes: 17 palettes, cycled live, persisted
+- [x] Themes: 17 palettes, cycled live, persisted — plus the desktop's own on Omarchy
 - [x] Help overlay, reading-position resume, `[[wikilinks]]`
 - [x] Mouse selection that copies clean text (drag, double-click word, triple-click block)
 - [x] Outline navigation, live reload, search inside every file

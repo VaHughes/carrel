@@ -10,6 +10,14 @@
 //! theme-cycle key. It never enters `App`: rule 6 keeps ratatui colour types
 //! out of the state layer, and the *name* in the config file is just a string.
 //!
+//! # The desktop palette
+//!
+//! One palette is not in that table: [`OMARCHY`] is derived at runtime from
+//! the colours the desktop publishes ([`crate::omarchy`]) and can be replaced
+//! while the reader is up, so [`ACTIVE`] holding [`OMARCHY_SLOT`] means "look
+//! in [`DESKTOP`] instead". Everything else about it — how it is named, how it
+//! cycles, how it is persisted — is the same as for any built-in.
+//!
 //! # Third-party palettes
 //!
 //! Catppuccin, Gruvbox, Tokyo Night, Nord, Dracula, Solarized, Everforest,
@@ -28,7 +36,13 @@ use ratatui::style::{Color, Modifier, Style};
 ///
 /// `bg`/`fg` of `None` mean "inherit the terminal", which is what makes the
 /// `terminal` theme a first-class palette rather than a special case.
-#[derive(Debug)]
+///
+/// `Copy` on purpose: the desktop palette ([`install_omarchy`]) is built at
+/// runtime and can be replaced while the reader is up, so [`active`] hands
+/// back a value rather than a `&'static` borrowed from a table that may be
+/// about to change. ~120 bytes off a hot L1 line, against a `Box::leak` per
+/// theme change — measured at noise either way, and this one does not leak.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub name: &'static str,
     /// A short alias (`dark`, `light`) that also resolves to this palette.
@@ -630,12 +644,53 @@ fn tinted(s: Style) -> Style {
     m
 }
 
-fn active() -> &'static Palette {
-    &PALETTES[ACTIVE.load(Ordering::Relaxed).min(PALETTES.len() - 1)]
+/// The name the desktop palette answers to, in config and on `T`.
+pub const OMARCHY: &str = "omarchy";
+
+/// [`ACTIVE`] holding this means "the desktop palette", which lives in
+/// [`DESKTOP`] rather than in [`PALETTES`]. A sentinel rather than an index
+/// because the built-in table is a compile-time constant and this one is not.
+const OMARCHY_SLOT: usize = usize::MAX;
+
+/// The palette read from the desktop, once [`install_omarchy`] has been given
+/// one. Written at most once a second by the event loop's poll and read once
+/// per style; an uncontended `RwLock` read is two atomics, and only the
+/// desktop theme pays even that.
+static DESKTOP: std::sync::RwLock<Option<Palette>> = std::sync::RwLock::new(None);
+
+fn desktop() -> Option<Palette> {
+    *DESKTOP.read().ok()?
+}
+
+/// Is there a desktop palette to switch to?
+#[must_use]
+pub fn omarchy_available() -> bool {
+    desktop().is_some()
+}
+
+fn active() -> Palette {
+    let i = ACTIVE.load(Ordering::Relaxed);
+    if i == OMARCHY_SLOT {
+        // Selected but not installed — a config naming `omarchy` on a machine
+        // where Omarchy is gone. The terminal's own colours are the right
+        // answer to "match my desktop" when the desktop stops saying.
+        return desktop().unwrap_or(PALETTES[0]);
+    }
+    PALETTES[i.min(PALETTES.len() - 1)]
 }
 
 /// Select a theme by name or alias. `false` if no such theme exists.
 pub fn set_theme(name: &str) -> bool {
+    if name == OMARCHY {
+        // Only offered when the desktop actually published a palette, so a
+        // stale `theme omarchy` gets the same honest "unknown theme" note as
+        // any other name that no longer resolves.
+        if !omarchy_available() {
+            return false;
+        }
+        ACTIVE.store(OMARCHY_SLOT, Ordering::Relaxed);
+        return true;
+    }
     let Some(i) = PALETTES
         .iter()
         .position(|p| p.name == name || p.alias == Some(name))
@@ -647,15 +702,128 @@ pub fn set_theme(name: &str) -> bool {
 }
 
 /// Advance to the next theme, returning its name.
+///
+/// The desktop palette rides at the end of the rotation when there is one, so
+/// `T` still walks every theme and comes home to `terminal`.
 pub fn cycle_theme() -> &'static str {
-    let next = (ACTIVE.load(Ordering::Relaxed) + 1) % PALETTES.len();
+    let i = ACTIVE.load(Ordering::Relaxed);
+    let next = if i == OMARCHY_SLOT {
+        0
+    } else if i + 1 >= PALETTES.len() && omarchy_available() {
+        OMARCHY_SLOT
+    } else {
+        (i + 1) % PALETTES.len()
+    };
     ACTIVE.store(next, Ordering::Relaxed);
-    PALETTES[next].name
+    current_name()
 }
 
 #[must_use]
 pub fn current_name() -> &'static str {
+    if ACTIVE.load(Ordering::Relaxed) == OMARCHY_SLOT {
+        return OMARCHY;
+    }
     active().name
+}
+
+/// Install (or replace) the palette derived from the desktop's own colours.
+///
+/// Returns `true` when the installed palette actually moved, which is the
+/// event loop's cue that a repaint is worth doing — `omarchy theme set` to
+/// the theme already showing must not flicker the screen once a second.
+pub fn install_omarchy(c: &crate::omarchy::Colors) -> bool {
+    let next = from_desktop(c);
+    let Ok(mut slot) = DESKTOP.write() else {
+        return false;
+    };
+    if *slot == Some(next) {
+        return false;
+    }
+    *slot = Some(next);
+    true
+}
+
+/// Blend `pct` per cent of `b` into `a`, per channel.
+fn mix(a: u32, b: u32, pct: u32) -> u32 {
+    let ch = |shift: u32| {
+        let x = ((a >> shift) & 0xff) * (100 - pct) + ((b >> shift) & 0xff) * pct;
+        (x / 100) & 0xff
+    };
+    (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
+
+/// Perceived brightness, 0-255. The same weights omawrite uses to decide a
+/// theme's polarity, and the ones every "is this dark?" check has used since
+/// CCIR 601.
+fn luma(hex: u32) -> u32 {
+    (299 * ((hex >> 16) & 0xff) + 587 * ((hex >> 8) & 0xff) + 114 * (hex & 0xff)) / 1000
+}
+
+/// The first candidate that will actually be legible against `bg`, else
+/// `fallback`. A theme whose blue is nearly its background — and there are
+/// several — must not end up with invisible links.
+fn legible(candidates: &[u32], bg: u32, fallback: u32) -> u32 {
+    let floor = luma(bg);
+    *candidates
+        .iter()
+        .find(|&&c| luma(c).abs_diff(floor) >= 48)
+        .unwrap_or(&fallback)
+}
+
+/// Map the desktop's terminal palette onto carrel's semantic slots.
+///
+/// Everything derived is derived by blending **toward the page** or **toward
+/// the ink** rather than toward black or white, so a light Omarchy theme and
+/// a dark one both come out right without a branch on polarity.
+fn from_desktop(d: &crate::omarchy::Colors) -> Palette {
+    let (bg, fg, accent) = (d.background, d.foreground, d.accent);
+    // A panel raised just off the page, and text sunk just into it.
+    let panel = mix(bg, fg, 10);
+    let muted = mix(fg, bg, 45);
+    let (red, green, yellow) = (d.ansi[1], d.ansi[2], d.ansi[3]);
+    let (blue, magenta, cyan) = (d.ansi[4], d.ansi[5], d.ansi[6]);
+
+    // Links are blue by five decades of convention; the accent is the theme's
+    // signature and belongs on the headings. Both guarded, because a theme is
+    // free to put either one almost on top of its background.
+    let link = legible(&[blue, cyan, accent], bg, fg);
+    let head = legible(&[accent, magenta, blue], bg, fg);
+    // The lamp: search's current match, which must read at a glance.
+    let lamp = legible(&[yellow, accent], bg, fg);
+
+    Palette {
+        name: OMARCHY,
+        alias: None,
+        bg: Some(c(bg)),
+        fg: Some(c(fg)),
+        heading_hi: c(head),
+        heading_lo: c(mix(head, bg, 35)),
+        code_fg: c(fg),
+        code_bg: c(panel),
+        link: c(link),
+        dim: c(muted),
+        status_fg: c(fg),
+        status_bg: c(mix(bg, fg, 16)),
+        // The desktop names its own selection colour, and a search hit is a
+        // selection: borrowing it makes carrel's highlight look like every
+        // other highlight on the screen.
+        match_bg: c(legible(&[d.selection], bg, mix(lamp, bg, 60))),
+        cur_fg: c(bg),
+        cur_bg: c(lamp),
+        sel: c(head),
+        lsel_fg: c(bg),
+        lsel_bg: c(link),
+        wordmark: c(head),
+        kw: c(legible(&[magenta, red], bg, fg)),
+        string: c(legible(&[green], bg, fg)),
+        comment: c(muted),
+        number: c(legible(&[yellow], bg, fg)),
+        func: c(legible(&[blue, cyan], bg, fg)),
+        ty: c(legible(&[cyan, blue], bg, fg)),
+        punct: c(muted),
+        ins: c(legible(&[green], bg, fg)),
+        del_: c(legible(&[red], bg, fg)),
+    }
 }
 
 /// The page itself: `None`s inherit the terminal (`terminal` theme).
@@ -780,8 +948,8 @@ pub fn wordmark() -> Style {
     )
 }
 
-/// GFM alert accents, mapped from existing palette slots so all 17 themes
-/// colour them without new fields: Note leans on the link blue, Tip on the
+/// GFM alert accents, mapped from existing palette slots so every theme —
+/// the desktop's included — colours them without new fields: Note leans on the link blue, Tip on the
 /// string green, Important on the bright heading, Warning on the amber
 /// accent, Caution on the keyword (red in the palettes that have one).
 #[must_use]
@@ -846,8 +1014,9 @@ pub fn link_selected() -> Style {
 }
 
 /// The mouse selection. `REVERSED` rather than a palette colour: it reads as
-/// a selection in all 17 palettes and survives `NO_COLOR` untouched — the
-/// same choice terminals themselves make.
+/// a selection in every palette — including one derived from a desktop theme
+/// nobody has seen — and survives `NO_COLOR` untouched. The same choice
+/// terminals themselves make.
 #[must_use]
 pub fn selection() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)
@@ -869,6 +1038,61 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), PALETTES.len(), "duplicate theme name");
+    }
+
+    // Deriving a desktop palette reads no global state, so it is safe here.
+    // Only *switching* to it has to live in the integration binary.
+
+    fn desktop(text: &str) -> crate::omarchy::Colors {
+        crate::omarchy::parse(text).expect("test palette parses")
+    }
+
+    #[test]
+    fn mixing_moves_toward_the_other_colour_from_either_end() {
+        assert_eq!(mix(0x000000, 0xffffff, 0), 0x000000);
+        assert_eq!(mix(0x000000, 0xffffff, 100), 0xffffff);
+        assert_eq!(mix(0x000000, 0xffffff, 50), 0x7f7f7f);
+        // The reason every tint blends toward the page or the ink rather than
+        // toward black or white: one call, and a light desktop theme comes
+        // out light while a dark one comes out dark.
+        assert!(luma(mix(0xffffff, 0x222324, 10)) < luma(0xffffff));
+        assert!(luma(mix(0x101010, 0xeeeeee, 10)) > luma(0x101010));
+    }
+
+    #[test]
+    fn a_desktop_palette_never_hides_a_link_in_its_own_page() {
+        // A theme whose "blue" is all but its background. Real palettes get
+        // close to this, and an unguarded mapping would paint links invisible.
+        let mut d = desktop(
+            "background = \"#101010\"\n\
+             foreground = \"#eeeeee\"\n\
+             accent = \"#c08040\"\n\
+             color6 = \"#7fd0d0\"\n",
+        );
+        d.ansi[4] = 0x131313;
+        let p = from_desktop(&d);
+        assert_ne!(p.link, c(0x131313), "an invisible link is not a link");
+        assert_eq!(p.link, c(0x7fd0d0), "it falls through to the cyan slot");
+    }
+
+    #[test]
+    fn a_desktop_palette_takes_its_accent_and_its_page() {
+        let d = desktop(
+            "background = \"#0e091d\"\n\
+             foreground = \"#dc8f7c\"\n\
+             accent = \"#6e6080\"\n\
+             selection_background = \"#6e6080\"\n\
+             color2 = \"#a68e5a\"\n\
+             color1 = \"#c53253\"\n",
+        );
+        let p = from_desktop(&d);
+        assert_eq!(p.bg, Some(c(0x0e091d)));
+        assert_eq!(p.fg, Some(c(0xdc8f7c)));
+        assert_eq!(p.heading_hi, c(0x6e6080), "headings wear the accent");
+        assert_eq!(p.wordmark, c(0x6e6080));
+        assert_eq!(p.ins, c(0xa68e5a), "a diff's additions take the green slot");
+        assert_eq!(p.del_, c(0xc53253), "and its removals the red one");
+        assert_eq!(p.name, OMARCHY);
     }
 
     #[test]

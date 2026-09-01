@@ -1496,6 +1496,17 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(carrel_core::Matches::position)
     {
         format!("{i} of {n}")
+    } else if matches!(app.mode, Mode::Search { .. }) {
+        // Typing. The search has already run and the hits are already
+        // highlighted, but `current` stays None until Enter accepts one — so
+        // without this the count only appears after you have committed to a
+        // needle. The question while typing is "is this finding anything",
+        // and it deserves an answer on the keystroke that decides it.
+        match app.matches.as_ref().map_or(0, carrel_core::Matches::len) {
+            0 => "no matches".to_string(),
+            1 => "1 match".to_string(),
+            n => format!("{n} matches"),
+        }
     } else {
         // Percent of the SCROLLABLE range: the bottom of the document must
         // read 100%, or the reader concludes scrolling is broken. scroll/total
@@ -2666,6 +2677,43 @@ mod tests {
         let buf = frame_of("# T\n\nbody", 60, 12);
         assert_eq!(buf[(1, 11)].style().fg, theme::lamp().fg, "the bulb");
         assert_eq!(buf[(3, 11)].style().fg, theme::wordmark().fg, "the word");
+    }
+
+    #[test]
+    fn the_status_row_counts_matches_while_the_needle_is_still_being_typed() {
+        let mut app = App::new(
+            "t.md".into(),
+            Document::parse("# T\n\nneedle and needle and thread"),
+            60,
+            12,
+        );
+        crate::app::update(&mut app, Action::SearchOpen(Direction::Forward));
+        for ch in "needle".chars() {
+            crate::app::update(&mut app, Action::SearchKey(SearchKey::Char(ch)));
+        }
+        let status = line(&buffer_of(&app, 60, 12), 10);
+        assert!(status.contains("/needle"), "the needle: {status:?}");
+        assert!(
+            status.contains("2 matches"),
+            "the count answers 'is this finding anything' before Enter, not \
+             after: {status:?}"
+        );
+
+        // A needle that finds nothing says so rather than falling back to
+        // the scroll percentage, which reads as if nothing were happening.
+        for ch in "xyz".chars() {
+            crate::app::update(&mut app, Action::SearchKey(SearchKey::Char(ch)));
+        }
+        let status = line(&buffer_of(&app, 60, 12), 10);
+        assert!(status.contains("no matches"), "{status:?}");
+
+        // Once a match is accepted the position takes the slot back.
+        crate::app::update(&mut app, Action::SearchKey(SearchKey::Backspace));
+        crate::app::update(&mut app, Action::SearchKey(SearchKey::Backspace));
+        crate::app::update(&mut app, Action::SearchKey(SearchKey::Backspace));
+        crate::app::update(&mut app, Action::SearchKey(SearchKey::Accept));
+        let status = line(&buffer_of(&app, 60, 12), 10);
+        assert!(status.contains("1 of 2"), "{status:?}");
     }
 
     #[test]
