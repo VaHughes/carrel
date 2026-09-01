@@ -754,31 +754,12 @@ fn paint_metadata_card(
 /// prose column's left edge and simply extends right. Code is deliberately in
 /// the second group: centring it by its longest line would make consecutive
 /// blocks jitter horizontally, which reads worse than the asymmetry.
-fn block_area(app: &App, node: &carrel_core::Node, full: Rect) -> Rect {
-    let prose_x = app.text_x_now();
-    let budget = app.layout.block_width(&node.kind);
-    if budget <= app.text_w() {
-        // Bound to the measure: the fixed column.
-        return Rect::new(prose_x, full.y, budget.min(full.width), full.height);
-    }
-    // A bleed kind. Centre a table by the width it actually occupies.
-    let x = match &node.kind {
-        NodeKind::Table { cols, .. } if !cols.is_empty() => {
-            let aligned = cols.iter().map(|&c| u32::from(c)).sum::<u32>()
-                + 3 * (cols.len() as u32 - 1)
-                + u32::from(node.indent);
-            let aligned = u16::try_from(aligned).unwrap_or(u16::MAX).min(full.width);
-            if aligned > app.text_w() {
-                full.x + (full.width - aligned) / 2
-            } else {
-                prose_x
-            }
-        }
-        _ => prose_x,
-    };
-    // Never run off the right edge, and never start left of the text area.
-    let x = x.max(full.x).min(full.right().saturating_sub(1));
-    Rect::new(x, full.y, full.right() - x, full.height)
+fn block_area(app: &App, block: BlockIdx, full: Rect) -> Rect {
+    // Geometry comes from `App` so paint and hit-testing cannot disagree —
+    // they did, for every kind that bleeds past the measure. See
+    // `App::block_span_x`.
+    let (x, w) = app.block_span_x(block);
+    Rect::new(x, full.y, w, full.height)
 }
 
 /// Margin marks: a bookmark dot, and the block cursor's bar.
@@ -902,7 +883,7 @@ fn paint_rows(
         // wide table across the page. Shadowing `area` here means every
         // painter below sees the block's geometry and none of them has to
         // know the measure exists.
-        let area = block_area(app, app.doc.node_for_block(block), full);
+        let area = block_area(app, block, full);
         paint_block_cursor(frame, app, block, area, skip, y);
         // A rendered mermaid diagram paints its art lines instead of the
         // block's wrapped source — properly line-skipped on partial scroll,

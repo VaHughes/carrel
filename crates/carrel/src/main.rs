@@ -173,13 +173,7 @@ fn main() -> ExitCode {
 /// never colours — `NO_COLOR` reduces it to `--plain` exactly.
 fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
     let src = match path {
-        Some(p) => {
-            if let Err(e) = carrel::app::check_document_size(p) {
-                eprintln!("carrel: {e}");
-                return ExitCode::FAILURE;
-            }
-            std::fs::read_to_string(p)
-        }
+        Some(p) => carrel::app::read_document(p),
         None => read_stdin_capped(),
     };
     match src {
@@ -197,11 +191,7 @@ fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
 /// `--tasks`: the report goes to stdout and the process exits. A file that
 /// fails to read or parse says so on stderr rather than printing nothing.
 fn print_tasks(path: &Path) -> ExitCode {
-    if carrel::app::check_document_size(path).is_err() {
-        eprintln!("carrel: cannot read {}", path.display());
-        return ExitCode::FAILURE;
-    }
-    match std::fs::read_to_string(path) {
+    match carrel::app::read_document(path) {
         Ok(src) => {
             let doc = carrel_core::Document::parse(&src);
             let report = carrel::plain::task_report(&doc);
@@ -425,6 +415,7 @@ fn print_plain_stdin(width: u16) -> ExitCode {
 /// silently stop applying the moment you `cd`. `carrel .` is the escape hatch,
 /// and the active root is always on screen.
 fn open_home(explicit: Option<&Path>) -> ExitCode {
+    use std::fmt::Write as _;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let (root, note) = match explicit {
         Some(p) => (p.to_path_buf(), None),
@@ -446,7 +437,7 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
             root.display()
         );
         for e in entries.iter().take(50) {
-            out.push_str(&format!("  {}\n", e.path.display()));
+            let _ = writeln!(out, "  {}", e.path.display());
         }
         return emit(&out);
     }
@@ -461,11 +452,7 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
 }
 
 fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
-    if let Err(e) = carrel::app::check_document_size(path) {
-        eprintln!("carrel: {}: {e}", path.display());
-        return ExitCode::FAILURE;
-    }
-    let src = match std::fs::read_to_string(path) {
+    let src = match carrel::app::read_document(path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("carrel: {}: {e}", path.display());
@@ -1852,7 +1839,7 @@ fn emit(s: &str) -> ExitCode {
 }
 
 fn print_plain(path: &Path, width: u16) -> ExitCode {
-    match std::fs::read_to_string(path) {
+    match carrel::app::read_document(path) {
         Ok(src) => {
             let doc = carrel::app::adapt(&src, diff_ok_for(path));
             emit(&carrel::plain::render(&doc, width))

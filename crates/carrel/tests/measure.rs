@@ -406,3 +406,76 @@ fn a_search_hit_is_the_same_byte_bound_or_unbound() {
         "search state is doc bytes; the measure cannot touch it"
     );
 }
+
+/// Every column a BLEED block paints into must resolve to the byte painted
+/// there — not to the byte the prose column would have put there.
+///
+/// `block_area` paints tables, code, math and images against the bleed column
+/// and re-centres a wide table; `doc_span_at` bounded every click by the prose
+/// column instead. They agreed for prose and diverged for everything else
+/// whenever bleed exceeded the measure — at 95 columns or wider with the
+/// default 90-column measure, so any maximized terminal. Measured before the
+/// fix at 160 columns: the table painted from column 22, clicks below 35 were
+/// rejected outright, and a click at column 40 selected the cell painted at
+/// column 22 — thirteen columns to the left of the pointer.
+///
+/// The existing sweep above could not catch it: it uses a prose document and
+/// only walks `x..x + text_w()`, and every frame test in `render.rs` runs at
+/// 60 columns or less, where nothing bleeds.
+#[test]
+fn clicking_a_wide_table_lands_on_the_cell_under_the_pointer() {
+    let cells = [
+        "AAAAAAAAAAAA",
+        "BBBBBBBBBBBB",
+        "CCCCCCCCCCCC",
+        "DDDDDDDDDDDD",
+        "EEEEEEEEEEEE",
+        "FFFFFFFFFFFF",
+        "GGGGGGGGGGGG",
+        "HHHHHHHHHHHH",
+    ];
+    let row = format!("|{}|", cells.join("|"));
+    let rule = format!("|{}|", ["------------"; 8].join("|"));
+    let src = format!("# T\n\n{row}\n{rule}\n{row}\n");
+
+    for cols in [100u16, 140, 160, 200] {
+        let app = app_at(cols, 16, &src);
+        // Precondition: this width really does make the table bleed past the
+        // measure, or the test proves nothing.
+        let (bx, bw) = app.block_span_x(carrel_core::BlockIdx(1));
+        let prose_x = App::text_x(cols, DEFAULT_MEASURE, 0);
+        assert!(
+            bx < prose_x,
+            "at {cols} cols the table must start left of the prose column"
+        );
+
+        let buf = frame(&app, cols, 16);
+        // Find the row the table actually painted into rather than assuming
+        // one — hardcoding a row number made an earlier version of this test
+        // sweep a blank line and pass while asserting nothing.
+        let table_row = (0..16u16)
+            .find(|&y| (bx..bx + bw).any(|x| buf[(x, y)].symbol().starts_with('A')))
+            .expect("the table must paint somewhere");
+        let mut checked = 0;
+        for col in bx..bx + bw {
+            // What is painted here?
+            let painted = buf[(col, table_row)].symbol().chars().next().unwrap_or(' ');
+            if !painted.is_ascii_uppercase() {
+                continue; // a separator or padding cell
+            }
+            let (start, _) = app.doc_span_at(col, table_row).unwrap_or_else(|| {
+                panic!("col {col} at {cols} paints {painted:?} but hit-tests to nothing")
+            });
+            let hit = app.doc.text[start as usize..].chars().next().unwrap_or(' ');
+            assert_eq!(
+                hit, painted,
+                "at {cols} cols, column {col} paints {painted:?} but resolves to {hit:?}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 40,
+            "only {checked} cells checked at {cols} cols — the sweep found nothing to assert on"
+        );
+    }
+}

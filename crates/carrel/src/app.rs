@@ -596,8 +596,7 @@ impl App {
     /// fragment jumps) run later and simply win.
     pub fn open_path(&mut self, path: &Path) -> std::io::Result<()> {
         self.save_position();
-        check_document_size(path)?;
-        let src = std::fs::read_to_string(path)?;
+        let src = read_document(path)?;
         // A `.md` file is never sniffed; `.diff`/`.patch` always are. Set
         // before parsing, because `parse_adapting` reads it.
         self.diff_ok = self.diff_forced.unwrap_or_else(|| {
@@ -721,8 +720,7 @@ impl App {
         let Some(path) = self.file.clone() else {
             return Ok(());
         };
-        check_document_size(&path)?;
-        let src = std::fs::read_to_string(&path)?;
+        let src = read_document(&path)?;
         self.reload_from(&src);
         self.note = Some("reloaded".into());
         Ok(())
@@ -1252,27 +1250,77 @@ impl App {
         Self::text_x(self.cols, self.max_width, self.gutter_w())
     }
 
+    /// A block's horizontal extent: where it paints, and how wide.
+    ///
+    /// **The single source for both directions.** `render.rs` builds its Rect
+    /// from this and [`Self::doc_span_at`] bounds a click by it. They used to
+    /// compute it separately, and agreed only for prose: `block_area` painted
+    /// tables, code, math and images against the BLEED column and re-centred a
+    /// wide table, while the hit-test bounded every click by the PROSE column.
+    /// Whenever bleed exceeded the measure — that is, at 95 columns or wider
+    /// with the default 90-column measure, so any maximized terminal — a click
+    /// on a wide table resolved thirteen columns to the left of what was
+    /// painted, and clicks on its outer thirds were rejected outright.
+    /// Selection, double-click-word, triple-click-block and link-follow were
+    /// all wrong together.
+    ///
+    /// Returns columns in screen space, already clamped to the text area.
+    #[must_use]
+    pub fn block_span_x(&self, block: BlockIdx) -> (u16, u16) {
+        let full_x = PAD_LEFT;
+        let full_w = self.bleed_w();
+        let full_right = full_x.saturating_add(full_w);
+        let prose_x = self.text_x_now();
+        let node = self.doc.node_for_block(block);
+        let budget = self.layout.block_width(&node.kind);
+        if budget <= self.text_w() {
+            // Bound to the measure: the fixed column.
+            return (prose_x, budget.min(full_w));
+        }
+        // A bleed kind. Centre a table by the width it actually occupies.
+        let x = match &node.kind {
+            carrel_core::NodeKind::Table { cols, .. } if !cols.is_empty() => {
+                let aligned = cols.iter().map(|&c| u32::from(c)).sum::<u32>()
+                    + 3 * (cols.len() as u32 - 1)
+                    + u32::from(node.indent);
+                let aligned = u16::try_from(aligned).unwrap_or(u16::MAX).min(full_w);
+                if aligned > self.text_w() {
+                    full_x + (full_w - aligned) / 2
+                } else {
+                    prose_x
+                }
+            }
+            _ => prose_x,
+        };
+        // Never run off the right edge, and never start left of the text area.
+        let x = x.max(full_x).min(full_right.saturating_sub(1));
+        (x, full_right - x)
+    }
+
     /// The `(start, end)` doc bytes of the grapheme cluster under a pointer
     /// cell, or `None` outside the text area / off the end of the content.
     ///
     /// **The one place a screen position becomes a byte** — everything
     /// downstream is doc space, which is what lets a selection survive a
-    /// resize. It hit-tests against [`Self::text_x_now`], the same function
+    /// resize. It hit-tests against [`Self::block_span_x`], the same function
     /// `render.rs` paints from; if the two ever diverge, every click lands on
-    /// the wrong byte and no frame test can see it.
+    /// the wrong byte and no frame test narrower than the measure can see it.
     #[must_use]
     pub fn doc_span_at(&self, col: u16, row: u16) -> Option<(u32, u32)> {
-        let text_x = self.text_x_now();
         let top = self.text_y();
         if row < top || row >= top + self.text_h() {
-            return None;
-        }
-        if col < text_x || col >= text_x + self.text_w() {
             return None;
         }
         let vrow = self.view.scroll_row + u32::from(row - top);
         let block = self.layout.block_at_row(vrow);
         if block.get() >= self.doc.block_count() {
+            return None;
+        }
+        // The BLOCK's column, not the prose column: a wide table paints
+        // outside the measure, and a click on it must resolve against the
+        // geometry it was actually painted with. See `block_span_x`.
+        let (block_x, block_w) = self.block_span_x(block);
+        if col < block_x || col >= block_x.saturating_add(block_w) {
             return None;
         }
         let mut rows = Vec::new();
@@ -1290,7 +1338,7 @@ impl App {
             text,
             r.doc.start,
             r.indent,
-            col - text_x,
+            col - block_x,
         ))
     }
 
@@ -1439,7 +1487,21 @@ impl App {
 /// beats corrupting quietly — and a 4 GiB "markdown file" is not a document,
 /// it is a mistake.
 pub fn check_document_size(path: &Path) -> std::io::Result<()> {
-    let len = std::fs::metadata(path)?.len();
+    let meta = std::fs::metadata(path)?;
+    // A FIFO, /dev/zero and most of /proc all report length zero, so the
+    // size guard passed and the unbounded read behind it ran anyway. Reading
+    // a FIFO blocked FOREVER with the terminal already in raw mode, the
+    // alternate screen up and the event loop stalled — no keystroke could
+    // reach it, and killing it from another terminal used to leave the
+    // terminal wrecked as well. `/dev/zero` read until the OOM killer came.
+    // A markdown link is untrusted input, so `[x](./pipe.md)` was enough.
+    if !meta.is_file() {
+        return Err(std::io::Error::other(
+            "not a regular file — carrel reads documents, and a pipe or \
+             device would block the reader with no way out",
+        ));
+    }
+    let len = meta.len();
     if len >= u64::from(u32::MAX) {
         return Err(std::io::Error::other(format!(
             "file is {len} bytes; carrel documents are limited to 4 GiB \
@@ -1447,6 +1509,24 @@ pub fn check_document_size(path: &Path) -> std::io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Read a document, enforcing the cap with the READ rather than with a stat
+/// taken before it.
+///
+/// `check_document_size` measures and then something else reads, which leaves
+/// a window: a file that grows past 4 GiB in between, or one whose length was
+/// never meaningful in the first place. `take` closes both — the same shape
+/// `read_stdin_capped` in the binary already uses, whose comment claimed it
+/// did "exactly as `check_document_size` does for files" before that was true.
+pub fn read_document(path: &Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+    check_document_size(path)?;
+    let mut src = String::new();
+    std::fs::File::open(path)?
+        .take(u64::from(u32::MAX))
+        .read_to_string(&mut src)?;
+    Ok(src)
 }
 
 /// The one transition. Pure state, no drawing and no terminal.
@@ -4795,6 +4875,32 @@ diff --git a/x.rs b/x.rs
                 "sanity: the old index was a real block in the old document"
             );
         }
+    }
+
+    #[test]
+    fn only_regular_files_are_opened_as_documents() {
+        // A FIFO, /dev/zero and most of /proc report length zero, so the size
+        // guard passed and the unbounded read behind it ran anyway: reading a
+        // FIFO blocked forever with the terminal in raw mode and the event
+        // loop stalled, and /dev/zero read until the OOM killer arrived.
+        // `[x](./pipe.md)` in any markdown file was enough to reach it.
+        #[cfg(unix)]
+        {
+            let e = check_document_size(Path::new("/dev/null"))
+                .expect_err("a character device is not a document");
+            assert!(e.to_string().contains("not a regular file"), "{e}");
+            assert!(read_document(Path::new("/dev/zero")).is_err());
+        }
+        let d = tempfile::tempdir().unwrap();
+        assert!(
+            check_document_size(d.path()).is_err(),
+            "a directory is not a document either"
+        );
+
+        // And a real file still opens.
+        let f = d.path().join("real.md");
+        std::fs::write(&f, "# Real\n").unwrap();
+        assert_eq!(read_document(&f).unwrap(), "# Real\n");
     }
 
     #[test]
