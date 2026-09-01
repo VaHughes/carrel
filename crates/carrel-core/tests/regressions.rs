@@ -60,12 +60,15 @@ fn mdfried_52_matches_are_bit_for_bit_identical_across_widths() {
                The quick brown fox does it again, and again.";
     let doc = Document::parse(src);
 
-    let at_80 = search(&doc, "quick brown", true);
-    let at_40 = search(&doc, "quick brown", true);
-    assert_eq!(at_80.ranges, at_40.ranges, "the match set is width-free");
-    assert_eq!(at_80.len(), 2);
+    // `search` takes no width, which IS the fix — so there is no pair of
+    // calls to compare, and asserting that two identical calls agree would
+    // only prove that the function is deterministic. The claim is carried
+    // below, by the characters actually painted at each width. This is just
+    // the non-vacuity guard: without a match to paint, that comparison holds
+    // trivially.
+    assert_eq!(search(&doc, "quick brown", true).len(), 2);
 
-    // And the same characters are painted at every width, even though the rows
+    // The same characters are painted at every width, even though the rows
     // they land on differ completely.
     // Whitespace is excluded: a space inside a match that lands exactly on a
     // wrap boundary is elided and genuinely not painted, and where the

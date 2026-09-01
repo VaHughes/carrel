@@ -99,16 +99,31 @@ fn fence_for(body: &str) -> String {
 
 /// The file a `diff --git a/X b/X` line is about.
 ///
-/// Takes the **b-side** where it can, because that is the file as it now is;
-/// falls back to the a-side for a deletion.
+/// Takes the **b-side**, because that is the file as it now is — which is
+/// also the new name of a rename, and, for a deletion, still the real path:
+/// git spells a deletion out on the `deleted file mode` and `+++ /dev/null`
+/// lines, never on this one.
+///
+/// The separator is the ` b/`, **not** the first space. Git does not quote a
+/// path merely because it contains spaces, so splitting at the first space
+/// turned `a/my notes.md b/my notes.md` into the heading
+/// `notes.md b/my notes.md` — and a mangled heading is a mangled section
+/// index, breadcrumb and outline, because those are all read back out of the
+/// synthesized markdown. The LAST ` b/` is the one to cut at, so a rename to
+/// a name containing ` b/` still ends whole; a path that contains ` b/` on
+/// *both* sides is genuinely ambiguous from this line alone and is not worth
+/// a second parser.
 fn path_of(l: &str) -> Option<&str> {
     let rest = l.strip_prefix("diff --git ")?;
-    let (a, b) = rest.split_once(' ')?;
-    let b = b.strip_prefix("b/").unwrap_or(b);
-    if b == "/dev/null" {
-        return a.strip_prefix("a/").or(Some(a));
+    if let Some((_, b)) = rest.rsplit_once(" b/") {
+        return Some(b);
     }
-    Some(b)
+    // No `b/` at all: `diff.mnemonicPrefix` writes `i/… w/…` (as this
+    // machine's git is configured to, which is how the shape was checked) and
+    // `--no-prefix` writes bare paths. Nothing here can tell those two halves
+    // apart once a path has a space in it, so keep the old first-space split
+    // rather than regress such a diff to "(unknown file)".
+    rest.split_once(' ').map(|(_, b)| b)
 }
 
 /// A file's accumulated hunks, and the counts to put beside its heading.
@@ -447,11 +462,33 @@ Author: B <b@example.com>
         assert!(md.contains("## crates/carrel/src/home.rs"), "{md}");
     }
 
+    /// `md.contains("## ")` was the whole assertion here, which passed while
+    /// the heading read `## dev/null` — a heading is worthless unless it
+    /// names the file. Git spells a deletion out in `deleted file mode` and
+    /// `+++ /dev/null`; the `diff --git` line still carries the real path on
+    /// both sides, so that is what the reader must see.
     #[test]
     fn a_deletion_names_the_file_that_is_going_away() {
-        let src = "diff --git a/gone.rs b/dev/null\n@@ -1 +0,0 @@\n-x\n";
+        let src = "diff --git a/gone.rs b/gone.rs\ndeleted file mode 100644\n\
+                   --- a/gone.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n";
         let md = to_markdown(src);
-        assert!(md.contains("## "), "{md}");
+        assert!(md.contains("## gone.rs"), "{md}");
+    }
+
+    /// Git does not quote a path just because it has a space in it, so the
+    /// separator is the ` b/`, not the first space. Splitting at the space
+    /// produced the heading `## notes.md b/my notes.md` — and a garbled
+    /// heading is a garbled section index, breadcrumb and outline.
+    #[test]
+    fn a_path_with_spaces_survives_the_heading() {
+        let src = "diff --git a/my notes.md b/my notes.md\n@@ -1 +1 @@\n-a\n+b\n";
+        let md = to_markdown(src);
+        assert!(md.contains("## my notes.md  +1 −1"), "{md}");
+        // A rename takes the NEW name, which is the file as it now is.
+        let src = "diff --git a/old name.md b/new name.md\nrename from old name.md\n\
+                   rename to new name.md\n@@ -1 +1 @@\n-a\n+b\n";
+        let md = to_markdown(src);
+        assert!(md.contains("## new name.md"), "{md}");
     }
 
     #[test]

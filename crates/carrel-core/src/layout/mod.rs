@@ -452,6 +452,15 @@ pub(crate) fn wrap_text<F: FnMut(Row)>(
 /// the trailing cells, so styling only the trailing half of a wide cluster paints
 /// a visible gap rather than half a character. A regex match lands on a `char`
 /// boundary, which is not necessarily a cluster boundary.
+///
+/// `r` is expected to intersect the row; a range that does not returns an
+/// **empty** `c0 == c1`, which every caller already treats as "paint nothing".
+/// That is a value rather than an `Option` on purpose — the miss is not an
+/// error, and the callers that would have to unwrap one are three
+/// paint loops that each guard `c1 > c0` anyway. It has to be *said*, though,
+/// because the walk's own answer for a range past the end of the row was the
+/// WHOLE row: `lo` outran every offset so the start stayed at the indent, and
+/// `hi` outran every offset so the end reached the last cluster.
 #[must_use]
 pub fn cols_for_doc_range(
     row_text: &str,
@@ -459,6 +468,10 @@ pub fn cols_for_doc_range(
     indent: u16,
     r: &Range<u32>,
 ) -> (u16, u16) {
+    let row_end = row_doc_start.saturating_add(u32::try_from(row_text.len()).unwrap_or(u32::MAX));
+    if r.end <= row_doc_start || r.start >= row_end {
+        return (indent, indent);
+    }
     let lo = r.start.saturating_sub(row_doc_start) as usize;
     let hi = r.end.saturating_sub(row_doc_start) as usize;
 
@@ -756,6 +769,24 @@ mod tests {
     fn cols_respect_indent() {
         let (c0, c1) = cols_for_doc_range("hello", 0, 4, &(0..2));
         assert_eq!((c0, c1), (4, 6));
+    }
+
+    /// A range that misses the row entirely must paint nothing. The
+    /// after-the-row case used to report the WHOLE row: `lo` outran every
+    /// offset so the start stayed at the indent, and `hi` outran every offset
+    /// so the end walked to the last cluster.
+    #[test]
+    fn cols_for_a_range_that_misses_the_row_are_empty() {
+        let (c0, c1) = cols_for_doc_range("hello", 0, 0, &(10..12));
+        assert_eq!(c0, c1, "range after the row: {c0}..{c1}");
+        let (c0, c1) = cols_for_doc_range("hello", 10, 0, &(2..4));
+        assert_eq!(c0, c1, "range before the row: {c0}..{c1}");
+        // Touching a boundary is still a miss: a range is half-open, so
+        // `..10` ends where the row begins and `15..` starts where it ends.
+        let (c0, c1) = cols_for_doc_range("hello", 10, 3, &(5..10));
+        assert_eq!(c0, c1, "ends exactly at the row start: {c0}..{c1}");
+        let (c0, c1) = cols_for_doc_range("hello", 10, 3, &(15..17));
+        assert_eq!(c0, c1, "starts exactly at the row end: {c0}..{c1}");
     }
 
     #[test]

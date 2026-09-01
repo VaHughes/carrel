@@ -75,16 +75,6 @@ impl Style {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LinkId(pub u32);
 
-/// GFM extended autolinks for bare `www.` runs.
-///
-/// Absent upstream in pulldown-cmark, so hand-rolled to the GFM rules that
-/// actually matter: the run ends at whitespace or `<`; trailing `?!.,:*_~` are
-/// trimmed; and a trailing `)` is trimmed **only** when the parens are
-/// unbalanced, so `www.example.com/a_(b)` keeps its closing paren while
-/// `(www.example.com)` does not.
-///
-/// Returns byte ranges into `text` paired with the URL to register. The scheme
-/// is `http://` per GFM — carrel does not guess at transport.
 /// One `x^2^`-style run: where the delimiters sit and what they enclose.
 struct ScriptRun {
     /// Byte index of the opening delimiter.
@@ -220,6 +210,16 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
     out
 }
 
+/// GFM extended autolinks for bare `www.` runs.
+///
+/// Absent upstream in pulldown-cmark, so hand-rolled to the GFM rules that
+/// actually matter: the run ends at whitespace or `<`; trailing `?!.,:*_~` are
+/// trimmed; and a trailing `)` is trimmed **only** when the parens are
+/// unbalanced, so `www.example.com/a_(b)` keeps its closing paren while
+/// `(www.example.com)` does not.
+///
+/// Returns byte ranges into `text` paired with the URL to register. The scheme
+/// is `http://` per GFM — carrel does not guess at transport.
 fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
     const TRAIL: &[char] = &['?', '!', '.', ',', ':', '*', '_', '~'];
     let bytes = text.as_bytes();
@@ -873,17 +873,28 @@ impl HtmlStrip {
                 (None, c) => out.push(c),
                 (Some(t), '>') => {
                     t.push('>');
-                    let tag = std::mem::take(t).to_ascii_lowercase();
+                    // The raw tag is kept beside the lowercased one because
+                    // the two answer different questions. Dispatch wants
+                    // `<IMG` to be `<img`; an attribute VALUE is content the
+                    // reader sees, and lowercasing `alt="A Chart of Numbers"`
+                    // would put characters in `Document::text` that the
+                    // renderer never emits — the invariant this module opens
+                    // with — and lose smart-case search for a caption plainly
+                    // on screen.
+                    let raw = std::mem::take(t);
+                    let tag = raw.to_ascii_lowercase();
                     self.tag = None;
-                    self.completed.push(HtmlMark {
-                        at_out: out.len(),
-                        tag: tag.clone(),
-                    });
+                    // Where the tag sat, before `<br>` or an alt text adds to
+                    // the output.
+                    let at_out = out.len();
                     if tag.starts_with("<!--") {
-                        // `<!-- -->` already ended; a longer comment sets state.
+                        // `<!-- -->` already ended; a longer comment sets
+                        // state. The raw text goes back into the buffer: the
+                        // `-->` this is waiting for has no case to fold, so
+                        // the lowercased copy would be a pointless clone.
                         if !tag.ends_with("-->") {
                             self.in_comment = true;
-                            self.tag = Some(tag);
+                            self.tag = Some(raw);
                         }
                     } else if tag.starts_with("<br") {
                         out.push('\n');
@@ -894,8 +905,9 @@ impl HtmlStrip {
                         self.skip_until = Some("</style");
                         self.tag = Some(String::new());
                     } else if tag.starts_with("<img") {
-                        Self::push_attr(&tag, "alt", out);
+                        Self::push_attr(&raw, &tag, "alt", out);
                     }
+                    self.completed.push(HtmlMark { tag, at_out });
                 }
                 (Some(t), c) => {
                     t.push(c);
@@ -907,12 +919,19 @@ impl HtmlStrip {
         }
     }
 
-    /// Append the value of `name="..."` (or `'...'`) from a raw tag, if any.
-    fn push_attr(tag: &str, name: &str, out: &mut String) {
-        let Some(i) = tag.find(&format!("{name}=")) else {
+    /// Append the value of `name="..."` (or `'...'`) from a tag, if any.
+    ///
+    /// `lower` must be `raw.to_ascii_lowercase()` and `name` must already be
+    /// lowercase: the attribute NAME is matched case-insensitively while the
+    /// VALUE is taken verbatim. ASCII lowercasing rewrites bytes in place and
+    /// never changes their number, so an index found in one string addresses
+    /// the same character in the other.
+    fn push_attr(raw: &str, lower: &str, name: &str, out: &mut String) {
+        debug_assert_eq!(raw.len(), lower.len(), "lower must be raw, ASCII-folded");
+        let Some(i) = lower.find(&format!("{name}=")) else {
             return;
         };
-        let rest = &tag[i + name.len() + 1..];
+        let rest = &raw[i + name.len() + 1..];
         let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
             return;
         };
@@ -1026,19 +1045,6 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Max-content display width of a frontmatter key column, capped at 16.
-    ///
-    /// Deliberately **not** a YAML parse: split each line at its first `:` (or
-    /// `=` for TOML). A line that does not split — a nested map, a list item, a
-    /// block scalar, a comment — contributes nothing, because it renders as a
-    /// raw continuation line under its parent. A *reader* must never fail on
-    /// exotic YAML; the worst outcome here is an unaligned line, not a lost
-    /// document.
-    /// Push text, turning bare `www.` runs into links on the way.
-    ///
-    /// Skipped entirely inside an explicit link (`current_link` is set) — a
-    /// `[label](url)` whose label happens to contain `www.` must not sprout a
-    /// second, nested destination.
     /// True while the open block is a code block.
     ///
     /// **Every hand-rolled inline pass must check this.** pulldown-cmark does
@@ -1052,6 +1058,11 @@ impl<'a> Builder<'a> {
             .is_some_and(|o| matches!(o.kind, NodeKind::CodeBlock { .. }))
     }
 
+    /// Push text, turning bare `www.` runs into links on the way.
+    ///
+    /// Skipped entirely inside an explicit link (`current_link` is set) — a
+    /// `[label](url)` whose label happens to contain `www.` must not sprout a
+    /// second, nested destination.
     fn push_linkified(&mut self, t: &str, src: Range<usize>) {
         if self.current_link.is_some() || self.in_code_block() {
             self.push(t, src, ProvKind::Verbatim);
@@ -1126,6 +1137,14 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Max-content display width of a frontmatter key column, capped at 16.
+    ///
+    /// Deliberately **not** a YAML parse: split each line at its first `:` (or
+    /// `=` for TOML). A line that does not split — a nested map, a list item, a
+    /// block scalar, a comment — contributes nothing, because it renders as a
+    /// raw continuation line under its parent. A *reader* must never fail on
+    /// exotic YAML; the worst outcome here is an unaligned line, not a lost
+    /// document.
     fn meta_key_col(body: &str) -> u16 {
         body.lines()
             .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
@@ -1832,20 +1851,41 @@ impl<'a> Builder<'a> {
                         out.pop();
                     }
                     let kept = out.len();
+                    // Read where this chunk lands BEFORE pushing it, rather
+                    // than subtracting `kept` afterwards: inside a table
+                    // `push` records into the cell buffer and never touches
+                    // `self.text`, so the subtraction underflowed — a debug
+                    // panic, and in release a wrapped offset that
+                    // `details_mark` then sliced `self.text` with.
+                    let before = self.text.len();
                     if kept > 0 {
                         self.push(&out, src, ProvKind::Substituted);
                     }
-                    for m in marks {
-                        // Map the mark from pre-hygiene output offsets to a doc
-                        // byte: leading removals shift everything down, and a
-                        // chunk that ended up empty has no positions to offer.
-                        let off = m.at_out.saturating_sub(leading).min(kept);
-                        let at = if kept > 0 {
-                            (self.text.len() - kept + off) as u32
-                        } else {
-                            self.text.len() as u32
-                        };
-                        self.details_mark(&m.tag, at);
+                    // A table cell cannot carry a fold region — `<details>`
+                    // is a block-level construct and the cell's text has no
+                    // doc position yet — so the marks have nowhere to go.
+                    if self.table.is_none() {
+                        for m in marks {
+                            // Map the mark from pre-hygiene output offsets to a
+                            // doc byte: leading removals shift everything down,
+                            // and a chunk that ended up empty has no positions
+                            // to offer.
+                            let off = m.at_out.saturating_sub(leading).min(kept);
+                            let mut at = (before + off).min(self.text.len());
+                            // `off` was measured before `push` expanded tabs,
+                            // so a tab in an HTML chunk leaves every later mark
+                            // short by the expansion — and short by an amount
+                            // that need not be a char boundary, which
+                            // `details_mark`'s slice would panic on. Walking
+                            // back to a boundary keeps the position valid; the
+                            // fold header can be a few columns wide of its tag,
+                            // which is worth less than splitting the push at
+                            // every mark and fragmenting provenance to fix.
+                            while at > before && !self.text.is_char_boundary(at) {
+                                at -= 1;
+                            }
+                            self.details_mark(&m.tag, at as u32);
+                        }
                     }
                 }
                 // Task list markers are decoration, so they extend the item's
@@ -2486,10 +2526,44 @@ mod tests {
         );
     }
 
+    /// The fixture is deliberately MIXED CASE. Dispatch has to be
+    /// case-insensitive, so the tag is lowercased — and reading the alt
+    /// attribute out of that lowercased copy put characters in
+    /// `Document::text` the renderer never emits, which is the module's
+    /// opening invariant, and broke smart-case search for a caption plainly
+    /// on screen. An all-lowercase fixture cannot tell the two apart.
     #[test]
     fn an_html_img_contributes_its_alt_text() {
-        let doc = Document::parse("<p><img src=\"x.png\" alt=\"a chart of numbers\"></p>\n");
-        assert!(doc.text.contains("a chart of numbers"), "{:?}", doc.text);
+        let doc = Document::parse("<p><IMG SRC=\"x.png\" ALT=\"A Chart of Numbers\"></p>\n");
+        assert!(doc.text.contains("A Chart of Numbers"), "{:?}", doc.text);
+    }
+
+    /// A tab inside an HTML chunk is expanded by `push`, but the marks were
+    /// measured before that — so a `<summary>` holding one left its end byte
+    /// short of where the text actually landed, and short by an amount that
+    /// need not be a char boundary. Slicing `text` with it panicked in debug
+    /// AND release. The position is snapped back to a boundary; the header
+    /// losing the tab's width is the accepted cost.
+    #[test]
+    fn a_tab_in_a_summary_cannot_produce_an_unsliceable_position() {
+        let doc =
+            Document::parse("<details>\n<summary>\t\u{1F600}</summary>\n\nbody\n\n</details>\n");
+        assert!(doc.text.starts_with("    \u{1F600}"), "{:?}", doc.text);
+        for r in &doc.details {
+            // The only claim: whatever came out can be read back.
+            let _ = &doc.text[r.summary.start as usize..r.summary.end as usize];
+        }
+    }
+
+    /// Inline HTML in a table cell: `push` diverts into the cell buffer and
+    /// leaves `self.text` alone, so the mark loop's byte arithmetic had
+    /// nothing to subtract from — a debug panic, and in release a wrapped
+    /// offset that `details_mark` then sliced `self.text` with.
+    #[test]
+    fn inline_html_in_a_table_cell_does_not_underflow_the_mark_offset() {
+        let doc = Document::parse("| <img src=\"x\" alt=\"Hello\"> | b |\n|---|---|\n| c | d |\n");
+        assert!(doc.text.contains("Hello"), "{:?}", doc.text);
+        assert!(doc.details.is_empty(), "a cell carries no fold region");
     }
 
     // --- GFM alerts ---

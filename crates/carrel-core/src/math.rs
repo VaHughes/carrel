@@ -107,6 +107,21 @@ impl MathExpr {
     }
 }
 
+/// How deep the walker will follow a nesting before refusing it.
+///
+/// The walk below is mutual recursion — `parse_group` to `parse_one` to
+/// `operand`/`begin` and back — with no bound of its own, so a document
+/// carrying `\frac{\frac{\frac{…` deep enough overflows the stack, and the
+/// release binary is `panic = "abort"`: not an error a frontend can render,
+/// but the reader gone. This closes a hole in a public API rather than a
+/// crash anyone has hit — the same input through the shipped binary did not
+/// reach it, so something on that path bounds the nesting first. Which is a
+/// reason not to depend on that path.
+///
+/// 256 is far past any equation a person writes, and refusal is the
+/// documented outcome anyway: the frontend renders the literal LaTeX.
+const MAX_DEPTH: u32 = 256;
+
 /// Parse LaTeX math into an expression tree, or `None` if it will not parse.
 ///
 /// `None` is a normal outcome, not an error path: the frontend renders the
@@ -120,7 +135,7 @@ pub fn parse(latex: &str) -> Option<MathExpr> {
         events.push(ev.ok()?);
     }
     let mut cursor = 0usize;
-    let expr = parse_group(&events, &mut cursor, None)?;
+    let expr = parse_group(&events, &mut cursor, None, 0)?;
     // A trailing unconsumed event means the stream was malformed in a way the
     // walker silently tolerated. Refuse rather than render half an equation.
     if cursor == events.len() {
@@ -131,7 +146,18 @@ pub fn parse(latex: &str) -> Option<MathExpr> {
 }
 
 /// Parse events until `stop` (or the end), returning them as one row.
-fn parse_group(events: &[Event], cursor: &mut usize, stop: Option<usize>) -> Option<MathExpr> {
+///
+/// `depth` counts nesting, not events: it rises on the way into a group and
+/// past [`MAX_DEPTH`] the parse is refused. See that constant for why.
+fn parse_group(
+    events: &[Event],
+    cursor: &mut usize,
+    stop: Option<usize>,
+    depth: u32,
+) -> Option<MathExpr> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
     let mut parts: Vec<MathExpr> = Vec::new();
     while *cursor < events.len() {
         if Some(*cursor) == stop {
@@ -140,7 +166,7 @@ fn parse_group(events: &[Event], cursor: &mut usize, stop: Option<usize>) -> Opt
         if matches!(events[*cursor], Event::End) {
             break;
         }
-        if let Step::Node(e) = parse_one(events, cursor)? {
+        if let Step::Node(e) = parse_one(events, cursor, depth)? {
             parts.push(e);
         }
     }
@@ -159,25 +185,28 @@ enum Step {
 /// `Script` is prefix in the stream: the event arrives, *then* the base, then
 /// the operands. So the base is pulled from the stream here rather than taken
 /// from the row built so far.
-fn parse_one(events: &[Event], cursor: &mut usize) -> Option<Step> {
+fn parse_one(events: &[Event], cursor: &mut usize, depth: u32) -> Option<Step> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
     let ev = events.get(*cursor)?;
     *cursor += 1;
     let out = match ev {
         Event::Content(c) => Step::Node(content(c)),
-        Event::Begin(g) => Step::Node(begin(events, cursor, g)?),
+        Event::Begin(g) => Step::Node(begin(events, cursor, g, depth + 1)?),
         Event::Visual(Visual::Fraction(_)) => {
-            let num = Box::new(operand(events, cursor)?);
-            let den = Box::new(operand(events, cursor)?);
+            let num = Box::new(operand(events, cursor, depth + 1)?);
+            let den = Box::new(operand(events, cursor, depth + 1)?);
             Step::Node(MathExpr::Frac { num, den })
         }
         Event::Visual(Visual::SquareRoot) => Step::Node(MathExpr::Sqrt {
-            radicand: Box::new(operand(events, cursor)?),
+            radicand: Box::new(operand(events, cursor, depth + 1)?),
             index: None,
         }),
         Event::Visual(Visual::Root) => {
             // `\sqrt[n]{x}` — the index comes first in the stream.
-            let index = Box::new(operand(events, cursor)?);
-            let radicand = Box::new(operand(events, cursor)?);
+            let index = Box::new(operand(events, cursor, depth + 1)?);
+            let radicand = Box::new(operand(events, cursor, depth + 1)?);
             Step::Node(MathExpr::Sqrt {
                 radicand,
                 index: Some(index),
@@ -186,10 +215,10 @@ fn parse_one(events: &[Event], cursor: &mut usize) -> Option<Step> {
         Event::Visual(Visual::Negation) => {
             // Rendered as the operand with a combining slash: the layout
             // engine's problem, so keep the operand and let it decide.
-            Step::Node(operand(events, cursor)?)
+            Step::Node(operand(events, cursor, depth + 1)?)
         }
         Event::Script { ty, position } => {
-            let base = Box::new(operand(events, cursor)?);
+            let base = Box::new(operand(events, cursor, depth + 1)?);
             let limits = matches!(position, ScriptPosition::AboveBelow)
                 || (matches!(position, ScriptPosition::Movable)
                     && matches!(
@@ -200,11 +229,15 @@ fn parse_one(events: &[Event], cursor: &mut usize) -> Option<Step> {
                         }
                     ));
             let (sub, sup) = match ty {
-                ScriptType::Subscript => (Some(Box::new(operand(events, cursor)?)), None),
-                ScriptType::Superscript => (None, Some(Box::new(operand(events, cursor)?))),
+                ScriptType::Subscript => {
+                    (Some(Box::new(operand(events, cursor, depth + 1)?)), None)
+                }
+                ScriptType::Superscript => {
+                    (None, Some(Box::new(operand(events, cursor, depth + 1)?)))
+                }
                 ScriptType::SubSuperscript => {
-                    let sub = Box::new(operand(events, cursor)?);
-                    let sup = Box::new(operand(events, cursor)?);
+                    let sub = Box::new(operand(events, cursor, depth + 1)?);
+                    let sup = Box::new(operand(events, cursor, depth + 1)?);
                     (Some(sub), Some(sup))
                 }
             };
@@ -227,14 +260,14 @@ fn parse_one(events: &[Event], cursor: &mut usize) -> Option<Step> {
 }
 
 /// Parse a single operand: either one atom, or a whole `Begin`…`End` group.
-fn operand(events: &[Event], cursor: &mut usize) -> Option<MathExpr> {
+fn operand(events: &[Event], cursor: &mut usize, depth: u32) -> Option<MathExpr> {
     loop {
         let ev = events.get(*cursor)?;
         if matches!(ev, Event::Space { .. } | Event::StateChange(_)) {
             *cursor += 1;
             continue;
         }
-        return match parse_one(events, cursor)? {
+        return match parse_one(events, cursor, depth)? {
             Step::Node(e) => Some(e),
             // An operand slot filled by a shapeless event is an empty box,
             // not a parse failure: `x^{}` is legal LaTeX.
@@ -247,7 +280,7 @@ fn operand(events: &[Event], cursor: &mut usize) -> Option<MathExpr> {
 }
 
 /// A `Begin(...)` group: a plain brace group, a fenced group, or a matrix.
-fn begin(events: &[Event], cursor: &mut usize, g: &Grouping) -> Option<MathExpr> {
+fn begin(events: &[Event], cursor: &mut usize, g: &Grouping, depth: u32) -> Option<MathExpr> {
     let delim = match g {
         Grouping::Normal => None,
         Grouping::LeftRight(l, _) => Some(match l {
@@ -267,7 +300,7 @@ fn begin(events: &[Event], cursor: &mut usize, g: &Grouping) -> Option<MathExpr>
     );
 
     if !is_grid {
-        let inner = parse_group(events, cursor, None)?;
+        let inner = parse_group(events, cursor, None, depth)?;
         expect_end(events, cursor)?;
         return Some(match delim {
             Some(MatrixDelim::None) | None => inner,
@@ -299,7 +332,7 @@ fn begin(events: &[Event], cursor: &mut usize, g: &Grouping) -> Option<MathExpr>
                 rows.push(std::mem::take(&mut row).into_boxed_slice());
             }
             _ => {
-                if let Step::Node(e) = parse_one(events, cursor)? {
+                if let Step::Node(e) = parse_one(events, cursor, depth)? {
                     cell.push(e);
                 }
             }
@@ -423,6 +456,19 @@ mod tests {
     fn a_parse_error_is_none_not_a_panic_and_not_garbage() {
         assert!(parse(r"\frac{").is_none(), "unbalanced input yields None");
         assert!(parse(r"\nosuchcommand").is_none(), "unknown command");
+    }
+
+    /// Nesting deeper than [`MAX_DEPTH`] is refused rather than recursed
+    /// into. The walker is mutually recursive with no tail call to hope for,
+    /// and the release binary is `panic = "abort"` — a stack overflow there
+    /// is not an error a frontend can render, it is the reader gone.
+    #[test]
+    fn absurd_nesting_yields_none_rather_than_a_stack_overflow() {
+        let deep = format!("{}x{}", r"\frac{".repeat(10_000), "}{1}".repeat(10_000));
+        assert!(parse(&deep).is_none(), "10,000 deep must refuse");
+        // The cap is far above any real equation, so ordinary math is
+        // untouched by it.
+        assert!(parse(r"\frac{\frac{a}{b}}{\frac{c}{d}}").is_some());
     }
 }
 
