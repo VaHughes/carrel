@@ -22,15 +22,25 @@ fn pty_run(args: &str, keys: &str, dir: &Path) -> String {
     let out = dir.join("pty-capture");
     let cfg = dir.join("cfg");
     let state = dir.join("state");
+    let cache = dir.join("cache");
     // `script` gives the child a real pty; the subshell delays the keys so
-    // the app is up before they arrive. XDG dirs point at the scratch dir —
-    // a test must never be able to touch the real config or positions.
+    // the app is up before they arrive. Every XDG dir AND `HOME` point at the
+    // scratch dir — a test must never be able to touch the real config or
+    // positions. `XDG_CACHE_HOME` and `HOME` were missing, so the suite was
+    // writing `index-*` files into the developer's own ~/.cache/carrel and
+    // enumerating their home directory through the picker's default roots.
+    //
+    // `timeout` because `status()` blocks unboundedly and `cargo test` has no
+    // per-test limit: the hang this whole tier exists to catch would otherwise
+    // burn a CI job for six hours instead of failing.
     let cmd = format!(
         "( sleep 1; printf '{keys}' ) | \
-         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' \
-         script -qec 'stty rows 20 cols 76; {bin} {args}' '{}' >/dev/null 2>&1",
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {bin} {args}' '{}' >/dev/null 2>&1",
         cfg.display(),
         state.display(),
+        cache.display(),
+        dir.display(),
         out.display(),
     );
     let status = Command::new("sh")
@@ -57,12 +67,15 @@ fn pty_run_cmd(cmd_in_pty: &str, keys: &str, delay: &str, dir: &Path) -> String 
     let out = dir.join("pty-capture");
     let cfg = dir.join("cfg");
     let state = dir.join("state");
+    let cache = dir.join("cache");
     let cmd = format!(
         "( sleep {delay}; printf '{keys}' ) | \
-         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' \
-         script -qec 'stty rows 20 cols 76; {cmd_in_pty}' '{}' >/dev/null 2>&1",
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {cmd_in_pty}' '{}' >/dev/null 2>&1",
         cfg.display(),
         state.display(),
+        cache.display(),
+        dir.display(),
         out.display(),
     );
     let status = Command::new("sh")
@@ -133,8 +146,8 @@ fn dash_on_a_terminal_refuses_with_a_note() {
     // echoed into the stream instead of asserted on the harness.
     let out = d.path().join("cap");
     let cmd = format!(
-        "XDG_CONFIG_HOME='{0}' XDG_STATE_HOME='{0}' \
-         script -qec 'stty rows 20 cols 76; {bin} - ; echo RC=$?' '{1}' >/dev/null 2>&1",
+        "XDG_CONFIG_HOME='{0}' XDG_STATE_HOME='{0}' XDG_CACHE_HOME='{0}' HOME='{0}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {bin} - ; echo RC=$?' '{1}' >/dev/null 2>&1",
         d.path().display(),
         out.display(),
     );
@@ -229,6 +242,61 @@ fn auto_read_drifts_to_the_end_without_a_resize() {
 }
 
 #[test]
+fn a_signal_still_hands_the_terminal_back() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    // A marker unique to this run, so the killer below cannot reach another
+    // test's reader. carrel must run in the FOREGROUND — backgrounded, it is
+    // in a background process group and takes the non-tty path instead.
+    let marker = format!(
+        "doc-sig-{}.md",
+        d.path().file_name().unwrap().to_string_lossy()
+    );
+    std::fs::write(d.path().join(&marker), "# Title\n\nbody\n").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    // `Drop` covers ordinary exits and the panic hook covers panics; a
+    // default-disposition signal ran neither and left the terminal in the
+    // alternate screen with mouse capture on, needing `reset`. The pattern is
+    // anchored so it matches carrel's own argv and not `script`'s, which
+    // carries the same string inside its command argument.
+    let cmd = format!(
+        "( sleep 2; pkill -TERM -f '^{bin} {marker}$' ) & \
+         XDG_CONFIG_HOME='{0}' XDG_STATE_HOME='{0}' XDG_CACHE_HOME='{0}' HOME='{0}' \
+         timeout 30 script -qec 'stty rows 20 cols 76; {bin} {marker}' '{1}' >/dev/null 2>&1; \
+         wait",
+        d.path().display(),
+        out.display(),
+    );
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+
+    assert!(
+        raw.contains("\x1b[?1049h"),
+        "the reader must have started: {raw:?}"
+    );
+    assert!(
+        raw.contains("\x1b[?1049l"),
+        "SIGTERM must still leave the alternate screen"
+    );
+    assert!(
+        raw.contains("\x1b[?1000l") || raw.contains("\x1b[?1002l"),
+        "…and must still disable mouse capture, which breaks scrollback and \
+         selection if it is left on"
+    );
+    assert!(raw.contains("\x1b[?25h"), "…and must give the cursor back");
+}
+
+#[test]
 fn every_frame_is_bracketed_in_a_synchronized_update() {
     if !script_available() {
         eprintln!("SKIP: `script`(1) not available — pty smoke not run");
@@ -307,10 +375,12 @@ fn a_file_created_while_the_home_screen_is_up_appears_on_it() {
     // put it on screen is a later walk.
     let cmd = format!(
         "( sleep 2; : > written-later.md; sleep 3; printf '\\003' ) | \
-         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' \
-         script -qec 'stty rows 20 cols 76; {bin}' '{}' >/dev/null 2>&1",
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {bin}' '{}' >/dev/null 2>&1",
         cfg.display(),
         state.display(),
+        d.path().join("cache").display(),
+        d.path().display(),
         out.display(),
     );
     let status = std::process::Command::new("sh")

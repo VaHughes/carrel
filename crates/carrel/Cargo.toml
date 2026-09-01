@@ -27,6 +27,7 @@ image.workspace         = true
 merman.workspace        = true
 ratatui.workspace       = true
 ratatui-image.workspace = true
+signal-hook.workspace = true
 
 # Dev-only. The resize invariant holds over `scroll x width x height`, a space
 # no hand-written example set covers.

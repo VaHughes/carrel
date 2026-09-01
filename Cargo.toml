@@ -67,6 +67,12 @@ criterion            = { version = "0.5", default-features = false, features = [
 # every format and this project counts binary bytes. Caps applied at decode.
 image                = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
+# Signals, so a SIGTERM does not leave the terminal in raw mode with mouse
+# capture on. ALREADY IN THE TREE — crossterm depends on it — so naming it
+# directly costs zero bytes, and its safe API keeps `unsafe_code = "forbid"`
+# intact, which a hand-written sigaction would not.
+signal-hook = { version = "0.3.18", default-features = false, features = ["iterator"] }
+
 # --- carrel (TUI) ---
 # Measured at +96 KiB over the core set. `layout-cache` is a default feature and
 # `default-features = false` silently disables it, so it is re-enabled explicitly.

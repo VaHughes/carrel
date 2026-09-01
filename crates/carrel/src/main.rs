@@ -522,22 +522,81 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
 /// the guard and a wrapped panic hook.
 struct TerminalGuard;
 
+use ratatui::crossterm::cursor::Show;
+use ratatui::crossterm::terminal::EndSynchronizedUpdate;
+
 impl TerminalGuard {
     fn engage_mouse() -> Self {
         let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
-        // Chain a mouse-disable in FRONT of ratatui's restoring panic hook.
+        // Chain in FRONT of ratatui's restoring panic hook. Mouse capture is
+        // ours; so is synchronized-update mode, which `paint` opens around
+        // every frame. A panic inside `draw` unwinds past the `End`, and
+        // ratatui's hook does not know about mode 2026 — so without this the
+        // terminal is left buffering and the shell prompt may never appear.
+        // Some terminals time mode 2026 out on their own; that is the
+        // terminal's mercy, not this program's correctness.
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+            let _ = ratatui::crossterm::execute!(
+                std::io::stdout(),
+                EndSynchronizedUpdate,
+                DisableMouseCapture,
+                Show
+            );
             prev(info);
         }));
+        Self::watch_for_signals();
         Self
+    }
+
+    /// Restore the terminal when the process is signalled rather than exiting.
+    ///
+    /// `Drop` covers every ordinary path and the panic hook covers panics, but
+    /// a default-disposition signal runs neither — so `pkill carrel`, a
+    /// session manager tearing down at logout, or killing a reader that is
+    /// wedged on a slow read all left the terminal in the alternate screen
+    /// with mouse capture on and the cursor hidden, needing `reset`. The
+    /// comment above says this project refuses to inflict that kind of exit
+    /// damage; this is the half that was missing.
+    ///
+    /// Raw mode clears ISIG, so Ctrl-C reaches the reader as a key and never
+    /// as SIGINT — but an explicit `kill -INT` still arrives here.
+    ///
+    /// `signal-hook`'s iterator delivers on an ordinary thread through a
+    /// self-pipe, so the restore runs as normal Rust rather than inside a
+    /// signal handler, where `execute!` would not be async-signal-safe.
+    /// Exiting with 128 + signal is the shell's convention for it.
+    fn watch_for_signals() {
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+        let Ok(mut signals) =
+            signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT, SIGQUIT])
+        else {
+            return; // Nothing to do but leave the old behaviour in place.
+        };
+        std::thread::spawn(move || {
+            if let Some(sig) = signals.forever().next() {
+                let _ = ratatui::crossterm::execute!(
+                    std::io::stdout(),
+                    EndSynchronizedUpdate,
+                    DisableMouseCapture,
+                    Show
+                );
+                ratatui::restore();
+                std::process::exit(128 + sig);
+            }
+        });
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+        // No `EndSynchronizedUpdate` here: on an ordinary exit `paint` has
+        // already closed the update it opened, and emitting a second one
+        // unbalances the pairing that `every_frame_is_bracketed_in_a_\
+        // synchronized_update` checks. Only the two ABNORMAL paths — a panic
+        // unwinding out of `draw`, and a signal arriving mid-frame — can
+        // leave one open, and both close it themselves.
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture, Show);
         ratatui::restore();
     }
 }
