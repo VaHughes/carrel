@@ -1,7 +1,7 @@
 # AUR package: carrel (builds from the release source tarball).
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel
-pkgver=2026.8.31
+pkgver=2026.9.1
 pkgrel=1
 pkgdesc="A quiet place to read your markdown — a terminal markdown reader"
 arch=('x86_64' 'aarch64')

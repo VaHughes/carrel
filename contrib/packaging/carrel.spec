@@ -1,7 +1,7 @@
 # Fedora COPR spec. Build with: copr-cli build <project> carrel.spec
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.8.31
+Version:        2026.9.1
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -57,6 +57,16 @@ cargo test --locked --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Tue Sep 01 2026 Joshua Hughes <hughes238@gmail.com> - 2026.9.1-1
+- An adversarial audit of the whole tree: hostile documents, malformed
+  input, signals and a real pty, with a regression test for every fix
+- A link resolving outside the library asks before it opens
+- carrel FILE PATTERN exits 1 when nothing matched, as grep does
+- An unknown or misplaced option, or a width that is not a number, is
+  an error instead of being read as a filename
+- The directory picker opens on the directory carrel was run from
+- Minimum supported Rust is 1.95
+
 * Mon Aug 31 2026 Joshua Hughes <hughes238@gmail.com> - 2026.8.31-1
 - The home screen notices files written while it is up: a new document
   appears, a deleted one leaves, an edited one moves up the list

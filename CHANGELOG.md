@@ -2,13 +2,13 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.9.1
 
 An adversarial audit of the whole tree — every module read line by line, then
 attacked with hostile documents, malformed input and a real pty. Fifteen
 changes; every fix carries a regression test that was watched failing first.
-Alongside them, one maintainer report the audit did not find: what the
-directory picker means by "here".
+Alongside them, one maintainer report the audit did not find — what the
+directory picker means by "here" — and the documentation sweep that followed it.
 
 ### Things that behave differently
 
@@ -190,6 +190,18 @@ surprise you:
   finding anything — went unanswered until you had committed to it. It now reads
   `12 matches` as you type, and `no matches` when there are none. `3 of 12` still takes the
   slot back the moment you accept one.
+
+- **The manual documents the home screen, and its bookmark-list key appears at last.** `"`
+  was written into `carrel.1` as a bare `.B "`, which troff reads as the start of a quoted
+  argument: the description painted with no key beside it, for as long as the key has
+  existed. The home-screen section listed four of its fifteen keys — movement, `Enter`, the
+  `1`/`2`/`3` resume rows, `T`, `H`, `h`/`F1`, `q` and `Esc` were all missing. `?`, `Home`
+  and `End` were bound and undocumented, and `Ctrl-E`/`Ctrl-Y` were described as scrolling
+  "without moving the reading position", which is not a thing carrel has. `--help` gained
+  the link keys (`Tab`, `Shift-Tab`, `Enter`), `Esc`, `H`, `B`, `PgDn`/`PgUp`, the `-h`/`-V`
+  short forms and `carrel --render -`. Undocumented until now: `max_width` raises anything
+  under 20 to 20, and a key repeated in the config takes its first line — except `place`,
+  where every line counts.
 
 ## 2026.8.31
 
