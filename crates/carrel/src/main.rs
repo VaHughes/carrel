@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use std::io::Write as _;
 
+use carrel::action::Targets;
 use carrel::app::{App, Outcome, update};
 use carrel::images::{self, ImageMsg};
 use carrel::keys::Keys;
-use carrel::render::OscLink;
+use carrel::render::{OscLink, Painted};
 use carrel::{config, home, render, scan};
 use carrel_core::{BlockIdx, Document, cluster_width, cols_for_doc_range, search, wrap};
 use ratatui::crossterm::event::{
@@ -39,6 +40,8 @@ USAGE:
     git show | carrel            a diff, as sections you can fold
     carrel --diff <FILE>         read FILE as a diff whatever it is called
     carrel --no-diff             never adapt a diff, even on a pipe
+    carrel --no-mouse            hand the pointer back to the terminal, so
+                                 its own selection and menus work as usual
     carrel --plain <FILE> [W]    the document as plain text (screen readers,
                                  pipes; a bare pipe does this by default)
     carrel --plain - [W]         piped input as plain text
@@ -124,6 +127,38 @@ fn take_diff_flag(args: &mut Vec<String>) -> Option<bool> {
     forced
 }
 
+/// `--no-mouse`, for the whole run. A `OnceLock` beside [`DIFF_FORCED`] and
+/// for the same reason: the entry points are many, and threading a bool that
+/// only the terminal guard reads through all of them would touch every
+/// signature.
+static MOUSE_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Is the pointer ours this run?
+///
+/// The flag wins over the config key, because a flag is this run and a config
+/// file is every run. Both default to on: carrel is a click-first reader, and
+/// the escape hatch is for the terminal that disagrees, not the common case.
+fn mouse_enabled() -> bool {
+    if MOUSE_OFF.get().copied().unwrap_or(false) {
+        return false;
+    }
+    config::load_all().mouse.unwrap_or(true)
+}
+
+/// Pull `--no-mouse` out of the argument list, as the diff flags are pulled.
+fn take_mouse_flag(args: &mut Vec<String>) -> bool {
+    let mut off = false;
+    args.retain(|a| {
+        if a == "--no-mouse" {
+            off = true;
+            false
+        } else {
+            true
+        }
+    });
+    off
+}
+
 /// A single-dash flag carrel does not know, arriving from something that
 /// thinks it is talking to `less`. `-` itself is the stdin marker and is
 /// never foreign; `--plain` and friends are carrel's own.
@@ -139,6 +174,7 @@ fn main() -> ExitCode {
     }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let diff_forced = take_diff_flag(&mut args);
+    let mouse_off = take_mouse_flag(&mut args);
 
     // Pager mode: git hands its pager flags it does not expect to be
     // understood (`-R`, `-F`, `-X`, …). Ignore unknown single-dash flags
@@ -148,6 +184,7 @@ fn main() -> ExitCode {
         args.retain(|a| !is_foreign_pager_flag(a));
     }
     DIFF_FORCED.set(diff_forced).ok();
+    MOUSE_OFF.set(mouse_off).ok();
     // `--` ends the options, so `carrel -- ./-weird.md` opens a file whose
     // name begins with a dash. Without it such a file was unopenable. Only
     // what precedes it is checked for flags.
@@ -227,6 +264,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--tasks",
     "--diff",
     "--no-diff",
+    "--no-mouse",
 ];
 
 /// Why `args` cannot be dispatched, if it cannot.
@@ -592,7 +630,13 @@ use ratatui::crossterm::terminal::EndSynchronizedUpdate;
 
 impl TerminalGuard {
     fn engage_mouse() -> Self {
-        let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+        // `--no-mouse` / `mouse = false`: never turn capture on in the first
+        // place. Nothing else needs a branch — with capture off the terminal
+        // keeps every pointer event, so no `MouseEvent` ever reaches the loop
+        // and every click target is simply never consulted.
+        if mouse_enabled() {
+            let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+        }
         // Chain in FRONT of ratatui's restoring panic hook. Mouse capture is
         // ours; so is synchronized-update mode, which `paint` opens around
         // every frame. A panic inside `draw` unwinds past the `End`, and
@@ -1186,7 +1230,8 @@ fn run_loop(
 
     let mut pending: Option<(u16, u16)> = None;
     let mut deadline: Option<Instant> = None;
-    let mut links: Vec<OscLink> = Vec::new();
+    let mut painted = Painted::default();
+    let mut repaint = true;
     let mut ptr = Pointer::default();
     let mut reloader = Reloader::new();
     let mut desktop = Desktop::new();
@@ -1203,7 +1248,10 @@ fn run_loop(
         images.drain(&mut app);
         diagrams.sync(&app);
         diagrams.drain(&mut app);
-        paint(&mut terminal, &app, &mut links, &mut images.protocols)?;
+        if repaint {
+            paint(&mut terminal, &app, &mut painted, &mut images.protocols)?;
+        }
+        repaint = true; // only a motion burst turns this off, and only briefly
 
         // Auto-read's heartbeat: schedule on the same wake budget as the
         // resize debounce, so one `poll` timeout serves both clocks.
@@ -1247,13 +1295,14 @@ fn run_loop(
                         }
                     }
                 }
-                Event::Mouse(m) => {
-                    if let Some(action) = mouse_action(m, &app, &mut ptr)
-                        && update(&mut app, action) == Outcome::Quit
-                    {
-                        break;
+                Event::Mouse(m) => match mouse_action(m, &app, &painted.targets, &mut ptr) {
+                    Some(action) => {
+                        if update(&mut app, action) == Outcome::Quit {
+                            break;
+                        }
                     }
-                }
+                    None => repaint = !coalescing_motion(m),
+                },
                 Event::Resize(w, h) => {
                     pending = Some((w, h));
                     deadline = Some(Instant::now() + DEBOUNCE);
@@ -1262,11 +1311,7 @@ fn run_loop(
             }
         }
 
-        // A copy requested by the state machine leaves through OSC 52 here —
-        // the outbox keeps I/O out of `update`.
-        if let Some(text) = app.clipboard.take() {
-            osc52(&text)?;
-        }
+        drain_outboxes(&mut app)?;
 
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
         poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
@@ -1288,12 +1333,7 @@ fn run_loop(
             }
         }
 
-        if deadline.is_some_and(|d| Instant::now() >= d)
-            && let Some((w, h)) = pending.take()
-        {
-            deadline = None;
-            app.on_resize(w, h);
-        }
+        apply_debounced_resize(&mut app, &mut pending, &mut deadline);
     }
     Ok(())
 }
@@ -1528,7 +1568,8 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
 
     let mut pending: Option<(u16, u16)> = None;
     let mut deadline: Option<Instant> = None;
-    let mut links: Vec<OscLink> = Vec::new();
+    let mut painted = Painted::default();
+    let mut repaint = true;
 
     loop {
         // Same draw path as run(): documents opened FROM the home screen must
@@ -1539,7 +1580,10 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         diagrams.sync(&app);
         diagrams.drain(&mut app);
         fill_titles(&mut app);
-        paint(&mut terminal, &app, &mut links, &mut images.protocols)?;
+        if repaint {
+            paint(&mut terminal, &app, &mut painted, &mut images.protocols)?;
+        }
+        repaint = true; // only a motion burst turns this off, and only briefly
 
         drain_scan(&mut app, &mut scan);
 
@@ -1574,13 +1618,14 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
                         }
                     }
                 }
-                Event::Mouse(m) => {
-                    if let Some(a) = home_mouse_action(m, &app, &mut ptr)
-                        && update(&mut app, a) == Outcome::Quit
-                    {
-                        break;
+                Event::Mouse(m) => match home_mouse_action(m, &app, &painted.targets, &mut ptr) {
+                    Some(a) => {
+                        if update(&mut app, a) == Outcome::Quit {
+                            break;
+                        }
                     }
-                }
+                    None => repaint = !coalescing_motion(m),
+                },
                 Event::Resize(w, h) => {
                     pending = Some((w, h));
                     deadline = Some(Instant::now() + DEBOUNCE);
@@ -1589,23 +1634,14 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
             }
         }
 
-        // Same clipboard outbox as run(): documents opened FROM the home
-        // screen must copy exactly like documents opened directly.
-        if let Some(text) = app.clipboard.take() {
-            osc52(&text)?;
-        }
+        drain_outboxes(&mut app)?;
 
         // And the same live reload (a no-op while the home screen is up —
         // there is no open file to watch), and the same desktop palette.
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
         desktop.poll();
 
-        if deadline.is_some_and(|d| Instant::now() >= d)
-            && let Some((w, h)) = pending.take()
-        {
-            deadline = None;
-            app.on_resize(w, h);
-        }
+        apply_debounced_resize(&mut app, &mut pending, &mut deadline);
 
         // The picker changed root: restart the walk against the new one.
         if let Some(h) = app.home()
@@ -1618,6 +1654,130 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Apply a resize once its debounce has elapsed.
+///
+/// Both loops debounce the same way — one SIGWINCH per drag frame would
+/// otherwise rebuild the layout on every cell of a window drag — so they share
+/// the code rather than each keeping a copy of the condition.
+fn apply_debounced_resize(
+    app: &mut App,
+    pending: &mut Option<(u16, u16)>,
+    deadline: &mut Option<Instant>,
+) {
+    if deadline.is_some_and(|d| Instant::now() >= d)
+        && let Some((w, h)) = pending.take()
+    {
+        *deadline = None;
+        app.on_resize(w, h);
+    }
+}
+
+/// Drain what `update` asked the outside world for.
+///
+/// The state machine does no I/O: it fills an outbox and the loop empties it.
+/// Both loops call this, so a document opened FROM the home screen copies and
+/// opens exactly like one opened directly — the asymmetry that has bitten this
+/// file before.
+fn drain_outboxes(app: &mut App) -> std::io::Result<()> {
+    if let Some(text) = app.clipboard.take() {
+        osc52(&text)?;
+    }
+    if let Some(url) = app.open_url.take()
+        && !open_in_browser(&url)
+    {
+        app.note = Some("could not open a browser".to_string());
+    }
+    Ok(())
+}
+
+/// Split an opener command into a program and its argv, with the URL placed.
+///
+/// Pure, so the placement can be tested without launching anything: the one
+/// thing worth getting wrong here is where the URL lands. `$BROWSER` may carry
+/// arguments and, by the convention Python's `webbrowser` and `sensible-browser`
+/// share, may mark the URL's place with `%s`; without one it goes last.
+fn browser_command(opener: &str, url: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = opener.split_whitespace();
+    let program = parts.next()?.to_string();
+    let rest: Vec<&str> = parts.collect();
+    let args = if rest.iter().any(|a| a.contains("%s")) {
+        rest.iter().map(|a| a.replace("%s", url)).collect()
+    } else {
+        rest.iter()
+            .map(|a| (*a).to_string())
+            .chain(std::iter::once(url.to_string()))
+            .collect()
+    };
+    Some((program, args))
+}
+
+/// Hand a vetted URL to the desktop's browser.
+///
+/// Called only with a string [`carrel::app::openable_url`] has already
+/// approved — the state machine is where that decision lives, and this
+/// function must never become a second, laxer gate.
+///
+/// **argv, never a shell.** `Command::new(program).arg(url)` passes the URL as
+/// one argument that no `sh -c` is ever asked to parse, so it cannot become an
+/// option, a redirection, or a second command however the document spelled it.
+/// All three handles go to `/dev/null`, or the opener's own diagnostics paint
+/// over the alternate screen carrel is drawing on.
+///
+/// The child is waited on by a detached thread rather than dropped: dropping
+/// it leaves a zombie until carrel exits, and `unsafe_code = "forbid"` rules
+/// out the usual double-fork. It is never waited on HERE, because a browser
+/// that takes two seconds to start must not be two seconds of frozen reader.
+fn open_in_browser(url: &str) -> bool {
+    use std::process::{Command, Stdio};
+
+    // `$BROWSER` is the portable answer and may carry arguments, with `%s`
+    // for the URL where the convention is followed. Otherwise the desktop's
+    // own opener, which is what respects the user's default browser.
+    let configured = std::env::var("BROWSER")
+        .ok()
+        .filter(|b| !b.trim().is_empty());
+    let opener = configured.unwrap_or_else(|| {
+        if cfg!(target_os = "macos") {
+            "open".to_string()
+        } else {
+            "xdg-open".to_string()
+        }
+    });
+    let Some((program, args)) = browser_command(&opener, url) else {
+        return false;
+    };
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match cmd.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// A pointer motion that changed nothing, with more input already queued.
+///
+/// `EnableMouseCapture` turns on mode 1003, so the terminal reports every cell
+/// the pointer crosses — and `paint` runs at the top of every iteration, so a
+/// mouse dragged across the window cost one full frame, plus its two
+/// synchronized-update escapes, per cell, for a picture that did not change.
+///
+/// Skipping is only safe while another event is ALREADY waiting, because that
+/// event drives the very next iteration: the burst coalesces and the frame
+/// that ends it is painted. When the pointer stops, the queue empties, this
+/// returns false, and the next iteration paints as it always did — so nothing
+/// can be starved by a motion that is over.
+fn coalescing_motion(m: MouseEvent) -> bool {
+    matches!(m.kind, MouseEventKind::Moved) && event::poll(Duration::ZERO).unwrap_or(false)
+}
+
 /// Pointer events for the reader.
 ///
 /// Desktop scrollbar semantics, because anything else feels jarring:
@@ -1625,9 +1785,27 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
 /// the pointer 1:1, preserving where on the thumb the hand took hold;
 /// clicking the empty **track pages** toward the click rather than
 /// teleporting the document.
-fn mouse_action(m: MouseEvent, app: &App, ptr: &mut Pointer) -> Option<carrel::action::Action> {
+fn mouse_action(
+    m: MouseEvent,
+    app: &App,
+    targets: &Targets,
+    ptr: &mut Pointer,
+) -> Option<carrel::action::Action> {
     use carrel::action::{Action, Span};
     use carrel::keys::{drag_target, thumb_geometry};
+
+    // What the last frame painted wins, before any geometry is re-derived.
+    // A target is only here because the painter put it here, so it agrees
+    // with the pixels by construction — which is the whole reason chrome is
+    // recorded rather than inverted.
+    if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+        && let Some(hit) = targets.hit(m.column, m.row)
+    {
+        // `Absorb` is a pane saying the click was inside it and meant
+        // nothing. It must stop here rather than fall through, or it reaches
+        // the document underneath and starts a selection there.
+        return (hit.action != Action::Absorb).then_some(hit.action);
+    }
 
     let bar_x = app.cols.saturating_sub(1); // the scrollbar column
     let text_h = app.text_h();
@@ -1805,11 +1983,17 @@ fn drain_scan(app: &mut App, scan: &mut Scan) {
 fn home_mouse_action(
     m: MouseEvent,
     app: &App,
+    targets: &Targets,
     ptr: &mut Pointer,
 ) -> Option<carrel::action::Action> {
     use carrel::action::Action;
     if !app.is_home() {
-        return mouse_action(m, app, ptr);
+        return mouse_action(m, app, targets, ptr);
+    }
+    if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+        && let Some(hit) = targets.hit(m.column, m.row)
+    {
+        return (hit.action != Action::Absorb).then_some(hit.action);
     }
     match m.kind {
         // Deliberately not accelerated: this moves the SELECTION, and a
@@ -1869,15 +2053,15 @@ fn home_mouse_action(
 fn paint(
     terminal: &mut ratatui::DefaultTerminal,
     app: &App,
-    links: &mut Vec<OscLink>,
+    painted: &mut Painted,
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) -> std::io::Result<()> {
     synchronized(|| {
         terminal.draw(|f| {
-            render::draw_full(f, app, links, images);
+            render::draw_full(f, app, painted, images);
             render::declare_wide_cells(f);
         })?;
-        emit_osc8(links)
+        emit_osc8(&painted.links)
     })
 }
 
@@ -2018,6 +2202,39 @@ fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the URL lands, without launching anything. The URL is always
+    /// exactly one argv element, whatever the opener looked like — that is
+    /// what keeps a destination from becoming an option or a second command.
+    #[test]
+    fn the_url_is_one_argument_wherever_the_opener_puts_it() {
+        assert_eq!(
+            browser_command("xdg-open", "https://example.com"),
+            Some(("xdg-open".into(), vec!["https://example.com".into()]))
+        );
+        assert_eq!(
+            browser_command("firefox --new-tab", "https://example.com"),
+            Some((
+                "firefox".into(),
+                vec!["--new-tab".into(), "https://example.com".into()]
+            ))
+        );
+        assert_eq!(
+            browser_command("my-opener --url=%s --quiet", "https://example.com"),
+            Some((
+                "my-opener".into(),
+                vec!["--url=https://example.com".into(), "--quiet".into()]
+            )),
+            "%s is substituted in place, not appended as well"
+        );
+        // A URL that looks like a flag is still one argument, and never the
+        // program.
+        let (prog, args) = browser_command("xdg-open", "https://example.com/--help").unwrap();
+        assert_eq!(prog, "xdg-open");
+        assert_eq!(args, vec!["https://example.com/--help".to_string()]);
+
+        assert_eq!(browser_command("   ", "https://example.com"), None);
+    }
 
     #[test]
     fn base64_matches_the_rfc_4648_vectors() {

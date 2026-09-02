@@ -57,6 +57,11 @@ pub struct Config {
     pub breadcrumb: Option<bool>,
     pub outline_margin: Option<bool>,
     pub titles: Option<bool>,
+    /// Mouse capture. `false` hands the pointer back to the terminal, so its
+    /// own selection and context menu work as they always did — the escape
+    /// hatch a mouse-first reader owes anyone whose terminal disagrees with
+    /// it. `--no-mouse` overrides this for one run.
+    pub mouse: Option<bool>,
     /// Already clamped by [`MIN_MEASURE`]; `Some(0)` still means OFF.
     pub max_width: Option<u16>,
     /// Newest first, deduped, capped at [`PLACE_CAP`].
@@ -105,6 +110,7 @@ fn parse_all(text: &str) -> Config {
                 c.outline_margin = Some(flag(v, false));
             }
             "titles" if c.titles.is_none() => c.titles = Some(flag(v, false)),
+            "mouse" if c.mouse.is_none() => c.mouse = Some(flag(v, true)),
             "max_width" if c.max_width.is_none() => {
                 // Unparseable stays absent rather than becoming zero: zero is
                 // a real setting here, meaning "no measure at all".

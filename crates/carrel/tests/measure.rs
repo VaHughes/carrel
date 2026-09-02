@@ -366,6 +366,154 @@ fn an_osc8_link_is_emitted_at_the_column_its_text_is_painted_in() {
     );
 }
 
+/// **The generic click-target guard.**
+///
+/// Every hand-written round-trip in this file checks one surface. This checks
+/// them all at once, and every surface added later inherits it for free: for
+/// each target the painter registered, read the cells it covers back off the
+/// buffer and assert they show what that action claims to act on. A target
+/// whose rectangle drifts one cell off its glyph fails here, which is the
+/// failure no frame assertion can see.
+#[test]
+fn every_registered_target_covers_the_thing_it_acts_on() {
+    use carrel::action::Action;
+
+    // Two links, a folded section and an unfolded <details>: one document
+    // that registers every kind of target step 2 paints.
+    // `# Two` matters: folding `# One` must not hide the links and the
+    // <details> block this test exists to check. No line continuations —
+    // their leading indentation lands INSIDE the string, and fifteen
+    // spaces in front of a tag makes markdown an indented code block.
+    let src = "# One\n\nbody of one\n\n# Two\n\nsee [the docs](https://example.com) and [more](./more.md)\n\n<details>\n<summary>Open me</summary>\n\nhidden\n\n</details>\n";
+    let mut app = app_at(120, 24, src);
+    // Fold the first heading, so its ▸ marker is painted and registered too.
+    carrel::app::update(&mut app, Action::FoldAt(0));
+
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer();
+
+    let mut checked = 0;
+    let mut link_text: Vec<String> = Vec::new();
+    for target in painted.targets.as_slice() {
+        let z = target.zone;
+        assert!(
+            z.x + z.w <= 120 && z.y + z.h <= 24,
+            "a target must lie inside the frame it was painted in: {target:?}"
+        );
+        let painted: String = (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect();
+        match target.action {
+            Action::LinkOpen(i) => {
+                assert!(
+                    app.doc.links.get(i as usize).is_some(),
+                    "link target {i} indexes past the document"
+                );
+                // EXACT, not "contains": a one-cell drift still lands inside
+                // the document's text, and "contains" would shrug at it. That
+                // drift is the entire failure this test exists to catch.
+                link_text.push(painted.clone());
+                checked += 1;
+            }
+            Action::FoldAt(_) => {
+                assert!(
+                    painted == "\u{25b8}" || painted == "\u{25be}",
+                    "a fold target must cover a fold marker, found {painted:?}"
+                );
+                checked += 1;
+            }
+            other => panic!("unclassified target {other:?} — teach this test what it covers"),
+        }
+    }
+    link_text.sort();
+    assert_eq!(
+        link_text,
+        vec!["more".to_string(), "the docs".to_string()],
+        "each link target must cover its own link text exactly, edge to edge"
+    );
+    assert!(
+        checked >= 4,
+        "the fixture must actually register targets, got {checked}"
+    );
+}
+
+/// **The modal-precedence guard.**
+///
+/// A pane owns its rectangle the way it owns the keyboard. Before the target
+/// registry there was no precedence at all on the pointer side: a click on an
+/// open pane started a text selection in the document behind it. The `z`
+/// ordering is what fixes that, and this is what proves it stays fixed.
+#[test]
+fn an_open_pane_takes_every_click_inside_it() {
+    use carrel::action::Action;
+
+    let src = "# Alpha\n\nbody\n\n# Beta\n\nmore body\n\n# Gamma\n\nlast\n";
+    let mut app = app_at(120, 24, src);
+    carrel::app::update(&mut app, Action::OutlineToggle);
+    assert!(app.outline.is_some(), "the outline picker is up");
+
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+
+    let jumps: Vec<_> = painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| matches!(t.action, Action::OutlineJumpAt(_)))
+        .collect();
+    assert_eq!(jumps.len(), 3, "one target per heading in the picker");
+
+    // Every row resolves to the entry painted on it, and to no other.
+    let buf = t.backend().buffer();
+    for (n, target) in jumps.iter().enumerate() {
+        let z = target.zone;
+        let painted_row: String = (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect();
+        let want = ["Alpha", "Beta", "Gamma"][n];
+        assert!(
+            painted_row.contains(want),
+            "row {n} should show {want}, shows {painted_row:?}"
+        );
+        assert_eq!(
+            painted.targets.hit(z.x + 1, z.y).map(|h| h.action),
+            Some(target.action),
+            "a click on row {n} must resolve to row {n}"
+        );
+    }
+
+    // The pane's own background absorbs. Take a cell on the pane's border
+    // row, which is inside the rectangle and on no entry.
+    let pane = jumps[0].zone;
+    let border = painted
+        .targets
+        .hit(pane.x, pane.y.saturating_sub(1))
+        .map(|h| h.action);
+    assert_eq!(
+        border,
+        Some(Action::Absorb),
+        "a click on the pane but not on a row is swallowed, not passed through"
+    );
+
+    // And nothing under the pane leaks out: no document target may win
+    // anywhere inside it.
+    for x in pane.x..pane.x + pane.w {
+        let hit = painted.targets.hit(x, pane.y).expect("inside the pane");
+        assert!(
+            matches!(hit.action, Action::Absorb | Action::OutlineJumpAt(_)),
+            "the pane leaked a {:?} at column {x}",
+            hit.action
+        );
+    }
+}
+
 // --- the invariant ---
 
 #[test]

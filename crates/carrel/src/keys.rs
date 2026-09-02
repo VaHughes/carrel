@@ -1063,6 +1063,13 @@ mod tests {
                 // (The mouse gestures ARE documented — as prose rows in the
                 // help table's mouse group, not as key bindings.)
                 A::SearchKey(_)
+                | A::LinkOpen(_)
+                | A::FoldAt(_)
+                | A::BacklinksOpenAt(_)
+                | A::ForwardOpenAt(_)
+                | A::MarkListJumpAt(_)
+                | A::OutlineJumpAt(_)
+                | A::Absorb
                 | A::HomeSelect(_)
                 | A::PickerSelect(_)
                 | A::HomeKey(_)

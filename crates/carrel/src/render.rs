@@ -30,6 +30,25 @@ use std::collections::HashMap;
 use ratatui_image::StatefulImage;
 use ratatui_image::protocol::StatefulProtocol;
 
+use crate::action::{Action, Targets, Zone};
+
+/// What one frame records for the passes that run after it.
+///
+/// The OSC 8 spans and the click targets are gathered by the same paint, at
+/// the same moment, from the same coordinates — so they travel together
+/// rather than as two more parameters on every painter.
+#[derive(Debug, Default)]
+pub struct Painted {
+    pub links: Vec<OscLink>,
+    pub targets: Targets,
+}
+
+/// Click-target layers. A pane painted over the document must take the click
+/// the document would otherwise have taken, so the number rises with the
+/// paint order rather than being chosen per widget.
+const Z_DOC: u8 = 0;
+const Z_CHROME: u8 = 1;
+const Z_OVERLAY: u8 = 2;
 use crate::app::{App, Mode, Screen};
 
 /// A visible link span, for the OSC 8 post-draw pass in `main.rs`.
@@ -53,7 +72,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 /// Draw, collecting visible link spans for the OSC 8 pass.
 pub fn draw_with_links(frame: &mut Frame, app: &App, links: &mut Vec<OscLink>) {
-    draw_full(frame, app, links, &mut HashMap::new());
+    let mut painted = Painted::default();
+    draw_full(frame, app, &mut painted, &mut HashMap::new());
+    std::mem::swap(links, &mut painted.links);
 }
 
 /// Declare the real column width of emoji-presentation cells, so ratatui's
@@ -107,10 +128,13 @@ pub fn declare_wide_cells(frame: &mut Frame) {
 pub fn draw_full(
     frame: &mut Frame,
     app: &App,
-    links: &mut Vec<OscLink>,
+    painted: &mut Painted,
     images: &mut HashMap<carrel_core::BlockIdx, StatefulProtocol>,
 ) {
-    links.clear();
+    painted.links.clear();
+    // Cleared with the links, and for the same reason: what this frame does
+    // not paint, this frame cannot be asked to click.
+    painted.targets.clear();
     if let Screen::Home(h) = &app.screen {
         let area = frame.area();
         if area.width < 2 || area.height < 3 {
@@ -126,10 +150,10 @@ pub fn draw_full(
         frame.buffer_mut().set_style(area, theme::body());
         draw_home(frame, app, h);
         if app.help.is_some() {
-            paint_help(frame, app);
+            paint_help(frame, app, &mut painted.targets);
         }
         if app.outline.is_some() {
-            paint_outline(frame, app);
+            paint_outline(frame, app, &mut painted.targets);
         }
         return;
     }
@@ -173,7 +197,7 @@ pub fn draw_full(
     let status = Rect::new(0, status_y, area.width, 1);
 
     paint_margin_outline(frame, app, text);
-    paint_rows(frame, app, text, links, images);
+    paint_rows(frame, app, text, painted, images);
     paint_scrollbar(frame, app, bar);
     paint_status(frame, app, status);
     paint_breadcrumb(frame, app, text);
@@ -185,29 +209,29 @@ pub fn draw_full(
         );
     }
     if app.help.is_some() {
-        paint_help(frame, app);
+        paint_help(frame, app, &mut painted.targets);
     }
     if app.outline.is_some() {
-        paint_outline(frame, app);
+        paint_outline(frame, app, &mut painted.targets);
     }
     if app.backlinks.is_some() {
-        paint_backlinks(frame, app);
+        paint_backlinks(frame, app, &mut painted.targets);
     }
     if app.forward.is_some() {
-        paint_forward(frame, app);
+        paint_forward(frame, app, &mut painted.targets);
     }
     if app.mark_list.is_some() {
-        paint_marks(frame, app);
+        paint_marks(frame, app, &mut painted.targets);
     }
     if app.info {
-        paint_info(frame, app);
+        paint_info(frame, app, &mut painted.targets);
     }
 }
 
 /// The bookmark list (`"`): every mark with its context line. Rows derive
 /// from `App::marks` at every frame, so a mark toggled under the pane shows
 /// immediately.
-fn paint_marks(frame: &mut Frame, app: &App) {
+fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(selected) = app.mark_list else {
         return;
     };
@@ -220,6 +244,9 @@ fn paint_marks(frame: &mut Frame, app: &App) {
     let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
     let x = (area.width - w) / 2;
     let y = (area.height - h) / 2;
+    // The pane owns its rectangle the way it owns the keyboard: a click on any
+    // part of it is absorbed here, unless a row pushed after this takes it.
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
     let blank = " ".repeat(w as usize);
@@ -249,6 +276,11 @@ fn paint_marks(frame: &mut Frame, app: &App) {
         if py >= y + h - 1 {
             break;
         }
+        targets.push(
+            Action::MarkListJumpAt(u32::try_from(i).unwrap_or(u32::MAX)),
+            Zone::new(x + 1, py, w.saturating_sub(1), 1),
+            Z_OVERLAY,
+        );
         let sel = i == selected;
         let style = if sel {
             theme::selected()
@@ -285,7 +317,7 @@ fn paint_marks(frame: &mut Frame, app: &App) {
 /// Same overlay shape as the outline picker — a centred box, a title, a
 /// selected row — because it answers the same kind of question and a reader
 /// should not have to learn two of them.
-fn paint_backlinks(frame: &mut Frame, app: &App) {
+fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(bl) = &app.backlinks else { return };
     let area = frame.area();
     if area.width < 24 || area.height < 6 {
@@ -296,6 +328,9 @@ fn paint_backlinks(frame: &mut Frame, app: &App) {
     let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
     let x = (area.width - w) / 2;
     let y = (area.height - h) / 2;
+    // The pane owns its rectangle the way it owns the keyboard: a click on any
+    // part of it is absorbed here, unless a row pushed after this takes it.
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
     let blank = " ".repeat(w as usize);
@@ -336,6 +371,16 @@ fn paint_backlinks(frame: &mut Frame, app: &App) {
         if py >= y + h - 1 {
             break;
         }
+        targets.push(
+            Action::BacklinksOpenAt(u32::try_from(first + i).unwrap_or(u32::MAX)),
+            Zone::new(
+                x + 1,
+                py,
+                w.saturating_sub(1),
+                (y + h - 1).saturating_sub(py).min(2),
+            ),
+            Z_OVERLAY,
+        );
         let sel = first + i == bl.selected;
         let style = if sel {
             theme::selected()
@@ -361,7 +406,7 @@ fn paint_backlinks(frame: &mut Frame, app: &App) {
 
 /// The forward-links pane: what this document points at. The backlinks
 /// pane's mirror — same overlay, same keys, the other direction.
-fn paint_forward(frame: &mut Frame, app: &App) {
+fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(pane) = &app.forward else { return };
     let area = frame.area();
     if area.width < 24 || area.height < 6 {
@@ -372,6 +417,9 @@ fn paint_forward(frame: &mut Frame, app: &App) {
     let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
     let x = (area.width - w) / 2;
     let y = (area.height - h) / 2;
+    // The pane owns its rectangle the way it owns the keyboard: a click on any
+    // part of it is absorbed here, unless a row pushed after this takes it.
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
     let blank = " ".repeat(w as usize);
@@ -414,6 +462,16 @@ fn paint_forward(frame: &mut Frame, app: &App) {
         if py >= y + h - 1 {
             break;
         }
+        targets.push(
+            Action::ForwardOpenAt(u32::try_from(first + i).unwrap_or(u32::MAX)),
+            Zone::new(
+                x + 1,
+                py,
+                w.saturating_sub(1),
+                (y + h - 1).saturating_sub(py).min(2),
+            ),
+            Z_OVERLAY,
+        );
         let sel = first + i == pane.selected;
         let style = if sel {
             theme::selected()
@@ -456,7 +514,7 @@ fn short_dest(dest: &str) -> String {
 
 /// The document-info card (`I`): what kind of document this is, derived
 /// fresh every frame. Passive — it never owns the keyboard.
-fn paint_info(frame: &mut Frame, app: &App) {
+fn paint_info(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let rows = app.info_rows();
     let area = frame.area();
     if area.width < 40 || area.height < 8 {
@@ -468,6 +526,9 @@ fn paint_info(frame: &mut Frame, app: &App) {
         .max(4);
     let x = (area.width - w) / 2;
     let y = (area.height - h) / 2;
+    // The pane owns its rectangle the way it owns the keyboard: a click on any
+    // part of it is absorbed here, unless a row pushed after this takes it.
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
     let blank = " ".repeat(w as usize);
@@ -510,7 +571,7 @@ fn paint_info(frame: &mut Frame, app: &App) {
     }
 }
 
-fn paint_outline(frame: &mut Frame, app: &App) {
+fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(picker) = &app.outline else { return };
     let matches = app.outline_matches();
     let area = frame.area();
@@ -523,6 +584,9 @@ fn paint_outline(frame: &mut Frame, app: &App) {
         .max(3);
     let x = (area.width - w) / 2;
     let y = (area.height - h) / 2;
+    // The pane owns its rectangle the way it owns the keyboard: a click on any
+    // part of it is absorbed here, unless a row pushed after this takes it.
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
     let blank = " ".repeat(w as usize);
@@ -550,6 +614,11 @@ fn paint_outline(frame: &mut Frame, app: &App) {
     let first = first.min(matches.len().saturating_sub(inner_h));
     for (i, block) in matches.iter().skip(first).take(inner_h).enumerate() {
         let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+        targets.push(
+            Action::OutlineJumpAt(u32::try_from(first + i).unwrap_or(u32::MAX)),
+            Zone::new(x + 1, py, w.saturating_sub(1), 1),
+            Z_OVERLAY,
+        );
         let node = app.doc.node_for_block(*block);
         let level = match node.kind {
             NodeKind::Heading { level } => level,
@@ -574,7 +643,7 @@ fn paint_outline(frame: &mut Frame, app: &App) {
 /// tables honest, so this painter never lies either. The state's scroll
 /// saturates; the CLAMP against the sheet's length happens here, where the
 /// content lives.
-fn paint_help(frame: &mut Frame, app: &App) {
+fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let table = if app.is_home() {
         crate::keys::HOME_HELP
     } else {
@@ -591,6 +660,9 @@ fn paint_help(frame: &mut Frame, app: &App) {
     let h = (u16::try_from(table.len()).unwrap_or(u16::MAX) + 2).min(area.height.saturating_sub(2));
     let x = (area.width - w) / 2;
     let y = (area.height - h) / 2;
+    // The pane owns its rectangle the way it owns the keyboard: a click on any
+    // part of it is absorbed here, unless a row pushed after this takes it.
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
     let blank = " ".repeat(w as usize);
@@ -858,7 +930,7 @@ fn paint_rows(
     frame: &mut Frame,
     app: &App,
     full: Rect,
-    links: &mut Vec<OscLink>,
+    painted: &mut Painted,
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) {
     // One buffer for the whole frame: after the first block this allocates
@@ -970,14 +1042,14 @@ fn paint_rows(
             if y >= area.bottom() {
                 break;
             }
-            paint_row(frame, app, block, row, area, y, links);
+            paint_row(frame, app, block, row, area, y, painted);
             y += 1;
         }
         // A folded heading wears its state: a gutter marker and a trailing
         // ellipsis. Decoration only — neither is in the text, so search and
         // selection never see them. A `<details>` summary wears the same.
         if skip == 0 && y > first_y {
-            paint_fold_markers(frame, app, block, area, first_y);
+            paint_fold_markers(frame, app, block, area, first_y, &mut painted.targets);
         }
         // Spotlight (`S`): a block that does not hold the viewport's centre
         // row falls into shadow. Applied AFTER the block paints, over every
@@ -1004,11 +1076,27 @@ fn paint_rows(
 /// The fold-state markers on a heading or `<details>` summary row: `▸ …`
 /// when folded away, `▾` alone when open. Decoration only — none of it is
 /// in the text, so search and selection never see any of it.
-fn paint_fold_markers(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect, first_y: u16) {
+fn paint_fold_markers(
+    frame: &mut Frame,
+    app: &App,
+    block: BlockIdx,
+    area: Rect,
+    first_y: u16,
+    targets: &mut Targets,
+) {
     let node = app.doc.node_for_block(block);
     let buf = frame.buffer_mut();
     if matches!(node.kind, NodeKind::Heading { .. }) && app.folded.contains(&node.id) {
-        buf.set_stringn(area.x.saturating_sub(2), first_y, "▸", 1, theme::dim());
+        let mx = area.x.saturating_sub(2);
+        buf.set_stringn(mx, first_y, "▸", 1, theme::dim());
+        // A folded heading's marker is the only way back into the section by
+        // pointer: the words it hides are not painted, and the heading row
+        // itself is what folded them.
+        targets.push(
+            Action::FoldAt(node.doc.start),
+            Zone::new(mx, first_y, 1, 1),
+            Z_CHROME,
+        );
         let text = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
         let after = area
             .x
@@ -1025,7 +1113,13 @@ fn paint_fold_markers(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect,
         }
         let folded = app.folded_details.contains(&(i as u32));
         let marker = if folded { "▸" } else { "▾" };
-        buf.set_stringn(area.x.saturating_sub(2), first_y, marker, 1, theme::dim());
+        let mx = area.x.saturating_sub(2);
+        buf.set_stringn(mx, first_y, marker, 1, theme::dim());
+        targets.push(
+            Action::FoldAt(region.summary.start),
+            Zone::new(mx, first_y, 1, 1),
+            Z_CHROME,
+        );
         if folded {
             // The ellipsis trails the summary text itself, which may sit
             // after other stripped text in the same block.
@@ -1053,8 +1147,9 @@ fn paint_row(
     row: &Row,
     area: Rect,
     y: u16,
-    links: &mut Vec<OscLink>,
+    painted: &mut Painted,
 ) {
+    let Painted { links, targets } = painted;
     let node = app.doc.node_for_block(block);
 
     // Card mode: an overflowing table lays out as label/value cards instead
@@ -1281,6 +1376,12 @@ fn paint_row(
             let w = (c1 - c0).min(area.right().saturating_sub(x0));
             if w == 0 {
                 continue;
+            }
+            // Clickable wherever it is painted, and pushed before the two
+            // style branches below so the link `Tab` has already selected is
+            // no less clickable than the rest.
+            if let Some(id) = inline.link {
+                targets.push(Action::LinkOpen(id.0), Zone::new(x0, y, w, 1), Z_DOC);
             }
             if inline.link == app.selected_link {
                 frame
@@ -2974,7 +3075,7 @@ mod tests {
         let mut protocols = HashMap::from([(img_block, picker.new_resize_protocol(red))]);
 
         let mut t = Terminal::new(TestBackend::new(30, 10)).unwrap();
-        t.draw(|f| draw_full(f, &app, &mut Vec::new(), &mut protocols))
+        t.draw(|f| draw_full(f, &app, &mut Painted::default(), &mut protocols))
             .unwrap();
         let buf = t.backend().buffer().clone();
 

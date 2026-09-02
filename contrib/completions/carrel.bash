@@ -9,7 +9,7 @@
 _carrel() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W "-h --help -V --version --plain --render --tasks --diff --no-diff" -- "$cur") )
+        COMPREPLY=( $(compgen -W "-h --help -V --version --plain --render --tasks --diff --no-diff --no-mouse" -- "$cur") )
     else
         # extglob is on wherever bash-completion is loaded, which is the only
         # place this file is installed.

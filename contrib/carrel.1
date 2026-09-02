@@ -27,7 +27,7 @@ carrel \- a quiet place to read your markdown
 .I FILE
 .br
 .B carrel
-.RB [ \-\-diff | \-\-no\-diff ]
+.RB [ \-\-diff | \-\-no\-diff | \-\-no\-mouse ]
 .I FILE
 .br
 .B carrel \-\-help
@@ -78,6 +78,15 @@ file never is.
 .TP
 .B \-\-no\-diff
 Never adapt a diff, even on a pipe.
+.TP
+.B \-\-no\-mouse
+Do not capture the mouse. Carrel is click\-first and captures the pointer by
+default; this hands it back, so the terminal's own selection, scrollback and
+context menu behave exactly as they do in any other program. Every action
+remains reachable from the keyboard. The
+.B mouse
+key in the configuration file does the same thing for every run; the flag wins
+for this one.
 .TP
 .B \-\-render
 Styled linear text for embedding in another tool's output: weight, slant,
@@ -164,7 +173,9 @@ or by ordinary markdown link. Enter opens one.
 .B l
 What this points at \(em every destination in the document, the mirror of
 .BR L .
-Enter opens a local one; an external URL is named, never fetched.
+Enter opens a local one; an external URL opens in your browser. Carrel still
+fetches nothing itself \(em it hands the address to the desktop and reads no
+reply.
 .TP
 .B m
 Set or clear a bookmark at the current position. Bookmarks are remembered
@@ -182,7 +193,12 @@ closes this pane, and the two link panes below.)
 Select the next or previous link.
 .TP
 .B Enter
-Follow the selected link.
+Follow the selected link. A markdown file beside this one opens in the reader;
+an
+.BR http ", " https " or " mailto
+address opens in your browser. Nothing else opens \(em a
+.BR file: ", " javascript: " or " data:
+destination is refused by name, whatever your desktop would have made of it.
 .TP
 .B Ctrl\-O
 Go back where you came from.
@@ -249,6 +265,26 @@ summary, it folds that section \(em the same toggle
 .B za
 gives. Where the margin outline is on, a click in its columns jumps to that
 section instead of starting a selection.
+.TP
+.B link
+Click a link to open it, wherever it is painted \(em no need to select it
+first. Local markdown opens in the reader; an
+.BR http ", " https " or " mailto
+address opens in your browser.
+.TP
+.B fold marker
+The
+.BR \(u25b8 / \(u25be
+in the left margin is a button: click it to fold or unfold that section, or
+that
+.B <details>
+block. It folds exactly what a click on the heading beside it folds.
+.TP
+.B pane row
+In the outline, the bookmark list and the two link panes, a click opens the row
+under the pointer \(em not the row the keyboard cursor was resting on. A click
+anywhere else on an open pane does nothing: while a pane is up it takes every
+click inside it, so nothing reaches the document behind it.
 .TP
 .B wheel
 Scroll. Three lines a notch, and more when the notches keep arriving \(em spin
@@ -425,6 +461,14 @@ toggles it. A document with no headings never shows one.
 The section tree pinned in the left margin, the current section lit, on
 terminals wide enough to spare the columns. Default false, because it moves
 the text column.
+.TP
+.B mouse
+Capture the mouse, so clicks reach carrel rather than the terminal. Default
+true \(em carrel is a click\-first reader. Set false to hand the pointer back,
+and the terminal's own selection, scrollback and context menu behave as they do
+anywhere else.
+.B \-\-no\-mouse
+does the same for one run.
 .TP
 .B root
 The directory the home screen lists.

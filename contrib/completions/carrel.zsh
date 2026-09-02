@@ -9,4 +9,5 @@ _arguments \
   '--tasks[print the task list as checkbox lines and exit]' \
   '--diff[read the input as a unified diff]' \
   '--no-diff[never adapt a diff, even on a pipe]' \
+  '--no-mouse[hand the pointer back to the terminal]' \
   '*:file:_files -g "*.(md|markdown|diff|patch)"'

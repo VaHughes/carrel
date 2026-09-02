@@ -266,6 +266,13 @@ pub struct App {
     /// One-shot clipboard outbox: the state machine fills it, the event loop
     /// drains it into an OSC 52 escape. The state layer never does I/O.
     pub clipboard: Option<String>,
+    /// One-shot browser outbox, the twin of [`Self::clipboard`]: the state
+    /// machine puts an already-vetted URL here and the event loop hands it to
+    /// the desktop. The state layer still does no I/O, and — the part that
+    /// matters — **nothing reaches this field that has not passed
+    /// [`openable_url`]**, so the allowlist cannot be bypassed by a caller
+    /// that forgot about it.
+    pub open_url: Option<String>,
     /// The home screen this document was opened from, if any. `q` restores
     /// it — entries, filter, and scroll intact — instead of quitting.
     pub home_stash: Option<Box<Home>>,
@@ -498,6 +505,7 @@ impl App {
             selection: None,
             sel_anchor: None,
             clipboard: None,
+            open_url: None,
             home_stash: None,
             cols,
             rows,
@@ -1769,6 +1777,21 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::Redraw
         }
+        // The picker owns the keyboard while it is up, and `update` routes
+        // every action here — so the click's action belongs here too, beside
+        // the jump it delegates to, not in `reader_update` where it can never
+        // arrive.
+        Action::OutlineJumpAt(i) => {
+            let i = i as usize;
+            if i >= app.outline_matches().len() {
+                return Outcome::Idle;
+            }
+            let Some(o) = app.outline.as_mut() else {
+                return Outcome::Idle;
+            };
+            o.selected = i;
+            outline_update(app, Action::OutlineJump)
+        }
         Action::OutlineJump => {
             let matches = app.outline_matches();
             let Some(block) = app
@@ -2240,36 +2263,23 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             // when things look clickable and are not.
             if app.selection.is_none()
                 && let Some((byte, _)) = pressed
+                && fold_at(app, byte)
             {
-                // A `<details>` summary row folds its region, exactly as a
-                // heading row folds its section — the two markers look alike,
-                // so they must behave alike.
-                if let Some((i, _)) = app
-                    .doc
-                    .details
-                    .iter()
-                    .enumerate()
-                    .find(|(_, r)| r.summary.contains(&byte))
-                {
-                    let i = u32::try_from(i).unwrap_or(u32::MAX);
-                    if !app.folded_details.remove(&i) {
-                        app.folded_details.insert(i);
-                    }
-                    app.after_fold_change();
-                    return Outcome::Redraw;
-                }
-                let node = app.doc.node_for_block(app.doc.block_at_doc(DocByte(byte)));
-                if matches!(node.kind, carrel_core::NodeKind::Heading { .. }) {
-                    let id = node.id;
-                    if !app.folded.remove(&id) {
-                        app.folded.insert(id);
-                    }
-                    app.after_fold_change();
-                    return Outcome::Redraw;
-                }
+                return Outcome::Redraw;
             }
             copy_selection(app);
             Outcome::Redraw
+        }
+        // The marker itself, which paints two columns left of the text and so
+        // was never inside any clickable span. Same resolution as a click on
+        // the row: the two must agree, or the glyph and the words beside it
+        // would fold different things.
+        Action::FoldAt(byte) => {
+            if fold_at(app, byte) {
+                Outcome::Redraw
+            } else {
+                Outcome::Idle
+            }
         }
         Action::SelectWord(byte) => {
             app.selection = word_range_at(&app.doc.text, byte);
@@ -2285,6 +2295,17 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 
         Action::LinkFollow => {
             app.following = false;
+            link_follow(app)
+        }
+        // A click does in one intent what Tab-then-Enter does in two: the
+        // pointer already said which link it meant, so selecting it and
+        // following it is one gesture.
+        Action::LinkOpen(i) => {
+            if app.doc.links.get(i as usize).is_none() {
+                return Outcome::Idle;
+            }
+            app.following = false;
+            app.selected_link = Some(LinkId(i));
             link_follow(app)
         }
 
@@ -2407,6 +2428,38 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::Redraw
         }
+        // A click already said which row; selecting it and opening it is one
+        // gesture, and the open itself is the handler that is already tested.
+        Action::BacklinksOpenAt(i) => {
+            let i = i as usize;
+            let Some(b) = app.backlinks.as_mut() else {
+                return Outcome::Idle;
+            };
+            if i >= b.rows.len() {
+                return Outcome::Idle;
+            }
+            b.selected = i;
+            update(app, Action::BacklinksOpen)
+        }
+        Action::ForwardOpenAt(i) => {
+            let i = i as usize;
+            let Some(f) = app.forward.as_mut() else {
+                return Outcome::Idle;
+            };
+            if i >= f.rows.len() {
+                return Outcome::Idle;
+            }
+            f.selected = i;
+            update(app, Action::ForwardOpen)
+        }
+        Action::MarkListJumpAt(i) => {
+            let i = i as usize;
+            if app.mark_list.is_none() || i >= app.marks.len() {
+                return Outcome::Idle;
+            }
+            app.mark_list = Some(i);
+            update(app, Action::MarkListJump)
+        }
         Action::BacklinksOpen => {
             let Some(path) = app
                 .backlinks
@@ -2467,10 +2520,10 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Idle;
             };
             let Some(path) = row.target else {
-                // The standing rule, said out loud where a fetch would have
-                // happened in another reader.
-                app.note = Some(format!("external — carrel does not fetch: {}", row.dest));
-                return Outcome::Redraw;
+                // Not fetchable, but openable — the same door `Enter` on a
+                // link in the text now opens.
+                let dest = row.dest.clone();
+                return open_external(app, &dest);
             };
             app.forward = None;
             let here = app.view.anchor;
@@ -2980,6 +3033,110 @@ fn link_step(app: &mut App, n: i32, h: u16) -> Outcome {
     Outcome::Redraw
 }
 
+/// The longest URL carrel will hand to the desktop.
+///
+/// The same cap the OSC 8 pass uses, for the same reason: terminals and
+/// desktop openers both give up somewhere near 2 KiB, and a document that
+/// wants more than this is not describing a link a person meant to follow.
+const MAX_URL: usize = 2048;
+
+/// Does this destination carry a URI scheme at all?
+///
+/// RFC 3986: `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` before the colon.
+/// Two characters minimum, so a Windows-shaped `C:\path` stays a path.
+#[must_use]
+fn has_scheme(dest: &str) -> bool {
+    let Some((scheme, _)) = dest.split_once(':') else {
+        return false;
+    };
+    scheme.len() >= 2
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// The URL, if it is one carrel is willing to open — otherwise `None`.
+///
+/// **This is the security boundary, and it is an allowlist on purpose.**
+/// Carrel's audience arrives holding a markdown file an AI agent wrote out of
+/// web pages they never read, and following a link in it is the most ordinary
+/// thing they will do. So: `http`, `https` and `mailto` open, and everything
+/// else — `file:` reading the disk, `javascript:` and `data:` where the opener
+/// is a browser, `ssh:`, and every scheme nobody has thought of yet — does
+/// not, whatever the desktop's handler table would have made of it.
+///
+/// Whitespace and control characters are refused outright rather than
+/// escaped. A URL containing either is not one a document meant to offer, and
+/// argument splitting is not a place to be clever.
+#[must_use]
+pub fn openable_url(dest: &str) -> Option<&str> {
+    if dest.len() > MAX_URL || dest.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    let (scheme, rest) = dest.split_once(':')?;
+    let ok = if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
+        // A bare `https:` or `https://` names no host.
+        rest.strip_prefix("//").is_some_and(|host| !host.is_empty())
+    } else if scheme.eq_ignore_ascii_case("mailto") {
+        !rest.is_empty()
+    } else {
+        false
+    };
+    ok.then_some(dest)
+}
+
+/// Fill the browser outbox, or say why not.
+///
+/// The refusal deliberately does not echo the destination back: the reader is
+/// already showing the link it is talking about, and a note is not the place
+/// to reprint a string this function has just declined to trust.
+fn open_external(app: &mut App, dest: &str) -> Outcome {
+    match openable_url(dest) {
+        Some(url) => {
+            app.open_url = Some(url.to_string());
+            app.note = Some("opened in your browser".to_string());
+        }
+        None => {
+            app.note = Some("carrel opens http, https and mailto links only".to_string());
+        }
+    }
+    Outcome::Redraw
+}
+
+/// Fold or unfold whatever `byte` is inside, if it is inside anything
+/// foldable. `true` when something changed.
+///
+/// A `<details>` summary folds its region exactly as a heading folds its
+/// section — the two markers look alike, so they must behave alike — and a
+/// summary wins, because it is the more specific of the two.
+fn fold_at(app: &mut App, byte: u32) -> bool {
+    if let Some((i, _)) = app
+        .doc
+        .details
+        .iter()
+        .enumerate()
+        .find(|(_, r)| r.summary.contains(&byte))
+    {
+        let i = u32::try_from(i).unwrap_or(u32::MAX);
+        if !app.folded_details.remove(&i) {
+            app.folded_details.insert(i);
+        }
+        app.after_fold_change();
+        return true;
+    }
+    let node = app.doc.node_for_block(app.doc.block_at_doc(DocByte(byte)));
+    if matches!(node.kind, carrel_core::NodeKind::Heading { .. }) {
+        let id = node.id;
+        if !app.folded.remove(&id) {
+            app.folded.insert(id);
+        }
+        app.after_fold_change();
+        return true;
+    }
+    false
+}
+
 fn link_follow(app: &mut App) -> Outcome {
     let Some(id) = app.selected_link else {
         return Outcome::Idle;
@@ -2990,11 +3147,17 @@ fn link_follow(app: &mut App) -> Outcome {
     if app.doc.is_wikilink(id) {
         return wiki_follow(app, id, &url);
     }
-    // External targets are the terminal's job via OSC 8. A reader does not
-    // spawn programs.
-    if url.contains("://") || url.starts_with("mailto:") {
-        app.note = Some(format!("external link — click or copy: {url}"));
-        return Outcome::Redraw;
+    // Anything with a scheme is external, and external now OPENS.
+    //
+    // This reverses "a reader does not spawn programs", which was right when
+    // the answer was OSC 8 and the audience already knew what OSC 8 was. It
+    // told everyone else to click something carrel was not making clickable,
+    // and offered "copy it" as the fallback. Handing the URL to the desktop is
+    // still not fetching: no socket is opened here, and carrel depends on no
+    // HTTP client and no TLS library — the README's claim is unchanged and
+    // stays checkable with `cargo tree`.
+    if has_scheme(&url) {
+        return open_external(app, &url);
     }
     // A piped document has no path; the sentinel's parent is the empty
     // path, so relative targets resolve against the working directory, and
@@ -4339,20 +4502,204 @@ mod tests {
         assert_eq!(f.rows[0].label.as_deref(), Some("local"));
     }
 
+    /// Was `opening_an_external_forward_link_says_so_and_fetches_nothing`,
+    /// which asserted the note "external — carrel does not fetch". The
+    /// destination now opens; what has NOT changed, and is what the old name
+    /// was really guarding, is that carrel still fetches nothing — the URL
+    /// leaves through the outbox and no byte of it is ever read back.
     #[test]
-    fn opening_an_external_forward_link_says_so_and_fetches_nothing() {
+    fn opening_an_external_forward_link_hands_it_to_the_browser_and_fetches_nothing() {
         let src = "see [that](https://example.com/elsewhere)\n";
         let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
         update(&mut a, Action::ForwardToggle);
         assert_eq!(update(&mut a, Action::ForwardOpen), Outcome::Redraw);
-        assert!(
-            a.note
-                .as_deref()
-                .is_some_and(|n| n.contains("does not fetch")),
-            "{:?}",
-            a.note
+        assert_eq!(
+            a.open_url.take().as_deref(),
+            Some("https://example.com/elsewhere")
         );
+        assert_eq!(a.note.as_deref(), Some("opened in your browser"));
         assert!(a.forward.is_some(), "the pane stays open");
+    }
+
+    /// The allowlist, item by item.
+    ///
+    /// Written before the opener existed and watched to fail: this is the
+    /// only thing standing between a document carrel did not write and the
+    /// desktop's handler table, so it is tested as a table rather than by
+    /// example.
+    #[test]
+    fn only_http_https_and_mailto_are_openable() {
+        for ok in [
+            "http://example.com",
+            "https://example.com/a/b?c=d#e",
+            "HTTPS://EXAMPLE.COM",
+            "mailto:someone@example.com",
+        ] {
+            assert_eq!(openable_url(ok), Some(ok), "{ok} should open");
+        }
+        for no in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<script>x</script>",
+            "ssh://host",
+            "vscode://file/etc/passwd",
+            "//example.com",             // scheme-relative: no scheme at all
+            "https:",                    // no host
+            "https://",                  // still no host
+            "mailto:",                   // no address
+            "notes/architecture.md",     // a local path is not a URL
+            "http://exa mple.com",       // whitespace never survives argv
+            "https://example.com/\u{7}", // a control character, ever
+        ] {
+            assert_eq!(openable_url(no), None, "{no:?} must not open");
+        }
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL));
+        assert_eq!(openable_url(&long), None, "past the cap");
+    }
+
+    #[test]
+    fn following_an_external_link_fills_the_browser_outbox() {
+        let src = "see [that](https://example.com/x)\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
+        update(&mut a, Action::LinkStep(1));
+        assert_eq!(update(&mut a, Action::LinkFollow), Outcome::Redraw);
+        assert_eq!(a.open_url.take().as_deref(), Some("https://example.com/x"));
+        assert_eq!(a.note.as_deref(), Some("opened in your browser"));
+    }
+
+    /// A refusal must be a refusal, not a fallback to "treat it as a path".
+    #[test]
+    fn a_refused_scheme_opens_nothing_and_says_so() {
+        let src = "see [that](javascript:alert(1))\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow);
+        assert!(a.open_url.is_none(), "nothing may reach the outbox");
+        assert_eq!(
+            a.note.as_deref(),
+            Some("carrel opens http, https and mailto links only")
+        );
+    }
+
+    /// The click does in one intent what Tab-then-Enter does in two.
+    #[test]
+    fn clicking_a_link_opens_it_without_selecting_it_first() {
+        let src = "one [a](https://example.com/a) two [b](https://example.com/b)\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 60, 10);
+        assert!(a.selected_link.is_none(), "nothing selected yet");
+        assert_eq!(update(&mut a, Action::LinkOpen(1)), Outcome::Redraw);
+        assert_eq!(a.open_url.take().as_deref(), Some("https://example.com/b"));
+    }
+
+    /// A target from a frame that no longer describes the document — the
+    /// reload race — must be inert rather than panicking on an index.
+    #[test]
+    fn link_open_past_the_end_is_inert() {
+        let src = "one [a](https://example.com/a)\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
+        assert_eq!(update(&mut a, Action::LinkOpen(99)), Outcome::Idle);
+        assert!(a.open_url.is_none());
+    }
+
+    /// The marker and the words beside it must fold the same thing, or the
+    /// glyph is lying about what it does.
+    #[test]
+    fn the_fold_marker_folds_exactly_what_the_heading_row_folds() {
+        let src = "# One\n\nbody\n\n# Two\n\nmore\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 20);
+        let head = a.doc.node_for_block(carrel_core::BlockIdx(0)).doc.start;
+
+        assert_eq!(update(&mut a, Action::FoldAt(head)), Outcome::Redraw);
+        let folded_by_marker: Vec<_> = a.folded.iter().copied().collect();
+        assert_eq!(folded_by_marker.len(), 1, "one section folded");
+
+        // The same byte through the click-on-the-row path.
+        update(&mut a, Action::FoldAt(head));
+        assert!(a.folded.is_empty(), "and the same byte unfolds it again");
+    }
+
+    #[test]
+    fn a_fold_marker_click_on_nothing_foldable_is_inert() {
+        let src = "just a paragraph\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
+        assert_eq!(update(&mut a, Action::FoldAt(2)), Outcome::Idle);
+    }
+
+    /// A click in a pane already said which row it meant, so it selects and
+    /// opens in one gesture — and it must open the row the pointer was on,
+    /// not the row the keyboard cursor happened to be resting on.
+    #[test]
+    fn clicking_an_outline_row_jumps_to_that_row_not_the_selected_one() {
+        // Tall sections, and a short window: on a document that fits the
+        // screen the view cannot move, and "did it jump?" has no answer.
+        let filler = "para\n\n".repeat(20);
+        let src = format!("# Alpha\n\n{filler}# Beta\n\n{filler}# Gamma\n\n{filler}");
+        let mut a = App::new("f.md".into(), Document::parse(&src), 60, 8);
+        update(&mut a, Action::OutlineToggle);
+        assert_eq!(a.outline.as_ref().unwrap().selected, 0, "cursor on Alpha");
+
+        assert_eq!(update(&mut a, Action::OutlineJumpAt(2)), Outcome::Redraw);
+        assert!(a.outline.is_none(), "the picker closes on a jump");
+        let landed = a.doc.block_at_doc(carrel_core::DocByte(a.view.anchor));
+        let text = a.doc.block_text(landed);
+        assert!(text.contains("Gamma"), "landed on {text:?}, not Gamma");
+    }
+
+    #[test]
+    fn clicking_a_bookmark_row_jumps_to_that_bookmark() {
+        // Tall enough that `GoToEnd` actually moves: on a document that fits
+        // the window the second toggle would land on the first mark and
+        // REMOVE it, leaving nothing to click.
+        let body = "para\n\n".repeat(40);
+        let src = format!("# One\n\n{body}# Two\n\nlast\n");
+        let mut a = App::new("f.md".into(), Document::parse(&src), 60, 8);
+        update(&mut a, Action::MarkToggle); // mark the top
+        update(&mut a, Action::GoToEnd);
+        update(&mut a, Action::MarkToggle); // and the end
+        update(&mut a, Action::MarkListToggle);
+        assert_eq!(a.marks.len(), 2);
+
+        assert_eq!(update(&mut a, Action::MarkListJumpAt(1)), Outcome::Redraw);
+        assert_eq!(a.view.anchor, a.marks[1], "landed on the row clicked");
+        assert!(a.mark_list.is_none(), "the list closes behind it");
+    }
+
+    /// A target left over from a frame that no longer describes the pane —
+    /// the row vanished, the list refiltered — must be inert, never a panic
+    /// and never the wrong row.
+    #[test]
+    fn a_pane_row_click_past_the_end_is_inert() {
+        let src = "# One\n\nbody\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 60, 20);
+        update(&mut a, Action::OutlineToggle);
+        assert_eq!(update(&mut a, Action::OutlineJumpAt(99)), Outcome::Idle);
+        assert!(a.outline.is_some(), "and the picker stays open");
+
+        assert_eq!(update(&mut a, Action::MarkListJumpAt(0)), Outcome::Idle);
+        assert_eq!(update(&mut a, Action::BacklinksOpenAt(0)), Outcome::Idle);
+        assert_eq!(update(&mut a, Action::ForwardOpenAt(0)), Outcome::Idle);
+    }
+
+    #[test]
+    fn clicking_a_forward_link_row_opens_that_row() {
+        let src = "see [a](https://example.com/a) and [b](https://example.com/b)\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 60, 20);
+        update(&mut a, Action::ForwardToggle);
+        assert_eq!(a.forward.as_ref().unwrap().rows.len(), 2);
+
+        assert_eq!(update(&mut a, Action::ForwardOpenAt(1)), Outcome::Redraw);
+        assert_eq!(a.open_url.take().as_deref(), Some("https://example.com/b"));
+    }
+
+    /// A click a pane swallowed changes nothing at all.
+    #[test]
+    fn an_absorbed_click_does_nothing() {
+        let src = "# One\n\nbody\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 60, 20);
+        let before = a.view.anchor;
+        assert_eq!(update(&mut a, Action::Absorb), Outcome::Idle);
+        assert_eq!(a.view.anchor, before);
+        assert!(a.selection.is_none(), "and starts no selection");
     }
 
     #[test]

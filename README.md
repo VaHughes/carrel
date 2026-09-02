@@ -68,7 +68,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 | **A comfortable measure** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, foldable, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
-| **Clickable links** | Real OSC 8 hyperlinks, with graceful degradation. |
+| **Clickable links** | Click a link to open it: a markdown file beside it opens in the reader, an `http`, `https` or `mailto` address opens in your browser. Real OSC 8 hyperlinks too, with graceful degradation. Carrel still fetches nothing — it hands the address to your desktop and reads no reply — and nothing outside those three schemes opens at all. |
 | **Correct emoji and wide characters** | Measured per grapheme cluster, never per codepoint. |
 | **Complete markdown** | CommonMark + GFM, footnotes, tables, definition lists, frontmatter, and LaTeX math as terminal box art. Every claim here is [a test](https://github.com/VaHughes/carrel/blob/main/crates/carrel/tests/conformance.rs). |
 | **A GUI, eventually** | Planned and designed for, **not yet built.** So that people who don't use terminals can read markdown too. |
@@ -178,6 +178,7 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 | `titles` | `false` | Show each document's own title — `title:` from frontmatter, else its first heading — instead of its file name. Falls back to the name for a file that has neither. |
 | `outline_margin` | `false` | The section tree pinned in the left margin, current section lit, on terminals wide enough to spare the columns. Click a heading to jump. Off by default because it moves the text column. |
 | `breadcrumb` | `true` | The section path pinned atop the page while you scroll — `The Book ▸ Chapter ▸ Detail` — with a rule under it. `B` toggles it. Documents with no headings never show one. |
+| `mouse` | `true` | Capture the mouse, so clicks reach carrel rather than the terminal. Set `false` — or pass `--no-mouse` for one run — to hand the pointer back, and your terminal's own selection, scrollback and context menu work as they do anywhere else. Every action stays reachable from the keyboard either way. |
 | `root` | — | The directory the home screen lists. `d` picks one in the app. |
 | `place` | — | A remembered favourite root. `d` opens on the working directory; one `Esc` clears that input and the places are what it offers instead. This key repeats, newest first, capped at eight; choosing a root with `d` records it. |
 

@@ -2,6 +2,55 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## 2026.9.2
+
+The first step of the click-first pivot: carrel is meant for people who arrived
+at the terminal because an AI agent lives there and now need to read what it
+wrote. They click. So links open when you click them, and the machinery every
+later clickable surface will need is in place underneath.
+
+### Things that behave differently
+
+- **Click a link to open it.** Anywhere it is painted, selected or not. A
+  markdown file beside it opens in the reader; an `http`, `https` or `mailto`
+  address **opens in your browser**. This reverses an older position — external
+  links used to be named and left to the terminal's own OSC 8 handling, which
+  told you to click something carrel was not making clickable, and offered
+  "copy it" when your terminal had no OSC 8. The `l` pane opens external
+  destinations the same way now.
+  **Carrel still fetches nothing.** It hands the address to your desktop and
+  reads no reply; it depends on no HTTP client and no TLS library, and
+  `cargo tree` is still how you check that rather than taking our word for it.
+  Nothing outside those three schemes opens at all — a `file:`, `javascript:`
+  or `data:` destination is refused by name, whatever your desktop's handler
+  table would have made of it. These documents are often written by an agent
+  out of pages nobody read, so the allowlist is the boundary, and the browser's
+  own sandbox is the rest of it. (Local links that leave your library still ask
+  for a second Enter, exactly as they did in 2026.9.1.)
+- **The fold markers are buttons.** The `▸` / `▾` in the left margin folds and
+  unfolds what a click on the heading beside it folds. It always looked like a
+  button; now it is one.
+- **A click in a pane opens the row under the pointer** — the outline, the
+  bookmark list, and both link panes — rather than the row the keyboard cursor
+  happened to be resting on. And an open pane now takes every click inside it:
+  clicking one used to start a text selection in the document behind it.
+- **`--no-mouse`, and `mouse = false` in the config file.** Carrel captures the
+  pointer by default, which is what stops your terminal's own selection and
+  context menu from working. This hands it back. Every action stays reachable
+  from the keyboard, and the flag wins over the config key for one run.
+
+### Under it
+
+- A click-target registry: the painter records where it put a thing, and the
+  event loop reads that back, instead of a hit-test re-deriving geometry the
+  painter already computed. Continuous surfaces — the text body, the scrollbar
+  thumb — keep the geometry-function-and-its-inverse they already had, which is
+  right for them. One `TestBackend` round-trip now guards every registered
+  target at once, and every clickable surface added later inherits it.
+- Moving the pointer no longer repaints the whole screen once per cell crossed.
+  Mouse capture asks the terminal to report every motion, and carrel was
+  drawing a full frame, plus its two synchronized-update escapes, for each one.
+
 ## 2026.9.1
 
 An adversarial audit of the whole tree — every module read line by line, then
