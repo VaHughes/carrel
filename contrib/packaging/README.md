@@ -1,6 +1,6 @@
 # Packaging templates
 
-**All five recipes are stamped for v2026.9.1**, and `scripts/check-packaging.sh` now
+**All five recipes are stamped for v2026.9.3**, and `scripts/check-packaging.sh` now
 asserts every one of them against `[workspace.package] version` in `Cargo.toml`.
 `carrel-package.nix` had not been touched since the commit that added it, and six stamp
 commits walked straight past it: the only version check here compared `.SRCINFO` to its own

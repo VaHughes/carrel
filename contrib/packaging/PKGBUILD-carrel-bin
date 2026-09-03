@@ -8,7 +8,7 @@
 # Publishing still waits on AUR account registration reopening.
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel-bin
-pkgver=2026.9.1
+pkgver=2026.9.3
 pkgrel=1
 pkgdesc="A quiet place to read your markdown — a terminal markdown reader (prebuilt)"
 arch=('x86_64' 'aarch64')

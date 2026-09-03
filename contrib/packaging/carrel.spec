@@ -2,7 +2,7 @@
 # .src.rpm and so needs rpmbuild locally. The exact command is in ../packaging/README.md.
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.9.1
+Version:        2026.9.3
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -58,6 +58,18 @@ cargo test --locked --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Thu Sep 03 2026 Joshua Hughes <hughes238@gmail.com> - 2026.9.3-1
+- Click-first: links, headings, fold markers, pane rows, the home list
+  and the path row above it are all clickable
+- Footer hints are buttons, painted as chips; the status row has a
+  home icon and a menu launcher
+- Right-click opens a context menu for what is under the pointer, or
+  the global menu anywhere else; every menu row shows its key
+- What the pointer is over lights up; a one-line hint on the first run
+- A clicked URL is copied to the clipboard, never opened
+- --no-mouse flag and mouse = false config key hand the pointer back
+- Four click-reachable bugs fixed: scrollbar and margin hit-tests
+  bounded, pane keys consistent between entry points, double-click slack
 * Tue Sep 01 2026 Joshua Hughes <hughes238@gmail.com> - 2026.9.1-1
 - An adversarial audit of the whole tree: hostile documents, malformed
   input, signals and a real pty, with a regression test for every fix
