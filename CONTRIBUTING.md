@@ -72,6 +72,16 @@ caveats (`cargo clean`, and debug-build speed).
   the text storage (`String`, no rope), the highlighter (syntect), and the one-coordinate-space
   rule were each researched at length. Open an issue with the new evidence before a PR that
   re-litigates one.
+- **A new clickable thing registers itself; it is never re-derived.** Carrel is click-first,
+  and the rule that keeps paint and hit-testing honest is: *if a thing's position depends only
+  on `(cols, rows, flags)`, invert the geometry function that placed it; if it depends on the
+  data being drawn, have the paint pass record its rectangle.* The second kind goes into the
+  per-frame target registry (`Targets` in `action.rs`), pushed by the code that paints it, and
+  is covered automatically by `every_registered_target_covers_the_thing_it_acts_on`. Re-deriving
+  a position in the hit-test is how a click lands one cell off its glyph, and no frame test can
+  see that — it has already happened here once, thirteen columns wide.
+- **A new gesture goes in the man page.** `contrib/carrel.1`'s `.SS Mouse` section is checked
+  against the help overlay by `tests/pty.rs`, and the list of exemptions is empty on purpose.
 - **Specs and changelogs are part of the change.** Behaviour changes update `CHANGELOG.md`;
   design-level changes get a short design doc reviewed in the PR.
 

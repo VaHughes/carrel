@@ -65,6 +65,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 | | |
 |---|---|
 | **Search that survives reflow and resize** | Matches are byte offsets into the document, so the match set is bit-for-bit identical at any width and a highlight follows its text across a rewrap. Most readers lose or shift matches when the window resizes; carrel can't, by construction. The headline feature and the hardest part. |
+| **Everything worth doing is clickable** | Links, headings, fold markers, the outline, the panes, the hint row along the bottom — click them. Carrel is built for people whose way into the terminal was an AI coding agent and who now have a `PLAN.md` to read; they should not have to learn `zR` first. Every key still works, and `--no-mouse` hands the pointer back. |
 | **A comfortable measure** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, foldable, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
@@ -163,6 +164,25 @@ git config core.pager carrel     # and then every git command that pages
 
 A `.md` file is **never** read as a diff, whatever it contains — so a document *about*
 diffs stays a document. `--diff` forces the reading, `--no-diff` refuses it.
+
+## Using the mouse
+
+Carrel captures the mouse, so clicks reach it rather than your terminal. What that buys:
+
+| | |
+|---|---|
+| **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. |
+| **A heading, or a `▸` / `▾` in the margin** | Folds and unfolds that section, or that `<details>` block. |
+| **The hint row along the bottom** | Every hint is a button — `spc page`, `/ search`, `o outline`, `h more`. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
+| **A row in a pane** | The outline, the bookmark list and both link panes open the row under the pointer. |
+| **The margin outline** | Click a section to jump to it. |
+| **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
+| **The scrollbar** | Drag the thumb, or click the track to page toward the pointer. The wheel scrolls, and gathers speed if you keep spinning it. |
+
+The trade is that your terminal's own text selection stops working while carrel has the
+pointer. Most terminals let you **hold Shift** to bypass that and select as usual; if
+yours doesn't, or you would rather not, `--no-mouse` (or `mouse = false` in the config)
+gives the pointer back for good. Nothing becomes unreachable — every action has a key.
 
 ## Configuration
 
@@ -264,6 +284,15 @@ dependency, emits semantic scopes rather than ANSI, and exposes no width-depende
 project surveyed during research that planned a second frontend for "later" never got one, so
 those constraints are treated as load-bearing rather than aspirational.
 
+Clicks go through the same seam. Keys and pointer events both become values of one shared
+`Action` enum before anything downstream sees them, so the state machine has never heard of
+either — which is what lets a second frontend produce the same intents from menu items and
+`GtkEventControllerKey`. For chrome whose position depends on what is being drawn (the hint
+row elides right to left as the terminal narrows), the paint pass **records** where it put
+each thing and the event loop reads that back, rather than a hit-test re-deriving geometry
+the painter already computed. Re-derivation is how a click ends up one cell off its glyph,
+which no frame test can see.
+
 Everything follows from a single invariant:
 
 > There is exactly one authoritative coordinate space: a byte offset into a flattened, unwrapped
@@ -307,6 +336,8 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Follow mode for a growing pipe; copy a code block with `y`
 - [x] Continue reading, bookmarks, backlinks, the outline in the margin
 - [x] Packaging: Homebrew, Fedora COPR, the shell installer, crates.io
+- [x] Click-first: links, fold markers, pane rows and the whole hint row are buttons,
+      on a click-target registry the paint pass fills; `--no-mouse` gives the pointer back
 - [ ] Marginalia — highlights and notes made while reading, stored in the state directory
       and never in the document; anchored on byte offsets, so they survive a resize by
       construction, re-finding themselves after an edit by the quoted text; walked like
