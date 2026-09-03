@@ -50,6 +50,15 @@ every later clickable surface will need is in place underneath.
   through the real dispatcher and asserts it produces exactly the action
   clicking it would: the footer cannot advertise one thing to the keyboard and
   do another to the mouse.
+  **And they look like buttons now.** Each hint is a chip — the status bar's
+  own surface under the key and its label, a cell of padding either side, a
+  bare cell between one chip and the next — rather than a phrase strung
+  between `░` caps with `·` dots. The old row read as a sentence with keys in
+  it, and nothing about a sentence says "click me"; a strip of raised chips
+  does. A hint that names no key (the first-run `click anything`) is still a
+  sentence and still paints as one. The padding is part of the button, so a
+  click on a chip's edge lands. No new colour: under `NO_COLOR` the chips
+  come out reversed, which is what a button looks like in monochrome.
 
 - **Menus, and an `≡` to open one.** **Right-click in the document** and you
   get a menu for whatever is under the pointer: a heading offers to fold its

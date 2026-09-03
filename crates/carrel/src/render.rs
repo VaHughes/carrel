@@ -1916,11 +1916,21 @@ fn put(buf: &mut ratatui::buffer::Buffer, x: &mut u16, y: u16, right: u16, s: &s
     *x += carrel_core::display_width(s);
 }
 
-/// The lamplight row: `╭● word  ░ key label · key label ░` — the footer spec
-/// §1/§4. Trims WHOLE hints right-to-left (a pinned trailing `h` hint
-/// survives longest), then the `░` caps, then the mode word — never a cut
-/// inside a hint. Colours are theme slots only: lamp for the bulb and keys,
-/// wordmark for the mode word, dim for labels and furniture.
+/// The lamplight row: `╭● word   key label   key label ` — the footer spec
+/// §1/§4, with every hint painted as a button rather than as a phrase.
+///
+/// A hint that names a key is a **chip**: one cell of padding either side,
+/// the status bar's surface under it, the key lit. Chips sit one bare cell
+/// apart, so the row reads as a strip of buttons and not as a sentence with
+/// keys in it — which is what `░ j/k scroll · spc page ░` was, and what the
+/// reader this design is for (spec §1) could not tell was clickable. A hint
+/// with no key (`click anything`) is a sentence and paints as one, in dim.
+///
+/// Elision trims WHOLE hints right-to-left (a pinned trailing `h` hint
+/// survives longest), then the chips' padding, then the mode word — never a
+/// cut inside a hint. Colours are theme slots only: lamp for the bulb,
+/// wordmark for the mode word, `button`/`button_key` for the chips, dim for
+/// a sentence.
 fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets) {
     use carrel_core::display_width;
     let f = crate::footer::of(app);
@@ -1935,31 +1945,40 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
             f.hints[..keep].to_vec()
         }
     };
-    let width_of = |keep: usize, caps: bool, word: bool| -> usize {
+    let is_chip = |h: &crate::keys::Hint| h.click.is_some();
+    // The gap before a hint: two sentences keep their ` · `; anything next to
+    // a chip gets the one bare cell that separates one button from the next.
+    let gap = |prev: &crate::keys::Hint, h: &crate::keys::Hint| -> usize {
+        if is_chip(prev) || is_chip(h) { 1 } else { 3 }
+    };
+    let width_of = |keep: usize, pad: bool, word: bool| -> usize {
         let mut n = 2; // ╭●
         if word {
             n += 1 + display_width(f.word) as usize;
         }
         let hints = shown(keep);
         if !hints.is_empty() {
-            n += 2 + if caps { 4 } else { 0 }; // "  " then "░ " … " ░"
+            n += 2;
             for (i, h) in hints.iter().enumerate() {
                 if i > 0 {
-                    n += 3; // " · "
+                    n += gap(&hints[i - 1], h);
                 }
                 n += display_width(h.key) as usize + 1 + display_width(h.label) as usize;
+                if pad && is_chip(h) {
+                    n += 2;
+                }
             }
         }
         n
     };
-    let (mut keep, mut caps, mut word) = (f.hints.len(), true, true);
-    while keep > 0 && width_of(keep, caps, word) > w {
+    let (mut keep, mut pad, mut word) = (f.hints.len(), true, true);
+    while keep > 0 && width_of(keep, pad, word) > w {
         keep -= 1;
     }
-    if width_of(keep, caps, word) > w {
-        caps = false;
+    if width_of(keep, pad, word) > w {
+        pad = false;
     }
-    if width_of(keep, caps, word) > w {
+    if width_of(keep, pad, word) > w {
         word = false;
     }
     let hints = shown(keep);
@@ -1983,31 +2002,42 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     }
     if !hints.is_empty() {
         put(buf, &mut x, area.y, right, "  ", Style::default());
-        if caps {
-            put(buf, &mut x, area.y, right, "░ ", theme::dim());
-        }
         for (i, h) in hints.iter().enumerate() {
             if i > 0 {
-                put(buf, &mut x, area.y, right, " · ", theme::dim());
+                let sep = if gap(&hints[i - 1], h) == 1 {
+                    " "
+                } else {
+                    " · "
+                };
+                put(buf, &mut x, area.y, right, sep, theme::dim());
             }
+            let Some(action) = h.click else {
+                // A sentence, not a button: no surface, no zone.
+                put(buf, &mut x, area.y, right, h.key, theme::lamp());
+                put(buf, &mut x, area.y, right, " ", Style::default());
+                put(buf, &mut x, area.y, right, h.label, theme::dim());
+                continue;
+            };
             // The zone is recorded BY the walk that paints it. Re-deriving
             // where a hint landed would mean reimplementing the elision
             // ladder above, backwards — which is the whole argument for a
-            // registry rather than an inverse.
+            // registry rather than an inverse. The padding is part of the
+            // button: a click on a chip's edge is a click on the chip.
             let from = x;
-            put(buf, &mut x, area.y, right, h.key, theme::lamp());
-            put(buf, &mut x, area.y, right, " ", Style::default());
-            put(buf, &mut x, area.y, right, h.label, theme::dim());
-            if let Some(action) = h.click {
-                targets.push(
-                    action,
-                    Zone::new(from, area.y, x.saturating_sub(from), 1),
-                    Z_CHROME,
-                );
+            if pad {
+                put(buf, &mut x, area.y, right, " ", theme::button());
             }
-        }
-        if caps {
-            put(buf, &mut x, area.y, right, " ░", theme::dim());
+            put(buf, &mut x, area.y, right, h.key, theme::button_key());
+            put(buf, &mut x, area.y, right, " ", theme::button());
+            put(buf, &mut x, area.y, right, h.label, theme::button());
+            if pad {
+                put(buf, &mut x, area.y, right, " ", theme::button());
+            }
+            targets.push(
+                action,
+                Zone::new(from, area.y, x.saturating_sub(from), 1),
+                Z_CHROME,
+            );
         }
     }
 }
@@ -3145,6 +3175,70 @@ mod tests {
         let buf = frame_of("# T\n\nbody", 60, 12);
         assert_eq!(buf[(1, 11)].style().fg, theme::lamp().fg, "the bulb");
         assert_eq!(buf[(3, 11)].style().fg, theme::wordmark().fg, "the word");
+    }
+
+    /// Each hint is a chip: the status bar's surface under key, label and
+    /// one cell of padding either side, with a bare cell between chips. That
+    /// bare cell is what makes them read as separate buttons rather than as
+    /// one long bar, so it is asserted as hard as the surface is.
+    #[test]
+    fn every_footer_hint_is_a_chip_on_the_status_surface() {
+        let buf = frame_of("# T\n\nbody text here", 60, 12);
+        let foot = line(&buf, 11);
+        let at = foot.find(" j/k scroll ").expect("the first chip");
+        let at = u16::try_from(foot[..at].chars().count()).unwrap();
+        let bg = theme::button().bg;
+        assert!(bg.is_some(), "a button has a surface");
+        for dx in 0..12 {
+            assert_eq!(
+                buf[(at + dx, 11)].style().bg,
+                bg,
+                "column {dx} of the chip carries the surface: {foot:?}"
+            );
+        }
+        assert_eq!(
+            buf[(at + 1, 11)].style().fg,
+            theme::button_key().fg,
+            "the key is lit"
+        );
+        assert_ne!(
+            buf[(at - 1, 11)].style().bg,
+            bg,
+            "the cell before the chip is bare"
+        );
+        assert_ne!(
+            buf[(at + 12, 11)].style().bg,
+            bg,
+            "the cell between two chips is bare"
+        );
+        assert_eq!(
+            buf[(at + 13, 11)].style().bg,
+            bg,
+            "and the next chip starts right after it"
+        );
+        assert!(
+            !foot.contains('░') && !foot.contains(" · "),
+            "no sentence furniture: {foot:?}"
+        );
+    }
+
+    /// A hint that names no key is a sentence and must not wear a button's
+    /// surface — otherwise the first-run line offers two buttons that do
+    /// nothing when clicked.
+    #[test]
+    fn a_hint_without_a_key_is_a_sentence_not_a_chip() {
+        let mut app = App::new("t.md".into(), Document::parse("# T\n\nbody"), 60, 12);
+        app.first_run = true;
+        let buf = buffer_of(&app, 60, 12);
+        let foot = line(&buf, 11);
+        assert!(
+            foot.contains("click anything · right-click for a menu"),
+            "{foot:?}"
+        );
+        let bg = theme::button().bg;
+        for x in 0..60 {
+            assert_ne!(buf[(x, 11)].style().bg, bg, "column {x} of {foot:?}");
+        }
     }
 
     #[test]

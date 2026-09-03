@@ -176,7 +176,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 | **Right-click** | A menu for whatever is under the pointer — fold this section, copy this code block, open or copy this link, cards or wrapped for this table. Right-click anywhere else, or click the **`≡`** at the end of the status row, and you get the global menu instead. Every row shows the key that does the same thing. |
 | **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. |
 | **A heading, or a `▸` / `▾` in the margin** | Folds and unfolds that section, or that `<details>` block. |
-| **The hint row along the bottom** | Every hint is a button — `spc page`, `/ search`, `o outline`, `h more`. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
+| **The hint row along the bottom** | Every hint is a button and looks like one — `spc page`, `/ search`, `o outline`, `h more`, each a chip on the status bar's surface. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
 | **A row in a pane** | The outline, the bookmark list and both link panes open the row under the pointer. |
 | **The margin outline** | Click a section to jump to it. |
 | **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |

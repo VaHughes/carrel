@@ -598,7 +598,8 @@ fn every_footer_button_covers_its_own_hint() {
             .collect()
     };
 
-    // The reading footer: `j/k scroll · spc page · / search · o outline · h more`
+    // The reading footer: ` j/k scroll   spc page   / search   o outline   h more `
+    // — each hint a padded chip, and the padding is part of the button.
     let mut seen = Vec::new();
     for t in painted.targets.as_slice() {
         // Only the footer row, so document link targets stay out of it.
@@ -618,11 +619,11 @@ fn every_footer_button_covers_its_own_hint() {
             |(text, _)| text.clone(),
         )
     };
-    assert_eq!(find(Action::OutlineToggle), "o outline");
-    assert_eq!(find(Action::HelpToggle), "h more");
+    assert_eq!(find(Action::OutlineToggle), " o outline ");
+    assert_eq!(find(Action::HelpToggle), " h more ");
     assert_eq!(
         find(Action::SearchOpen(carrel::action::Direction::Forward)),
-        "/ search"
+        " / search "
     );
     // The lamp is a painted thing that registers like one, rather than the
     // hardcoded "bottom row, first three cells" the event loop used to carry.

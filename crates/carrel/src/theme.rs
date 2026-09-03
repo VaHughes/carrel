@@ -973,6 +973,31 @@ pub fn lamp() -> Style {
     tinted(Style::default().fg(active().sel))
 }
 
+/// A footer button's face. The status bar's own surface, so a chip on the
+/// bottom row reads as a piece of the chrome lifted off the page rather than
+/// as a new colour — and so it costs no new slot in seventeen palettes. The
+/// row it sits on is the terminal's base background, which is what makes
+/// each chip a visible rectangle; under `NO_COLOR` the background becomes
+/// `REVERSED` through [`tinted`] and the chips stay chips.
+#[must_use]
+pub fn button() -> Style {
+    status()
+}
+
+/// The key on a footer button: the lamp's amber on the button's surface,
+/// bold, so the one thing the reader has to type stands out of the label
+/// beside it the way it did when the row was a sentence.
+#[must_use]
+pub fn button_key() -> Style {
+    let p = active();
+    tinted(
+        Style::default()
+            .fg(p.sel)
+            .bg(p.status_bg)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
 /// The tagline and other quiet secondary text.
 #[must_use]
 pub fn dim() -> Style {
