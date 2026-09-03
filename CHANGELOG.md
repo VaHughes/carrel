@@ -36,6 +36,21 @@ every later clickable surface will need is in place underneath.
   context menu from working. This hands it back. Every action stays reachable
   from the keyboard, and the flag wins over the config key for one run.
 
+- **The footer is a row of buttons.** Every hint along the bottom — `spc page`,
+  `/ search`, `o outline`, `h more`, and the rest, whichever set the current
+  state is showing — does its thing when you click it. So do `T theme` and
+  `q quit` in the status row, which have been painted as words for a while on
+  the grounds that a key nobody can see is a feature nobody has. The lamp was
+  already clickable and still is; it just stopped being a hardcoded rule about
+  the bottom-left three cells and became a painted thing that registers like
+  every other.
+  A hint's click does what its **first** key does, so `j/k` scrolls down and
+  `n/N` goes to the next match. A row that names no key — `type` — is a
+  sentence, not a button, and stays inert. A test presses each hint's key
+  through the real dispatcher and asserts it produces exactly the action
+  clicking it would: the footer cannot advertise one thing to the keyboard and
+  do another to the mouse.
+
 ### Four things that were quietly wrong
 
 Clicking exposed these; they were harmless only because so little was

@@ -425,53 +425,111 @@ pub const HOME_HELP: &[(&str, &str)] = &[
 /// Same shape as the help tables. `("type", …)` entries are prose, exempt
 /// from the honesty test's probe; every other key is fed back through the
 /// real dispatcher, so a hinted key that would be inert fails the build.
-pub const HINT_READING: &[(&str, &str)] = &[
-    ("j/k", "scroll"),
-    ("spc", "page"),
-    ("/", "search"),
-    ("o", "outline"),
-    ("h", "more"),
+/// One footer hint: the key, what it does, and what a CLICK on it does.
+///
+/// The third column is what makes the footer a row of buttons rather than a
+/// row of advice. **A hint's click does what its FIRST key does** — `j/k`
+/// scrolls down, `n/N` goes to the next match — because the first key listed
+/// is the forward one, and a button has to pick. `click: None` is for a row
+/// that names no key at all: `("type", "narrow")` is a sentence, not a button.
+///
+/// `every_footer_hint_key_acts_in_its_own_state` presses the key through the
+/// real dispatcher and asserts it produces exactly this action, so the two
+/// columns cannot drift apart.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Hint {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub click: Option<Action>,
+}
+
+const fn hint(key: &'static str, label: &'static str, click: Action) -> Hint {
+    Hint {
+        key,
+        label,
+        click: Some(click),
+    }
+}
+
+/// A hint that is prose: it names no key, so there is nothing to click.
+const fn says(key: &'static str, label: &'static str) -> Hint {
+    Hint {
+        key,
+        label,
+        click: None,
+    }
+}
+
+pub const HINT_READING: &[Hint] = &[
+    hint("j/k", "scroll", Action::Scroll(Span::Line, 1)),
+    hint("spc", "page", Action::Scroll(Span::Page, 1)),
+    hint("/", "search", Action::SearchOpen(Direction::Forward)),
+    hint("o", "outline", Action::OutlineToggle),
+    hint("h", "more", Action::HelpToggle),
 ];
-pub const HINT_SEARCH_TYPING: &[(&str, &str)] = &[("enter", "jump"), ("esc", "cancel")];
-pub const HINT_STREAMING: &[(&str, &str)] = &[
-    ("j/k", "scroll"),
-    ("F", "follow the end"),
-    ("y", "copy block"),
-    ("h", "more"),
+pub const HINT_SEARCH_TYPING: &[Hint] = &[
+    hint("enter", "jump", Action::SearchKey(SearchKey::Accept)),
+    hint("esc", "cancel", Action::SearchKey(SearchKey::Cancel)),
 ];
-pub const HINT_FOLLOWING: &[(&str, &str)] = &[
-    ("F", "stop"),
-    ("k", "detach"),
-    ("y", "copy block"),
-    ("h", "more"),
+pub const HINT_STREAMING: &[Hint] = &[
+    hint("j/k", "scroll", Action::Scroll(Span::Line, 1)),
+    hint("F", "follow the end", Action::FollowToggle),
+    hint("y", "copy block", Action::YankBlock),
+    hint("h", "more", Action::HelpToggle),
 ];
-pub const HINT_MATCHES: &[(&str, &str)] =
-    &[("n/N", "next/prev"), ("zz", "center"), ("esc", "clear")];
-pub const HINT_LINK: &[(&str, &str)] = &[("tab", "next"), ("enter", "follow"), ("esc", "clear")];
-pub const HINT_OUTLINE: &[(&str, &str)] = &[("type", "narrow"), ("enter", "go"), ("esc", "back")];
-pub const HINT_HELP: &[(&str, &str)] = &[("j/k", "scroll"), ("esc", "close")];
-pub const HINT_HOME_BROWSE: &[(&str, &str)] = &[
-    ("j/k", "move"),
-    ("enter", "open"),
-    ("d", "directory"),
-    ("i", "filter"),
-    ("/", "search"),
-    ("h", "more"),
+pub const HINT_FOLLOWING: &[Hint] = &[
+    hint("F", "stop", Action::FollowToggle),
+    hint("k", "detach", Action::Scroll(Span::Line, -1)),
+    hint("y", "copy block", Action::YankBlock),
+    hint("h", "more", Action::HelpToggle),
 ];
-pub const HINT_HOME_FILTER: &[(&str, &str)] =
-    &[("type", "narrow"), ("enter", "open"), ("esc", "back")];
-pub const HINT_HOME_SEARCH: &[(&str, &str)] =
-    &[("type", "query"), ("enter", "open first"), ("esc", "back")];
-pub const HINT_HOME_PICKER: &[(&str, &str)] = &[
-    ("type", "a path"),
+pub const HINT_MATCHES: &[Hint] = &[
+    hint("n/N", "next/prev", Action::MatchStep(1)),
+    hint("zz", "center", Action::Recenter(Where::Middle)),
+    hint("esc", "clear", Action::Dismiss),
+];
+pub const HINT_LINK: &[Hint] = &[
+    hint("tab", "next", Action::LinkStep(1)),
+    hint("enter", "follow", Action::LinkFollow),
+    hint("esc", "clear", Action::Dismiss),
+];
+pub const HINT_OUTLINE: &[Hint] = &[
+    says("type", "narrow"),
+    hint("enter", "go", Action::OutlineJump),
+    hint("esc", "back", Action::OutlineKey(SearchKey::Cancel)),
+];
+pub const HINT_HELP: &[Hint] = &[
+    hint("j/k", "scroll", Action::Scroll(Span::Line, 1)),
+    hint("esc", "close", Action::Dismiss),
+];
+pub const HINT_HOME_BROWSE: &[Hint] = &[
+    hint("j/k", "move", Action::HomeMove(1)),
+    hint("enter", "open", Action::HomeOpen),
+    hint("d", "directory", Action::PickerOpen),
+    hint("i", "filter", Action::HomeFilterMode),
+    hint("/", "search", Action::HomeSearchMode),
+    hint("h", "more", Action::HelpToggle),
+];
+pub const HINT_HOME_FILTER: &[Hint] = &[
+    says("type", "narrow"),
+    hint("enter", "open", Action::HomeOpen),
+    hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
+];
+pub const HINT_HOME_SEARCH: &[Hint] = &[
+    says("type", "query"),
+    hint("enter", "open first", Action::HomeOpen),
+    hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
+];
+pub const HINT_HOME_PICKER: &[Hint] = &[
+    says("type", "a path"),
     // The arrows, not `^j/^k`, even though the Ctrl pair is the less
     // guessable one: whoever is reading the footer is reading it because
     // they do not know what to do, and a cryptic key there leaves them
     // unsure the obvious one even works. A vim user who presses `j`, watches
     // it land in the path, and opens help finds `Ctrl-J`/`Ctrl-K` at once.
-    ("↑/↓", "move"),
-    ("enter", "choose"),
-    ("esc", "back"),
+    hint("↑/↓", "move", Action::HomeMove(1)),
+    hint("enter", "choose", Action::PickerChoose),
+    hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
 ];
 
 /// The scrollbar thumb's `(top, len)` in bar rows.
@@ -858,11 +916,7 @@ mod tests {
             })
         }
         type Dispatch = Box<dyn Fn(&[KeyEvent]) -> Option<Action>>;
-        type Case = (
-            &'static str,
-            &'static [(&'static str, &'static str)],
-            Dispatch,
-        );
+        type Case = (&'static str, &'static [Hint], Dispatch);
         // Feed the whole sequence IN ORDER (a prefix key like the first `z`
         // must actually arm) and judge only the final press.
         let reader = |searching: bool| -> Dispatch {
@@ -893,15 +947,37 @@ mod tests {
             ("home-search", HINT_HOME_SEARCH, home(HomeMode::Search)),
             ("home-picker", HINT_HOME_PICKER, home(HomeMode::Picker)),
         ];
+        let mut checked = 0;
         for (state, table, dispatch) in cases {
-            for (key, label) in table {
-                let Some(evs) = probe(key) else { continue };
+            for h in table {
+                let Some(evs) = probe(h.key) else {
+                    assert!(
+                        h.click.is_none(),
+                        "{state}: `{}` names no key, so it cannot be a button either",
+                        h.key
+                    );
+                    continue;
+                };
+                let acted = dispatch(&evs);
                 assert!(
-                    dispatch(&evs).is_some(),
-                    "footer lies: {state} hints `{key} {label}` but the key is inert"
+                    acted.is_some(),
+                    "footer lies: {state} hints `{} {}` but the key is inert",
+                    h.key,
+                    h.label
                 );
+                // The stronger half, and the reason the third column can be
+                // trusted: the BUTTON must do what the KEY does. Without this
+                // the two drift, and a footer that lies about what clicking
+                // it will do is worse than one that offers no clicking at all.
+                assert_eq!(
+                    h.click, acted,
+                    "{state}: clicking `{} {}` would do something its key does not",
+                    h.key, h.label
+                );
+                checked += 1;
             }
         }
+        assert!(checked > 20, "the tables must be walked, got {checked}");
     }
 
     #[test]

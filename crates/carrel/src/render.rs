@@ -148,7 +148,7 @@ pub fn draw_full(
             return;
         }
         frame.buffer_mut().set_style(area, theme::body());
-        draw_home(frame, app, h);
+        draw_home(frame, app, h, &mut painted.targets);
         if app.help.is_some() {
             paint_help(frame, app, &mut painted.targets);
         }
@@ -199,13 +199,14 @@ pub fn draw_full(
     paint_margin_outline(frame, app, text);
     paint_rows(frame, app, text, painted, images);
     paint_scrollbar(frame, app, bar);
-    paint_status(frame, app, status);
+    paint_status(frame, app, status, &mut painted.targets);
     paint_breadcrumb(frame, app, text);
     if app.hints {
         paint_footer(
             frame,
             app,
             Rect::new(0, area.height.saturating_sub(1), area.width, 1),
+            &mut painted.targets,
         );
     }
     if app.help.is_some() {
@@ -1562,13 +1563,17 @@ fn paint_scrollbar(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
+fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets) {
     let left = match &app.mode {
         Mode::Search { input, .. } => format!("/{input}"),
         // A one-shot note (a failed follow, an external URL) outranks the
         // filename until the next action clears it.
         Mode::Normal => app.note.clone().unwrap_or_else(|| app.path.clone()),
     };
+    // `chrome` marks the ONE branch that writes `T theme` and the exit key as
+    // literal text. Only there may those substrings become buttons — a
+    // selected link's URL could contain anything.
+    let mut chrome = false;
     let right = if let Some(id) = app.selected_link {
         // The selected link's destination, always visible for copying.
         app.doc.links[id.0 as usize].to_string()
@@ -1611,6 +1616,7 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
         // "how much is left" is the question a reader actually has; the
         // percentage answers "where am I". Both, when there is time worth
         // mentioning — `minutes_left` stays quiet under a minute.
+        chrome = true;
         match app.minutes_left() {
             Some(m) => format!("{pct}% · {m} min left · T theme · {exit}"),
             None => format!("{pct}% · T theme · {exit}"),
@@ -1619,7 +1625,7 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
 
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
-    let lx = fold_lamp(buf, app.hints, area);
+    let lx = fold_lamp(buf, app.hints, area, targets);
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
     // Display width, never a scalar count — `right` is an arbitrary URL when a
     // link is selected and `left` is a user's filename, so either can carry
@@ -1631,6 +1637,23 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
     let rx = area.right().saturating_sub(rw);
     if rx > lx + carrel_core::display_width(&left) {
         buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
+        if chrome {
+            // These two have been painted as words for a while — the field
+            // note behind them is that a key nobody can see is a feature
+            // nobody has. They read as labels, so they are buttons now. The
+            // offset is measured off the string that was just painted, the
+            // way it was painted: display width, never a byte count.
+            let mut button = |word: &str, action: Action| {
+                if let Some(at) = right.find(word) {
+                    let dx = carrel_core::display_width(&right[..at]);
+                    let w = carrel_core::display_width(word);
+                    targets.push(action, Zone::new(rx + dx, area.y, w, 1), Z_CHROME);
+                }
+            };
+            button("T theme", Action::ThemeCycle);
+            button("q home", Action::CloseFile);
+            button("q quit", Action::CloseFile);
+        }
     }
 }
 
@@ -1638,11 +1661,23 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect) {
 /// darkened lamp — `╰○` — which is both the state and the "turn me back on"
 /// affordance (clicking it, or `H`, re-lights it). Returns the x where the
 /// status text starts.
-fn fold_lamp(buf: &mut ratatui::buffer::Buffer, hints: bool, area: Rect) -> u16 {
+fn fold_lamp(
+    buf: &mut ratatui::buffer::Buffer,
+    hints: bool,
+    area: Rect,
+    targets: &mut Targets,
+) -> u16 {
     if hints {
         return area.x;
     }
     buf.set_stringn(area.x, area.y, "╰○ ", 3, theme::dim());
+    // The folded lamp is the only way back to the hints by pointer, so it
+    // registers exactly as the lit one does.
+    targets.push(
+        Action::HintsToggle,
+        Zone::new(area.x, area.y, 3, 1),
+        Z_CHROME,
+    );
     area.x + 3
 }
 
@@ -1661,12 +1696,12 @@ fn put(buf: &mut ratatui::buffer::Buffer, x: &mut u16, y: u16, right: u16, s: &s
 /// survives longest), then the `░` caps, then the mode word — never a cut
 /// inside a hint. Colours are theme slots only: lamp for the bulb and keys,
 /// wordmark for the mode word, dim for labels and furniture.
-fn paint_footer(frame: &mut Frame, app: &App, area: Rect) {
+fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets) {
     use carrel_core::display_width;
     let f = crate::footer::of(app);
     let w = area.width as usize;
-    let pinned = f.hints.last().is_some_and(|(k, _)| *k == "h");
-    let shown = |keep: usize| -> Vec<(&str, &str)> {
+    let pinned = f.hints.last().is_some_and(|h| h.key == "h");
+    let shown = |keep: usize| -> Vec<crate::keys::Hint> {
         if pinned && keep >= 1 {
             let mut v: Vec<_> = f.hints[..keep - 1].to_vec();
             v.push(*f.hints.last().unwrap());
@@ -1683,11 +1718,11 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect) {
         let hints = shown(keep);
         if !hints.is_empty() {
             n += 2 + if caps { 4 } else { 0 }; // "  " then "░ " … " ░"
-            for (i, (k, l)) in hints.iter().enumerate() {
+            for (i, h) in hints.iter().enumerate() {
                 if i > 0 {
                     n += 3; // " · "
                 }
-                n += display_width(k) as usize + 1 + display_width(l) as usize;
+                n += display_width(h.key) as usize + 1 + display_width(h.label) as usize;
             }
         }
         n
@@ -1708,7 +1743,15 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect) {
     let right = area.right();
     let mut x = area.x;
     let lamp = format!("{}{}", f.arm, f.bulb);
+    let lamp_x = x;
     put(buf, &mut x, area.y, right, &lamp, theme::lamp());
+    // The lamp was hit-tested by a hardcoded "bottom row, first three cells"
+    // in the event loop. It is a painted thing; it registers like one.
+    targets.push(
+        Action::HintsToggle,
+        Zone::new(lamp_x, area.y, x.saturating_sub(lamp_x), 1),
+        Z_CHROME,
+    );
     if word {
         put(buf, &mut x, area.y, right, " ", Style::default());
         put(buf, &mut x, area.y, right, f.word, theme::wordmark());
@@ -1718,13 +1761,25 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect) {
         if caps {
             put(buf, &mut x, area.y, right, "░ ", theme::dim());
         }
-        for (i, (key, label)) in hints.iter().enumerate() {
+        for (i, h) in hints.iter().enumerate() {
             if i > 0 {
                 put(buf, &mut x, area.y, right, " · ", theme::dim());
             }
-            put(buf, &mut x, area.y, right, key, theme::lamp());
+            // The zone is recorded BY the walk that paints it. Re-deriving
+            // where a hint landed would mean reimplementing the elision
+            // ladder above, backwards — which is the whole argument for a
+            // registry rather than an inverse.
+            let from = x;
+            put(buf, &mut x, area.y, right, h.key, theme::lamp());
             put(buf, &mut x, area.y, right, " ", Style::default());
-            put(buf, &mut x, area.y, right, label, theme::dim());
+            put(buf, &mut x, area.y, right, h.label, theme::dim());
+            if let Some(action) = h.click {
+                targets.push(
+                    action,
+                    Zone::new(from, area.y, x.saturating_sub(from), 1),
+                    Z_CHROME,
+                );
+            }
         }
         if caps {
             put(buf, &mut x, area.y, right, " ░", theme::dim());
@@ -1801,7 +1856,7 @@ fn paint_resume(frame: &mut Frame, home: &Home, area: Rect, mut y: u16) -> u16 {
     y
 }
 
-fn draw_home(frame: &mut Frame, app: &App, home: &Home) {
+fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
     let area = frame.area();
     let banner = area.width >= BANNER_MIN_COLS && area.height >= BANNER_MIN_ROWS;
     let mut y = area.y;
@@ -1867,12 +1922,14 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home) {
         app,
         home,
         Rect::new(area.x, list_bottom, area.width, 1),
+        targets,
     );
     if app.hints {
         paint_footer(
             frame,
             app,
             Rect::new(area.x, list_bottom + 1, area.width, 1),
+            targets,
         );
     }
 
@@ -1989,7 +2046,7 @@ fn paint_hits(frame: &mut Frame, home: &Home, area: Rect) {
     }
 }
 
-fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect) {
+fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targets: &mut Targets) {
     let left = match home.mode {
         HomeMode::Filter => format!("filter: {}", home.filter),
         HomeMode::Normal => home.note.clone().unwrap_or_else(|| "normal".into()),
@@ -2015,7 +2072,7 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect) {
 
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
-    let lx = fold_lamp(buf, app.hints, area);
+    let lx = fold_lamp(buf, app.hints, area, targets);
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
     // Display width, never a scalar count — `right` is an arbitrary URL when a
     // link is selected and `left` is a user's filename, so either can carry

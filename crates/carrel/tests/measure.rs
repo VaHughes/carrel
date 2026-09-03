@@ -426,7 +426,21 @@ fn every_registered_target_covers_the_thing_it_acts_on() {
                 );
                 checked += 1;
             }
-            other => panic!("unclassified target {other:?} — teach this test what it covers"),
+            // Chrome — the lamp, the footer's hint buttons, the status row's
+            // `T theme` and `q quit`. There is no per-action expectation to
+            // write for these (`every_footer_button_covers_its_own_hint` does
+            // that job), but the universal one holds for every target there
+            // will ever be: **a button must sit on something painted.** A zone
+            // over blank cells is a click that looks like it lands on nothing.
+            _ => {
+                assert!(
+                    painted.chars().any(|c| !c.is_whitespace()),
+                    "target {:?} covers only blank cells at {:?}",
+                    target.action,
+                    z
+                );
+                checked += 1;
+            }
         }
     }
     link_text.sort();
@@ -552,6 +566,82 @@ fn a_gutter_click_below_the_text_is_not_a_heading() {
         app.margin_row_at(col, app.rows - 1),
         None,
         "nor the last row"
+    );
+}
+
+/// The footer is a row of buttons, and each one must sit on its own words.
+///
+/// `paint_footer` decides where a hint lands by walking left to right through
+/// a four-stage elision ladder — drop hints right to left, then the caps, then
+/// the mode word. Inverting that walk to hit-test it would be a second copy of
+/// the algorithm, which is exactly what the registry exists to avoid. So the
+/// walk records the zones, and this reads them back off the painted cells.
+#[test]
+fn every_footer_button_covers_its_own_hint() {
+    use carrel::action::Action;
+
+    let src = format!("# Doc\n\n{PROSE}\n\n{PROSE}\n");
+    let mut app = app_at(120, 24, &src);
+    app.hints = true;
+    app.on_resize(120, 24);
+
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer();
+
+    let read = |z: carrel::action::Zone| -> String {
+        (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect()
+    };
+
+    // The reading footer: `j/k scroll · spc page · / search · o outline · h more`
+    let mut seen = Vec::new();
+    for t in painted.targets.as_slice() {
+        // Only the footer row, so document link targets stay out of it.
+        if t.zone.y + 1 != 24 {
+            continue;
+        }
+        seen.push((read(t.zone), t.action));
+    }
+    assert!(
+        seen.len() >= 5,
+        "the footer must register the lamp and its hints, got {seen:?}"
+    );
+
+    let find = |action: Action| -> String {
+        seen.iter().find(|(_, a)| *a == action).map_or_else(
+            || panic!("no footer button for {action:?} in {seen:?}"),
+            |(text, _)| text.clone(),
+        )
+    };
+    assert_eq!(find(Action::OutlineToggle), "o outline");
+    assert_eq!(find(Action::HelpToggle), "h more");
+    assert_eq!(
+        find(Action::SearchOpen(carrel::action::Direction::Forward)),
+        "/ search"
+    );
+    // The lamp is a painted thing that registers like one, rather than the
+    // hardcoded "bottom row, first three cells" the event loop used to carry.
+    assert_eq!(find(Action::HintsToggle), "╭●");
+
+    // And clicking a hint resolves to that hint, not its neighbour.
+    let (_, outline_zone) = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::OutlineToggle)
+        .map(|t| (t.action, t.zone))
+        .expect("outline button");
+    assert_eq!(
+        painted
+            .targets
+            .hit(outline_zone.x, outline_zone.y)
+            .map(|h| h.action),
+        Some(Action::OutlineToggle)
     );
 }
 

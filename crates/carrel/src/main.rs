@@ -1757,11 +1757,6 @@ fn mouse_action(
     match m.kind {
         MouseEventKind::ScrollDown => Some(Action::Scroll(Span::Line, ptr.wheel.notch(true))),
         MouseEventKind::ScrollUp => Some(Action::Scroll(Span::Line, -ptr.wheel.notch(false))),
-        // The lamp — lit on the footer, folded on the status row — is the
-        // switch. Both live on the bottom row's first cells.
-        MouseEventKind::Down(MouseButton::Left) if m.row + 1 == app.rows && m.column < 3 => {
-            Some(Action::HintsToggle)
-        }
         // The track is only as tall as the text. Without the row bounds this
         // guard claimed the whole rightmost COLUMN, so a click on the status
         // row's far right mapped past the thumb and paged the document. A
@@ -1948,9 +1943,6 @@ fn home_mouse_action(
         MouseEventKind::ScrollDown => Some(Action::HomeMove(3)),
         MouseEventKind::ScrollUp => Some(Action::HomeMove(-3)),
         // Same lamp, same switch as the reader's bottom row.
-        MouseEventKind::Down(MouseButton::Left) if m.row + 1 == app.rows && m.column < 3 => {
-            Some(Action::HintsToggle)
-        }
         // A click on a file row: first press selects, second opens — the
         // file-manager idiom, and forgiving of a misclick. The row → index
         // mapping is `Home::row_at`, the inverse of the paint's own geometry.

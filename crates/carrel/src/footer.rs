@@ -16,7 +16,7 @@ pub struct Footer {
     /// `●` steady · `◉` focused typing · `◎` overlay up · `○` off.
     pub bulb: char,
     pub word: &'static str,
-    pub hints: &'static [(&'static str, &'static str)],
+    pub hints: &'static [keys::Hint],
 }
 
 /// Precedence (spec §2): help > outline > typing a search > link selected >
@@ -87,7 +87,7 @@ mod tests {
         // while a document is growing and the footer is the one place anyone
         // would find it.
         assert_eq!(f.hints, keys::HINT_STREAMING);
-        assert!(f.hints.iter().any(|(k, _)| *k == "F"));
+        assert!(f.hints.iter().any(|h| h.key == "F"));
 
         // A mode still outranks the ambient stream…
         update(&mut a, Action::SearchOpen(Direction::Forward));
