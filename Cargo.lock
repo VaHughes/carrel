@@ -165,6 +165,8 @@ dependencies = [
  "ignore",
  "image",
  "merman",
+ "merman-ascii",
+ "merman-core",
  "proptest",
  "ratatui",
  "ratatui-image",

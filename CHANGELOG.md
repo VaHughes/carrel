@@ -2,6 +2,18 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **`cargo install carrel` builds again without `--locked`.** On 2026-09-02
+  the mermaid renderer's upstream published `merman-ascii 0.8.0-alpha.6`, and
+  the `merman 0.8.0-alpha.5` carrel pins asks for its sibling crates by caret
+  range, so an unlocked install resolved the new one and failed to compile —
+  for every carrel version, from that day. The prebuilt releases, the
+  installer, Homebrew, COPR and the AUR recipes were never affected: they
+  build from the lock file. Carrel now pins `merman-core` and `merman-ascii`
+  exactly, beside `merman`, so the resolver cannot drift. Until this ships,
+  `cargo install carrel --locked` is the working form, and the README says so.
+
 ## 2026.9.3
 
 The click-first release: carrel is meant for people who arrived at the

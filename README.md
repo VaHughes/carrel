@@ -100,7 +100,7 @@ sudo dnf install carrel
 [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall):
 
 ```bash
-cargo install carrel        # builds from crates.io
+cargo install carrel --locked   # builds from crates.io, with the tested dependency set
 cargo binstall carrel       # fetches the release binary
 ```
 

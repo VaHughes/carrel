@@ -42,6 +42,17 @@ regex                = "1.13"
 # ascii's +6.8 MiB, and the GUI gets raster free from WebKit. It shares our
 # exact unicode-width 0.2.2 pin. Maintainer decision in the wave-F spec.
 merman               = { version = "=0.8.0-alpha.5", default-features = false, features = ["ascii"] }
+# merman's OWN dependencies on its sibling crates are caret ranges
+# (`^0.8.0-alpha.5`), and the alpha line breaks API between alphas: on
+# 2026-09-02 upstream published merman-ascii 0.8.0-alpha.6, which alpha.5's
+# `ascii.rs` cannot compile against, and every UNLOCKED resolve — which is
+# what `cargo install carrel` does without `--locked` — picked it up and
+# failed. Cargo.lock does not travel to a registry install by default, so
+# the pin has to be a constraint the resolver sees: these two sit in the
+# tree only because merman pulls them, and are named here solely to hold
+# them at the version merman was tested against. Bump all three together.
+merman-core          = { version = "=0.8.0-alpha.5", default-features = false }
+merman-ascii         = { version = "=0.8.0-alpha.5", default-features = false }
 # Syntax highlighting as SEMANTIC TOKENS — the core classifies scopes, the
 # frontends colour them. `regex-fancy` because `regex` is already linked
 # (+1.59 MiB, the project's largest cost), which makes the pure-Rust engine
