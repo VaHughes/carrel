@@ -446,6 +446,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::MarkListJumpAt(_)
         | A::OutlineJumpAt(_)
         | A::Absorb
+        | A::Hover(_)
         | A::MenuOpen { .. }
         | A::MenuMove(_)
         | A::MenuHover(_)
@@ -527,6 +528,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("wheel", "scroll; drag the bar to jump"),
     ("right-click", "a menu for what is under it"),
     ("menu button", "the ≡ on the status row"),
+    ("hover", "the thing under it lights"),
 ];
 
 /// The help sheet, home-screen side.
@@ -654,6 +656,16 @@ pub const HINT_HOME_SEARCH: &[Hint] = &[
     hint("enter", "open first", Action::HomeOpen),
     hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
 ];
+/// The one-time invitation, shown on the first launch that has never
+/// remembered a reading position — and replaced by the ordinary hints the
+/// moment the reader does anything at all.
+///
+/// herdr greets a new session with one line of the same shape. For the
+/// reader this design is for — someone whose way into a terminal was an AI
+/// agent, with a `PLAN.md` to read and no reason to think a terminal
+/// program has menus — this single line is the difference between a reader
+/// and a `cat`.
+pub const HINT_FIRST_RUN: &[Hint] = &[says("click", "anything"), says("right-click", "for a menu")];
 pub const HINT_HOME_PICKER: &[Hint] = &[
     says("type", "a path"),
     // The arrows, not `^j/^k`, even though the Ctrl pair is the less
@@ -1029,7 +1041,9 @@ mod tests {
         // Some(action). `zz` needs two presses — the first arms the prefix.
         fn probe(key: &str) -> Option<Vec<KeyEvent>> {
             Some(match key {
-                "type" => return None,
+                // Prose, not keys: a sentence in the hint slot, and the
+                // first-run invitation's two gestures.
+                "type" | "click" | "right-click" => return None,
                 "j/k" => vec![k('j')],
                 "k" => vec![k('k')],
                 "F" => vec![k('F')],
@@ -1069,6 +1083,7 @@ mod tests {
 
         let cases: Vec<Case> = vec![
             ("reading", HINT_READING, reader(false)),
+            ("first-run", HINT_FIRST_RUN, reader(false)),
             ("streaming", HINT_STREAMING, reader(false)),
             ("following", HINT_FOLLOWING, reader(false)),
             ("search-typing", HINT_SEARCH_TYPING, reader(true)),

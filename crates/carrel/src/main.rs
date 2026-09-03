@@ -1201,6 +1201,13 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
     app.file = Some(path.to_path_buf());
     app.note = theme_note;
     app.state_dir = carrel::state::state_dir();
+    // The one-time footer invitation. No state directory at all means we
+    // cannot tell, and a line that might never go away is worse than one
+    // that never appears.
+    app.first_run = app
+        .state_dir
+        .as_deref()
+        .is_some_and(carrel::state::is_first_run_in);
     // Rooted at the document's own directory: links inside the project follow
     // silently, links out of it ask first. See `App::escapes_library`.
     // `Path::new("doc.md").parent()` is `Some("")`, which canonicalizes to an
@@ -1534,6 +1541,13 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     let cached = scan::load_cache(&root);
     let mut app = App::new_home(root.clone(), cached, size.width, size.height);
     app.state_dir = carrel::state::state_dir();
+    // The one-time footer invitation. No state directory at all means we
+    // cannot tell, and a line that might never go away is worse than one
+    // that never appears.
+    app.first_run = app
+        .state_dir
+        .as_deref()
+        .is_some_and(carrel::state::is_first_run_in);
     app.library_root = Some(root.clone());
     apply_config(&mut app);
     load_resume(&mut app);
@@ -1722,6 +1736,20 @@ fn coalescing_motion(m: MouseEvent) -> bool {
     matches!(m.kind, MouseEventKind::Moved) && event::poll(Duration::ZERO).unwrap_or(false)
 }
 
+/// The pointer moved: light what is under it, but only when that CHANGES.
+///
+/// Reporting every motion would defeat the coalescing that stops a slow
+/// mouse drag repainting the whole screen once per cell crossed — and the
+/// answer is almost always the same target as the cell before.
+fn hover_action(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::action::Action> {
+    let now = targets.hoverable(m.column, m.row);
+    match app.hover {
+        // Still inside the same target — including "still over nothing".
+        Some((c, r)) if targets.hoverable(c, r) == now => None,
+        _ => Some(carrel::action::Action::Hover((m.column, m.row))),
+    }
+}
+
 /// Should a right-click here open a menu, and which one?
 ///
 /// A pane owns the pointer while it is up exactly as it owns the keyboard,
@@ -1896,6 +1924,9 @@ fn mouse_action(
                 Some(Action::SelectRelease)
             }
         }
+        // Decoration only, and last: every button the pointer could be over
+        // has already had its chance to mean something.
+        MouseEventKind::Moved => hover_action(m, app, targets),
         _ => None,
     }
 }
@@ -2067,6 +2098,7 @@ fn home_mouse_action(
                 _ => Some(Action::HomeOpen),
             }
         }
+        MouseEventKind::Moved => hover_action(m, app, targets),
         _ => None,
     }
 }
@@ -2128,12 +2160,76 @@ fn emit_osc8(links: &[OscLink]) -> std::io::Result<()> {
             out,
             cursor::MoveTo(l.x, l.y),
             style::Print(format!(
-                "\x1b]8;;{}\x1b\\\x1b[38;2;224;160;68m\x1b[4m{}\x1b[0m\x1b]8;;\x1b\\",
-                l.url, l.text
+                "\x1b]8;;{}\x1b\\{}{}\x1b[0m\x1b]8;;\x1b\\",
+                l.url,
+                sgr(l.style),
+                l.text
             )),
         )?;
     }
     out.flush()
+}
+
+/// A ratatui `Style` as the SGR sequence that reproduces it.
+///
+/// Only what a link cell can actually carry: a foreground, a background, and
+/// the modifiers the inline styles and hover use. Anything else is dropped
+/// rather than approximated — this repaints cells ratatui already painted
+/// correctly, so the failure mode of an omission is "looks like the terminal
+/// default for one attribute", not a wrong colour.
+fn sgr(style: ratatui::style::Style) -> String {
+    use ratatui::style::Modifier;
+    use std::fmt::Write as _;
+    let mut s = String::from("\x1b[0m");
+    if let Some(c) = style.fg {
+        let _ = write!(s, "\x1b[{}m", colour(c, true));
+    }
+    if let Some(c) = style.bg {
+        let _ = write!(s, "\x1b[{}m", colour(c, false));
+    }
+    for (m, code) in [
+        (Modifier::BOLD, 1),
+        (Modifier::DIM, 2),
+        (Modifier::ITALIC, 3),
+        (Modifier::UNDERLINED, 4),
+        (Modifier::REVERSED, 7),
+        (Modifier::CROSSED_OUT, 9),
+    ] {
+        if style.add_modifier.contains(m) {
+            let _ = write!(s, "\x1b[{code}m");
+        }
+    }
+    s
+}
+
+/// One colour as SGR parameters, foreground or background.
+fn colour(c: ratatui::style::Color, fg: bool) -> String {
+    use ratatui::style::Color as C;
+    // 30-37 / 40-47 for the eight, +60 for the bright pair.
+    let base = u8::from(!fg) * 10;
+    let named = |n: u8| (30 + base + n).to_string();
+    let bright = |n: u8| (90 + base + n).to_string();
+    match c {
+        C::Rgb(r, g, b) => format!("{};2;{r};{g};{b}", if fg { 38 } else { 48 }),
+        C::Indexed(i) => format!("{};5;{i}", if fg { 38 } else { 48 }),
+        C::Black => named(0),
+        C::Red => named(1),
+        C::Green => named(2),
+        C::Yellow => named(3),
+        C::Blue => named(4),
+        C::Magenta => named(5),
+        C::Cyan => named(6),
+        C::Gray => named(7),
+        C::DarkGray => bright(0),
+        C::LightRed => bright(1),
+        C::LightGreen => bright(2),
+        C::LightYellow => bright(3),
+        C::LightBlue => bright(4),
+        C::LightMagenta => bright(5),
+        C::LightCyan => bright(6),
+        C::White => bright(7),
+        C::Reset => (39 + base).to_string(),
+    }
 }
 
 /// Non-interactive output: a document summary, plus search results when a

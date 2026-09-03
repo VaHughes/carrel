@@ -823,3 +823,73 @@ fn the_launcher_opens_the_global_menu_with_a_left_click() {
     );
     assert!(cap.contains("Quit"), "which reaches the way out");
 }
+
+/// Hover reaches the real terminal: a motion report over a footer button
+/// repaints that button, and the same report over blank chrome repaints
+/// nothing.
+///
+/// `ESC[<35;col;rowM` is motion with no button held — the report
+/// `EnableMouseCapture`'s `?1003h` asks for and carrel discarded until now.
+#[test]
+fn a_motion_report_lights_the_button_under_the_pointer() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    // TWO scratch dirs, not one: the first run to finish writes a reading
+    // position, and the second would then be a different app — no first-run
+    // footer line, a resumed position — which is a difference this test did
+    // not mean to measure.
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    for d in [&a, &b] {
+        std::fs::write(d.path().join("doc.md"), "# Head\n\nbody\n").unwrap();
+    }
+
+    // The `≡` at the end of the status row (76x20: last column, row 19).
+    // Deliberately NOT a footer hint: on a first run the footer shows the
+    // invitation, whose rows name no key and are therefore not buttons —
+    // which is what this test was pointing at, and why it found nothing.
+    let moved = pty_run("doc.md", r"\033[<35;76;19Mq", a.path());
+    let still = pty_run("doc.md", "q", b.path());
+    // The underline IS the repaint: hover is the only thing in carrel that
+    // paints one outside a link's own text, and the still run proves the
+    // document alone emits none.
+    assert!(
+        moved.contains("\u{1b}[4m") || moved.contains(";4m"),
+        "a motion report over a footer button must paint an underline"
+    );
+    assert!(
+        !still.contains("\u{1b}[4m") && !still.contains(";4m"),
+        "and a run with no pointer motion paints none"
+    );
+}
+
+/// A link must keep the theme's colour after the OSC 8 pass has repainted it.
+///
+/// The pass hard-coded carrel's own amber, so ratatui painted every link in
+/// the palette's link colour and the pass immediately painted it back in
+/// amber — wrong in 15 of the 17 palettes, on every visible link, since OSC
+/// 8 shipped. No frame test could see it: the ratatui buffer was always
+/// right, and the corruption was added by a pass that runs after the draw.
+#[test]
+fn the_hyperlink_pass_repaints_links_in_the_themes_own_colour() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("doc.md"), "# Head\n\na [link](other.md)\n").unwrap();
+    std::fs::create_dir_all(d.path().join("cfg/carrel")).unwrap();
+    std::fs::write(d.path().join("cfg/carrel/config"), "theme = gruvbox-dark\n").unwrap();
+
+    let cap = pty_run("doc.md", "q", d.path());
+    // gruvbox-dark's link colour, and carrel's amber.
+    assert!(
+        cap.contains("38;2;131;165;152"),
+        "the link is painted in the theme's colour"
+    );
+    assert!(
+        !cap.contains("224;160;68"),
+        "and nothing repaints it in carrel's amber afterwards"
+    );
+}

@@ -37,6 +37,8 @@ pub fn of(app: &App) -> Footer {
             HomeMode::Picker => f('◎', "choose", keys::HINT_HOME_PICKER),
             HomeMode::Filter => f('◉', "filter", keys::HINT_HOME_FILTER),
             HomeMode::Search => f('◉', "search", keys::HINT_HOME_SEARCH),
+            // The invitation, on the screen a bare `carrel` opens on.
+            HomeMode::Normal if app.first_run => f('●', "browse", keys::HINT_FIRST_RUN),
             HomeMode::Normal => f('●', "browse", keys::HINT_HOME_BROWSE),
         };
     }
@@ -61,6 +63,12 @@ pub fn of(app: &App) -> Footer {
     // the ordinary reading set — only the lamp says content is arriving.
     if app.streaming {
         return f('◉', "streaming", keys::HINT_STREAMING);
+    }
+    // Lowest precedence of all: every mode above knows something more
+    // specific to say, and `streaming` in particular has `F`, which exists
+    // only while a document is growing.
+    if app.first_run {
+        return f('●', "reading", keys::HINT_FIRST_RUN);
     }
     f('●', "reading", keys::HINT_READING)
 }
@@ -125,6 +133,45 @@ mod tests {
             (of(&a).bulb, of(&a).word),
             ('◎', "help"),
             "help outranks all"
+        );
+    }
+
+    #[test]
+    fn the_first_run_invitation_shows_once_and_goes_when_you_act() {
+        let mut a = reader();
+        a.first_run = true;
+        assert_eq!(of(&a).hints, keys::HINT_FIRST_RUN);
+        assert_eq!(of(&a).word, "reading", "the lamp still says where you are");
+
+        // Moving the pointer is not acting: the invitation is what tells you
+        // moving it is worth anything.
+        update(&mut a, Action::Hover((3, 4)));
+        assert_eq!(of(&a).hints, keys::HINT_FIRST_RUN);
+
+        update(&mut a, Action::Scroll(crate::action::Span::Line, 1));
+        assert_eq!(of(&a).hints, keys::HINT_READING, "acting retires it");
+    }
+
+    #[test]
+    fn the_invitation_reaches_the_home_screen_a_bare_carrel_opens_on() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 60, 16);
+        a.first_run = true;
+        assert_eq!(of(&a).hints, keys::HINT_FIRST_RUN);
+        // …and never over a mode that has something more specific to say.
+        update(&mut a, Action::HomeFilterMode);
+        assert_eq!(of(&a).hints, keys::HINT_HOME_FILTER);
+    }
+
+    #[test]
+    fn every_mode_outranks_the_invitation() {
+        let mut a = reader();
+        a.streaming = true;
+        a.first_run = true;
+        assert_eq!(
+            of(&a).hints,
+            keys::HINT_STREAMING,
+            "`F` exists only while a document is growing; the invitation can wait"
         );
     }
 

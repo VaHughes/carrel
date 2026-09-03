@@ -77,6 +77,16 @@ every later clickable surface will need is in place underneath.
 - **Copy a local link.** Clicking a link to a file beside it opens it; the
   menu's `Copy link` puts its path on the clipboard instead. A URL is still
   copied and never opened.
+- **What the pointer is over lights up.** A link, a footer button, `T theme`,
+  the `≡`, a row of an open pane or of the home list — if a click would do
+  something there, moving the pointer over it says so. It is decoration and
+  never a decision: every click resolves from its own coordinates, so a
+  terminal that does not report pointer motion loses the highlight and nothing
+  else.
+- **One line, on the first run, and then never again.** A launch that has
+  never remembered a reading position says `click anything · right-click for a
+  menu` where the key hints go. Doing anything at all retires it — and reading
+  something is what makes the next launch quiet.
 
 ### Four things that were quietly wrong
 
@@ -116,6 +126,13 @@ clickable.
   link put its text back over the panel, in the panel's own colours. Every
   overlay had this; menus open on top of prose every time, which is how it was
   finally noticed.
+- **Links were painted in the wrong colour in 15 of the 17 themes.** Terminal
+  hyperlinks are re-emitted after each frame by repainting the link's own
+  cells, and that repaint hard-coded carrel's amber — so every visible link
+  was painted in the theme's colour and then immediately painted back in
+  amber. It has been that way since hyperlinks shipped. The repaint reads the
+  finished frame now instead of guessing, which is also what lets a hovered
+  link stay hovered.
 - **The fold markers were printed wrong in the man page.** `▸` and `▾` rendered
   as the literal text `5b8` and `5be` in every `man carrel` since they were
   documented — a two-character escape given a four-character name. `man` hides

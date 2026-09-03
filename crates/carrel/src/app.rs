@@ -248,6 +248,21 @@ pub struct App {
     /// therefore checked before them: a menu is the last thing opened and
     /// the first thing that must answer for a key.
     pub menu: Option<crate::menu::Menu>,
+    /// The cell the pointer is on, for the hover decoration.
+    ///
+    /// A CELL, not a target: the painter re-asks its own registry every
+    /// frame, so a scroll under a still pointer moves the highlight to
+    /// whatever is there now, and a target that stopped being painted stops
+    /// being lit with no bookkeeping. **Never load-bearing** — see
+    /// [`Action::Hover`].
+    pub hover: Option<(u16, u16)>,
+    /// This reader has never remembered a reading position.
+    ///
+    /// `false` in the constructor and set by the binary, the same contract
+    /// as `config_dir` and `state_dir`: nothing in the library may decide
+    /// what the real state directory holds. Drives the one-time footer
+    /// invitation, and is cleared by the first thing the reader does.
+    pub first_run: bool,
     /// Set by [`Action::ThemeCycle`], drained by the event loop.
     ///
     /// The active palette is presentation state and never enters this
@@ -505,6 +520,8 @@ impl App {
             help: None,
             outline: None,
             menu: None,
+            hover: None,
+            first_run: false,
             theme_cycle: false,
             info: false,
             focus: false,
@@ -1685,6 +1702,26 @@ pub fn adapt(src: &str, diff_ok: bool) -> Document {
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
+    // The first-run invitation goes as soon as the reader does anything at
+    // all — it exists to be acted on, and a line that stays after you have
+    // acted is noise. Moving the pointer is not acting, and neither is a
+    // clock; everything else is. First, so that even an action that returns
+    // early below still counts as having been done.
+    if app.first_run
+        && !matches!(
+            action,
+            Action::Hover(_) | Action::MenuHover(_) | Action::AutoTick
+        )
+    {
+        app.first_run = false;
+    }
+    // The pointer's cell is pure decoration, so it is answered before any
+    // modal state gets a say: hover must never be able to change what a
+    // menu or a pane would do.
+    if let Action::Hover(at) = action {
+        app.hover = Some(at);
+        return Outcome::Redraw;
+    }
     // Opening a menu works from any state that can have one, and the menu
     // owns everything while it is up — it is the last thing opened, so it is
     // the first thing that answers. Both checks come before the toggles

@@ -179,6 +179,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 | **The margin outline** | Click a section to jump to it. |
 | **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
 | **The scrollbar** | Drag the thumb, or click the track to page toward the pointer. The wheel scrolls, and gathers speed if you keep spinning it. |
+| **Hovering** | Whatever the pointer is over lights up, if clicking it would do something. Decoration only — a click always resolves from where it landed. |
 
 The trade is that your terminal's own text selection stops working while carrel has the
 pointer. Most terminals let you **hold Shift** to bypass that and select as usual; if
@@ -342,6 +343,7 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Menus: right-click for what is under the pointer, `≡` for everything else, each row
       printing the key that does the same thing — every action carrel has is now reachable
       without knowing one, and a test says so exhaustively
+- [x] Hover, and one first-run line — the click-first pivot, finished
 - [ ] Marginalia — highlights and notes made while reading, stored in the state directory
       and never in the document; anchored on byte offsets, so they survive a resize by
       construction, re-finding themselves after an edit by the quoted text; walked like

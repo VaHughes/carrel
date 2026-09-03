@@ -209,6 +209,19 @@ pub enum Action {
     OutlineJumpAt(u32),
     /// Jump to an absolute visual row from a pointer position.
     ScrollTo(u32),
+    /// The pointer moved to this cell.
+    ///
+    /// **Never load-bearing.** It decorates what is under the pointer and
+    /// decides nothing: every click resolves from its own coordinates, so a
+    /// terminal that does not report motion loses the decoration and nothing
+    /// else. (ratatui's own `custom-widget` example gets this wrong — its
+    /// press reads no coordinates and acts on whatever the last motion
+    /// selected, so in such a terminal it activates the wrong button.)
+    ///
+    /// The CELL is stored rather than what was under it, so a scroll under a
+    /// still pointer moves the highlight to whatever is there now — the
+    /// painter re-asks its own registry every frame.
+    Hover((u16, u16)),
     /// Open a menu anchored at `(col, row)`.
     ///
     /// `byte` is the doc byte under the pointer: `Some` opens the context
@@ -400,6 +413,23 @@ impl Targets {
             })
     }
 
+    /// The zone a hover should light: the topmost target under the pointer
+    /// that actually does something.
+    ///
+    /// [`Action::Absorb`] is excluded, and that exclusion is the whole
+    /// reason this is not just [`Targets::hit`]: a pane registers its entire
+    /// rectangle as `Absorb`, so lighting what `hit` returns would fill the
+    /// whole pane the moment the pointer crossed a blank part of it.
+    #[must_use]
+    pub fn hoverable(&self, col: u16, row: u16) -> Option<Zone> {
+        self.0
+            .iter()
+            .filter(|t| t.action != Action::Absorb && t.zone.contains(col, row))
+            .enumerate()
+            .max_by_key(|(i, t)| (t.z, *i))
+            .map(|(_, t)| t.zone)
+    }
+
     /// Is any target at or above `z` under the pointer?
     ///
     /// The modal question: with a pane open, a click that hits none of its
@@ -465,6 +495,21 @@ mod pointer_tests {
         t.push(Action::Quit, Zone::new(0, 0, 4, 1), 0);
         t.clear();
         assert!(t.hit(1, 0).is_none());
+    }
+
+    #[test]
+    fn a_hover_never_lights_a_panes_whole_rectangle() {
+        let mut t = Targets::new();
+        // A pane: its own area, then one row inside it.
+        t.push(Action::Absorb, Zone::new(0, 0, 20, 6), 2);
+        t.push(Action::OutlineJumpAt(0), Zone::new(1, 1, 18, 1), 2);
+        assert_eq!(t.hoverable(5, 1), Some(Zone::new(1, 1, 18, 1)), "the row");
+        assert_eq!(
+            t.hoverable(5, 4),
+            None,
+            "a blank part of the pane lights nothing — `hit` would return the              pane's whole rectangle here"
+        );
+        assert_eq!(t.hit(5, 4).map(|h| h.action), Some(Action::Absorb));
     }
 
     #[test]

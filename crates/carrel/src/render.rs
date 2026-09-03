@@ -67,6 +67,15 @@ pub struct OscLink {
     pub y: u16,
     pub text: String,
     pub url: String,
+    /// The style the cell was actually painted with, read back off the
+    /// buffer by [`settle_links`] once every painter has had its say.
+    ///
+    /// The pass repaints these cells, so it has to know what they look like.
+    /// It used to hard-code one colour — carrel's own amber — which meant
+    /// every link in **15 of the 17 palettes** was repainted in the wrong
+    /// colour immediately after being painted in the right one, and any
+    /// modifier a later pass added (hover, now) was wiped.
+    pub style: Style,
 }
 use crate::home::{Home, HomeMode};
 use crate::theme;
@@ -161,7 +170,8 @@ pub fn draw_full(
             paint_outline(frame, app, &mut painted.targets);
         }
         paint_menu(frame, app, &mut painted.targets);
-        hide_covered_links(painted);
+        paint_hover(frame, app, &painted.targets);
+        settle_links(frame, painted);
         return;
     }
 
@@ -236,27 +246,68 @@ pub fn draw_full(
     }
     // Last, and therefore on top of everything it was opened over.
     paint_menu(frame, app, &mut painted.targets);
-    hide_covered_links(painted);
+    paint_hover(frame, app, &painted.targets);
+    settle_links(frame, painted);
 }
 
-/// Drop the OSC 8 spans an overlay is sitting on.
+/// Light whatever this frame painted under the pointer.
+///
+/// Asked of THIS frame's registry, not remembered from the last one: a
+/// scroll under a still pointer moves the highlight to whatever is there
+/// now, and a target that stopped being painted stops being lit, both with
+/// no bookkeeping anywhere.
+///
+/// A style repainted over a cell rect, never a span rewritten — the same
+/// rule search highlights follow (architecture.md §8 item 16). It patches,
+/// so the label keeps its own colour and only the surface changes.
+///
+/// Nothing is lit while a menu is open: the menu has its own lit row, and a
+/// second highlight on the chrome behind it would say the chrome was still
+/// live when it is not.
+fn paint_hover(frame: &mut Frame, app: &App, targets: &Targets) {
+    if app.menu.is_some() {
+        return;
+    }
+    let Some((col, row)) = app.hover else { return };
+    let Some(z) = targets.hoverable(col, row) else {
+        return;
+    };
+    frame
+        .buffer_mut()
+        .set_style(Rect::new(z.x, z.y, z.w, z.h), theme::hover());
+}
+
+/// Reconcile the OSC 8 list with what is actually on screen.
 ///
 /// The hyperlink pass in `main.rs` paints from **coordinates**, not from the
-/// buffer: it moves the cursor to where a link was collected and writes the
-/// text again wrapped in `ESC ] 8`. A pane drawn over that cell has already
-/// overwritten it in the buffer — but the OSC pass runs afterwards and puts
-/// the link glyphs back, on top of the pane, in the pane's own colours.
+/// buffer: it moves the cursor to where each link was collected and writes
+/// the text again wrapped in `ESC ] 8`. So it has to be told two things that
+/// only the finished frame knows, and both were once guessed at:
 ///
-/// Every overlay had this; a menu opens directly on top of prose every time,
-/// which is how it was finally seen. The registry already knows which cells
-/// an overlay claimed, so the answer is to ask it rather than to teach each
-/// painter to prune a list it does not own.
-fn hide_covered_links(painted: &mut Painted) {
+/// 1. **Which links are still visible.** A pane drawn over a link has
+///    overwritten it in the buffer — and the OSC pass then put the glyphs
+///    back, on top of the pane, in the pane's colours. Every overlay had
+///    this; a context menu opens on prose every time, which is how it was
+///    finally seen. The registry already knows which cells an overlay
+///    claimed, so ask it.
+/// 2. **What they look like.** The pass hard-coded one fg colour and an
+///    underline, so a link was painted in the theme's colour and instantly
+///    repainted in carrel's amber — wrong in 15 of the 17 palettes — and
+///    the hover modifiers, added after `paint_row` ran, never survived.
+///    Reading the cell back is exact by construction: it is literally what
+///    is on screen.
+fn settle_links(frame: &mut Frame, painted: &mut Painted) {
     let Painted { links, targets } = painted;
     links.retain(|l| {
         let w = carrel_core::display_width(&l.text);
         !(l.x..l.x.saturating_add(w)).any(|x| targets.covered_at(x, l.y, Z_OVERLAY))
     });
+    let buf = frame.buffer_mut();
+    for l in links.iter_mut() {
+        if let Some(cell) = buf.cell((l.x, l.y)) {
+            l.style = cell.style();
+        }
+    }
 }
 
 /// The bookmark list (`"`): every mark with its context line. Rows derive
@@ -1452,6 +1503,8 @@ fn paint_row(
                     y,
                     text,
                     url,
+                    // Stamped by `settle_links` after hover and the overlays.
+                    style: Style::default(),
                 });
             }
         }

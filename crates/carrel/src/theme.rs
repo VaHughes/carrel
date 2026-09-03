@@ -1013,6 +1013,30 @@ pub fn link_selected() -> Style {
     tinted(Style::default().fg(p.lsel_fg).bg(p.lsel_bg))
 }
 
+/// The thing under the pointer.
+///
+/// **Modifiers only, never a colour.** A palette-derived background looked
+/// right and was not: **14 of the 17 palettes give code blocks and the
+/// status bar the same background**, so a tint borrowed from one would have
+/// been invisible on every pane row, the help sheet and the outline in most
+/// themes — and obviously fine in the one the tests happen to run in.
+/// Modifiers cannot be defeated by a palette, need no new entry in
+/// seventeen tables, and are already right under `NO_COLOR` and in
+/// monochrome without going through [`tinted`] at all.
+///
+/// **Both** bold and underline, because each alone collides with something
+/// already on the cell: a link is underlined by [`inline`], and a selected
+/// row is bolded by [`selected`]. Together, every surface a pointer can land
+/// on gains at least one of the two.
+///
+/// (The design said "underline the link, highlight the row". One signal for
+/// every clickable surface is both easier to explain and the only version
+/// that survives contact with the palettes.)
+#[must_use]
+pub fn hover() -> Style {
+    Style::default().add_modifier(Modifier::BOLD.union(Modifier::UNDERLINED))
+}
+
 /// The mouse selection. `REVERSED` rather than a palette colour: it reads as
 /// a selection in every palette — including one derived from a desktop theme
 /// nobody has seen — and survives `NO_COLOR` untouched. The same choice

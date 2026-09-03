@@ -899,3 +899,186 @@ fn a_link_under_an_overlay_is_not_re_emitted_as_a_hyperlink() {
     let (_, painted) = menu_frame(&app, 90, 40);
     assert_eq!(painted.links.len(), 1, "an uncovered link is untouched");
 }
+
+// --- hover ---
+
+/// Hover lights exactly the button under the pointer, and nothing when the
+/// pointer is over nothing.
+///
+/// The zone comes from the SAME registry the click does, so a highlight that
+/// covers cells a click would miss is a contradiction — which is what makes
+/// this checkable at all: read the lit cells off the buffer and compare them
+/// with the target's own rectangle.
+#[test]
+fn hovering_lights_the_button_under_the_pointer_and_only_that() {
+    use carrel::action::Action;
+
+    let mut app = app_at(90, 24, "# Head\n\nbody text\n");
+    // The footer's `o outline` button, whichever column the elision ladder
+    // put it in — asked of the painter, not guessed at.
+    let (_, painted) = menu_frame(&app, 90, 24);
+    let button = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::OutlineToggle)
+        .expect("the footer offers the outline");
+    let z = button.zone;
+
+    let plain = menu_frame(&app, 90, 24).0;
+    carrel::app::update(&mut app, Action::Hover((z.x, z.y)));
+    let lit = menu_frame(&app, 90, 24).0;
+
+    let differs = |b: &Buffer, c: &Buffer| -> Vec<(u16, u16)> {
+        let mut v = Vec::new();
+        for y in 0..24 {
+            for x in 0..90 {
+                if b[(x, y)].style() != c[(x, y)].style() {
+                    v.push((x, y));
+                }
+            }
+        }
+        v
+    };
+    let changed = differs(&plain, &lit);
+    let expected: Vec<(u16, u16)> = (z.x..z.x + z.w).map(|x| (x, z.y)).collect();
+    assert_eq!(
+        changed, expected,
+        "hover must repaint the button's own cells, edge to edge, and no others"
+    );
+
+    // Over nothing: no cell changes at all.
+    carrel::app::update(&mut app, Action::Hover((0, 0)));
+    let nothing = menu_frame(&app, 90, 24).0;
+    assert!(
+        differs(&plain, &nothing).is_empty(),
+        "the pointer is over no target; nothing should light"
+    );
+}
+
+/// A pane registers its whole rectangle as `Absorb`. Hovering a blank part of
+/// it must light nothing — lighting what a CLICK would find there would fill
+/// the entire panel.
+///
+/// Verified to fail with `hoverable` replaced by `hit`: the whole outline
+/// panel changes style at once.
+#[test]
+fn hovering_a_blank_part_of_a_pane_lights_nothing() {
+    use carrel::action::Action;
+
+    let src = "# One\n\na\n\n# Two\n\nb\n";
+    let mut app = app_at(90, 24, src);
+    carrel::app::update(&mut app, Action::OutlineToggle);
+    // A filter that matches no heading: the panel keeps its minimum height,
+    // so its one inner row is blank and belongs to no entry. Without this
+    // the panel is exactly as tall as its rows and there is nowhere inside
+    // it that is not a row — the bug would be invisible, the same way the
+    // margin-outline one was until the outline outgrew the terminal.
+    carrel::app::update(
+        &mut app,
+        Action::OutlineKey(carrel::action::SearchKey::Char('z')),
+    );
+    let plain = menu_frame(&app, 90, 24).0;
+
+    let (_, painted) = menu_frame(&app, 90, 24);
+    let pane = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::Absorb)
+        .expect("the pane absorbs")
+        .zone;
+    let (col, row) = (pane.x + 4, pane.y + 1);
+    assert!(
+        painted.targets.hit(col, row).map(|h| h.action) == Some(Action::Absorb),
+        "the fixture must land on a blank part of the pane, not on a row"
+    );
+
+    carrel::app::update(&mut app, Action::Hover((col, row)));
+    let lit = menu_frame(&app, 90, 24).0;
+    for y in 0..24 {
+        for x in 0..90 {
+            assert_eq!(
+                plain[(x, y)].style(),
+                lit[(x, y)].style(),
+                "nothing may light at ({x}, {y})"
+            );
+        }
+    }
+}
+
+/// A link is painted underlined already, so an underline is not a hover
+/// signal on one — the surface a pointer most often lands on is exactly the
+/// surface where the obvious choice says nothing.
+///
+/// Verified to fail with `theme::hover()` reduced to `UNDERLINED` alone.
+#[test]
+fn hovering_a_link_changes_how_it_looks_even_though_it_is_already_underlined() {
+    use carrel::action::Action;
+
+    let mut app = app_at(90, 24, "# Head\n\nsee [the docs](./more.md) here\n");
+    let (_, painted) = menu_frame(&app, 90, 24);
+    let link = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| matches!(t.action, Action::LinkOpen(_)))
+        .expect("the link registers")
+        .zone;
+
+    let plain = menu_frame(&app, 90, 24).0;
+    assert!(
+        plain[(link.x, link.y)]
+            .style()
+            .add_modifier
+            .contains(ratatui::style::Modifier::UNDERLINED),
+        "the fixture must be a link that is ALREADY underlined"
+    );
+
+    carrel::app::update(&mut app, Action::Hover((link.x, link.y)));
+    let lit = menu_frame(&app, 90, 24).0;
+    for x in link.x..link.x + link.w {
+        assert_ne!(
+            plain[(x, link.y)].style(),
+            lit[(x, link.y)].style(),
+            "hovering the link must change cell {x} visibly"
+        );
+    }
+}
+
+/// The OSC 8 pass repaints the cells it names, so it must be told what they
+/// look like — and the only answer that cannot be wrong is the one read off
+/// the finished buffer.
+///
+/// It used to hard-code carrel's amber and an underline, so a link was
+/// painted in the theme's colour and repainted in the wrong one a moment
+/// later, and any modifier a later pass added was wiped. Verified to fail
+/// with the stamping loop in `settle_links` removed.
+#[test]
+fn every_osc8_span_carries_the_style_its_cells_were_painted_with() {
+    use carrel::action::Action;
+
+    let mut app = app_at(90, 24, "# Head\n\nsee [the docs](./more.md) here\n");
+    for hovering in [false, true] {
+        let (buf, painted) = menu_frame(&app, 90, 24);
+        let link = painted.links.first().expect("one link");
+        assert_eq!(
+            link.style,
+            buf[(link.x, link.y)].style(),
+            "hovering={hovering}: the pass would repaint the cell differently \
+             from how it was painted"
+        );
+        if !hovering {
+            carrel::app::update(&mut app, Action::Hover((link.x, link.y)));
+        }
+    }
+    // And the hover really did change it, or the loop above proved nothing.
+    let (_, painted) = menu_frame(&app, 90, 24);
+    assert!(
+        painted.links[0]
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD),
+        "the hovered link's recorded style must carry the hover"
+    );
+}

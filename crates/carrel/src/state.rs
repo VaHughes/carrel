@@ -152,6 +152,19 @@ pub fn state_dir() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".local").join("state").join("carrel"))
 }
 
+/// Has this reader ever remembered a reading position?
+///
+/// The absence of the `positions` file, which is written the first time a
+/// document is read far enough to be worth resuming — so the first-run
+/// invitation stays until you have actually read something, and then never
+/// comes back. A session that opens a document, reads nothing and quits
+/// writes nothing and is offered the line again, which is the right answer:
+/// nothing was learned.
+#[must_use]
+pub fn is_first_run_in(dir: &Path) -> bool {
+    !dir.join("positions").exists()
+}
+
 /// One remembered document.
 #[derive(Debug, Clone)]
 pub struct Entry {
