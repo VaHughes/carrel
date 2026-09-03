@@ -6,27 +6,24 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 The first step of the click-first pivot: carrel is meant for people who arrived
 at the terminal because an AI agent lives there and now need to read what it
-wrote. They click. So links open when you click them, and the machinery every
-later clickable surface will need is in place underneath.
+wrote. They click. So the things that look clickable are, and the machinery
+every later clickable surface will need is in place underneath.
 
 ### Things that behave differently
 
-- **Click a link to open it.** Anywhere it is painted, selected or not. A
-  markdown file beside it opens in the reader; an `http`, `https` or `mailto`
-  address **opens in your browser**. This reverses an older position — external
-  links used to be named and left to the terminal's own OSC 8 handling, which
-  told you to click something carrel was not making clickable, and offered
-  "copy it" when your terminal had no OSC 8. The `l` pane opens external
-  destinations the same way now.
-  **Carrel still fetches nothing.** It hands the address to your desktop and
-  reads no reply; it depends on no HTTP client and no TLS library, and
-  `cargo tree` is still how you check that rather than taking our word for it.
-  Nothing outside those three schemes opens at all — a `file:`, `javascript:`
-  or `data:` destination is refused by name, whatever your desktop's handler
-  table would have made of it. These documents are often written by an agent
-  out of pages nobody read, so the allowlist is the boundary, and the browser's
-  own sandbox is the rest of it. (Local links that leave your library still ask
-  for a second Enter, exactly as they did in 2026.9.1.)
+- **Click a link.** Anywhere it is painted, selected or not — no need to select
+  it with `Tab` first. A markdown file beside it opens in the reader, exactly as
+  `Enter` has always opened it. A URL is **copied to your clipboard**, with a
+  note saying so, to paste where you meant it to go; the `l` pane does the same
+  for an external destination, which it used to only name.
+  **Carrel does not launch a browser**, and it still fetches nothing. Opening a
+  URL would mean spawning a program on behalf of a document carrel did not
+  write — usually one an agent assembled out of pages nobody read — and then
+  deciding, for every scheme anyone invents, whether that program should see it.
+  Copying decides nothing. Carrel still depends on no HTTP client and no TLS
+  library, and `cargo tree` is how you check that rather than taking our word
+  for it. (Local links that leave your library still ask for a second Enter,
+  exactly as they did in 2026.9.1.)
 - **The fold markers are buttons.** The `▸` / `▾` in the left margin folds and
   unfolds what a click on the heading beside it folds. It always looked like a
   button; now it is one.

@@ -173,9 +173,8 @@ or by ordinary markdown link. Enter opens one.
 .B l
 What this points at \(em every destination in the document, the mirror of
 .BR L .
-Enter opens a local one; an external URL opens in your browser. Carrel still
-fetches nothing itself \(em it hands the address to the desktop and reads no
-reply.
+Enter opens a local one; an external URL is copied to the clipboard. Carrel
+neither fetches it nor launches anything to open it.
 .TP
 .B m
 Set or clear a bookmark at the current position. Bookmarks are remembered
@@ -194,11 +193,10 @@ Select the next or previous link.
 .TP
 .B Enter
 Follow the selected link. A markdown file beside this one opens in the reader;
-an
-.BR http ", " https " or " mailto
-address opens in your browser. Nothing else opens \(em a
-.BR file: ", " javascript: " or " data:
-destination is refused by name, whatever your desktop would have made of it.
+any destination with a scheme \(em a URL, a
+.B mailto:
+address \(em is copied to the clipboard instead, to paste wherever you meant it
+to go. A reader does not spawn programs.
 .TP
 .B Ctrl\-O
 Go back where you came from.
@@ -267,10 +265,8 @@ gives. Where the margin outline is on, a click in its columns jumps to that
 section instead of starting a selection.
 .TP
 .B link
-Click a link to open it, wherever it is painted \(em no need to select it
-first. Local markdown opens in the reader; an
-.BR http ", " https " or " mailto
-address opens in your browser.
+Click a link, wherever it is painted \(em no need to select it first. A local
+markdown file opens in the reader; a URL is copied to the clipboard.
 .TP
 .B fold marker
 The

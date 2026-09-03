@@ -1674,92 +1674,15 @@ fn apply_debounced_resize(
 
 /// Drain what `update` asked the outside world for.
 ///
-/// The state machine does no I/O: it fills an outbox and the loop empties it.
-/// Both loops call this, so a document opened FROM the home screen copies and
-/// opens exactly like one opened directly — the asymmetry that has bitten this
-/// file before.
+/// The state machine does no I/O: it fills the outbox and the loop empties it.
+/// Both loops call this, so a document opened FROM the home screen copies
+/// exactly like one opened directly — the asymmetry that has bitten this file
+/// before. A copy is the only thing that leaves here; carrel launches nothing.
 fn drain_outboxes(app: &mut App) -> std::io::Result<()> {
     if let Some(text) = app.clipboard.take() {
         osc52(&text)?;
     }
-    if let Some(url) = app.open_url.take()
-        && !open_in_browser(&url)
-    {
-        app.note = Some("could not open a browser".to_string());
-    }
     Ok(())
-}
-
-/// Split an opener command into a program and its argv, with the URL placed.
-///
-/// Pure, so the placement can be tested without launching anything: the one
-/// thing worth getting wrong here is where the URL lands. `$BROWSER` may carry
-/// arguments and, by the convention Python's `webbrowser` and `sensible-browser`
-/// share, may mark the URL's place with `%s`; without one it goes last.
-fn browser_command(opener: &str, url: &str) -> Option<(String, Vec<String>)> {
-    let mut parts = opener.split_whitespace();
-    let program = parts.next()?.to_string();
-    let rest: Vec<&str> = parts.collect();
-    let args = if rest.iter().any(|a| a.contains("%s")) {
-        rest.iter().map(|a| a.replace("%s", url)).collect()
-    } else {
-        rest.iter()
-            .map(|a| (*a).to_string())
-            .chain(std::iter::once(url.to_string()))
-            .collect()
-    };
-    Some((program, args))
-}
-
-/// Hand a vetted URL to the desktop's browser.
-///
-/// Called only with a string [`carrel::app::openable_url`] has already
-/// approved — the state machine is where that decision lives, and this
-/// function must never become a second, laxer gate.
-///
-/// **argv, never a shell.** `Command::new(program).arg(url)` passes the URL as
-/// one argument that no `sh -c` is ever asked to parse, so it cannot become an
-/// option, a redirection, or a second command however the document spelled it.
-/// All three handles go to `/dev/null`, or the opener's own diagnostics paint
-/// over the alternate screen carrel is drawing on.
-///
-/// The child is waited on by a detached thread rather than dropped: dropping
-/// it leaves a zombie until carrel exits, and `unsafe_code = "forbid"` rules
-/// out the usual double-fork. It is never waited on HERE, because a browser
-/// that takes two seconds to start must not be two seconds of frozen reader.
-fn open_in_browser(url: &str) -> bool {
-    use std::process::{Command, Stdio};
-
-    // `$BROWSER` is the portable answer and may carry arguments, with `%s`
-    // for the URL where the convention is followed. Otherwise the desktop's
-    // own opener, which is what respects the user's default browser.
-    let configured = std::env::var("BROWSER")
-        .ok()
-        .filter(|b| !b.trim().is_empty());
-    let opener = configured.unwrap_or_else(|| {
-        if cfg!(target_os = "macos") {
-            "open".to_string()
-        } else {
-            "xdg-open".to_string()
-        }
-    });
-    let Some((program, args)) = browser_command(&opener, url) else {
-        return false;
-    };
-    let mut cmd = Command::new(program);
-    cmd.args(args);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    match cmd.spawn() {
-        Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-            true
-        }
-        Err(_) => false,
-    }
 }
 
 /// A pointer motion that changed nothing, with more input already queued.
@@ -2202,39 +2125,6 @@ fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Where the URL lands, without launching anything. The URL is always
-    /// exactly one argv element, whatever the opener looked like — that is
-    /// what keeps a destination from becoming an option or a second command.
-    #[test]
-    fn the_url_is_one_argument_wherever_the_opener_puts_it() {
-        assert_eq!(
-            browser_command("xdg-open", "https://example.com"),
-            Some(("xdg-open".into(), vec!["https://example.com".into()]))
-        );
-        assert_eq!(
-            browser_command("firefox --new-tab", "https://example.com"),
-            Some((
-                "firefox".into(),
-                vec!["--new-tab".into(), "https://example.com".into()]
-            ))
-        );
-        assert_eq!(
-            browser_command("my-opener --url=%s --quiet", "https://example.com"),
-            Some((
-                "my-opener".into(),
-                vec!["--url=https://example.com".into(), "--quiet".into()]
-            )),
-            "%s is substituted in place, not appended as well"
-        );
-        // A URL that looks like a flag is still one argument, and never the
-        // program.
-        let (prog, args) = browser_command("xdg-open", "https://example.com/--help").unwrap();
-        assert_eq!(prog, "xdg-open");
-        assert_eq!(args, vec!["https://example.com/--help".to_string()]);
-
-        assert_eq!(browser_command("   ", "https://example.com"), None);
-    }
 
     #[test]
     fn base64_matches_the_rfc_4648_vectors() {

@@ -505,24 +505,22 @@ mod links {
         assert!(app.history.is_empty());
     }
 
-    /// Was `an_external_link_is_never_followed_only_noted`. It is followed
-    /// now — by the browser. What this still guards, and what it always
-    /// really guarded, is that the READER does not move: no navigation, no
-    /// history entry, and the document under the pointer is the one still on
-    /// screen when the browser has it.
+    /// Was `an_external_link_is_never_followed_only_noted`. It is copied now
+    /// rather than only named, but what this guards is unchanged: the READER
+    /// does not move, nothing is navigated to, and no program is launched.
     #[test]
-    fn an_external_link_goes_to_the_browser_and_leaves_the_reader_where_it_is() {
+    fn an_external_link_is_copied_and_leaves_the_reader_where_it_is() {
         let (_d, mut app) = fixture();
         update(&mut app, Action::LinkStep(1));
         update(&mut app, Action::LinkStep(1)); // select https://example.com/x
         update(&mut app, Action::LinkFollow);
         assert!(app.doc.text.contains("filler"), "still reading a.md");
         assert_eq!(
-            app.open_url.take().as_deref(),
+            app.clipboard.take().as_deref(),
             Some("https://example.com/x"),
-            "the URL leaves through the outbox"
+            "the URL leaves through the clipboard outbox"
         );
-        assert_eq!(app.note.as_deref(), Some("opened in your browser"));
+        assert_eq!(app.note.as_deref(), Some("copied to clipboard"));
         assert!(app.history.is_empty(), "nothing to go back to");
     }
 

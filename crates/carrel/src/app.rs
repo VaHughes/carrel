@@ -266,13 +266,6 @@ pub struct App {
     /// One-shot clipboard outbox: the state machine fills it, the event loop
     /// drains it into an OSC 52 escape. The state layer never does I/O.
     pub clipboard: Option<String>,
-    /// One-shot browser outbox, the twin of [`Self::clipboard`]: the state
-    /// machine puts an already-vetted URL here and the event loop hands it to
-    /// the desktop. The state layer still does no I/O, and — the part that
-    /// matters — **nothing reaches this field that has not passed
-    /// [`openable_url`]**, so the allowlist cannot be bypassed by a caller
-    /// that forgot about it.
-    pub open_url: Option<String>,
     /// The home screen this document was opened from, if any. `q` restores
     /// it — entries, filter, and scroll intact — instead of quitting.
     pub home_stash: Option<Box<Home>>,
@@ -505,7 +498,6 @@ impl App {
             selection: None,
             sel_anchor: None,
             clipboard: None,
-            open_url: None,
             home_stash: None,
             cols,
             rows,
@@ -2520,10 +2512,10 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Idle;
             };
             let Some(path) = row.target else {
-                // Not fetchable, but openable — the same door `Enter` on a
-                // link in the text now opens.
+                // Not fetchable, and not launched either: copied, exactly as
+                // the same destination in the text is.
                 let dest = row.dest.clone();
-                return open_external(app, &dest);
+                return copy_link(app, &dest);
             };
             app.forward = None;
             let here = app.view.anchor;
@@ -3033,10 +3025,9 @@ fn link_step(app: &mut App, n: i32, h: u16) -> Outcome {
     Outcome::Redraw
 }
 
-/// The longest URL carrel will hand to the desktop.
+/// The longest URL carrel will put on the clipboard.
 ///
-/// The same cap the OSC 8 pass uses, for the same reason: terminals and
-/// desktop openers both give up somewhere near 2 KiB, and a document that
+/// The same cap the OSC 8 pass uses, for the same reason: a document that
 /// wants more than this is not describing a link a person meant to follow.
 const MAX_URL: usize = 2048;
 
@@ -3054,54 +3045,6 @@ fn has_scheme(dest: &str) -> bool {
         && scheme
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-}
-
-/// The URL, if it is one carrel is willing to open — otherwise `None`.
-///
-/// **This is the security boundary, and it is an allowlist on purpose.**
-/// Carrel's audience arrives holding a markdown file an AI agent wrote out of
-/// web pages they never read, and following a link in it is the most ordinary
-/// thing they will do. So: `http`, `https` and `mailto` open, and everything
-/// else — `file:` reading the disk, `javascript:` and `data:` where the opener
-/// is a browser, `ssh:`, and every scheme nobody has thought of yet — does
-/// not, whatever the desktop's handler table would have made of it.
-///
-/// Whitespace and control characters are refused outright rather than
-/// escaped. A URL containing either is not one a document meant to offer, and
-/// argument splitting is not a place to be clever.
-#[must_use]
-pub fn openable_url(dest: &str) -> Option<&str> {
-    if dest.len() > MAX_URL || dest.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return None;
-    }
-    let (scheme, rest) = dest.split_once(':')?;
-    let ok = if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
-        // A bare `https:` or `https://` names no host.
-        rest.strip_prefix("//").is_some_and(|host| !host.is_empty())
-    } else if scheme.eq_ignore_ascii_case("mailto") {
-        !rest.is_empty()
-    } else {
-        false
-    };
-    ok.then_some(dest)
-}
-
-/// Fill the browser outbox, or say why not.
-///
-/// The refusal deliberately does not echo the destination back: the reader is
-/// already showing the link it is talking about, and a note is not the place
-/// to reprint a string this function has just declined to trust.
-fn open_external(app: &mut App, dest: &str) -> Outcome {
-    match openable_url(dest) {
-        Some(url) => {
-            app.open_url = Some(url.to_string());
-            app.note = Some("opened in your browser".to_string());
-        }
-        None => {
-            app.note = Some("carrel opens http, https and mailto links only".to_string());
-        }
-    }
-    Outcome::Redraw
 }
 
 /// Fold or unfold whatever `byte` is inside, if it is inside anything
@@ -3137,6 +3080,29 @@ fn fold_at(app: &mut App, byte: u32) -> bool {
     false
 }
 
+/// Copy an external destination to the clipboard, and say so.
+///
+/// Carrel does not launch a browser. Handing a URL to the desktop would mean
+/// spawning a program on behalf of a document carrel did not write — usually
+/// one an agent assembled out of pages nobody read — and deciding, for every
+/// scheme anyone invents, whether that program should see it. Copying decides
+/// nothing: the destination goes to the clipboard and you paste it where you
+/// meant it to go.
+///
+/// Control characters are stripped rather than escaped, exactly as the OSC 8
+/// pass strips them, because the clipboard is pasted into a shell as often as
+/// into a browser and a URL never legitimately contains one.
+fn copy_link(app: &mut App, dest: &str) -> Outcome {
+    let url: String = dest.chars().filter(|c| !c.is_control()).collect();
+    if url.is_empty() || url.len() > MAX_URL {
+        app.note = Some("that link is too long to copy".to_string());
+        return Outcome::Redraw;
+    }
+    app.clipboard = Some(url);
+    app.note = Some("copied to clipboard".to_string());
+    Outcome::Redraw
+}
+
 fn link_follow(app: &mut App) -> Outcome {
     let Some(id) = app.selected_link else {
         return Outcome::Idle;
@@ -3147,17 +3113,11 @@ fn link_follow(app: &mut App) -> Outcome {
     if app.doc.is_wikilink(id) {
         return wiki_follow(app, id, &url);
     }
-    // Anything with a scheme is external, and external now OPENS.
-    //
-    // This reverses "a reader does not spawn programs", which was right when
-    // the answer was OSC 8 and the audience already knew what OSC 8 was. It
-    // told everyone else to click something carrel was not making clickable,
-    // and offered "copy it" as the fallback. Handing the URL to the desktop is
-    // still not fetching: no socket is opened here, and carrel depends on no
-    // HTTP client and no TLS library — the README's claim is unchanged and
-    // stays checkable with `cargo tree`.
+    // External targets are the terminal's job via OSC 8. A reader does not
+    // spawn programs — so an external destination is COPIED, and pasting it
+    // where you want it is one keystroke you were going to make anyway.
     if has_scheme(&url) {
-        return open_external(app, &url);
+        return copy_link(app, &url);
     }
     // A piped document has no path; the sentinel's parent is the empty
     // path, so relative targets resolve against the working directory, and
@@ -4502,93 +4462,89 @@ mod tests {
         assert_eq!(f.rows[0].label.as_deref(), Some("local"));
     }
 
-    /// Was `opening_an_external_forward_link_says_so_and_fetches_nothing`,
-    /// which asserted the note "external — carrel does not fetch". The
-    /// destination now opens; what has NOT changed, and is what the old name
-    /// was really guarding, is that carrel still fetches nothing — the URL
-    /// leaves through the outbox and no byte of it is ever read back.
+    /// Was `opening_an_external_forward_link_says_so_and_fetches_nothing`.
+    /// The wording changed and the destination now reaches your clipboard,
+    /// but what the old name guarded is untouched: carrel fetches nothing,
+    /// and it launches nothing either.
     #[test]
-    fn opening_an_external_forward_link_hands_it_to_the_browser_and_fetches_nothing() {
+    fn opening_an_external_forward_link_copies_it_and_fetches_nothing() {
         let src = "see [that](https://example.com/elsewhere)\n";
         let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
         update(&mut a, Action::ForwardToggle);
         assert_eq!(update(&mut a, Action::ForwardOpen), Outcome::Redraw);
         assert_eq!(
-            a.open_url.take().as_deref(),
+            a.clipboard.take().as_deref(),
             Some("https://example.com/elsewhere")
         );
-        assert_eq!(a.note.as_deref(), Some("opened in your browser"));
+        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
         assert!(a.forward.is_some(), "the pane stays open");
     }
 
-    /// The allowlist, item by item.
-    ///
-    /// Written before the opener existed and watched to fail: this is the
-    /// only thing standing between a document carrel did not write and the
-    /// desktop's handler table, so it is tested as a table rather than by
-    /// example.
     #[test]
-    fn only_http_https_and_mailto_are_openable() {
-        for ok in [
-            "http://example.com",
-            "https://example.com/a/b?c=d#e",
-            "HTTPS://EXAMPLE.COM",
-            "mailto:someone@example.com",
-        ] {
-            assert_eq!(openable_url(ok), Some(ok), "{ok} should open");
-        }
-        for no in [
-            "file:///etc/passwd",
-            "javascript:alert(1)",
-            "data:text/html,<script>x</script>",
-            "ssh://host",
-            "vscode://file/etc/passwd",
-            "//example.com",             // scheme-relative: no scheme at all
-            "https:",                    // no host
-            "https://",                  // still no host
-            "mailto:",                   // no address
-            "notes/architecture.md",     // a local path is not a URL
-            "http://exa mple.com",       // whitespace never survives argv
-            "https://example.com/\u{7}", // a control character, ever
-        ] {
-            assert_eq!(openable_url(no), None, "{no:?} must not open");
-        }
-        let long = format!("https://example.com/{}", "a".repeat(MAX_URL));
-        assert_eq!(openable_url(&long), None, "past the cap");
-    }
-
-    #[test]
-    fn following_an_external_link_fills_the_browser_outbox() {
+    fn following_an_external_link_copies_it_and_says_so() {
         let src = "see [that](https://example.com/x)\n";
         let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
         update(&mut a, Action::LinkStep(1));
         assert_eq!(update(&mut a, Action::LinkFollow), Outcome::Redraw);
-        assert_eq!(a.open_url.take().as_deref(), Some("https://example.com/x"));
-        assert_eq!(a.note.as_deref(), Some("opened in your browser"));
+        assert_eq!(a.clipboard.take().as_deref(), Some("https://example.com/x"));
+        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+        assert!(a.doc.text.contains("that"), "and the reader has not moved");
     }
 
-    /// A refusal must be a refusal, not a fallback to "treat it as a path".
+    /// Every scheme copies, because copying decides nothing: there is no
+    /// program on the other end to protect. What must NOT happen is a
+    /// scheme-bearing destination falling through to the local-path branch
+    /// and being resolved as a filename.
     #[test]
-    fn a_refused_scheme_opens_nothing_and_says_so() {
-        let src = "see [that](javascript:alert(1))\n";
-        let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
-        update(&mut a, Action::LinkStep(1));
-        update(&mut a, Action::LinkFollow);
-        assert!(a.open_url.is_none(), "nothing may reach the outbox");
-        assert_eq!(
-            a.note.as_deref(),
-            Some("carrel opens http, https and mailto links only")
-        );
+    fn a_destination_with_any_scheme_is_copied_not_treated_as_a_path() {
+        for dest in [
+            "https://example.com/a",
+            "mailto:someone@example.com",
+            "ssh://host/repo.git",
+            "javascript:alert(1)",
+        ] {
+            let src = format!("see [that]({dest})\n");
+            let mut a = App::new("f.md".into(), Document::parse(&src), 40, 10);
+            update(&mut a, Action::LinkStep(1));
+            update(&mut a, Action::LinkFollow);
+            assert_eq!(a.clipboard.take().as_deref(), Some(dest), "{dest}");
+            assert_eq!(a.note.as_deref(), Some("copied to clipboard"), "{dest}");
+        }
     }
 
-    /// The click does in one intent what Tab-then-Enter does in two.
+    /// The clipboard is pasted into a shell as often as into a browser, so the
+    /// copier is exercised directly — a raw escape byte cannot be smuggled
+    /// through a markdown link destination, but a document is not the only
+    /// thing that reaches this function.
+    #[test]
+    fn a_url_carrying_control_characters_is_stripped_before_it_is_copied() {
+        let mut a = App::new("f.md".into(), Document::parse("x\n"), 40, 10);
+        copy_link(&mut a, "https://example.com/\u{1b}[31m\u{7}");
+        let copied = a.clipboard.take().expect("copied");
+        assert!(
+            !copied.chars().any(char::is_control),
+            "no control character may reach the clipboard: {copied:?}"
+        );
+        assert_eq!(copied, "https://example.com/[31m");
+        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+    }
+
+    #[test]
+    fn an_absurd_url_is_refused_rather_than_copied() {
+        let mut a = App::new("f.md".into(), Document::parse("x\n"), 40, 10);
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL));
+        copy_link(&mut a, &long);
+        assert!(a.clipboard.is_none());
+        assert_eq!(a.note.as_deref(), Some("that link is too long to copy"));
+    }
+
     #[test]
     fn clicking_a_link_opens_it_without_selecting_it_first() {
         let src = "one [a](https://example.com/a) two [b](https://example.com/b)\n";
         let mut a = App::new("f.md".into(), Document::parse(src), 60, 10);
         assert!(a.selected_link.is_none(), "nothing selected yet");
         assert_eq!(update(&mut a, Action::LinkOpen(1)), Outcome::Redraw);
-        assert_eq!(a.open_url.take().as_deref(), Some("https://example.com/b"));
+        assert_eq!(a.clipboard.take().as_deref(), Some("https://example.com/b"));
     }
 
     /// A target from a frame that no longer describes the document — the
@@ -4598,7 +4554,7 @@ mod tests {
         let src = "one [a](https://example.com/a)\n";
         let mut a = App::new("f.md".into(), Document::parse(src), 40, 10);
         assert_eq!(update(&mut a, Action::LinkOpen(99)), Outcome::Idle);
-        assert!(a.open_url.is_none());
+        assert!(a.clipboard.is_none());
     }
 
     /// The marker and the words beside it must fold the same thing, or the
@@ -4688,7 +4644,7 @@ mod tests {
         assert_eq!(a.forward.as_ref().unwrap().rows.len(), 2);
 
         assert_eq!(update(&mut a, Action::ForwardOpenAt(1)), Outcome::Redraw);
-        assert_eq!(a.open_url.take().as_deref(), Some("https://example.com/b"));
+        assert_eq!(a.clipboard.take().as_deref(), Some("https://example.com/b"));
     }
 
     /// A click a pane swallowed changes nothing at all.
