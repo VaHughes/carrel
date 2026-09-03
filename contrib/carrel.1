@@ -270,7 +270,7 @@ markdown file opens in the reader; a URL is copied to the clipboard.
 .TP
 .B fold marker
 The
-.BR \(u25b8 / \(u25be
+.BR \[u25B8] / \[u25BE]
 in the left margin is a button: click it to fold or unfold that section, or
 that
 .B <details>
@@ -281,6 +281,41 @@ In the outline, the bookmark list and the two link panes, a click opens the row
 under the pointer \(em not the row the keyboard cursor was resting on. A click
 anywhere else on an open pane does nothing: while a pane is up it takes every
 click inside it, so nothing reaches the document behind it.
+.TP
+.B right\-click
+Open a menu. In the document it is a menu for whatever is under the pointer
+\(em a heading offers folding, a link offers opening and copying, a code block
+offers copying, a table offers the card view \(em and it is positioned before
+it opens, so its rows act on what was clicked rather than on wherever the view
+happens to be. Anywhere else \(em the status row, the hint footer, the
+breadcrumb, the margin, the scrollbar, or the home screen \(em it opens the
+global menu instead.
+.TP
+.B menu button
+The
+.B \[u2261]
+at the right end of the status row opens the same global menu with a left
+click, for a reader who has no reason to guess that right\-clicking does
+anything.
+.TP
+.B menu
+Inside a menu:
+.BR \(ua / \(da
+move,
+.B Enter
+chooses,
+.B Esc
+or
+.B q
+closes, and a click outside closes without choosing. Moving the pointer over a
+row lights it, so the keyboard cursor follows the hand. Nothing is lit when a
+menu opens. Each row shows the key that does the same thing, which is how a
+menu teaches its own shortcuts; a row with no key is one only the menu offers.
+A greyed row says what carrel could do here and declines \(em
+.B Follow the end
+on a document that is not growing, or
+.B Back
+with nothing behind you.
 .TP
 .B wheel
 Scroll. Three lines a notch, and more when the notches keep arriving \(em spin

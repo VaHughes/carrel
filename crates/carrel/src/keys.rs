@@ -525,6 +525,8 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("drag", "select — copies on release"),
     ("2× click", "select word, 3× the block"),
     ("wheel", "scroll; drag the bar to jump"),
+    ("right-click", "a menu for what is under it"),
+    ("menu button", "the ≡ on the status row"),
 ];
 
 /// The help sheet, home-screen side.
@@ -545,6 +547,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("/", "search inside files"),
     ("Esc", "clear filter, then leave it"),
     ("§", "other"),
+    ("right-click", "a menu, anywhere"),
     ("d", "directory: type, from here"),
     ("T", "cycle themes"),
     ("h F1", "this help (F1 while typing)"),

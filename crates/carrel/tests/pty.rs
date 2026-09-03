@@ -633,6 +633,30 @@ fn the_man_page_documents_every_key_the_help_overlay_does() {
         !man.lines().any(|l| l.trim_end() == r#".B ""#),
         r#"contrib/carrel.1 has a bare `.B "` — troff renders that tag empty; write `.B \(dq`"#
     );
+
+    // The same class of failure once removed: `\(xx` names exactly TWO
+    // characters, so `\(u25b8` is read as `\(u2` — undefined — followed by
+    // the literal text `5b8`. The fold markers printed as "5b8/5be" in every
+    // rendered man page from the day they were documented until 2026-09-03,
+    // and nothing said so: groff warns once per undefined name and `man`
+    // hides warnings by default. A Unicode codepoint needs the bracket form.
+    let bad: Vec<&str> = man
+        .lines()
+        .filter(|l| {
+            l.match_indices(r"\(u").any(|(i, _)| {
+                l[i + 3..]
+                    .chars()
+                    .take(3)
+                    .filter(char::is_ascii_hexdigit)
+                    .count()
+                    >= 3
+            })
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        r"contrib/carrel.1 spells a codepoint `\(uXXXX`, which troff reads as `\(u2` plus text. Use `\[uXXXX]`: {bad:?}"
+    );
 }
 
 /// The completions and the man page name every flag by hand. If a flag is
@@ -719,4 +743,83 @@ fn the_conformance_corpus_survives_a_pty_round_trip() {
         raw.contains('╭'),
         "the frontmatter card paints on the first screen"
     );
+}
+
+/// Right-click opens a context menu, and a left-click on one of its rows
+/// acts — through the real event loop, in a real pty, with SGR mouse
+/// reports on the wire rather than synthetic `Action`s.
+///
+/// The wave-B spec said mouse input was not scriptable end to end. It is:
+/// `ESC[<B;COL;ROWM` presses and `…m` releases, with `B` = 0 for the left
+/// button and 2 for the right, at 1-based coordinates.
+#[test]
+fn a_right_click_opens_a_menu_and_a_click_on_a_row_acts() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("doc.md"),
+        "# The heading\n\nSome prose to right-click on.\n",
+    )
+    .unwrap();
+
+    // Row 3 (1-based) is the heading; a right-click there offers folding.
+    // Press and release, then `q` to close the menu and `q` again to leave:
+    // `q` closes an open menu, exactly as it closes every other pane.
+    let cap = pty_run("doc.md", r"\033[<2;8;3M\033[<2;8;3mqq", d.path());
+    assert!(
+        cap.contains("Fold this section"),
+        "a right-click on a heading offers to fold it"
+    );
+    assert!(
+        cap.contains("Search"),
+        "and the tail every context menu ends with"
+    );
+
+    // The box drops one row below the pointer, so its TOP BORDER is row 4
+    // and its first item is row 5 — an off-by-one here is a click on the
+    // border, which the menu absorbs and nothing happens. Clicking the row
+    // folds the section: the body goes behind the marker.
+    let cap = pty_run(
+        "doc.md",
+        r"\033[<2;8;3M\033[<2;8;3m\033[<0;12;5M\033[<0;12;5mq",
+        d.path(),
+    );
+    assert!(
+        cap.contains('\u{25b8}'),
+        "the row acted: the section is folded, marker and all"
+    );
+
+    // The control, because a fold marker appearing proves nothing on its
+    // own: the SAME click with no menu under it must fold nothing. (It does
+    // land on prose, so it starts a selection — which is the right answer
+    // for a click on the document.)
+    let cap = pty_run("doc.md", r"\033[<0;12;5M\033[<0;12;5mq", d.path());
+    assert!(
+        !cap.contains('\u{25b8}'),
+        "without the menu that click folds nothing"
+    );
+}
+
+/// The `≡` on the status row opens the global menu with a plain left click
+/// — the affordance the whole design leans on for discoverability.
+#[test]
+fn the_launcher_opens_the_global_menu_with_a_left_click() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("doc.md"), "# Head\n\nbody\n").unwrap();
+    // 76 columns, so the launcher is the 76th (1-based); the status row is
+    // row 19 of 20, with the hint footer on row 20.
+    let cap = pty_run("doc.md", r"\033[<0;76;19M\033[<0;76;19mqq", d.path());
+    assert!(cap.contains('\u{2261}'), "the launcher is painted");
+    assert!(
+        cap.contains("Document info"),
+        "and clicking it opens the global menu"
+    );
+    assert!(cap.contains("Quit"), "which reaches the way out");
 }

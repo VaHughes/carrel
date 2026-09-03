@@ -65,7 +65,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 | | |
 |---|---|
 | **Search that survives reflow and resize** | Matches are byte offsets into the document, so the match set is bit-for-bit identical at any width and a highlight follows its text across a rewrap. Most readers lose or shift matches when the window resizes; carrel can't, by construction. The headline feature and the hardest part. |
-| **Everything worth doing is clickable** | Links, headings, fold markers, the outline, the panes, the hint row along the bottom — click them. Carrel is built for people whose way into the terminal was an AI coding agent and who now have a `PLAN.md` to read; they should not have to learn `zR` first. Every key still works, and `--no-mouse` hands the pointer back. |
+| **Everything worth doing is clickable** | Links, headings, fold markers, the outline, the panes, the hint row along the bottom — click them. Right-click for a menu of what is under the pointer, or press `≡` on the status row for everything else. Carrel is built for people whose way into the terminal was an AI coding agent and who now have a `PLAN.md` to read; they should not have to learn `zR` first. Every key still works, and `--no-mouse` hands the pointer back. |
 | **A comfortable measure** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, foldable, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename. |
@@ -171,6 +171,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 
 | | |
 |---|---|
+| **Right-click** | A menu for whatever is under the pointer — fold this section, copy this code block, open or copy this link, cards or wrapped for this table. Right-click anywhere else, or click the **`≡`** at the end of the status row, and you get the global menu instead. Every row shows the key that does the same thing. |
 | **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. |
 | **A heading, or a `▸` / `▾` in the margin** | Folds and unfolds that section, or that `<details>` block. |
 | **The hint row along the bottom** | Every hint is a button — `spc page`, `/ search`, `o outline`, `h more`. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
@@ -338,6 +339,9 @@ The rules that keep the second frontend possible are enforced mechanically:
 - [x] Packaging: Homebrew, Fedora COPR, the shell installer, crates.io
 - [x] Click-first: links, fold markers, pane rows and the whole hint row are buttons,
       on a click-target registry the paint pass fills; `--no-mouse` gives the pointer back
+- [x] Menus: right-click for what is under the pointer, `≡` for everything else, each row
+      printing the key that does the same thing — every action carrel has is now reachable
+      without knowing one, and a test says so exhaustively
 - [ ] Marginalia — highlights and notes made while reading, stored in the state directory
       and never in the document; anchored on byte offsets, so they survive a resize by
       construction, re-finding themselves after an edit by the quoted text; walked like

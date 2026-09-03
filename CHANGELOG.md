@@ -51,6 +51,33 @@ every later clickable surface will need is in place underneath.
   clicking it would: the footer cannot advertise one thing to the keyboard and
   do another to the mouse.
 
+- **Menus, and an `≡` to open one.** **Right-click in the document** and you
+  get a menu for whatever is under the pointer: a heading offers to fold its
+  section, a link offers to open or copy it and to show what points at it, a
+  code block offers to copy itself, a table offers the card view. It is
+  positioned before it opens, so its rows act on what you clicked rather than
+  on wherever the view happens to be. **Right-click anywhere else** — the
+  status row, the hint footer, the breadcrumb, the margin, the scrollbar, the
+  home screen — and you get the global menu: document info, spotlight,
+  auto-read, themes, the key hints, the breadcrumb, help, and the way out.
+  The same global menu opens from the **`≡` at the right end of the status
+  row**, with an ordinary left click, because nobody should have to guess that
+  right-clicking does anything.
+  Inside a menu, `↑`/`↓` move, `Enter` chooses, `Esc` or `q` closes, and a
+  click outside closes without choosing. Moving the pointer over a row lights
+  it. Nothing is lit when a menu opens. **Every row shows the key that does
+  the same thing** — which is how a clicking reader becomes a keyboard reader
+  six months later without ever being told to — and those keys come from the
+  keymap itself, so a menu cannot advertise a shortcut carrel does not bind.
+  A greyed row says what carrel could do here and declines: `Follow the end`
+  on a document that is not growing, `Back` with nothing behind you.
+- **`Back` has a way in that is not a chord.** `Ctrl-O` went back after
+  following a link, and it is not a key anyone guesses. It is the first row of
+  the global menu now.
+- **Copy a local link.** Clicking a link to a file beside it opens it; the
+  menu's `Copy link` puts its path on the clipboard instead. A URL is still
+  copied and never opened.
+
 ### Four things that were quietly wrong
 
 Clicking exposed these; they were harmless only because so little was
@@ -83,6 +110,19 @@ clickable.
 - Moving the pointer no longer repaints the whole screen once per cell crossed.
   Mouse capture asks the terminal to report every motion, and carrel was
   drawing a full frame, plus its two synchronized-update escapes, for each one.
+- **A link underneath an open pane used to be drawn back on top of it.**
+  Terminal hyperlinks are re-emitted after each frame from the coordinates the
+  link was painted at, not from what is on screen — so any panel covering a
+  link put its text back over the panel, in the panel's own colours. Every
+  overlay had this; menus open on top of prose every time, which is how it was
+  finally noticed.
+- **The fold markers were printed wrong in the man page.** `▸` and `▾` rendered
+  as the literal text `5b8` and `5be` in every `man carrel` since they were
+  documented — a two-character escape given a four-character name. `man` hides
+  the warning that says so by default. Fixed, and guarded.
+- Changing the theme now travels the same route as everything else instead of
+  being intercepted by each event loop before the state machine saw it. That
+  was invisible until a menu row needed to do it — and would have done nothing.
 
 ## 2026.9.1
 
