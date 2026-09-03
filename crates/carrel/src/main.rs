@@ -67,6 +67,7 @@ KEYS (home screen):
     gg G                         ends           d     choose a directory
     T                            cycle themes   q     quit
     h F1                         help
+    click                        select a file; double-click opens it
 
 KEYS (while reading):
     j k ↓ ↑ Ctrl-E Ctrl-Y        line            gg G Home End   start / end
@@ -94,7 +95,11 @@ KEYS (while reading):
     X                            jump to the next task
     y                            copy the code block
     F                            follow a document that is still arriving
-    mouse: drag selects and copies; double-click a word, triple-click a block
+    Mouse: click a link, a heading, a fold marker, a row of any list, or
+    any hint along the bottom row. Right-click for a menu of whatever is
+    under the pointer; the ≡ at the end of the status row opens the global
+    one. Drag selects and copies; double-click takes the word, triple-click
+    the block. --no-mouse hands the pointer back to your terminal.
 
     Diffs: a pipe, or a .diff/.patch file, is read as one — a heading per
     commit and per file, hunks as code. A .md file never is. Use it as
