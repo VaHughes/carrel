@@ -2207,6 +2207,14 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
 /// rule from `action.rs`. Elision drops whole segments from the LEFT and
 /// marks the cut with `…`, because the deep end is the part you are in and
 /// the part you navigate from.
+/// The width of the separator painted AFTER `prev`: the filesystem root is
+/// spelled `/` and is its own separator, so a segment after it takes one
+/// bare cell rather than ` / ` — which would paint the root as `/ / tmp`,
+/// and did, in the README demo, until someone looked at the frame.
+fn sep_width(prev: &crate::home::Crumb) -> u16 {
+    if prev.label == "/" { 1 } else { 3 }
+}
+
 fn paint_path_row(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targets) {
     use carrel_core::display_width;
 
@@ -2245,7 +2253,7 @@ fn paint_path_row(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targ
         // easy thing to forget: without it the budget is one cell too
         // generous and the DEEPEST segment — the one this whole row exists
         // to show — is the one that gets clipped off the right edge.
-        let sep = u16::from(i > 0) * 3;
+        let sep = if i == 0 { 0 } else { sep_width(&crumbs[i - 1]) };
         let ellipsis = u16::from(i > 0);
         let want = display_width(&c.label) + sep;
         if used + want + ellipsis > budget {
@@ -2262,7 +2270,13 @@ fn paint_path_row(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targ
         // A separator before every segment except the very first one, and
         // never doubled after the `…`, which already reads as a break.
         if i > first || (first > 0 && i == first) {
-            put(buf, &mut x, area.y, right, " / ", theme::dim());
+            let sep = if i > 0 && crumbs[i - 1].label == "/" {
+                // The root is its own separator: `/ tmp`, not `/ / tmp`.
+                " "
+            } else {
+                " / "
+            };
+            put(buf, &mut x, area.y, right, sep, theme::dim());
         }
         let from = x;
         // The last segment is where you are; the rest are where you can go.
@@ -3302,6 +3316,21 @@ mod tests {
             "rightmost hints dropped first: {foot:?}"
         );
         assert!(foot.contains("j/k scroll"), "leftmost hints kept: {foot:?}");
+    }
+
+    /// A root outside `$HOME` starts with the filesystem root, whose label
+    /// is `/`. It is its own separator: `/ tmp / x`, never `/ / tmp / x`.
+    #[test]
+    fn the_root_segment_is_not_followed_by_a_second_slash() {
+        let d = tempfile::tempdir().unwrap();
+        let app = App::new_home(d.path().into(), vec![], 80, 24);
+        let buf = buffer_of(&app, 80, 24);
+        let row = (0..24)
+            .map(|y| line(&buf, y))
+            .find(|l| l.contains(&*d.path().file_name().unwrap().to_string_lossy()))
+            .expect("the path row");
+        assert!(!row.contains("/ /"), "doubled root: {row:?}");
+        assert!(row.contains("/ tmp /"), "root then one separator: {row:?}");
     }
 
     #[test]

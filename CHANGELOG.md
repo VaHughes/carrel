@@ -2,12 +2,14 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## 2026.9.2
+## 2026.9.3
 
-The first step of the click-first pivot: carrel is meant for people who arrived
-at the terminal because an AI agent lives there and now need to read what it
-wrote. They click. So the things that look clickable are, and the machinery
-every later clickable surface will need is in place underneath.
+The click-first release: carrel is meant for people who arrived at the
+terminal because an AI agent lives there and now need to read what it wrote.
+They click. So the things that look clickable are, the things that are
+clickable look it, there is a menu on the right button and a `≡` to open it
+with the left, and the machinery every later clickable surface will need is
+in place underneath.
 
 ### Things that behave differently
 
@@ -132,6 +134,10 @@ clickable.
   function.
 - **A double-click needed both presses on exactly the same cell.** A hand
   drifts, and the drift turned it into two single clicks. One cell of slack now.
+- **A directory outside your home painted its root twice** — `/ / tmp / docs`
+  in the path row, because the root segment is spelled `/` and the separator
+  after it is too. The root is its own separator now: `/ tmp / docs`. Found by
+  looking at the README demo rather than at a test.
 
 ### Under it
 
