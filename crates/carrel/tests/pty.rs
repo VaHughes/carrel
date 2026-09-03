@@ -893,3 +893,85 @@ fn the_hyperlink_pass_repaints_links_in_the_themes_own_colour() {
         "and nothing repaints it in carrel's amber afterwards"
     );
 }
+
+/// Build `docs/today/current/file.md` under `dir`, with a sibling one level
+/// up so a successful move is visible in the listing.
+fn nested_tree(dir: &Path) {
+    std::fs::create_dir_all(dir.join("docs/today/current")).unwrap();
+    std::fs::write(dir.join("docs/today/current/file.md"), "# A\n\nbody\n").unwrap();
+    std::fs::write(dir.join("docs/today/other.md"), "# B\n\nbody\n").unwrap();
+}
+
+/// The path row navigates: clicking a segment goes there, and the `↑` goes
+/// up one. Both assert on a file that is only listed from the new root, so
+/// a stale frame in the byte stream cannot pass for a move.
+#[test]
+fn the_path_row_walks_the_directory_tree() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    // 76x20 puts the path row on row 8: ` ↑  ~ / docs / today / current`,
+    // with `docs` at columns 9-12 and the arrow at column 2.
+    let a = tempfile::tempdir().unwrap();
+    nested_tree(a.path());
+    let cap = pty_run(
+        "docs/today/current",
+        r"\033[<0;10;8M\033[<0;10;8mq",
+        a.path(),
+    );
+    assert!(
+        cap.contains("today/other.md"),
+        "clicking `docs` must list what is under docs"
+    );
+
+    let b = tempfile::tempdir().unwrap();
+    nested_tree(b.path());
+    let cap = pty_run("docs/today/current", r"\033[<0;2;8M\033[<0;2;8mq", b.path());
+    assert!(
+        cap.contains("other.md"),
+        "the ↑ must go up one, where other.md lives"
+    );
+
+    // The control: without the click, neither file is reachable.
+    let c = tempfile::tempdir().unwrap();
+    nested_tree(c.path());
+    let cap = pty_run("docs/today/current", "q", c.path());
+    assert!(
+        !cap.contains("other.md"),
+        "other.md is not under the starting directory"
+    );
+}
+
+/// The `⌂` on the reader's status row opens the file list — including from a
+/// document opened directly, where `q` quits instead.
+#[test]
+fn the_home_icon_leaves_the_reader_for_the_file_list() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    nested_tree(d.path());
+    // 76x20 with the hint row: the status row is row 19, the ⌂ column 1.
+    let cap = pty_run(
+        "docs/today/current/file.md",
+        r"\033[<0;1;19M\033[<0;1;19mq",
+        d.path(),
+    );
+    assert!(cap.contains('\u{2302}'), "the icon is painted");
+    assert!(
+        cap.contains("a quiet place to read your markdown"),
+        "clicking it lands on the home screen, which a direct open never shows"
+    );
+
+    // The control: `q` alone quits a directly-opened document, as a pager
+    // should — the icon is a different intent, not a rename of that one.
+    let e = tempfile::tempdir().unwrap();
+    nested_tree(e.path());
+    let cap = pty_run("docs/today/current/file.md", "q", e.path());
+    assert!(
+        !cap.contains("a quiet place to read your markdown"),
+        "q still quits rather than opening the home screen"
+    );
+}

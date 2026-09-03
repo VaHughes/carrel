@@ -691,6 +691,9 @@ mod tests {
             A::HomeKey(_) => Chrome,      // `esc back`
             A::PickerChoose => Chrome,    // `enter choose`
             A::MenuOpen { .. } => Chrome, // the `≡`, and every right-click
+            A::HomeUp => Chrome,          // the `↑` at the head of the path row
+            A::HomeCrumb(_) => Chrome,    // a segment of the path row
+            A::GoHome => Chrome,          // the `⌂` on the reader's status row
 
             // --- the document itself ---
             A::LinkOpen(_) => Doc,

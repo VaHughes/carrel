@@ -83,6 +83,21 @@ every later clickable surface will need is in place underneath.
   never a decision: every click resolves from its own coordinates, so a
   terminal that does not report pointer motion loses the highlight and nothing
   else.
+- **The path above the file list is a row of buttons.** The home screen has
+  always shown which directory it is listing; now each segment of it goes
+  there — `~ / Work / carrel / docs`, click `Work` and you are in `Work`. The
+  `↑` at the head of the row goes up one level, and `Backspace` does the same
+  from the keyboard. On a narrow terminal the row drops whole segments from
+  the shallow end and marks the cut with `…`, because the end you are in is
+  the end you navigate from. Walking the tree this way deliberately does
+  **not** change where `carrel` opens next time — `d` is still how a
+  directory becomes your default.
+- **A `⌂` on the reader's status row goes back to the file list.** With a home
+  screen behind the document that is what `q` already did; for a document
+  opened directly, or piped in, `q` quits — so the icon opens a list rooted at
+  the document's own directory instead of ending the program. Both status-row
+  icons stand down on a terminal too narrow to keep the reading percentage,
+  since each has another way in.
 - **One line, on the first run, and then never again.** A launch that has
   never remembered a reading position says `click anything · right-click for a
   menu` where the key hints go. Doing anything at all retires it — and reading

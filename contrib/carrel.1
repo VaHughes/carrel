@@ -317,6 +317,31 @@ on a document that is not growing, or
 .B Back
 with nothing behind you.
 .TP
+.B path row
+The line under the banner on the home screen is the directory you are
+looking at, spelled as its own segments \(em
+.B ~ / Work / carrel / docs
+\(em and each one is a button: click it to go there. The
+.B \[u2191]
+at the head of the row goes up one level, and
+.B Backspace
+does the same from the keyboard. On a narrow terminal the row drops whole
+segments from the shallow end and marks the cut with
+.BR \[u2026] ,
+because the end you are in is the end you navigate from.
+.TP
+.B \[u2302]
+At the left of the reader's status row: back to the file list. With a home
+screen behind the document this is what
+.B q
+does; for a document opened directly, or piped in,
+.B q
+quits and this one opens a list rooted at the document's own directory
+instead. Both icons \(em this and the
+.B \[u2261]
+at the other end \(em are dropped on a terminal too narrow to keep the
+status text, since each has another way in.
+.TP
 .B hover
 Whatever the pointer is over lights up, if it is something a click would act
 on \(em a link, a button in the footer or the status row, a row of an open
@@ -339,6 +364,10 @@ The lamp on the bottom row is a switch: click it to fold the hint footer away,
 or to bring it back \(em the same as
 .BR H .
 .SS Home screen
+.TP
+.B Backspace
+Up one directory. The path row above the list does the same by pointer, a
+segment at a time.
 .TP
 .BR j ", " k ", " \(ua ", " \(da
 Move down and up the list.

@@ -391,8 +391,11 @@ fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
 /// without a working tty source.
 fn run_stdin_or_fallback() -> ExitCode {
     let rx = carrel::stream::spawn();
-    if let Ok(()) = run_stdin(&rx) {
-        ExitCode::SUCCESS
+    if let Ok(home) = run_stdin(&rx) {
+        match home {
+            None => ExitCode::SUCCESS,
+            Some(root) => open_home(Some(&root)),
+        }
     } else {
         // The reader thread owns stdin now; collect through its channel
         // — it reads to EOF regardless, so this is the whole document.
@@ -550,6 +553,12 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
     use std::fmt::Write as _;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let (root, note) = match explicit {
+        // Made absolute here and nowhere else, so `Home::root` is absolute
+        // for the rest of the program. The path row shows it as segments you
+        // can click and `↑` walks up it, and neither means anything for
+        // `docs/today` — `Path::parent` of a one-segment relative path is
+        // `Some("")`, which is not a directory anyone can go to.
+        Some(p) if p.is_relative() => (cwd.join(p), None),
         Some(p) => (p.to_path_buf(), None),
         None => match config::load_root() {
             Some(saved) if saved.is_dir() => (saved, None),
@@ -613,7 +622,11 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
     }
 
     match run(path, &src) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(None) => ExitCode::SUCCESS,
+        // The `⌂`: the reader is closed and the terminal restored, so the
+        // home screen starts exactly as `carrel <DIR>` would. It is an
+        // explicit root, so browsing here never overwrites the saved one.
+        Ok(Some(root)) => open_home(Some(&root)),
         Err(e) => {
             eprintln!("carrel: {e}");
             ExitCode::FAILURE
@@ -1176,7 +1189,7 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
-fn run(path: &Path, src: &str) -> std::io::Result<()> {
+fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
     let theme_note = startup_theme();
     // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
     let diff_ok = diff_forced().unwrap_or_else(|| {
@@ -1234,12 +1247,15 @@ fn run(path: &Path, src: &str) -> std::io::Result<()> {
 /// The reader's event loop, shared by the file entry (`run`) and the piped
 /// entry (`run_stdin`). `stream` is the stdin channel when the document is
 /// arriving live; `None` for a file.
+/// Returns the directory to open the home screen on, when the reader was
+/// asked for the file list and there is no home screen behind it to restore
+/// — `Action::GoHome` from a document opened directly, or piped in.
 fn run_loop(
     mut terminal: ratatui::DefaultTerminal,
     mut app: App,
     mut images: Images,
     mut stream: Option<&Receiver<String>>,
-) -> std::io::Result<()> {
+) -> std::io::Result<Option<PathBuf>> {
     let mut keys = Keys::new();
 
     let mut pending: Option<(u16, u16)> = None;
@@ -1313,6 +1329,13 @@ fn run_loop(
         }
 
         drain_outboxes(&mut app)?;
+        // Asked for the file list with nothing to go back to: leave the
+        // loop and let `main` build one. Nothing here can start a
+        // filesystem walk — that is `run_home`'s machinery, and duplicating
+        // it inside the reader's loop is how the two would drift.
+        if app.goto_home.is_some() {
+            break;
+        }
 
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
         poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
@@ -1336,7 +1359,7 @@ fn run_loop(
 
         apply_debounced_resize(&mut app, &mut pending, &mut deadline);
     }
-    Ok(())
+    Ok(app.goto_home.take())
 }
 
 /// Drain the stdin channel: one re-parse per wake no matter how many chunks
@@ -1398,7 +1421,7 @@ fn poll_stream(
 /// The piped-document reader: the TUI opens immediately and content streams
 /// in. Keys arrive through `/dev/tty` — crossterm's own fallback when stdin
 /// is not a terminal — so this fails cleanly where no tty exists.
-fn run_stdin(rx: &Receiver<String>) -> std::io::Result<()> {
+fn run_stdin(rx: &Receiver<String>) -> std::io::Result<Option<PathBuf>> {
     let theme_note = startup_theme();
     let images = Images::detect();
     let terminal = ratatui::try_init()?;

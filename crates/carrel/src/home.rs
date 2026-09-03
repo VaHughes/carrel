@@ -696,6 +696,22 @@ impl Home {
         Some(self.entries.get(i)?.path.as_path())
     }
 
+    /// The directory one level up, if there is one.
+    ///
+    /// `None` at the filesystem root, and `None` for a relative root with no
+    /// parent component — `Path::new("docs").parent()` is `Some("")`, which
+    /// is not a directory anyone can go to. Roots are absolute by the time
+    /// they reach here (`open_home` joins a relative argument onto the
+    /// working directory), so the second case is defence, not a path anyone
+    /// walks.
+    #[must_use]
+    pub fn parent(&self) -> Option<PathBuf> {
+        self.root
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    }
+
     /// Point at a new root: forget everything and start over.
     ///
     /// The caller restarts the walk; this only resets state.
@@ -732,6 +748,75 @@ const HIT_ROWS: usize = 2;
 
 /// A bound on one `read_dir`, not on the list — the picker scrolls.
 const MAX_MATCHES: usize = 200;
+
+/// One clickable segment of the current root's path.
+///
+/// The home screen has always shown its root as a line of text. Making the
+/// segments clickable is the cheapest possible directory navigation: the
+/// path is already the thing on screen that says where you are, so it may as
+/// well be the thing that takes you somewhere.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Crumb {
+    /// What is painted for this segment — no separators.
+    pub label: String,
+    /// Where clicking it goes.
+    pub path: PathBuf,
+}
+
+/// The root as clickable segments, shallowest first.
+///
+/// `$HOME` collapses into a single `~`, the way the directory picker already
+/// spells it ([`picker_prefill`]) and the way anyone reading a path expects
+/// to see it — a home path is otherwise three segments of pure noise before
+/// the part that means anything.
+#[must_use]
+pub fn crumbs(root: &Path) -> Vec<Crumb> {
+    crumbs_in(root, home_dir().as_deref())
+}
+
+/// [`crumbs`] with the home directory injected, so tests never read the
+/// environment — the same contract as [`directory_matches_in`].
+#[must_use]
+pub fn crumbs_in(root: &Path, home: Option<&Path>) -> Vec<Crumb> {
+    use std::path::Component;
+
+    let mut out: Vec<Crumb> = Vec::new();
+    // Only a real prefix, and never `~` for `$HOME` itself being `/`: that
+    // would swallow the whole filesystem into one segment.
+    let under_home = home
+        .filter(|h| h.is_absolute() && h.parent().is_some() && root.starts_with(h))
+        .map(|h| (h, root.strip_prefix(h).unwrap_or(Path::new(""))));
+    let (mut acc, rest) = match under_home {
+        Some((h, rest)) => {
+            out.push(Crumb {
+                label: "~".to_string(),
+                path: h.to_path_buf(),
+            });
+            (h.to_path_buf(), rest)
+        }
+        None => (PathBuf::new(), root),
+    };
+    for c in rest.components() {
+        let label = match c {
+            Component::RootDir => "/".to_string(),
+            Component::Normal(s) => s.to_string_lossy().into_owned(),
+            // `.` and `..` are not places a reader means to click, and a
+            // Windows prefix cannot occur (the port was declined) — but
+            // `components()` is exhaustive and dropping a segment silently
+            // would make the accumulated path wrong for every segment after
+            // it, so they are kept as they are spelled.
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                c.as_os_str().to_string_lossy().into_owned()
+            }
+        };
+        acc.push(c.as_os_str());
+        out.push(Crumb {
+            label,
+            path: acc.clone(),
+        });
+    }
+    out
+}
 
 /// The directories the picker offers for what has been typed.
 ///
@@ -910,6 +995,60 @@ fn list_dirs(dir: &Path, prefix: &str) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
+    // --- the clickable path row ---
+
+    #[test]
+    fn a_path_becomes_one_crumb_per_segment_deepest_last() {
+        let c = crumbs_in(Path::new("/home/ada/Work/carrel"), None);
+        let labels: Vec<&str> = c.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["/", "home", "ada", "Work", "carrel"]);
+        // Every crumb's path is the prefix it names, so clicking one goes
+        // exactly where the text above it says.
+        assert_eq!(c[0].path, Path::new("/"));
+        assert_eq!(c[2].path, Path::new("/home/ada"));
+        assert_eq!(c.last().unwrap().path, Path::new("/home/ada/Work/carrel"));
+    }
+
+    #[test]
+    fn home_collapses_to_a_single_tilde() {
+        let home = Path::new("/home/ada");
+        let c = crumbs_in(Path::new("/home/ada/Work/carrel"), Some(home));
+        let labels: Vec<&str> = c.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["~", "Work", "carrel"]);
+        assert_eq!(c[0].path, home, "and it still goes home when clicked");
+
+        // $HOME itself is one crumb, not zero.
+        let c = crumbs_in(home, Some(home));
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].label, "~");
+    }
+
+    #[test]
+    fn a_path_outside_home_keeps_its_root() {
+        let c = crumbs_in(Path::new("/etc/nginx"), Some(Path::new("/home/ada")));
+        let labels: Vec<&str> = c.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["/", "etc", "nginx"]);
+    }
+
+    #[test]
+    fn a_home_of_slash_never_swallows_the_filesystem() {
+        // A degenerate `$HOME=/` would otherwise make every path one `~`.
+        let c = crumbs_in(Path::new("/etc"), Some(Path::new("/")));
+        let labels: Vec<&str> = c.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["/", "etc"]);
+    }
+
+    #[test]
+    fn the_parent_is_none_at_the_top_and_never_the_empty_path() {
+        let mut h = Home::new(PathBuf::from("/home/ada/Work"), vec![]);
+        assert_eq!(h.parent(), Some(PathBuf::from("/home/ada")));
+        h.root = PathBuf::from("/");
+        assert_eq!(h.parent(), None, "the filesystem root has no up");
+        // `Path::new("docs").parent()` is `Some("")` — not a place.
+        h.root = PathBuf::from("docs");
+        assert_eq!(h.parent(), None);
+    }
     use super::*;
     use std::time::{Duration, SystemTime};
 

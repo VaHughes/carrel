@@ -263,6 +263,12 @@ pub struct App {
     /// what the real state directory holds. Drives the one-time footer
     /// invitation, and is cleared by the first thing the reader does.
     pub first_run: bool,
+    /// Set by [`Action::GoHome`] when there is no home screen to go back to.
+    ///
+    /// An outbox, like `clipboard` and `theme_cycle`: building a home screen
+    /// means starting a filesystem walk, and the state layer does no I/O.
+    /// The reader's loop breaks on this and hands the root to `open_home`.
+    pub goto_home: Option<std::path::PathBuf>,
     /// Set by [`Action::ThemeCycle`], drained by the event loop.
     ///
     /// The active palette is presentation state and never enters this
@@ -521,6 +527,7 @@ impl App {
             outline: None,
             menu: None,
             hover: None,
+            goto_home: None,
             first_run: false,
             theme_cycle: false,
             info: false,
@@ -2054,6 +2061,36 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             }
             return Outcome::Redraw;
         }
+        // Walking the path row. Deliberately NOT persisted: `d` is how a
+        // directory becomes your default and a remembered place, and
+        // clicking through a few folders to find something is not that. The
+        // walk restarts because `run_home` compares `home.root` to the root
+        // it is scanning, so changing it here is the whole transition.
+        Action::HomeUp => {
+            let Some(up) = app.home().and_then(crate::home::Home::parent) else {
+                if let Some(h) = app.home_mut() {
+                    h.note = Some("already at the top".into());
+                }
+                return Outcome::Redraw;
+            };
+            return go_to_root(app, up);
+        }
+        Action::HomeCrumb(i) => {
+            let Some(target) = app
+                .home()
+                .map(|h| crate::home::crumbs(&h.root))
+                .and_then(|c| c.get(i).map(|c| c.path.clone()))
+            else {
+                return Outcome::Idle;
+            };
+            // Clicking the segment you are already in is a no-op rather than
+            // a rescan that scrolls the list back to the top.
+            if app.home().is_some_and(|h| h.root == target) {
+                return Outcome::Idle;
+            }
+            return go_to_root(app, target);
+        }
+
         Action::PickerChoose => {
             // Enter follows the HIGHLIGHT, and falls back to the typed path
             // only when nothing matched it — so a path typed in full still
@@ -2343,6 +2380,28 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::CloseFile => close_file(app),
+
+        // The `⌂`. With a home screen behind this document it is exactly
+        // what `q` does; without one — a document opened directly, or piped
+        // in — `q` quits, and this does not. A reader who clicked an icon
+        // labelled "the file list" and got an exited program would be right
+        // to be annoyed.
+        Action::GoHome => {
+            if app.home_stash.is_some() {
+                return close_file(app);
+            }
+            app.save_position();
+            // `Path::new("doc.md").parent()` is `Some("")`, not `None` — the
+            // same trap `library_root` documents. An empty parent means the
+            // working directory, and `open_home` makes that absolute.
+            let dir = app.doc_dir();
+            app.goto_home = Some(if dir.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                dir
+            });
+            Outcome::Redraw
+        }
 
         Action::ScrollTo(row) => {
             app.view.scroll_to(&app.doc, &app.layout, row, h);
@@ -3118,6 +3177,26 @@ fn forward_rows(app: &App) -> Vec<ForwardRow> {
 
 /// Back to the library, if we came from it. Entries, filter, and selection
 /// are exactly as they were left; opened directly, `q` quits like a pager.
+/// Point the home screen at `root`, with whatever the index cache already
+/// knows about it painted first.
+///
+/// The picker's own choose path does this too and then PERSISTS the root;
+/// this one does not, which is the difference between "take me here" and
+/// "this is where I read".
+fn go_to_root(app: &mut App, root: std::path::PathBuf) -> Outcome {
+    if !root.is_dir() {
+        if let Some(h) = app.home_mut() {
+            h.note = Some(format!("not a directory: {}", root.display()));
+        }
+        return Outcome::Redraw;
+    }
+    let cached = crate::scan::load_cache(&root);
+    if let Some(h) = app.home_mut() {
+        h.set_root(root, cached);
+    }
+    Outcome::Redraw
+}
+
 fn close_file(app: &mut App) -> Outcome {
     app.save_position();
     let Some(h) = app.home_stash.take() else {
@@ -3533,6 +3612,121 @@ mod tests {
     /// document actually scrolls, which several tests below depend on.
     fn app() -> App {
         App::new("t.md".into(), Document::parse(SRC), 20, 6)
+    }
+
+    // --- walking the directory tree ---------------------------------------
+
+    /// A real tree, because every one of these transitions checks `is_dir`.
+    fn tree() -> (tempfile::TempDir, App) {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("docs/today/current")).unwrap();
+        let root = d.path().join("docs/today/current");
+        let a = App::new_home(root, vec![], 80, 24);
+        (d, a)
+    }
+
+    #[test]
+    fn the_up_arrow_walks_one_level_and_stops_at_the_top() {
+        let (d, mut a) = tree();
+        update(&mut a, Action::HomeUp);
+        assert_eq!(a.home().unwrap().root, d.path().join("docs/today"));
+        update(&mut a, Action::HomeUp);
+        assert_eq!(a.home().unwrap().root, d.path().join("docs"));
+
+        // Walk to the filesystem root and press again: a note, not a panic
+        // and not a move to nowhere.
+        for _ in 0..40 {
+            update(&mut a, Action::HomeUp);
+        }
+        assert_eq!(a.home().unwrap().root, std::path::Path::new("/"));
+        update(&mut a, Action::HomeUp);
+        assert_eq!(a.home().unwrap().root, std::path::Path::new("/"));
+        assert_eq!(
+            a.home().unwrap().note.as_deref(),
+            Some("already at the top")
+        );
+    }
+
+    #[test]
+    fn clicking_a_path_segment_goes_to_that_segment() {
+        let (d, mut a) = tree();
+        let crumbs = crate::home::crumbs(&a.home().unwrap().root);
+        // The one that says `docs`, wherever the temp dir put it.
+        let i = crumbs
+            .iter()
+            .position(|c| c.label == "docs")
+            .expect("the path contains docs");
+        update(&mut a, Action::HomeCrumb(i));
+        assert_eq!(a.home().unwrap().root, d.path().join("docs"));
+    }
+
+    #[test]
+    fn clicking_the_segment_you_are_in_does_nothing() {
+        let (_d, mut a) = tree();
+        let before = a.home().unwrap().root.clone();
+        let last = crate::home::crumbs(&before).len() - 1;
+        // Idle, not Redraw: a rescan here would scroll the list back to the
+        // top for a click that asked for nothing.
+        assert_eq!(update(&mut a, Action::HomeCrumb(last)), Outcome::Idle);
+        assert_eq!(a.home().unwrap().root, before);
+        // And an index from a frame that no longer describes this root.
+        assert_eq!(update(&mut a, Action::HomeCrumb(99)), Outcome::Idle);
+        assert_eq!(a.home().unwrap().root, before);
+    }
+
+    #[test]
+    fn walking_the_tree_never_rewrites_the_saved_default() {
+        let (d, mut a) = tree();
+        let cfg = tempfile::tempdir().unwrap();
+        a.config_dir = Some(cfg.path().into());
+        update(&mut a, Action::HomeUp);
+        assert_eq!(a.home().unwrap().root, d.path().join("docs/today"));
+        // `d` is how a directory becomes your default. Clicking through a
+        // few folders to find something is not that, and a browse that
+        // silently changed where `carrel` opens next time would be a nasty
+        // surprise.
+        assert_eq!(crate::config::load_root_in(cfg.path()), None);
+    }
+
+    #[test]
+    fn the_home_icon_restores_the_home_screen_when_there_is_one() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.md");
+        std::fs::write(&f, "# A\n\nbody\n").unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 80, 24);
+        a.open_path(&f).expect("opens");
+        assert!(!a.is_home(), "reading now");
+        assert_eq!(update(&mut a, Action::GoHome), Outcome::Redraw);
+        assert!(a.is_home(), "and back to the list");
+        assert!(a.goto_home.is_none(), "no new home screen was needed");
+    }
+
+    #[test]
+    fn the_home_icon_asks_for_a_new_list_when_the_file_was_opened_directly() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.md");
+        std::fs::write(&f, "# A\n\nbody\n").unwrap();
+        let mut a = App::new("a.md".into(), Document::parse("# A"), 80, 24);
+        a.file = Some(f);
+        // `q` quits here — a pager should. The icon must not.
+        assert_eq!(update(&mut a, Action::GoHome), Outcome::Redraw);
+        assert_eq!(
+            a.goto_home.as_deref(),
+            Some(d.path()),
+            "rooted at the document's own directory"
+        );
+        assert!(!a.is_home(), "the state layer does no filesystem walk");
+    }
+
+    #[test]
+    fn a_pathless_document_asks_for_the_working_directory() {
+        let mut a = App::new("(stdin)".into(), Document::parse("# A"), 80, 24);
+        update(&mut a, Action::GoHome);
+        assert_eq!(
+            a.goto_home.as_deref(),
+            Some(std::path::Path::new(".")),
+            "never the empty path, which `Path::parent` hands back for a bare name"
+        );
     }
 
     // --- menus ------------------------------------------------------------

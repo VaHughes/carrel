@@ -164,6 +164,24 @@ pub enum Action {
     ForwardOpenAt(u32),
     /// Jump to a heading block — the margin outline's click.
     OutlineJumpTo(carrel_core::BlockIdx),
+    /// Go to the directory one level above the home screen's root — the
+    /// `↑` at the head of the path row.
+    HomeUp,
+    /// Go to one of the path row's segments, by index into
+    /// [`crate::home::crumbs`]. Clamped by the receiver, so a segment from a
+    /// frame that no longer describes the root is inert rather than wrong.
+    ///
+    /// Deliberately an index and not a path: `Action` is `Copy`, and every
+    /// list in this enum is addressed the same way.
+    HomeCrumb(usize),
+    /// From the reader, back to the directory screen — the `⌂` on the status
+    /// row.
+    ///
+    /// Not [`Action::CloseFile`]: `q` QUITS when the document was opened
+    /// directly, because a pager should. This one always lands on the file
+    /// list, rooted at the document's own directory when there is no home
+    /// screen behind it to go back to.
+    GoHome,
     /// Open a continue-reading row by index.
     HomeResume(usize),
     /// Toggle a bookmark at the current position.

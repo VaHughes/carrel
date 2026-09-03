@@ -789,3 +789,92 @@ fn places_lead_the_empty_picker_menu_and_a_choice_becomes_one() {
     assert_eq!(places.first(), Some(&target), "{places:?}");
     assert!(places.contains(&std::path::PathBuf::from("/fav/notes")));
 }
+
+/// The path row's targets must cover the segments they name, edge to edge.
+///
+/// This is the round trip that matters for the click-first pivot: the
+/// painter walks left to right accumulating `x` past separators of its own,
+/// and any hit-test that re-derived those offsets would drift. Verified to
+/// fail on a one-cell shift of the recorded zone.
+#[test]
+fn every_path_segment_target_covers_its_own_label() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("docs/today/current")).unwrap();
+    let root = d.path().join("docs/today/current");
+    let app = App::new_home(root.clone(), vec![], 100, 24);
+
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer();
+
+    let crumbs = carrel::home::crumbs(&root);
+    let mut seen = 0;
+    for target in painted.targets.as_slice() {
+        let Action::HomeCrumb(i) = target.action else {
+            continue;
+        };
+        let z = target.zone;
+        let text: String = (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect();
+        assert_eq!(
+            text, crumbs[i].label,
+            "segment {i} claims {:?} and covers {text:?}",
+            crumbs[i].label
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, crumbs.len(), "every segment registers exactly once");
+
+    // And the up arrow sits on its own glyph.
+    let up = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::HomeUp)
+        .expect("there is a directory above this one");
+    assert_eq!(buf[(up.zone.x, up.zone.y)].symbol(), "\u{2191}");
+}
+
+/// A path too long for the terminal drops whole segments from the LEFT and
+/// says so with a `…` — the deep end is where you are and where you navigate
+/// from, so it is the end that survives.
+#[test]
+fn a_long_path_elides_from_the_shallow_end() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let d = tempfile::tempdir().unwrap();
+    let deep = d
+        .path()
+        .join("alpha-directory/beta-directory/gamma-directory/delta-directory");
+    std::fs::create_dir_all(&deep).unwrap();
+    let app = App::new_home(deep, vec![], 40, 24);
+
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(40, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer();
+
+    let row: String = (0..40).map(|x| buf[(x, 7)].symbol().to_string()).collect();
+    assert!(row.contains('\u{2026}'), "the cut is marked: {row:?}");
+    assert!(
+        row.contains("delta-directory"),
+        "the directory you are in survives: {row:?}"
+    );
+    // Nothing painted past the edge, and no target off the row.
+    for target in painted.targets.as_slice() {
+        assert!(
+            target.zone.x + target.zone.w <= 40,
+            "{target:?} runs off the terminal"
+        );
+    }
+}

@@ -235,6 +235,10 @@ impl Keys {
                 KeyCode::Char('T') => Some(Action::ThemeCycle),
                 KeyCode::Char('H') => Some(Action::HintsToggle),
                 KeyCode::Char('d') => Some(Action::PickerOpen),
+                // Every file manager's "up one" key, and free here: Normal
+                // mode has no text to delete. In the filter and the picker
+                // it stays a backspace, which is what it must be.
+                KeyCode::Backspace => Some(Action::HomeUp),
                 // 1-3 open the continue-reading rows, which are numbered on
                 // screen. Normal mode only — in the filter they are characters.
                 KeyCode::Char(c @ '1'..='3') => Some(Action::HomeResume(c as usize - '1' as usize)),
@@ -429,6 +433,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::HomeFilterMode => "i",
         A::HomeSearchMode => "/",
         A::HomeResume(_) => "1 2 3",
+        A::HomeUp => "Backspace",
         A::PickerOpen => "d",
         A::OutlineJumpTo(_) => "click",
         A::BacklinksToggle => "L",
@@ -447,6 +452,8 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::OutlineJumpAt(_)
         | A::Absorb
         | A::Hover(_)
+        | A::HomeCrumb(_)
+        | A::GoHome
         | A::MenuOpen { .. }
         | A::MenuMove(_)
         | A::MenuHover(_)
@@ -549,8 +556,10 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("/", "search inside files"),
     ("Esc", "clear filter, then leave it"),
     ("§", "other"),
-    ("right-click", "a menu, anywhere"),
     ("d", "directory: type, from here"),
+    ("Backspace", "up one directory"),
+    ("click a segment", "of the path row: go there"),
+    ("right-click", "a menu, anywhere"),
     ("T", "cycle themes"),
     ("h F1", "this help (F1 while typing)"),
     ("H", "hide / show the key hints"),

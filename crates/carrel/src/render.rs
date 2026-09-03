@@ -1709,11 +1709,32 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
+    // **The icons are the first thing to go when the row is tight.** They
+    // cost two columns each, and on a narrow terminal that is the difference
+    // between showing the reading percentage and not. An affordance that
+    // pushes the thing it sits beside off the screen is not an improvement,
+    // and both of these have another way in — `q`, and a right-click
+    // anywhere in the chrome.
+    let icons = icons_fit(area.width, lx, &left, &right);
+    let lx = if icons {
+        // The way back to the file list, at the head of the row where the
+        // filename is — which is the part of the chrome that says which
+        // document this is, and therefore where "a different one" belongs.
+        buf.set_stringn(lx, area.y, "\u{2302}", 1, theme::lamp());
+        targets.push(Action::GoHome, Zone::new(lx, area.y, 1, 1), Z_CHROME);
+        lx + 2
+    } else {
+        lx
+    };
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
     // The launcher takes the last column before anything else is placed, so
     // the status text is measured against what is left rather than painted
     // over it.
-    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
+    let stop = if icons {
+        paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets)
+    } else {
+        area.right()
+    };
     // Display width, never a scalar count — `right` is an arbitrary URL when a
     // link is selected and `left` is a user's filename, so either can carry
     // CJK or emoji. `put` nine lines down already measures this way, and
@@ -1847,6 +1868,18 @@ fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
             );
         }
     }
+}
+
+/// Is there room on the status row for its icons AND both ends of its text?
+///
+/// The `⌂` and the `≡` cost two columns each — one for the glyph and one of
+/// air. On a wide terminal that is nothing; at thirty columns it is the
+/// reading percentage.
+fn icons_fit(width: u16, lx: u16, left: &str, right: &str) -> bool {
+    use carrel_core::display_width;
+    let text = display_width(left) + display_width(right);
+    // One column of gap between the two ends, so they never touch.
+    lx.saturating_add(text).saturating_add(5) <= width
 }
 
 /// When the hints are hidden, the status row's left edge shows the folded,
@@ -2082,12 +2115,14 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
             y += 1;
         }
 
-        // The active root, always visible, so the precedence rule is never a
-        // mystery: explicit argument > saved root > current directory.
-        let root = home.root.display().to_string();
-        buf.set_stringn(area.x + 1, y, &root, area.width as usize, theme::dim());
-        y += 1;
+        y += 1; // the path row, painted below where the buffer is free again
     }
+    paint_path_row(
+        frame,
+        home,
+        Rect::new(area.x, y - 1, area.width, 1),
+        targets,
+    );
 
     y = paint_resume(frame, home, area, y);
 
@@ -2127,6 +2162,91 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
 
     if home.mode == HomeMode::Picker {
         paint_picker(frame, home, area);
+    }
+}
+
+/// The active root as a row of buttons: `↑  ~ / Work / carrel / docs`.
+///
+/// This line has always been here — the root is shown so the precedence rule
+/// (explicit argument > saved root > current directory) is never a mystery.
+/// It is the one thing on the home screen that already says where you are,
+/// so it is the natural thing to make say where you are going.
+///
+/// **The zones are recorded, not inverted.** Where a segment lands depends on
+/// the lengths of the segments before it, which is the data being drawn — the
+/// rule from `action.rs`. Elision drops whole segments from the LEFT and
+/// marks the cut with `…`, because the deep end is the part you are in and
+/// the part you navigate from.
+fn paint_path_row(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targets) {
+    use carrel_core::display_width;
+
+    if area.width < 4 {
+        return;
+    }
+    let crumbs = crate::home::crumbs(&home.root);
+    let up = home.parent().is_some();
+    let right = area.right();
+    let buf = frame.buffer_mut();
+    let mut x = area.x + 1;
+
+    if up {
+        // The parent is usually one segment to the left on this very row —
+        // but not when the row has been elided, and not when that segment is
+        // long and the eye has to hunt for it. One fixed target, always in
+        // the same place, is worth the two cells.
+        let from = x;
+        put(buf, &mut x, area.y, right, "↑", theme::lamp());
+        targets.push(
+            Action::HomeUp,
+            Zone::new(from, area.y, x.saturating_sub(from), 1),
+            Z_CHROME,
+        );
+    }
+    put(buf, &mut x, area.y, right, "  ", Style::default());
+
+    // How many segments fit, counting from the deep end. `sep` is the ` / `
+    // between two of them; the `…` replaces everything dropped.
+    let budget = right.saturating_sub(x);
+    let mut keep = 0usize;
+    let mut used = 0u16;
+    for (i, c) in crumbs.iter().enumerate().rev() {
+        // The ` / ` that precedes this segment, and the `…` that will stand
+        // in for everything still to its left. Reserving the ellipsis is the
+        // easy thing to forget: without it the budget is one cell too
+        // generous and the DEEPEST segment — the one this whole row exists
+        // to show — is the one that gets clipped off the right edge.
+        let sep = u16::from(i > 0) * 3;
+        let ellipsis = u16::from(i > 0);
+        let want = display_width(&c.label) + sep;
+        if used + want + ellipsis > budget {
+            break;
+        }
+        used += want;
+        keep += 1;
+    }
+    let first = crumbs.len().saturating_sub(keep.max(1));
+    if first > 0 {
+        put(buf, &mut x, area.y, right, "…", theme::dim());
+    }
+    for (i, c) in crumbs.iter().enumerate().skip(first) {
+        // A separator before every segment except the very first one, and
+        // never doubled after the `…`, which already reads as a break.
+        if i > first || (first > 0 && i == first) {
+            put(buf, &mut x, area.y, right, " / ", theme::dim());
+        }
+        let from = x;
+        // The last segment is where you are; the rest are where you can go.
+        let style = if i + 1 == crumbs.len() {
+            theme::wordmark()
+        } else {
+            theme::dim()
+        };
+        put(buf, &mut x, area.y, right, &c.label, style);
+        targets.push(
+            Action::HomeCrumb(i),
+            Zone::new(from, area.y, x.saturating_sub(from), 1),
+            Z_CHROME,
+        );
     }
 }
 
@@ -2266,10 +2386,15 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
-    // The home screen gets the same launcher as the reader: it is the one
+    // The home screen gets the same launcher as the reader — it is the one
     // affordance that says a menu exists at all, and a reader who has not
-    // opened a file yet is the one most likely to need it.
-    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
+    // opened a file yet is the one most likely to need it — and drops it on
+    // the same terms.
+    let stop = if icons_fit(area.width, lx, &left, &right) {
+        paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets)
+    } else {
+        area.right()
+    };
     // Display width, never a scalar count — the same rule as the reader's
     // status row, where a wide filename or URL once collided with the count.
     let rw = carrel_core::display_width(&right);
