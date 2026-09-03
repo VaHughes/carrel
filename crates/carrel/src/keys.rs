@@ -343,6 +343,137 @@ impl Keys {
         };
         Some(Action::SearchKey(k))
     }
+
+    /// Menu bindings. Deliberately four keys and no more (spec §3.2): a menu
+    /// is a short list you are looking at, so anything beyond moving,
+    /// choosing and leaving is a key that does something invisible.
+    #[must_use]
+    pub fn map_menu(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            // The Ctrl pair works here for the same reason it works in the
+            // pickers: a hand that never leaves the home row.
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::MenuMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::MenuMove(-1)),
+            KeyCode::Down => Some(Action::MenuMove(1)),
+            KeyCode::Up => Some(Action::MenuMove(-1)),
+            KeyCode::Enter => Some(Action::MenuChoose),
+            // `q` closes every other pane carrel has, so it closes this one
+            // too. Esc is the menu convention; `q` is carrel's, and a reader
+            // who has learned one should not be trapped by the other.
+            KeyCode::Char('q') | KeyCode::Esc => Some(Action::MenuClose),
+            _ => None,
+        }
+    }
+}
+
+/// The key a menu row advertises for an action, or `None` when the action
+/// has no keyboard binding at all.
+///
+/// **The match is exhaustive**, so a new `Action` fails to compile until
+/// someone decides which key documents it — the same discipline the help
+/// tables are held to, and for the same reason: a shortcut printed beside a
+/// menu item teaches a key, and teaching the wrong one is worse than
+/// teaching none. Where several keys reach an action the FORWARD one is
+/// named, which is the rule `Hint::click` already follows.
+///
+/// Multi-key rows read as they do in the help sheet (`"j k"`, `"h F1"`);
+/// [`first`] takes the one a menu should print.
+#[must_use]
+#[allow(clippy::too_many_lines)] // one arm per Action; that IS the guarantee
+#[allow(clippy::match_same_arms)] // the same key documenting reader + home is the point
+pub const fn accel(a: Action) -> Option<&'static str> {
+    use Action as A;
+    Some(match a {
+        A::Scroll(..) => "j k",
+        A::GoToStart => "gg",
+        A::GoToEnd => "G",
+        A::GoToRow(_) => "42G",
+        A::BlockStep(_) => "{ }",
+        A::Recenter(_) => "zz",
+        A::SearchOpen(_) => "/ ?",
+        A::MatchStep(_) => "n N",
+        A::LinkStep(_) => "Tab",
+        A::LinkFollow => "Enter",
+        A::Back => "Ctrl-O",
+        A::Dismiss => "Esc",
+        A::CloseFile => "q",
+        A::ThemeCycle => "T",
+        A::TableToggle => "t",
+        A::RenderedToggle => "r",
+        A::MarkToggle => "m",
+        A::MarkNext => "'",
+        A::MarkListToggle => "\"",
+        A::MarkListMove(_) | A::MarkListJump => "\"",
+        A::FootnoteJump => "%",
+        A::FollowToggle => "F",
+        A::AutoToggle => "A",
+        A::AutoTick => return None,
+        A::CodeStep(_) => "] [",
+        A::TaskStep(_) => "X",
+        A::YankBlock => "y",
+        A::HelpToggle => "h F1",
+        A::HintsToggle => "H",
+        A::BreadcrumbToggle => "B",
+        A::InfoToggle => "I",
+        A::FocusToggle => "S",
+        A::FoldToggle => "za",
+        A::FoldAll => "zM",
+        A::UnfoldAll => "zR",
+        A::OutlineToggle => "o",
+        A::Quit => "Q",
+        A::HomeMove(_) => "j k",
+        A::HomeGo(_) => "gg",
+        A::HomeOpen => "Enter",
+        A::HomeFilterMode => "i",
+        A::HomeSearchMode => "/",
+        A::HomeResume(_) => "1 2 3",
+        A::PickerOpen => "d",
+        A::OutlineJumpTo(_) => "click",
+        A::BacklinksToggle => "L",
+        A::BacklinksMove(_) | A::BacklinksOpen => "L",
+        A::ForwardToggle => "l",
+        A::ForwardMove(_) | A::ForwardOpen => "l",
+        // No key of their own: internal, pointer-driven, or reachable only
+        // through the menu that names them in words.
+        A::SearchKey(_)
+        | A::LinkOpen(_)
+        | A::LinkCopy
+        | A::FoldAt(_)
+        | A::BacklinksOpenAt(_)
+        | A::ForwardOpenAt(_)
+        | A::MarkListJumpAt(_)
+        | A::OutlineJumpAt(_)
+        | A::Absorb
+        | A::MenuOpen { .. }
+        | A::MenuMove(_)
+        | A::MenuHover(_)
+        | A::MenuChoose
+        | A::MenuPick(_)
+        | A::MenuClose
+        | A::HomeSelect(_)
+        | A::PickerSelect(_)
+        | A::HomeKey(_)
+        | A::OutlineKey(_)
+        | A::OutlineMove(_)
+        | A::OutlineJump
+        | A::ScrollTo(_)
+        | A::SelectAnchor(_)
+        | A::SelectDrag(_)
+        | A::SelectRelease
+        | A::SelectWord(_)
+        | A::SelectBlock(_)
+        | A::HomeNormalMode
+        | A::PickerChoose
+        | A::PickerCancel => return None,
+    })
+}
+
+/// The one key a menu prints from an [`accel`] row: the first.
+#[must_use]
+pub fn first(keys: &str) -> &str {
+    keys.split_whitespace().next().unwrap_or(keys)
 }
 
 /// The help sheet, reader side. A `§` row opens a group. The drift test
@@ -1075,95 +1206,14 @@ mod tests {
         );
     }
 
-    /// Every Action variant must either appear in a help table or be listed
-    /// as deliberately undocumented. The match is EXHAUSTIVE: a new variant
-    /// fails to compile until someone decides which it is — help that lies
-    /// is worse than no help.
+    /// Every Action variant must either name a key or be listed as
+    /// deliberately unbound. The exhaustive match now lives in [`accel`],
+    /// which the menus read too — so this test guards the help tables AND
+    /// every accelerator a menu prints, from one place.
     #[test]
-    #[allow(clippy::too_many_lines)] // one arm per Action; that IS the test
     fn every_action_is_documented_or_deliberately_not() {
         use crate::action::Action as A;
-        // Same key documenting two variants (reader + home) is the point.
-        #[allow(clippy::match_same_arms)]
-        fn doc_key(a: A) -> Option<&'static str> {
-            Some(match a {
-                A::Scroll(..) => "j k",
-                A::GoToStart => "gg",
-                A::GoToEnd => "G",
-                A::GoToRow(_) => "42G",
-                A::BlockStep(_) => "{ }",
-                A::Recenter(_) => "zz",
-                A::SearchOpen(_) => "/ ?",
-                A::MatchStep(_) => "n N",
-                A::LinkStep(_) => "Tab",
-                A::LinkFollow => "Enter",
-                A::Back => "Ctrl-O",
-                A::Dismiss => "Esc",
-                A::CloseFile => "q",
-                A::ThemeCycle => "T",
-                A::TableToggle => "t",
-                A::RenderedToggle => "r",
-                A::MarkToggle => "m",
-                A::MarkNext => "'",
-                A::MarkListToggle => "\"",
-                A::MarkListMove(_) | A::MarkListJump => "\"",
-                A::FootnoteJump => "%",
-                A::FollowToggle => "F",
-                A::AutoToggle => "A",
-                A::AutoTick => return None,
-                A::CodeStep(_) => "] [",
-                A::TaskStep(_) => "X",
-                A::YankBlock => "y",
-                A::HelpToggle => "h F1",
-                A::HintsToggle => "H",
-                A::BreadcrumbToggle => "B",
-                A::InfoToggle => "I",
-                A::FocusToggle => "S",
-                A::FoldToggle => "za",
-                A::FoldAll => "zM",
-                A::UnfoldAll => "zR",
-                A::OutlineToggle => "o",
-                A::Quit => "Q",
-                A::HomeMove(_) => "j k",
-                A::HomeGo(_) => "gg",
-                A::HomeOpen => "Enter",
-                A::HomeFilterMode => "i",
-                A::HomeSearchMode => "/",
-                A::HomeResume(_) => "1 2 3",
-                A::OutlineJumpTo(_) => "click",
-                A::BacklinksToggle => "L",
-                A::BacklinksMove(_) | A::BacklinksOpen => "L",
-                A::ForwardToggle => "l",
-                A::ForwardMove(_) | A::ForwardOpen => "l",
-                // Deliberately undocumented: internal or pointer-driven.
-                // (The mouse gestures ARE documented — as prose rows in the
-                // help table's mouse group, not as key bindings.)
-                A::SearchKey(_)
-                | A::LinkOpen(_)
-                | A::FoldAt(_)
-                | A::BacklinksOpenAt(_)
-                | A::ForwardOpenAt(_)
-                | A::MarkListJumpAt(_)
-                | A::OutlineJumpAt(_)
-                | A::Absorb
-                | A::HomeSelect(_)
-                | A::PickerSelect(_)
-                | A::HomeKey(_)
-                | A::OutlineKey(_)
-                | A::OutlineMove(_)
-                | A::OutlineJump
-                | A::ScrollTo(_)
-                | A::SelectAnchor(_)
-                | A::SelectDrag(_)
-                | A::SelectRelease
-                | A::SelectWord(_)
-                | A::SelectBlock(_)
-                | A::HomeNormalMode
-                | A::PickerOpen
-                | A::PickerChoose
-                | A::PickerCancel => return None,
-            })
-        }
+        let doc_key = accel;
         let all_rows: String = READER_HELP
             .iter()
             .chain(HOME_HELP)
@@ -1196,6 +1246,7 @@ mod tests {
             A::HomeOpen,
             A::HomeFilterMode,
             A::HomeSearchMode,
+            A::PickerOpen,
         ] {
             if let Some(key) = doc_key(a) {
                 let first = key.split_whitespace().next().unwrap();

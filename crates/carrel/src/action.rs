@@ -209,6 +209,38 @@ pub enum Action {
     OutlineJumpAt(u32),
     /// Jump to an absolute visual row from a pointer position.
     ScrollTo(u32),
+    /// Open a menu anchored at `(col, row)`.
+    ///
+    /// `byte` is the doc byte under the pointer: `Some` opens the context
+    /// menu built for it, `None` the global one. The frontend decides which
+    /// by asking whether the pointer was on text at all — so a right-click
+    /// in the chrome, in the margin, or below the last line all reach the
+    /// global menu, and everything the document paints reaches the other.
+    MenuOpen {
+        at: (u16, u16),
+        byte: Option<u32>,
+    },
+    /// Move the menu's selection. Clamps at both ends — a menu is short
+    /// enough that wrapping only ever surprises.
+    MenuMove(i32),
+    /// Put the selection on an absolute item index: what the pointer does by
+    /// hovering. An index that is out of range, or on a gap or a greyed row,
+    /// clears the selection rather than clamping onto a neighbour — the
+    /// pointer is over nothing, and saying so is the honest answer.
+    MenuHover(u32),
+    /// Act on the selected item, and close.
+    MenuChoose,
+    /// Act on an item by absolute index — a click, which already said which
+    /// row it meant. See [`Action::BacklinksOpenAt`].
+    MenuPick(u32),
+    /// Close without acting.
+    MenuClose,
+    /// Copy the selected link's destination.
+    ///
+    /// [`Action::LinkFollow`] already copies an EXTERNAL destination, because
+    /// there is nothing else a reader may do with one. This is the other
+    /// half: copy a local one instead of opening it.
+    LinkCopy,
     /// A click an overlay swallowed.
     ///
     /// A pane owns its rectangle the way it owns the keyboard: a click on a

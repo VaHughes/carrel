@@ -26,6 +26,7 @@ pub mod keys;
 pub mod layout;
 pub mod links;
 pub mod math_art;
+pub mod menu;
 pub mod omarchy;
 pub mod plain;
 pub mod render;

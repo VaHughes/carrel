@@ -1278,13 +1278,10 @@ fn run_loop(
             let Ok(ev) = event::read() else { break };
             match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    let action = key_action(&mut keys, &app, k);
-                    if let Some(action) = action {
-                        if action == carrel::action::Action::ThemeCycle {
-                            cycle_theme_now(&mut app);
-                        } else if update(&mut app, action) == Outcome::Quit {
-                            break;
-                        }
+                    if let Some(action) = key_action(&mut keys, &app, k)
+                        && update(&mut app, action) == Outcome::Quit
+                    {
+                        break;
                     }
                 }
                 Event::Mouse(m) => match mouse_action(m, &app, &painted.targets, &mut ptr) {
@@ -1594,13 +1591,10 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
             let Ok(ev) = event::read() else { break };
             match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    let action = key_action(&mut keys, &app, k);
-                    if let Some(a) = action {
-                        if a == carrel::action::Action::ThemeCycle {
-                            cycle_theme_now(&mut app);
-                        } else if update(&mut app, a) == Outcome::Quit {
-                            break;
-                        }
+                    if let Some(a) = key_action(&mut keys, &app, k)
+                        && update(&mut app, a) == Outcome::Quit
+                    {
+                        break;
                     }
                 }
                 Event::Mouse(m) => match home_mouse_action(m, &app, &painted.targets, &mut ptr) {
@@ -1671,7 +1665,11 @@ fn apply_debounced_resize(
 /// the precedence: innermost overlay first, the home screen next, the reader
 /// last.
 fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action::Action> {
-    if app.backlinks.is_some() {
+    // A menu is the last thing opened, so it is the first thing that answers
+    // — above every pane, and above the home screen's typing modes.
+    if app.menu.is_some() {
+        Keys::map_menu(k)
+    } else if app.backlinks.is_some() {
         Keys::map_backlinks(k)
     } else if app.forward.is_some() {
         Keys::map_forward(k)
@@ -1697,6 +1695,14 @@ fn drain_outboxes(app: &mut App) -> std::io::Result<()> {
     if let Some(text) = app.clipboard.take() {
         osc52(&text)?;
     }
+    // The palette is presentation state and never enters `App`, so `update`
+    // records the REQUEST and the loop performs it. It used to be a branch
+    // in each loop taken before `update` ever ran, which meant a theme
+    // change could only ever come from a key — a menu row that cycles
+    // themes would have been silently inert.
+    if std::mem::take(&mut app.theme_cycle) {
+        cycle_theme_now(app);
+    }
     Ok(())
 }
 
@@ -1716,6 +1722,80 @@ fn coalescing_motion(m: MouseEvent) -> bool {
     matches!(m.kind, MouseEventKind::Moved) && event::poll(Duration::ZERO).unwrap_or(false)
 }
 
+/// Should a right-click here open a menu, and which one?
+///
+/// A pane owns the pointer while it is up exactly as it owns the keyboard,
+/// so a right-click into one is inert rather than stacking a second modal
+/// thing on screen with no rule for which answers. Otherwise: the doc byte
+/// under the pointer picks the context menu, and its absence — the chrome,
+/// the margin, the blank below the last line, the whole home screen — picks
+/// the global one.
+fn open_menu_at(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
+    if app.help.is_some()
+        || app.outline.is_some()
+        || app.backlinks.is_some()
+        || app.forward.is_some()
+        || app.mark_list.is_some()
+        || app.searching()
+    {
+        return None;
+    }
+    let byte = if app.is_home() {
+        None
+    } else {
+        doc_span_at(app, m.column, m.row).map(|(start, _)| start)
+    };
+    Some(carrel::action::Action::MenuOpen {
+        at: (m.column, m.row),
+        byte,
+    })
+}
+
+/// Pointer events while a menu is open. Nothing falls through to the
+/// document: the menu is modal, and `covered_at(.., Z_MENU)` is the painter's
+/// own answer to "was that inside it".
+fn menu_mouse(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::action::Action> {
+    use carrel::action::Action;
+    let row_at = |col, row| {
+        targets.hit(col, row).and_then(|h| match h.action {
+            Action::MenuPick(i) => Some(i),
+            _ => None,
+        })
+    };
+    let inside = targets.covered_at(m.column, m.row, carrel::render::Z_MENU);
+    match m.kind {
+        // Hover moves the selection, so the keyboard cursor follows the
+        // pointer — herdr's model. Reported only when it CHANGES something:
+        // an unchanged hover on every cell of a drag across the box would
+        // repaint the screen once per column.
+        MouseEventKind::Moved => {
+            let want = row_at(m.column, m.row);
+            let now = app.menu.as_ref().and_then(|menu| menu.selected);
+            if want.map(|i| i as usize) == now {
+                None
+            } else {
+                // Out of range is the deliberate "over nothing" signal.
+                Some(Action::MenuHover(want.unwrap_or(u32::MAX)))
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if !inside {
+                // A press outside dismisses without acting — every menu
+                // anyone has ever used does this, and a reader who opened
+                // one by accident must be able to leave without learning a
+                // key.
+                return Some(Action::MenuClose);
+            }
+            row_at(m.column, m.row).map(Action::MenuPick)
+        }
+        // Right-clicking elsewhere moves the menu there rather than making
+        // you close it first.
+        MouseEventKind::Down(MouseButton::Right) if !inside => open_menu_at(m, app),
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => Some(Action::MenuClose),
+        _ => None,
+    }
+}
+
 /// Pointer events for the reader.
 ///
 /// Desktop scrollbar semantics, because anything else feels jarring:
@@ -1732,6 +1812,12 @@ fn mouse_action(
     use carrel::action::{Action, Span};
     use carrel::keys::{drag_target, thumb_geometry};
 
+    if app.menu.is_some() {
+        return menu_mouse(m, app, targets);
+    }
+    if matches!(m.kind, MouseEventKind::Down(MouseButton::Right)) {
+        return open_menu_at(m, app);
+    }
     // What the last frame painted wins, before any geometry is re-derived.
     // A target is only here because the painter put it here, so it agrees
     // with the pixels by construction — which is the whole reason chrome is
@@ -1929,6 +2015,14 @@ fn home_mouse_action(
     use carrel::action::Action;
     if !app.is_home() {
         return mouse_action(m, app, targets, ptr);
+    }
+    // The same two rules as the reader, in the same order — `key_action`'s
+    // lesson applied to the pointer: one decision, not a copy per loop.
+    if app.menu.is_some() {
+        return menu_mouse(m, app, targets);
+    }
+    if matches!(m.kind, MouseEventKind::Down(MouseButton::Right)) {
+        return open_menu_at(m, app);
     }
     if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
         && let Some(hit) = targets.hit(m.column, m.row)

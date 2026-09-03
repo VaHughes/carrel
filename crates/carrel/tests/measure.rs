@@ -758,3 +758,144 @@ fn clicking_a_wide_table_lands_on_the_cell_under_the_pointer() {
         );
     }
 }
+
+// --- menus ---
+
+/// Paint one frame with a menu open, and hand back both halves.
+fn menu_frame(app: &App, cols: u16, rows: u16) -> (Buffer, carrel::render::Painted) {
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, app, &mut painted, &mut protocols))
+        .unwrap();
+    (t.backend().buffer().clone(), painted)
+}
+
+/// The menu's half of the generic guard: every row's target must cover the
+/// row's own label, not its neighbour's and not the border.
+///
+/// Verified to fail on a one-cell drift in `paint_menu`'s zone: the read
+/// comes back with the border in it and the last character of the label cut.
+#[test]
+fn every_menu_row_target_covers_its_own_label() {
+    use carrel::action::Action;
+
+    let mut app = app_at(90, 24, "# Head\n\nbody text\n");
+    carrel::app::update(
+        &mut app,
+        Action::MenuOpen {
+            at: (4, 3),
+            byte: None,
+        },
+    );
+    let items = app.menu.as_ref().expect("a menu is open").items.clone();
+    let (buf, painted) = menu_frame(&app, 90, 24);
+
+    let mut checked = 0;
+    for target in painted.targets.as_slice() {
+        let Action::MenuPick(i) = target.action else {
+            continue;
+        };
+        let z = target.zone;
+        let row: String = (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect();
+        let item = &items[i as usize];
+        assert!(
+            row.contains(item.label),
+            "row {i} claims {:?} but paints {row:?}",
+            item.label
+        );
+        assert!(
+            item.accel.is_empty() || row.contains(item.accel),
+            "row {i} does not show the key it advertises: {row:?}"
+        );
+        assert!(
+            !row.contains('\u{2502}'),
+            "a row's target must stop inside the border: {row:?}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 8,
+        "the menu must register its rows, got {checked}"
+    );
+    assert!(
+        items.iter().filter(|i| !i.pickable()).count() >= 2,
+        "gaps and greyed rows exist, and none of them registered a target"
+    );
+}
+
+/// The `≡` is the whole reason the global menu is discoverable. It must be
+/// painted, and its target must be on the glyph rather than beside it.
+#[test]
+fn the_launcher_sits_on_its_own_glyph_in_both_screens() {
+    use carrel::action::Action;
+
+    for app in [
+        app_at(90, 24, "# Head\n\nbody\n"),
+        App::new_home(std::path::PathBuf::from("."), vec![], 90, 24),
+    ] {
+        let (buf, painted) = menu_frame(&app, 90, 24);
+        let launcher = painted
+            .targets
+            .as_slice()
+            .iter()
+            .find(|t| matches!(t.action, Action::MenuOpen { byte: None, .. }))
+            .expect("the launcher registers");
+        let z = launcher.zone;
+        assert_eq!(
+            buf[(z.x, z.y)].symbol(),
+            "\u{2261}",
+            "the launcher target must cover the ≡ it opens from"
+        );
+        assert_eq!(z.x, 89, "and it lives at the right end of the status row");
+    }
+}
+
+/// A pane covers the document, and the OSC 8 pass paints from coordinates
+/// rather than from the buffer — so without pruning it would put the link
+/// glyphs back on top of the pane, in the pane's colours.
+///
+/// Verified to fail with `hide_covered_links` removed: the link comes back.
+#[test]
+fn a_link_under_an_overlay_is_not_re_emitted_as_a_hyperlink() {
+    use carrel::action::Action;
+
+    // Tall enough that a menu opened low stays low: on a short terminal the
+    // box flips above the pointer and lands on the link by accident, which
+    // would make the second half of this test pass for the wrong reason.
+    let src = "# Head\n\nsee [the docs](https://example.com) here\n";
+    let mut app = app_at(90, 40, src);
+    let (_, painted) = menu_frame(&app, 90, 40);
+    assert_eq!(painted.links.len(), 1, "the link is live to begin with");
+    let at = painted.links[0].y;
+
+    // Open a menu ON the link's row: anchored one row above, a menu drops
+    // onto the row below the pointer.
+    carrel::app::update(
+        &mut app,
+        Action::MenuOpen {
+            at: (2, at - 1),
+            byte: None,
+        },
+    );
+    let (_, painted) = menu_frame(&app, 90, 40);
+    assert!(
+        painted.links.is_empty(),
+        "the hyperlink pass would have drawn {:?} over the menu",
+        painted.links
+    );
+
+    // And a link the menu does NOT cover stays live.
+    carrel::app::update(&mut app, Action::MenuClose);
+    carrel::app::update(
+        &mut app,
+        Action::MenuOpen {
+            at: (2, 20),
+            byte: None,
+        },
+    );
+    let (_, painted) = menu_frame(&app, 90, 40);
+    assert_eq!(painted.links.len(), 1, "an uncovered link is untouched");
+}

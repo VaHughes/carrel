@@ -244,6 +244,19 @@ pub struct App {
     /// `Some` while the outline picker is up. The heading list itself is
     /// DERIVED from `doc` at every use — nothing here can go stale.
     pub outline: Option<Outline>,
+    /// The open menu, if one is. Above every pane in modal precedence, and
+    /// therefore checked before them: a menu is the last thing opened and
+    /// the first thing that must answer for a key.
+    pub menu: Option<crate::menu::Menu>,
+    /// Set by [`Action::ThemeCycle`], drained by the event loop.
+    ///
+    /// The active palette is presentation state and never enters this
+    /// (ratatui-free) type — but the ACTION has to be routable like every
+    /// other, or a menu row that cycles themes would need the loop to
+    /// intercept it before `update` ever saw it, which is exactly the
+    /// second-copy-of-a-precedence-chain that `key_action` exists to stop.
+    /// So it leaves through the outbox `clipboard` already established.
+    pub theme_cycle: bool,
     /// The document-info card is showing (`I`). Pure presentation intent —
     /// the rows are derived fresh at every paint.
     pub info: bool,
@@ -491,6 +504,8 @@ impl App {
             hints: true,
             help: None,
             outline: None,
+            menu: None,
+            theme_cycle: false,
             info: false,
             focus: false,
             auto_read: false,
@@ -1213,6 +1228,32 @@ impl App {
         rows.get(first + i).map(|(b, _, _)| *b)
     }
 
+    /// Point the reader's cursors at `byte`, the way Neovim's
+    /// `mousemodel=popup_setpos` moves the text cursor before opening a
+    /// context menu.
+    ///
+    /// A reader has no text cursor, but it has two things a menu item acts
+    /// through — the selected link and the code-block cursor — and a menu
+    /// that offered `Copy code block` while the cursor sat on a different
+    /// block would copy the wrong one. Doing it here, at open time, also
+    /// means the status bar names the link the menu is about before the
+    /// first row is read.
+    pub fn aim_at(&mut self, byte: u32) {
+        let block = self.doc.block_at_doc(carrel_core::DocByte(byte));
+        let node = self.doc.node_for_block(block);
+        if matches!(node.kind, NodeKind::CodeBlock { .. }) {
+            self.code_focus = Some(block);
+        }
+        if let Some(id) = node
+            .inlines
+            .iter()
+            .find(|i| i.link.is_some() && i.doc.contains(&byte))
+            .and_then(|i| i.link)
+        {
+            self.selected_link = Some(id);
+        }
+    }
+
     /// Doc position of a link's first visible run, for revealing it.
     fn link_pos(&self, id: LinkId) -> Option<u32> {
         self.doc
@@ -1644,6 +1685,36 @@ pub fn adapt(src: &str, diff_ok: bool) -> Document {
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
+    // Opening a menu works from any state that can have one, and the menu
+    // owns everything while it is up — it is the last thing opened, so it is
+    // the first thing that answers. Both checks come before the toggles
+    // below, because `H` reaching the hints THROUGH an open menu would be a
+    // key acting on something the reader cannot see.
+    if let Action::MenuOpen { at, byte } = action {
+        let items = match byte {
+            Some(b) => crate::menu::context(app, b),
+            None => crate::menu::global(app),
+        };
+        // `popup_setpos`: put the reader's own cursors where the pointer is
+        // BEFORE the menu opens, so `Copy code block` copies the block under
+        // the pointer and the status bar already names the link the menu is
+        // about. Neovim moves the text cursor for exactly this reason.
+        if let Some(b) = byte {
+            app.aim_at(b);
+        }
+        app.menu = Some(crate::menu::Menu::new(items, at));
+        return Outcome::Redraw;
+    }
+    if app.menu.is_some() {
+        return menu_update(app, action);
+    }
+    // The theme is the event loop's to change — see `App::theme_cycle`. It
+    // is routed here rather than intercepted before `update` so that a menu
+    // row, a footer button and `T` all travel the same path.
+    if let Action::ThemeCycle = action {
+        app.theme_cycle = true;
+        return Outcome::Redraw;
+    }
     // The lamp switch works from ANY state — hiding the hints must never
     // require first backing out of whatever you were doing.
     if let Action::HintsToggle = action {
@@ -1723,6 +1794,61 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         return home_update(app, action);
     }
     reader_update(app, action)
+}
+
+/// Transitions while a menu is up.
+///
+/// Four keys and the pointer, and nothing else reaches the document — a
+/// menu is modal in exactly the way the help sheet is. Choosing runs the
+/// item's own action through `update` again, so a menu adds no behaviour of
+/// its own: every row is a thing carrel could already do.
+fn menu_update(app: &mut App, action: Action) -> Outcome {
+    match action {
+        Action::MenuMove(n) => {
+            if let Some(m) = app.menu.as_mut() {
+                m.step(n);
+            }
+            Outcome::Redraw
+        }
+        // Hover fires on every pointer motion, so an unchanged selection
+        // must report `Idle` — otherwise moving the mouse across a menu
+        // repaints the whole screen once per cell.
+        Action::MenuHover(i) => {
+            let Some(m) = app.menu.as_mut() else {
+                return Outcome::Idle;
+            };
+            let before = m.selected;
+            m.hover(i as usize);
+            if m.selected == before {
+                Outcome::Idle
+            } else {
+                Outcome::Redraw
+            }
+        }
+        Action::MenuClose => {
+            app.menu = None;
+            Outcome::Redraw
+        }
+        Action::MenuPick(i) => {
+            let Some(chosen) = app.menu.as_ref().and_then(|m| m.item(i as usize)) else {
+                // A gap, a greyed row, or an index from a frame that no
+                // longer describes this menu: absorbed, never guessed at.
+                return Outcome::Idle;
+            };
+            app.menu = None;
+            update(app, chosen)
+        }
+        Action::MenuChoose => {
+            let Some(chosen) = app.menu.as_ref().and_then(crate::menu::Menu::chosen) else {
+                return Outcome::Idle;
+            };
+            app.menu = None;
+            update(app, chosen)
+        }
+        // Ctrl-C still leaves, from here as from everywhere.
+        Action::Quit => Outcome::Quit,
+        _ => Outcome::Idle,
+    }
 }
 
 /// Transitions while the outline picker is up.
@@ -2294,6 +2420,17 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         Action::LinkFollow => {
             app.following = false;
             link_follow(app)
+        }
+        // The other half of `link_follow`'s external branch: copy a
+        // destination instead of opening it, whatever kind it is. Carrel
+        // still spawns nothing — this is the row that lets a LOCAL path be
+        // pasted somewhere rather than followed.
+        Action::LinkCopy => {
+            let Some(id) = app.selected_link else {
+                return Outcome::Idle;
+            };
+            let dest = app.doc.links[id.0 as usize].to_string();
+            copy_link(app, &dest)
         }
         // A click does in one intent what Tab-then-Enter does in two: the
         // pointer already said which link it meant, so selecting it and
@@ -3042,7 +3179,7 @@ const MAX_URL: usize = 2048;
 /// RFC 3986: `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` before the colon.
 /// Two characters minimum, so a Windows-shaped `C:\path` stays a path.
 #[must_use]
-fn has_scheme(dest: &str) -> bool {
+pub(crate) fn has_scheme(dest: &str) -> bool {
     let Some((scheme, _)) = dest.split_once(':') else {
         return false;
     };
@@ -3359,6 +3496,210 @@ mod tests {
     /// document actually scrolls, which several tests below depend on.
     fn app() -> App {
         App::new("t.md".into(), Document::parse(SRC), 20, 6)
+    }
+
+    // --- menus ------------------------------------------------------------
+
+    fn menu_app() -> App {
+        App::new(
+            "t.md".into(),
+            Document::parse("# Head\n\nbody text here\n"),
+            60,
+            20,
+        )
+    }
+
+    fn open_global(a: &mut App) {
+        update(
+            a,
+            Action::MenuOpen {
+                at: (10, 5),
+                byte: None,
+            },
+        );
+    }
+
+    fn menu_row(a: &App, label: &str) -> u32 {
+        u32::try_from(
+            a.menu
+                .as_ref()
+                .expect("a menu is open")
+                .items
+                .iter()
+                .position(|it| it.label == label)
+                .unwrap_or_else(|| panic!("no row named {label:?}")),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_menu_owns_the_keyboard_while_it_is_up() {
+        let mut a = menu_app();
+        let before = a.view.scroll_row;
+        open_global(&mut a);
+        // Every reader action is inert: the document must not move under a
+        // menu the reader is reading.
+        for action in [
+            Action::Scroll(crate::action::Span::Page, 1),
+            Action::GoToEnd,
+            Action::InfoToggle,
+            Action::HintsToggle,
+        ] {
+            assert_eq!(update(&mut a, action), Outcome::Idle, "{action:?}");
+        }
+        assert_eq!(a.view.scroll_row, before);
+        assert!(!a.info, "the info card never opened");
+        assert!(a.hints, "and the lamp never switched");
+        update(&mut a, Action::MenuClose);
+        assert!(a.menu.is_none());
+        assert_eq!(update(&mut a, Action::InfoToggle), Outcome::Redraw);
+    }
+
+    #[test]
+    fn choosing_a_row_runs_its_action_and_closes() {
+        let mut a = menu_app();
+        open_global(&mut a);
+        let i = menu_row(&a, "Document info");
+        assert_eq!(update(&mut a, Action::MenuPick(i)), Outcome::Redraw);
+        assert!(a.info, "the row did what the key does");
+        assert!(a.menu.is_none(), "and the menu got out of the way");
+    }
+
+    #[test]
+    fn a_greyed_row_and_a_gap_are_both_inert() {
+        let mut a = menu_app();
+        open_global(&mut a);
+        let items = a.menu.as_ref().unwrap().items.clone();
+        let gap = items.iter().position(|it| it.action.is_none()).unwrap();
+        let grey = items
+            .iter()
+            .position(|it| it.action.is_some() && !it.enabled)
+            .expect("Follow the end is greyed on a static document");
+        for i in [gap, grey, items.len() + 5] {
+            assert_eq!(update(&mut a, Action::MenuPick(i as u32)), Outcome::Idle);
+            assert!(a.menu.is_some(), "and the menu stays open for row {i}");
+        }
+    }
+
+    #[test]
+    fn enter_chooses_nothing_until_something_is_lit() {
+        let mut a = menu_app();
+        open_global(&mut a);
+        assert_eq!(update(&mut a, Action::MenuChoose), Outcome::Idle);
+        assert!(
+            a.menu.is_some(),
+            "nothing was selected, so nothing happened"
+        );
+        update(&mut a, Action::MenuMove(1));
+        assert_eq!(update(&mut a, Action::MenuChoose), Outcome::Redraw);
+        assert!(a.menu.is_none());
+    }
+
+    #[test]
+    fn an_unchanged_hover_asks_for_no_repaint() {
+        let mut a = menu_app();
+        open_global(&mut a);
+        let i = u32::try_from(
+            a.menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .position(crate::menu::Item::pickable)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(update(&mut a, Action::MenuHover(i)), Outcome::Redraw);
+        assert_eq!(
+            update(&mut a, Action::MenuHover(i)),
+            Outcome::Idle,
+            "moving the pointer inside one row must not repaint the screen"
+        );
+        // And off every row: the light goes out, which IS a change.
+        let gap = u32::try_from(
+            a.menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .position(|it| it.action.is_none())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(update(&mut a, Action::MenuHover(gap)), Outcome::Redraw);
+        assert_eq!(a.menu.as_ref().unwrap().selected, None);
+    }
+
+    #[test]
+    fn opening_a_context_menu_aims_at_what_the_pointer_was_on() {
+        let src = "see [it](notes.md)\n\n```rust\nlet x = 1;\n```\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 60, 20);
+        let text = a.doc.text.clone();
+        let at = |n: &str| u32::try_from(text.find(n).expect(n)).unwrap();
+
+        let link = at("it");
+        update(
+            &mut a,
+            Action::MenuOpen {
+                at: (0, 0),
+                byte: Some(link),
+            },
+        );
+        assert_eq!(
+            a.selected_link.map(|l| l.0),
+            Some(0),
+            "the status bar names the link the menu is about"
+        );
+        update(&mut a, Action::MenuClose);
+
+        let code = at("let x");
+        update(
+            &mut a,
+            Action::MenuOpen {
+                at: (0, 0),
+                byte: Some(code),
+            },
+        );
+        let focused = a.code_focus.expect("the block under the pointer");
+        assert!(
+            a.doc.node_for_block(focused).doc.contains(&code),
+            "`Copy code block` would copy the one that was clicked"
+        );
+    }
+
+    #[test]
+    fn the_theme_leaves_through_the_outbox_so_a_menu_row_can_cycle_it() {
+        let mut a = menu_app();
+        assert_eq!(update(&mut a, Action::ThemeCycle), Outcome::Redraw);
+        assert!(
+            a.theme_cycle,
+            "the loop drains this and changes the palette"
+        );
+        a.theme_cycle = false;
+        // And through a menu row, which is the reason it is routed at all.
+        open_global(&mut a);
+        let i = menu_row(&a, "Themes");
+        update(&mut a, Action::MenuPick(i));
+        assert!(a.theme_cycle);
+    }
+
+    #[test]
+    fn copy_link_puts_a_local_path_on_the_clipboard() {
+        let mut a = App::new(
+            "t.md".into(),
+            Document::parse("see [it](notes/other.md)"),
+            60,
+            20,
+        );
+        assert_eq!(
+            update(&mut a, Action::LinkCopy),
+            Outcome::Idle,
+            "no link yet"
+        );
+        update(&mut a, Action::LinkStep(1));
+        assert_eq!(update(&mut a, Action::LinkCopy), Outcome::Redraw);
+        assert_eq!(a.clipboard.as_deref(), Some("notes/other.md"));
+        assert!(a.file.is_none(), "copying a local link does NOT follow it");
     }
 
     #[test]

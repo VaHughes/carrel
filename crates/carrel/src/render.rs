@@ -49,6 +49,11 @@ pub struct Painted {
 const Z_DOC: u8 = 0;
 const Z_CHROME: u8 = 1;
 const Z_OVERLAY: u8 = 2;
+/// A menu is the last thing opened and sits over everything, including a
+/// pane. `Targets::covered_at(.., Z_MENU)` is therefore the frontend's
+/// question "was that click inside the open menu" — asked of the painter,
+/// never re-derived from the geometry.
+pub const Z_MENU: u8 = 3;
 use crate::app::{App, Mode, Screen};
 
 /// A visible link span, for the OSC 8 post-draw pass in `main.rs`.
@@ -155,6 +160,8 @@ pub fn draw_full(
         if app.outline.is_some() {
             paint_outline(frame, app, &mut painted.targets);
         }
+        paint_menu(frame, app, &mut painted.targets);
+        hide_covered_links(painted);
         return;
     }
 
@@ -227,6 +234,29 @@ pub fn draw_full(
     if app.info {
         paint_info(frame, app, &mut painted.targets);
     }
+    // Last, and therefore on top of everything it was opened over.
+    paint_menu(frame, app, &mut painted.targets);
+    hide_covered_links(painted);
+}
+
+/// Drop the OSC 8 spans an overlay is sitting on.
+///
+/// The hyperlink pass in `main.rs` paints from **coordinates**, not from the
+/// buffer: it moves the cursor to where a link was collected and writes the
+/// text again wrapped in `ESC ] 8`. A pane drawn over that cell has already
+/// overwritten it in the buffer — but the OSC pass runs afterwards and puts
+/// the link glyphs back, on top of the pane, in the pane's own colours.
+///
+/// Every overlay had this; a menu opens directly on top of prose every time,
+/// which is how it was finally seen. The registry already knows which cells
+/// an overlay claimed, so the answer is to ask it rather than to teach each
+/// painter to prune a list it does not own.
+fn hide_covered_links(painted: &mut Painted) {
+    let Painted { links, targets } = painted;
+    links.retain(|l| {
+        let w = carrel_core::display_width(&l.text);
+        !(l.x..l.x.saturating_add(w)).any(|x| targets.covered_at(x, l.y, Z_OVERLAY))
+    });
 }
 
 /// The bookmark list (`"`): every mark with its context line. Rows derive
@@ -1627,6 +1657,10 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
+    // The launcher takes the last column before anything else is placed, so
+    // the status text is measured against what is left rather than painted
+    // over it.
+    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
     // Display width, never a scalar count — `right` is an arbitrary URL when a
     // link is selected and `left` is a user's filename, so either can carry
     // CJK or emoji. `put` nine lines down already measures this way, and
@@ -1634,7 +1668,7 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     // rule)". This was the one place in the paint layer that broke it, which
     // both mis-anchored a wide URL and let the two ends collide.
     let rw = carrel_core::display_width(&right);
-    let rx = area.right().saturating_sub(rw);
+    let rx = stop.saturating_sub(rw);
     if rx > lx + carrel_core::display_width(&left) {
         buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
         if chrome {
@@ -1653,6 +1687,111 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
             button("T theme", Action::ThemeCycle);
             button("q home", Action::CloseFile);
             button("q quit", Action::CloseFile);
+        }
+    }
+}
+
+/// The `≡` at the right end of the status row: the visible, left-clickable
+/// way into the global menu.
+///
+/// It is load-bearing for the whole click-first pivot. Right-click alone
+/// would leave every global command undiscoverable to exactly the reader
+/// this design is for — someone who arrived at a terminal because an agent
+/// lives there, and who is looking for a menu because that is what software
+/// has. Returns the column the status text must stop before.
+fn paint_launcher(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    at: (u16, u16),
+    targets: &mut Targets,
+) -> u16 {
+    let x = area.right().saturating_sub(1);
+    if x <= area.x {
+        return area.right();
+    }
+    buf.set_stringn(x, area.y, "\u{2261}", 1, theme::lamp());
+    targets.push(
+        Action::MenuOpen { at, byte: None },
+        Zone::new(x, area.y, 1, 1),
+        Z_CHROME,
+    );
+    // One cell of air, so the launcher never touches the text beside it.
+    x.saturating_sub(1)
+}
+
+/// An open menu: a box anchored where the pointer was.
+///
+/// The geometry is `Menu::zone`, in the pure layer, so a GTK frontend flips
+/// and clamps its own popup by the same rule. Everything here is the
+/// drawing: the existing border vocabulary, the accelerator column, and one
+/// target per pickable row.
+fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
+    let Some(menu) = &app.menu else { return };
+    let area = frame.area();
+    let z = menu.zone(area.width, area.height);
+    if z.w < 4 || z.h < 3 {
+        return; // nothing legible fits; Esc and a click outside still close it
+    }
+    // The box owns its rectangle: a click on a gap, a greyed row or the
+    // border must not reach whatever is behind it.
+    targets.push(Action::Absorb, z, Z_MENU);
+    let buf = frame.buffer_mut();
+
+    let inner = usize::from(z.w.saturating_sub(2));
+    let bar = "\u{2500}".repeat(inner);
+    buf.set_stringn(
+        z.x,
+        z.y,
+        format!("\u{256d}{bar}\u{256e}"),
+        z.w as usize,
+        theme::status(),
+    );
+    buf.set_stringn(
+        z.x,
+        z.y + z.h - 1,
+        format!("\u{2570}{bar}\u{256f}"),
+        z.w as usize,
+        theme::status(),
+    );
+
+    let accel_dx = menu.accel_dx(z.w);
+    let rows = usize::from(z.h - 2);
+    for (i, item) in menu.items.iter().take(rows).enumerate() {
+        let y = z.y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+        let lit = menu.selected == Some(i);
+        let style = if lit {
+            theme::selected()
+        } else if item.pickable() {
+            theme::status()
+        } else {
+            // A gap and a greyed row paint the same: both are rows you
+            // cannot land on, and dim is what that looks like.
+            theme::dim()
+        };
+        buf.set_stringn(z.x, y, "\u{2502}", 1, theme::status());
+        buf.set_stringn(z.x + z.w - 1, y, "\u{2502}", 1, theme::status());
+        // The whole inner row carries the selection, so the lit band is a
+        // band rather than a word with gaps in it.
+        buf.set_stringn(z.x + 1, y, " ".repeat(inner), inner, style);
+        if item.action.is_none() {
+            continue; // a gap is a blank line, CUA §3.5.5, not a rule
+        }
+        buf.set_stringn(z.x + 2, y, item.label, inner.saturating_sub(2), style);
+        // Left-aligned inside a right-hand column: the accelerators' FIRST
+        // characters line up, which is what makes the column scannable.
+        buf.set_stringn(
+            z.x + accel_dx,
+            y,
+            item.accel,
+            usize::from(z.w.saturating_sub(accel_dx + 1)),
+            if lit { style } else { theme::dim() },
+        );
+        if item.pickable() {
+            targets.push(
+                Action::MenuPick(u32::try_from(i).unwrap_or(u32::MAX)),
+                Zone::new(z.x + 1, y, z.w.saturating_sub(2), 1),
+                Z_MENU,
+            );
         }
     }
 }
@@ -2074,14 +2213,14 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
     buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
-    // Display width, never a scalar count — `right` is an arbitrary URL when a
-    // link is selected and `left` is a user's filename, so either can carry
-    // CJK or emoji. `put` nine lines down already measures this way, and
-    // breadcrumb.rs names the rule outright: "never per-char sums (the ZWJ
-    // rule)". This was the one place in the paint layer that broke it, which
-    // both mis-anchored a wide URL and let the two ends collide.
+    // The home screen gets the same launcher as the reader: it is the one
+    // affordance that says a menu exists at all, and a reader who has not
+    // opened a file yet is the one most likely to need it.
+    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
+    // Display width, never a scalar count — the same rule as the reader's
+    // status row, where a wide filename or URL once collided with the count.
     let rw = carrel_core::display_width(&right);
-    let rx = area.right().saturating_sub(rw);
+    let rx = stop.saturating_sub(rw);
     if rx > lx + carrel_core::display_width(&left) {
         buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
     }
