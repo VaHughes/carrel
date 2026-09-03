@@ -1197,7 +1197,13 @@ impl App {
             return None;
         }
         let top = self.text_y();
-        if row < top {
+        // Bounded at BOTH ends. `row < top` alone left the gutter's columns
+        // live all the way down the terminal, so a click on the status row
+        // resolved to whatever heading `first + i` happened to reach and
+        // jumped there. Invisible with a handful of headings, because the
+        // index ran off the end and returned `None` by accident; a real hit
+        // on a real heading once the outline is longer than the text is tall.
+        if row < top || row >= top + self.text_h() {
             return None;
         }
         let rows = self.margin_rows();

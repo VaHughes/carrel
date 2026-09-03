@@ -19,8 +19,8 @@ use carrel::render::{OscLink, Painted};
 use carrel::{config, home, render, scan};
 use carrel_core::{BlockIdx, Document, cluster_width, cols_for_doc_range, search, wrap};
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEvent,
-    MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, KeyEventKind, MouseButton,
+    MouseEvent, MouseEventKind,
 };
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
@@ -1107,9 +1107,11 @@ impl Clicks {
     /// Record a press; the returned streak is 1, 2, or 3 (then wraps).
     fn press(&mut self, col: u16, row: u16) -> u8 {
         let now = Instant::now();
-        let same = self
-            .last
-            .is_some_and(|(t, c, r)| now.duration_since(t) < MULTI_CLICK && c == col && r == row);
+        // Within one cell, not on it: a hand drifts between presses, and an
+        // exact-cell rule silently downgraded a double-click to two singles.
+        let same = self.last.is_some_and(|(t, c, r)| {
+            now.duration_since(t) < MULTI_CLICK && c.abs_diff(col) <= 1 && r.abs_diff(row) <= 1
+        });
         self.streak = if same { (self.streak % 3) + 1 } else { 1 };
         self.last = Some((now, col, row));
         self.streak
@@ -1276,17 +1278,7 @@ fn run_loop(
             let Ok(ev) = event::read() else { break };
             match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    let action = if app.backlinks.is_some() {
-                        Keys::map_backlinks(k)
-                    } else if app.forward.is_some() {
-                        Keys::map_forward(k)
-                    } else if app.mark_list.is_some() {
-                        Keys::map_marks(k)
-                    } else if app.outline.is_some() {
-                        Keys::map_outline(k)
-                    } else {
-                        keys.map(k, app.searching())
-                    };
+                    let action = key_action(&mut keys, &app, k);
                     if let Some(action) = action {
                         if action == carrel::action::Action::ThemeCycle {
                             cycle_theme_now(&mut app);
@@ -1602,14 +1594,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
             let Ok(ev) = event::read() else { break };
             match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    let action = if app.outline.is_some() {
-                        Keys::map_outline(k)
-                    } else if app.is_home() {
-                        let mode = app.home().map_or(home::HomeMode::Filter, |h| h.mode);
-                        keys.map_home(k, mode)
-                    } else {
-                        keys.map(k, app.searching())
-                    };
+                    let action = key_action(&mut keys, &app, k);
                     if let Some(a) = action {
                         if a == carrel::action::Action::ThemeCycle {
                             cycle_theme_now(&mut app);
@@ -1669,6 +1654,36 @@ fn apply_debounced_resize(
     {
         *deadline = None;
         app.on_resize(w, h);
+    }
+}
+
+/// Which key map owns this keystroke.
+///
+/// **The two loops used to answer differently.** `run()` consulted the
+/// backlinks, forward-links and bookmark panes before the outline; `run_home()`
+/// consulted only the outline. So a document opened FROM the home screen gave
+/// those three panes the READER's keymap: with the pane up, `j` scrolled the
+/// document underneath it instead of moving the pane's cursor, and `Enter`
+/// followed a link instead of opening the selected row. Opening the same
+/// document directly behaved correctly, which is what kept it hidden.
+///
+/// One function, both loops, so the answer cannot diverge again. The order is
+/// the precedence: innermost overlay first, the home screen next, the reader
+/// last.
+fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action::Action> {
+    if app.backlinks.is_some() {
+        Keys::map_backlinks(k)
+    } else if app.forward.is_some() {
+        Keys::map_forward(k)
+    } else if app.mark_list.is_some() {
+        Keys::map_marks(k)
+    } else if app.outline.is_some() {
+        Keys::map_outline(k)
+    } else if app.is_home() {
+        let mode = app.home().map_or(home::HomeMode::Filter, |h| h.mode);
+        keys.map_home(k, mode)
+    } else {
+        keys.map(k, app.searching())
     }
 }
 
@@ -1747,7 +1762,14 @@ fn mouse_action(
         MouseEventKind::Down(MouseButton::Left) if m.row + 1 == app.rows && m.column < 3 => {
             Some(Action::HintsToggle)
         }
-        MouseEventKind::Down(MouseButton::Left) if m.column >= bar_x && max_scroll > 0 => {
+        // The track is only as tall as the text. Without the row bounds this
+        // guard claimed the whole rightmost COLUMN, so a click on the status
+        // row's far right mapped past the thumb and paged the document. A
+        // drag, once the thumb is grabbed, deliberately keeps tracking
+        // outside the track — that is what every desktop scrollbar does.
+        MouseEventKind::Down(MouseButton::Left)
+            if m.column >= bar_x && max_scroll > 0 && m.row >= top && m.row < top + text_h =>
+        {
             let (top, len) = thumb_geometry(text_h, total, app.view.scroll_row);
             let row = bar_y(m.row);
             if row >= top && row < top + len {
@@ -2126,6 +2148,106 @@ fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
 mod tests {
     use super::*;
 
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    /// The scrollbar is as tall as the text, not as tall as the terminal.
+    ///
+    /// The press guard read `m.column >= bar_x` and never bounded the row, so
+    /// a click on the far right of the STATUS ROW — below the track, on
+    /// chrome — mapped past the thumb and paged the document down.
+    #[test]
+    fn a_click_right_of_the_status_row_does_not_page_the_document() {
+        use carrel::action::{Action, Span};
+        let mut src = String::new();
+        for n in 0..200 {
+            use std::fmt::Write as _;
+            let _ = write!(src, "line {n}\n\n");
+        }
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(&src), 80, 24);
+        app.on_resize(80, 24);
+        assert!(
+            app.layout.max_scroll(app.text_h()) > 0,
+            "the fixture must have a scrollbar"
+        );
+
+        let bar_x = app.cols - 1;
+        let targets = Targets::new();
+        let mut ptr = Pointer::default();
+
+        let inside = mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            bar_x,
+            app.text_y() + 1,
+        );
+        assert!(
+            mouse_action(inside, &app, &targets, &mut ptr).is_some() || ptr.dragging.is_some(),
+            "a press on the track itself still acts"
+        );
+
+        let mut ptr = Pointer::default();
+        let below = mouse(MouseEventKind::Down(MouseButton::Left), bar_x, app.rows - 1);
+        assert_eq!(
+            mouse_action(below, &app, &targets, &mut ptr),
+            None,
+            "the bottom row is chrome; clicking it must not scroll"
+        );
+        assert!(ptr.dragging.is_none(), "and must not grab the thumb");
+
+        let above = mouse(MouseEventKind::Down(MouseButton::Left), bar_x, 0);
+        let act = mouse_action(above, &app, &targets, &mut ptr);
+        assert!(
+            act != Some(Action::Scroll(Span::Page, 1)),
+            "nor may a row above the track page forward"
+        );
+    }
+
+    /// A pane's keymap must not depend on which loop is running.
+    ///
+    /// `run_home()` consulted only the outline, so a document opened from the
+    /// home screen gave the backlinks, forward-links and bookmark panes the
+    /// READER's keymap: `j` scrolled the document under the open pane instead
+    /// of moving its cursor. Opening the same file directly was correct, which
+    /// is exactly why nobody noticed.
+    #[test]
+    fn an_open_pane_owns_j_whichever_loop_is_running() {
+        use carrel::action::Action;
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        let src = "see [a](https://example.com/a)\n";
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(src), 60, 20);
+        let mut keys = Keys::new();
+
+        assert!(
+            matches!(key_action(&mut keys, &app, j), Some(Action::Scroll(..))),
+            "with no pane up, j scrolls the document"
+        );
+
+        update(&mut app, Action::ForwardToggle);
+        assert!(app.forward.is_some());
+        assert_eq!(
+            key_action(&mut keys, &app, j),
+            Some(Action::ForwardMove(1)),
+            "with the forward pane up, j moves the PANE, not the document"
+        );
+
+        update(&mut app, Action::ForwardToggle);
+        update(&mut app, Action::MarkToggle);
+        update(&mut app, Action::MarkListToggle);
+        assert_eq!(
+            key_action(&mut keys, &app, j),
+            Some(Action::MarkListMove(1)),
+            "and the bookmark list owns it too"
+        );
+    }
+
     #[test]
     fn base64_matches_the_rfc_4648_vectors() {
         assert_eq!(b64(b""), "");
@@ -2183,6 +2305,26 @@ mod tests {
         assert_eq!(c.press(5, 5), 3);
         assert_eq!(c.press(5, 5), 1, "a fourth click starts over");
         assert_eq!(c.press(9, 5), 1, "a different cell starts over");
+    }
+
+    /// A hand drifts. Requiring the EXACT same cell turned a double-click
+    /// into two single clicks whenever the pointer moved one column between
+    /// presses, which is most of them — and this reader is aimed at people
+    /// for whom the double-click IS the gesture. One cell of slack, the
+    /// tolerance herdr settled on.
+    #[test]
+    fn a_double_click_survives_a_hand_that_drifts_one_cell() {
+        let mut c = Clicks::default();
+        assert_eq!(c.press(10, 5), 1);
+        assert_eq!(c.press(11, 5), 2, "one column over is the same click");
+        assert_eq!(c.press(11, 6), 3, "and one row over");
+
+        let mut c = Clicks::default();
+        assert_eq!(c.press(10, 5), 1);
+        assert_eq!(c.press(12, 5), 1, "two columns is a new click");
+        let mut c = Clicks::default();
+        assert_eq!(c.press(10, 5), 1);
+        assert_eq!(c.press(10, 7), 1, "and so is two rows");
     }
 
     #[test]

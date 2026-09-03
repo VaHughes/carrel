@@ -514,6 +514,47 @@ fn an_open_pane_takes_every_click_inside_it() {
     }
 }
 
+/// The gutter is as tall as the text, not as tall as the terminal.
+///
+/// `margin_row_at` bounded `row < top` and nothing else, so a click on the
+/// STATUS ROW inside the gutter's columns still resolved to a heading and
+/// jumped there — a click on chrome moving the document under it.
+#[test]
+fn a_gutter_click_below_the_text_is_not_a_heading() {
+    // MORE headings than the text area is tall. With only a few, the bug is
+    // invisible: `rows.get(first + i)` runs off the end and returns None by
+    // accident. It is a real hit, on a real heading, once the list is long
+    // enough for the index to land inside it.
+    let mut src = String::new();
+    for n in 0..40 {
+        use std::fmt::Write as _;
+        let _ = write!(src, "# Section {n}\n\nbody {n}\n\n");
+    }
+    let mut app = app_at(200, 24, &src);
+    app.outline_margin = true;
+    app.on_resize(200, 24);
+    assert!(app.gutter_w() > 0, "the fixture must paint a gutter");
+
+    let col = carrel::app::PAD_LEFT + 1;
+    let top = app.text_y();
+    assert!(
+        app.margin_row_at(col, top).is_some(),
+        "the first painted gutter row is still a hit"
+    );
+
+    let below = top + app.text_h();
+    assert_eq!(
+        app.margin_row_at(col, below),
+        None,
+        "the row under the text area is chrome, not the outline"
+    );
+    assert_eq!(
+        app.margin_row_at(col, app.rows - 1),
+        None,
+        "nor the last row"
+    );
+}
+
 // --- the invariant ---
 
 #[test]

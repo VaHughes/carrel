@@ -36,6 +36,27 @@ every later clickable surface will need is in place underneath.
   context menu from working. This hands it back. Every action stays reachable
   from the keyboard, and the flag wins over the config key for one run.
 
+### Four things that were quietly wrong
+
+Clicking exposed these; they were harmless only because so little was
+clickable.
+
+- **A click on the far right of the status row paged the document.** The
+  scrollbar claimed its whole column, top to bottom, instead of the track's own
+  rows.
+- **A click in the margin outline's columns, below the text, jumped to a
+  heading.** Same shape of bug: bounded at the top and not at the bottom. It
+  needed a document with more headings than the terminal is tall to show up at
+  all, which is why it survived.
+- **An open pane ignored `j` and `k` when you had come from the home screen.**
+  The two event loops disagreed about which keymap owns a keystroke: opening a
+  file directly gave the backlinks, forward-links and bookmark panes their own
+  keys, opening the same file from the home screen gave them the reader's, so
+  `j` scrolled the document *underneath* the open pane. Both loops now ask one
+  function.
+- **A double-click needed both presses on exactly the same cell.** A hand
+  drifts, and the drift turned it into two single clicks. One cell of slack now.
+
 ### Under it
 
 - A click-target registry: the painter records where it put a thing, and the
