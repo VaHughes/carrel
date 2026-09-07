@@ -247,6 +247,9 @@ cargo test --workspace
 cargo run -p carrel -- README.md "search"
 ```
 
+The gates CI runs, the testing tiers, and the conventions are in
+[`docs/DEVELOPMENT.md`](https://github.com/VaHughes/carrel/blob/main/docs/DEVELOPMENT.md).
+
 ### Running your own build as `carrel`
 
 While working on Carrel you want the `carrel` command to be *your* build, not the released one
@@ -313,6 +316,9 @@ The rules that keep the second frontend possible are enforced mechanically:
 ```bash
 ./scripts/check-discipline.sh
 ```
+
+The module map, the decisions already made, and the pinned dependencies are in
+[`docs/ARCHITECTURE.md`](https://github.com/VaHughes/carrel/blob/main/docs/ARCHITECTURE.md).
 
 ## Roadmap
 
