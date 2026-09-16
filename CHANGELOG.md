@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **The help sheet types.** Every keystroke narrows it to the matching rows,
+  fuzzily, with group headers dropping out of the way; arrows and `Ctrl-J` /
+  `Ctrl-K` scroll, `F1` or a two-stage `Esc` closes. The letters belong to the
+  filter now, so `j`/`k`/`h`/`q` narrow instead of acting from inside.
 - **The breadcrumb band is clickable.** Every section it names jumps there on
   a click — through the same gate as the outline jump, so folds open and
   `Ctrl-O` comes back — and hover lights the segment under the pointer.

@@ -272,6 +272,39 @@ impl Keys {
         }
     }
 
+    /// Help-sheet bindings: the outline picker's idiom without the commit —
+    /// printable keys narrow the sheet, arrows and Ctrl pairs scroll it,
+    /// Esc backs out in two stages.
+    ///
+    /// The letters belong to the filter, so `j`/`k`/`h`/`q` type rather than
+    /// acting; closing is F1 or Esc. Capitals keep the reader jobs the sheet
+    /// never stole (`T`/`H`/`B` act through `update`'s early interceptors
+    /// exactly as they do today), and the filter is case-insensitive, so
+    /// nothing is lost by spending them. `Q` still quits outright.
+    #[must_use]
+    pub fn map_help(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('Q') => Some(Action::Quit),
+            KeyCode::F(1) => Some(Action::HelpToggle),
+            KeyCode::Char('T') => Some(Action::ThemeCycle),
+            KeyCode::Char('H') => Some(Action::HintsToggle),
+            KeyCode::Char('B') => Some(Action::BreadcrumbToggle),
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::Scroll(Span::Line, 1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::Scroll(Span::Line, -1)),
+            KeyCode::Down => Some(Action::Scroll(Span::Line, 1)),
+            KeyCode::Up => Some(Action::Scroll(Span::Line, -1)),
+            KeyCode::PageDown => Some(Action::Scroll(Span::Page, 1)),
+            KeyCode::PageUp => Some(Action::Scroll(Span::Page, -1)),
+            KeyCode::Home => Some(Action::GoToStart),
+            KeyCode::Char(c) => Some(Action::HelpKey(SearchKey::Char(c))),
+            KeyCode::Backspace => Some(Action::HelpKey(SearchKey::Backspace)),
+            KeyCode::Esc => Some(Action::HelpKey(SearchKey::Cancel)),
+            _ => None,
+        }
+    }
+
     /// Backlinks-pane bindings. A short list of files: move, open, close.
     /// No filter, so the letters stay free — `L` closes it the way it opened.
     #[must_use]
@@ -479,6 +512,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::PickerSelect(_)
         | A::CrumbJump(_)
         | A::HomeKey(_)
+        | A::HelpKey(_)
         | A::OutlineKey(_)
         | A::OutlineMove(_)
         | A::OutlineJump
@@ -589,6 +623,29 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("q Ctrl-C", "quit"),
 ];
 
+/// Indices into a help table surviving `filter`: fuzzy over "key
+/// description", best first — the home filter's rule, so the two pickers
+/// feel like one. `§` group headers never match; with a filter up they drop
+/// out and the survivors read flat. An empty filter is every row, groups
+/// and all.
+#[must_use]
+pub fn help_matching(table: &[(&str, &str)], filter: &str) -> Vec<usize> {
+    let needle = filter.trim().to_lowercase();
+    if needle.is_empty() {
+        return (0..table.len()).collect();
+    }
+    let mut scored: Vec<(i32, usize)> = table
+        .iter()
+        .enumerate()
+        .filter(|(_, (key, _))| *key != "§")
+        .filter_map(|(i, (key, desc))| {
+            crate::fuzzy::score(&format!("{key} {desc}"), &needle).map(|s| (s, i))
+        })
+        .collect();
+    scored.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
+    scored.into_iter().map(|(_, i)| i).collect()
+}
+
 /// Lamplight footer hints — one table per state, selected by `footer::of`.
 /// Same shape as the help tables. `("type", …)` entries are prose, exempt
 /// from the honesty test's probe; every other key is fed back through the
@@ -667,8 +724,9 @@ pub const HINT_OUTLINE: &[Hint] = &[
     hint("esc", "back", Action::OutlineKey(SearchKey::Cancel)),
 ];
 pub const HINT_HELP: &[Hint] = &[
-    hint("j/k", "scroll", Action::Scroll(Span::Line, 1)),
-    hint("esc", "close", Action::Dismiss),
+    says("type", "narrow"),
+    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
+    hint("esc", "back", Action::HelpKey(SearchKey::Cancel)),
 ];
 pub const HINT_HOME_BROWSE: &[Hint] = &[
     hint("j/k", "move", Action::HomeMove(1)),
@@ -1035,6 +1093,70 @@ mod tests {
     }
 
     #[test]
+    fn help_types_to_narrow_and_arrows_scroll() {
+        assert_eq!(
+            Keys::map_help(k('f')),
+            Some(Action::HelpKey(SearchKey::Char('f'))),
+        );
+        assert_eq!(
+            Keys::map_help(k('q')),
+            Some(Action::HelpKey(SearchKey::Char('q'))),
+            "q types now; F1 or Esc closes",
+        );
+        assert_eq!(
+            Keys::map_help(k(' ')),
+            Some(Action::HelpKey(SearchKey::Char(' '))),
+            "multi-word filters need their space",
+        );
+        assert_eq!(
+            Keys::map_help(code(KeyCode::Down)),
+            Some(Action::Scroll(Span::Line, 1)),
+        );
+        assert_eq!(
+            Keys::map_help(code(KeyCode::Up)),
+            Some(Action::Scroll(Span::Line, -1)),
+        );
+        assert_eq!(
+            Keys::map_help(ctrl('n')),
+            Some(Action::Scroll(Span::Line, 1)),
+            "the vim reflex survives, on Ctrl",
+        );
+        assert_eq!(
+            Keys::map_help(code(KeyCode::Esc)),
+            Some(Action::HelpKey(SearchKey::Cancel)),
+        );
+        assert_eq!(Keys::map_help(code(KeyCode::Enter)), None);
+        assert_eq!(Keys::map_help(code(KeyCode::Tab)), None);
+        assert_eq!(Keys::map_help(k('Q')), Some(Action::Quit));
+        assert_eq!(Keys::map_help(k('T')), Some(Action::ThemeCycle));
+        assert_eq!(
+            Keys::map_help(code(KeyCode::F(1))),
+            Some(Action::HelpToggle),
+            "the function key still toggles from inside"
+        );
+    }
+
+    #[test]
+    fn help_filtering_is_fuzzy_and_drops_group_headers() {
+        let rows = help_matching(HOME_HELP, "");
+        assert_eq!(rows.len(), HOME_HELP.len(), "empty shows everything");
+        let rows = help_matching(READER_HELP, "fold");
+        assert!(!rows.is_empty(), "something mentions folding");
+        for &i in &rows {
+            assert_ne!(READER_HELP[i].0, "§", "groups never match");
+        }
+        assert!(
+            rows.iter().any(|&i| READER_HELP[i].0 == "za"),
+            "the fold row is found: {:?}",
+            rows.iter().map(|&i| READER_HELP[i].0).collect::<Vec<_>>(),
+        );
+        assert!(
+            help_matching(READER_HELP, "zzz-no-such-key").is_empty(),
+            "no match is an empty list, not the table"
+        );
+    }
+
+    #[test]
     fn tab_and_sideways_arrows_browse_without_choosing() {
         let mut m = Keys::new();
         assert_eq!(
@@ -1150,6 +1272,7 @@ mod tests {
             })
         };
         let outline: Dispatch = Box::new(|evs| evs.iter().fold(None, |_, e| Keys::map_outline(*e)));
+        let help: Dispatch = Box::new(|evs| evs.iter().fold(None, |_, e| Keys::map_help(*e)));
 
         let cases: Vec<Case> = vec![
             ("reading", HINT_READING, reader(false)),
@@ -1160,7 +1283,7 @@ mod tests {
             ("matches", HINT_MATCHES, reader(false)),
             ("link", HINT_LINK, reader(false)),
             ("outline", HINT_OUTLINE, outline),
-            ("help", HINT_HELP, reader(false)),
+            ("help", HINT_HELP, help),
             ("home-browse", HINT_HOME_BROWSE, home(HomeMode::Normal)),
             ("home-filter", HINT_HOME_FILTER, home(HomeMode::Filter)),
             ("home-search", HINT_HOME_SEARCH, home(HomeMode::Search)),

@@ -1711,6 +1711,11 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
     // — above every pane, and above the home screen's typing modes.
     if app.menu.is_some() {
         Keys::map_menu(k)
+    } else if app.help.is_some() {
+        // The sheet types: every printable key narrows it, so it needs its
+        // own map the way the outline picker has — the reader's map would
+        // scroll the document underneath instead.
+        Keys::map_help(k)
     } else if app.backlinks.is_some() {
         Keys::map_backlinks(k)
     } else if app.forward.is_some() {

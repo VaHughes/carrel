@@ -47,6 +47,15 @@ pub struct Outline {
     pub selected: usize,
 }
 
+/// The help sheet's transient state: how far down it has scrolled, and the
+/// filter narrowing it. Typing never leaves the sheet — it only narrows what
+/// the sheet shows — so there is no selection to keep.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Help {
+    pub scroll: u16,
+    pub filter: String,
+}
+
 /// What `za` (or a click on a fold marker) decided to fold: a heading's
 /// section, or a `<details>` region.
 #[derive(Debug, PartialEq, Eq)]
@@ -243,9 +252,9 @@ pub struct App {
     /// The lamplight hint footer is showing. `H` and a click on the lamp
     /// toggle it; persisted through `config_dir` so the choice sticks.
     pub hints: bool,
-    /// `Some(scroll)` while the help overlay is up. Presentation-free state:
-    /// the sheet's row offset, clamped by the painter against its content.
-    pub help: Option<u16>,
+    /// `Some` while the help overlay is up: the sheet's row offset (clamped
+    /// by the painter against its content) and the filter narrowing it.
+    pub help: Option<Help>,
     /// `Some` while the outline picker is up. The heading list itself is
     /// DERIVED from `doc` at every use — nothing here can go stale.
     pub outline: Option<Outline>,
@@ -1860,31 +1869,12 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
             _ => {}
         }
     }
-    // The help overlay owns the keyboard while it is up: scroll scrolls the
-    // sheet, dismiss-shaped actions close it, everything else is inert — a
-    // stray keystroke must not navigate the document underneath.
-    if let Some(scroll) = app.help {
-        return match action {
-            Action::HelpToggle | Action::Dismiss | Action::CloseFile => {
-                app.help = None;
-                Outcome::Redraw
-            }
-            Action::Scroll(_, n) => {
-                app.help = Some(if n < 0 {
-                    scroll.saturating_sub(u16::try_from(n.unsigned_abs()).unwrap_or(u16::MAX))
-                } else {
-                    scroll.saturating_add(u16::try_from(n.unsigned_abs()).unwrap_or(u16::MAX))
-                });
-                Outcome::Redraw
-            }
-            Action::GoToStart => {
-                app.auto_read = false;
-                app.help = Some(0);
-                Outcome::Redraw
-            }
-            Action::Quit => Outcome::Quit,
-            _ => Outcome::Idle,
-        };
+    // The help overlay owns the keyboard while it is up: typing narrows the
+    // sheet, arrows scroll it, dismiss-shaped actions close it, everything
+    // else is inert — a stray keystroke must not navigate the document
+    // underneath.
+    if app.help.is_some() {
+        return help_update(app, action);
     }
     // The outline picker owns the keyboard the same way (help wins when
     // both would apply — it is bound in outline mode's key set as nothing,
@@ -1896,6 +1886,68 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         return home_update(app, action);
     }
     reader_update(app, action)
+}
+
+/// Transitions while the help sheet is up.
+///
+/// Typing narrows, arrows scroll, dismiss-shaped actions close, and nothing
+/// else reaches the document — the sheet is modal in exactly the way a menu
+/// is, and for the same reason: a keystroke acting on something the reader
+/// cannot see is worse than one doing nothing.
+fn help_update(app: &mut App, action: Action) -> Outcome {
+    match action {
+        Action::HelpToggle | Action::Dismiss | Action::CloseFile => {
+            app.help = None;
+            Outcome::Redraw
+        }
+        Action::HelpKey(k) => match k {
+            SearchKey::Char(c) => {
+                if let Some(h) = app.help.as_mut() {
+                    h.filter.push(c);
+                    h.scroll = 0;
+                }
+                Outcome::Redraw
+            }
+            SearchKey::Backspace => {
+                if let Some(h) = app.help.as_mut() {
+                    h.filter.pop();
+                }
+                Outcome::Redraw
+            }
+            SearchKey::Accept => Outcome::Idle,
+            // Two-stage escape, the filter's shape: clear the filter first,
+            // close the sheet only when there is nothing left to clear.
+            SearchKey::Cancel => {
+                let empty = app.help.as_ref().is_some_and(|h| h.filter.is_empty());
+                if empty {
+                    app.help = None;
+                } else if let Some(h) = app.help.as_mut() {
+                    h.filter.clear();
+                }
+                Outcome::Redraw
+            }
+        },
+        Action::Scroll(_, n) => {
+            if let Some(h) = app.help.as_mut() {
+                let step = u16::try_from(n.unsigned_abs()).unwrap_or(u16::MAX);
+                h.scroll = if n < 0 {
+                    h.scroll.saturating_sub(step)
+                } else {
+                    h.scroll.saturating_add(step)
+                };
+            }
+            Outcome::Redraw
+        }
+        Action::GoToStart => {
+            app.auto_read = false;
+            if let Some(h) = app.help.as_mut() {
+                h.scroll = 0;
+            }
+            Outcome::Redraw
+        }
+        Action::Quit => Outcome::Quit,
+        _ => Outcome::Idle,
+    }
 }
 
 /// Transitions while a menu is up.
@@ -2235,7 +2287,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::HelpToggle => {
-            app.help = Some(0);
+            app.help = Some(Help::default());
             return Outcome::Redraw;
         }
 
@@ -3091,7 +3143,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::HelpToggle => {
-            app.help = Some(0);
+            app.help = Some(Help::default());
             Outcome::Redraw
         }
 
@@ -4615,14 +4667,48 @@ mod tests {
         let (row, anchor) = (a.view.scroll_row, a.view.anchor);
 
         assert_eq!(update(&mut a, Action::HelpToggle), Outcome::Redraw);
-        assert_eq!(a.help, Some(0));
+        assert_eq!(a.help, Some(Help::default()));
         update(&mut a, Action::Scroll(Span::Line, 3));
-        assert_eq!(a.help, Some(3), "j scrolls the sheet");
+        assert_eq!(
+            a.help,
+            Some(Help {
+                scroll: 3,
+                filter: String::new(),
+            }),
+            "arrows scroll the sheet"
+        );
         assert_eq!(a.view.scroll_row, row, "the document did not move");
 
         update(&mut a, Action::HelpToggle);
         assert_eq!(a.help, None);
         assert_eq!((a.view.scroll_row, a.view.anchor), (row, anchor));
+    }
+
+    #[test]
+    fn typing_narrows_the_sheet_and_esc_backs_out_in_two_stages() {
+        let mut a = app();
+        update(&mut a, Action::HelpToggle);
+        update(&mut a, Action::HelpKey(SearchKey::Char('f')));
+        update(&mut a, Action::HelpKey(SearchKey::Char('o')));
+        assert_eq!(
+            a.help.as_ref().map(|h| h.filter.as_str()),
+            Some("fo"),
+            "keystrokes belong to the filter"
+        );
+        assert_eq!(
+            a.help.as_ref().map(|h| h.scroll),
+            Some(0),
+            "typing restarts at the top"
+        );
+        update(&mut a, Action::HelpKey(SearchKey::Backspace));
+        assert_eq!(a.help.as_ref().map(|h| h.filter.as_str()), Some("f"));
+        update(&mut a, Action::HelpKey(SearchKey::Cancel));
+        assert!(
+            a.help.as_ref().is_some_and(|h| h.filter.is_empty()),
+            "first Esc clears the filter, not the sheet"
+        );
+        update(&mut a, Action::HelpKey(SearchKey::Cancel));
+        assert_eq!(a.help, None, "second Esc closes");
     }
 
     #[test]
@@ -4660,7 +4746,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut a = App::new_home(d.path().into(), vec![], 40, 10);
         assert_eq!(update(&mut a, Action::HelpToggle), Outcome::Redraw);
-        assert_eq!(a.help, Some(0));
+        assert_eq!(a.help, Some(Help::default()));
         update(&mut a, Action::HelpToggle);
         assert_eq!(a.help, None);
         assert!(a.is_home());

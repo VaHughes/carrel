@@ -722,15 +722,17 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
 
 /// The key-binding sheet: a centred panel over the page. Content comes from
 /// `keys::{READER_HELP, HOME_HELP}` — the drift test in keys.rs keeps those
-/// tables honest, so this painter never lies either. The state's scroll
-/// saturates; the CLAMP against the sheet's length happens here, where the
-/// content lives.
+/// tables honest, so this painter never lies either. Typing narrows the rows
+/// through [`keys::help_matching`]; the state's scroll saturates, and the
+/// CLAMP against the sheet's length happens here, where the content lives.
 fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let table = if app.is_home() {
         crate::keys::HOME_HELP
     } else {
         crate::keys::READER_HELP
     };
+    let filter = app.help.as_ref().map_or("", |h| h.filter.as_str());
+    let rows = crate::keys::help_matching(table, filter);
     let area = frame.area();
     if area.width < 20 || area.height < 4 {
         return; // nothing legible fits; the toggle still works
@@ -739,7 +741,11 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     // enough that no row in either table truncates (the test pins the
     // longest one).
     let w = 52u16.min(area.width.saturating_sub(2));
-    let h = (u16::try_from(table.len()).unwrap_or(u16::MAX) + 2).min(area.height.saturating_sub(2));
+    // Three rows at minimum — title, one content row, bar — so an empty
+    // filter still has somewhere to say so.
+    let h = (u16::try_from(rows.len()).unwrap_or(u16::MAX) + 2)
+        .max(3)
+        .min(area.height.saturating_sub(2));
     let x = (area.width - w) / 2;
     let y = (area.height - h) / 2;
     // The pane owns its rectangle the way it owns the keyboard: a click on any
@@ -752,32 +758,37 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
         buf.set_stringn(x, py, &blank, w as usize, theme::status());
     }
     let bar = "─".repeat(w as usize);
-    buf.set_stringn(
-        x,
-        y,
-        format!("┌ carrel — keys {bar}"),
-        w as usize,
-        theme::status(),
-    );
+    let title = if filter.is_empty() {
+        "┌ carrel — keys".to_string()
+    } else {
+        format!("┌ carrel — keys /{filter}")
+    };
+    buf.set_stringn(x, y, format!("{title} {bar}"), w as usize, theme::status());
     buf.set_stringn(
         x,
         y + h - 1,
-        format!("└ h · q · Esc close    j k scroll {bar}"),
+        format!("└ type narrows · ↑↓ scroll · esc back {bar}"),
         w as usize,
         theme::status(),
     );
 
     let inner_h = usize::from(h - 2);
-    let max_scroll = table.len().saturating_sub(inner_h);
-    let scroll = usize::from(app.help.unwrap_or(0)).min(max_scroll);
-    for (i, (key, desc)) in table.iter().skip(scroll).take(inner_h).enumerate() {
+    let max_scroll = rows.len().saturating_sub(inner_h);
+    let scroll = usize::from(app.help.as_ref().map_or(0, |hel| hel.scroll)).min(max_scroll);
+    let mut shown = 0usize;
+    for (i, &r) in rows.iter().skip(scroll).take(inner_h).enumerate() {
         let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
-        if *key == "§" {
+        let (key, desc) = table[r];
+        if key == "§" {
             buf.set_stringn(x, py, format!("  {desc}"), w as usize, theme::selected());
         } else {
             let line = format!("    {key:<18} {desc}");
             buf.set_stringn(x, py, line, w as usize, theme::status());
         }
+        shown += 1;
+    }
+    if shown == 0 && h > 2 {
+        buf.set_stringn(x, y + 1, "  no key matches that", w as usize, theme::dim());
     }
 }
 
@@ -3075,7 +3086,7 @@ mod tests {
             "no overlay while closed"
         );
 
-        app.help = Some(0);
+        app.help = Some(crate::app::Help::default());
         let open = buffer_of(&app, 60, 30);
         let open_text: String = (0..30).map(|y| line(&open, y) + "\n").collect();
         assert!(
@@ -3089,7 +3100,11 @@ mod tests {
     #[test]
     fn help_scroll_clamps_to_the_sheet_length() {
         let mut app = App::new("t.md".into(), Document::parse("body\n"), 60, 10);
-        app.help = Some(9999); // state saturates; the painter must clamp
+        // State saturates; the painter must clamp.
+        app.help = Some(crate::app::Help {
+            scroll: 9999,
+            filter: String::new(),
+        });
         let buf = buffer_of(&app, 60, 10);
         let text: String = (0..10).map(|y| line(&buf, y) + "\n").collect();
         // The table's LAST row must be visible when scrolled past the end —
@@ -3105,9 +3120,44 @@ mod tests {
     }
 
     #[test]
+    fn typing_narrows_the_help_sheet_to_matches() {
+        let mut app = App::new("t.md".into(), Document::parse("body text\n"), 60, 30);
+        app.help = Some(crate::app::Help {
+            scroll: 0,
+            filter: "fold".into(),
+        });
+        let buf = buffer_of(&app, 60, 30);
+        let text: String = (0..30).map(|y| line(&buf, y) + "\n").collect();
+        assert!(
+            text.contains("/fold"),
+            "the title echoes the filter:\n{text}"
+        );
+        assert!(
+            text.contains("fold this section"),
+            "the matching row survives:\n{text}"
+        );
+        assert!(
+            !text.contains("motions"),
+            "group headers drop out when filtered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_help_filter_with_no_match_says_so() {
+        let mut app = App::new("t.md".into(), Document::parse("body text\n"), 60, 30);
+        app.help = Some(crate::app::Help {
+            scroll: 0,
+            filter: "zzz-no-such-key".into(),
+        });
+        let buf = buffer_of(&app, 60, 30);
+        let text: String = (0..30).map(|y| line(&buf, y) + "\n").collect();
+        assert!(text.contains("no key matches that"), "{text}");
+    }
+
+    #[test]
     fn the_home_help_shows_home_keys() {
         let mut app = home_app(3, 60, 20);
-        app.help = Some(0);
+        app.help = Some(crate::app::Help::default());
         let buf = buffer_of(&app, 60, 20);
         let text: String = (0..20).map(|y| line(&buf, y) + "\n").collect();
         assert!(

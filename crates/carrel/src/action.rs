@@ -219,6 +219,10 @@ pub enum Action {
     /// [`Action::HomeKey`] does; `Cancel` clears the filter first and closes
     /// only when it is already empty.
     OutlineKey(SearchKey),
+    /// A keystroke into the help sheet's filter. Same shape as
+    /// [`Action::OutlineKey`]: printable keys narrow the sheet, `Cancel`
+    /// clears the filter first and closes only when it is already empty.
+    HelpKey(SearchKey),
     /// Enter: jump to the selected heading and push a history entry, so
     /// `Ctrl-O` returns — an outline jump is a link follow in spirit.
     OutlineJump,

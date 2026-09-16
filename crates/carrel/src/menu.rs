@@ -767,6 +767,7 @@ mod tests {
 
             // --- not intents at all ---
             A::SearchKey(_) => Internal, // typing
+            A::HelpKey(_) => Internal,   // typing, on the help sheet
             A::Hover(_) => Internal,     // decoration; it decides nothing
             A::AutoTick => Internal,     // a clock
             A::Absorb => Internal,       // dropped at the hit-test
