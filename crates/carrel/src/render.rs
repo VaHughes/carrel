@@ -217,7 +217,7 @@ pub fn draw_full(
     paint_rows(frame, app, text, painted, images);
     paint_scrollbar(frame, app, bar);
     paint_status(frame, app, status, &mut painted.targets);
-    paint_breadcrumb(frame, app, text);
+    paint_breadcrumb(frame, app, text, &mut painted.targets);
     if app.hints {
         paint_footer(
             frame,
@@ -2453,7 +2453,10 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
 /// and geometry cannot disagree. The crumb aligns with the prose column
 /// (`text_x`) and fits the measure; the rule spans the full text area, the
 /// wide edge, because it separates chrome from content.
-fn paint_breadcrumb(frame: &mut Frame, app: &App, text: Rect) {
+///
+/// Every painted segment registers itself, so a click jumps to that heading
+/// and hover lights it — the path row's shape, one screen down.
+fn paint_breadcrumb(frame: &mut Frame, app: &App, text: Rect, targets: &mut Targets) {
     let Some(crumb) = crate::breadcrumb::of(app, app.text_w()) else {
         return;
     };
@@ -2463,18 +2466,29 @@ fn paint_breadcrumb(frame: &mut Frame, app: &App, text: Rect) {
     if crumb.segments.is_empty() {
         return;
     }
-    let mut line = String::new();
+    let right = app.text_x_now().saturating_add(app.text_w());
+    let mut x = app.text_x_now();
     if crumb.elided {
-        line.push_str(crate::breadcrumb::ELLIPSIS);
+        put(
+            buf,
+            &mut x,
+            0,
+            right,
+            crate::breadcrumb::ELLIPSIS,
+            theme::dim(),
+        );
     }
-    for (i, (_, t)) in crumb.segments.iter().enumerate() {
+    for (i, (id, t)) in crumb.segments.iter().enumerate() {
         if i > 0 {
-            line.push_str(crate::breadcrumb::SEP);
+            put(buf, &mut x, 0, right, crate::breadcrumb::SEP, theme::dim());
         }
-        line.push_str(t);
+        let from = x;
+        put(buf, &mut x, 0, right, t, theme::dim());
+        // Clamped to the row, as the dialog buttons are: `put` advances past
+        // the clip, and a zone past the frame fails the target guard.
+        let w = x.saturating_sub(from).min(right.saturating_sub(from));
+        targets.push(Action::CrumbJump(*id), Zone::new(from, 0, w, 1), Z_CHROME);
     }
-    let x = app.text_x_now();
-    buf.set_stringn(x, 0, &line, app.text_w() as usize, theme::dim());
 }
 
 fn paint_picker(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targets) {

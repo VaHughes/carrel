@@ -627,6 +627,66 @@ fn the_library_dialog_registers_rows_buttons_and_close() {
     );
 }
 
+/// **The breadcrumb guard.**
+///
+/// Every painted band segment registers itself: a click jumps to that
+/// heading, hover lights it, and the zone covers exactly the segment's own
+/// text — the path row's contract, one screen down.
+#[test]
+fn every_breadcrumb_segment_target_covers_its_own_text() {
+    use carrel::action::Action;
+
+    let mut src = String::new();
+    src.push_str("# Top\n\nintro\n\n## Middle\n\n");
+    for n in 0..30 {
+        use std::fmt::Write as _;
+        let _ = writeln!(src, "middle body {n}\n");
+    }
+    src.push_str("### Inner\n\n");
+    for n in 0..30 {
+        use std::fmt::Write as _;
+        let _ = writeln!(src, "deep body {n}\n");
+    }
+    let mut app = app_at(100, 24, &src);
+    // Scroll deep, so the band reads Top ▸ Middle ▸ Inner.
+    for _ in 0..80 {
+        carrel::app::update(&mut app, Action::Scroll(carrel::action::Span::Line, 1));
+    }
+
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer();
+
+    let crumbs: Vec<_> = painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| matches!(t.action, Action::CrumbJump(_)))
+        .collect();
+    assert_eq!(crumbs.len(), 3, "one target per band segment");
+    for (n, target) in crumbs.iter().enumerate() {
+        let painted_row: String = (target.zone.x..target.zone.x + target.zone.w)
+            .map(|x| buf[(x, target.zone.y)].symbol().to_string())
+            .collect();
+        let want = ["Top", "Middle", "Inner"][n];
+        assert_eq!(
+            painted_row, want,
+            "segment {n} must cover its own text exactly, edge to edge"
+        );
+        assert_eq!(
+            painted
+                .targets
+                .hit(target.zone.x, target.zone.y)
+                .map(|h| h.action),
+            Some(target.action),
+            "a click on segment {n} must resolve to segment {n}"
+        );
+    }
+}
+
 /// The gutter is as tall as the text, not as tall as the terminal.
 ///
 /// `margin_row_at` bounded `row < top` and nothing else, so a click on the

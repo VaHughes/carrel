@@ -699,6 +699,7 @@ mod tests {
             A::MenuOpen { .. } => Chrome, // the `≡`, and every right-click
             A::HomeUp => Chrome,          // the `↑` at the head of the path row
             A::HomeCrumb(_) => Chrome,    // a segment of the path row
+            A::CrumbJump(_) => Chrome,    // a segment of the breadcrumb band
             A::GoHome => Chrome,          // the `⌂` on the reader's status row
 
             // --- the document itself ---

@@ -2574,6 +2574,24 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 Outcome::Idle
             }
         }
+        // A breadcrumb segment: jump to that heading through the same gate
+        // as the outline jump, with the same history behind it. The id is
+        // validated — it indexed the parse the click was painted from, and
+        // a reload since may have reused it for a non-heading.
+        Action::CrumbJump(id) => {
+            let Some(n) = app.doc.nodes.get(id.0 as usize) else {
+                return Outcome::Idle;
+            };
+            if !matches!(n.kind, carrel_core::NodeKind::Heading { .. }) {
+                return Outcome::Idle;
+            }
+            let byte = n.doc.start;
+            if let Some(here) = app.file.clone() {
+                app.push_history(here, app.view.anchor);
+            }
+            app.reveal_byte(byte, h, Where::Top);
+            Outcome::Redraw
+        }
         Action::SelectWord(byte) => {
             app.selection = word_range_at(&app.doc.text, byte);
             Outcome::Redraw
@@ -4786,6 +4804,49 @@ mod tests {
         assert_eq!(a.view.scroll_row, a.layout.row_start(block));
         update(&mut a, Action::Back);
         assert_eq!(a.view.scroll_row, 0, "Ctrl-O returns");
+    }
+
+    #[test]
+    fn clicking_a_breadcrumb_segment_jumps_with_history() {
+        let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
+        a.file = Some(PathBuf::from("/tmp/t.md"));
+        let two = a
+            .doc
+            .nodes
+            .iter()
+            .find(|n| {
+                matches!(n.kind, carrel_core::NodeKind::Heading { .. })
+                    && &a.doc.text[n.doc.start as usize..n.doc.end as usize] == "Two"
+            })
+            .map(|n| n.id)
+            .expect("a Two heading");
+        assert_eq!(update(&mut a, Action::CrumbJump(two)), Outcome::Redraw);
+        let at = a.doc.text.find("Two").unwrap() as u32;
+        let block = a.doc.block_at_doc(carrel_core::DocByte(at));
+        assert_eq!(a.view.scroll_row, a.layout.row_start(block));
+        assert_eq!(a.history.len(), 1, "a jump is a link follow in spirit");
+        update(&mut a, Action::Back);
+        assert_eq!(a.view.scroll_row, 0, "Ctrl-O returns");
+    }
+
+    #[test]
+    fn a_stale_crumb_id_lands_on_nothing() {
+        let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
+        assert_eq!(
+            update(&mut a, Action::CrumbJump(carrel_core::NodeId(9999))),
+            Outcome::Idle,
+            "a reload may have reused the number"
+        );
+        // A real id that is not a heading refuses too: the click painted
+        // from a different parse than the one on screen.
+        let para = a
+            .doc
+            .nodes
+            .iter()
+            .find(|n| !matches!(n.kind, carrel_core::NodeKind::Heading { .. }))
+            .map(|n| n.id)
+            .expect("a body block");
+        assert_eq!(update(&mut a, Action::CrumbJump(para)), Outcome::Idle);
     }
 
     #[test]

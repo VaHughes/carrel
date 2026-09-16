@@ -477,6 +477,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::MenuClose
         | A::HomeSelect(_)
         | A::PickerSelect(_)
+        | A::CrumbJump(_)
         | A::HomeKey(_)
         | A::OutlineKey(_)
         | A::OutlineMove(_)
@@ -554,6 +555,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("right-click", "a menu for what is under it"),
     ("menu button", "the ≡ on the status row"),
     ("hover", "the thing under it lights"),
+    ("click a section", "of the breadcrumb: go there"),
 ];
 
 /// The help sheet, home-screen side.

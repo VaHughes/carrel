@@ -225,6 +225,11 @@ pub enum Action {
     /// Jump to an outline entry by absolute row in the FILTERED list. See
     /// [`Action::BacklinksOpenAt`].
     OutlineJumpAt(u32),
+    /// Jump to a breadcrumb segment's heading. Carries the heading's `NodeId`
+    /// — stable for the parse the click was painted from, and validated on
+    /// arrival, so a reload between paint and press lands on nothing rather
+    /// than on the wrong section.
+    CrumbJump(carrel_core::NodeId),
     /// Jump to an absolute visual row from a pointer position.
     ScrollTo(u32),
     /// The pointer moved to this cell.

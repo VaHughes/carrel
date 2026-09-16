@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **The breadcrumb band is clickable.** Every section it names jumps there on
+  a click — through the same gate as the outline jump, so folds open and
+  `Ctrl-O` comes back — and hover lights the segment under the pointer.
 - **Search results read as a document.** `Tab` in home-screen search opens the
   hits as generated markdown — a section per file with a link per match — on
   the same machinery that reads a diff, so the outline, folding, breadcrumb,
