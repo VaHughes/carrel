@@ -302,12 +302,22 @@ pub enum Action {
     HomeFilterMode,
     /// `/` on the home screen: content search across every scanned file.
     HomeSearchMode,
+    /// `Tab` in content search: read the hits as a document — a section per
+    /// file with a link per match — instead of opening one file.
+    HomeOpenResults,
     PickerOpen,
     /// Put the picker's highlight on an absolute entry — a mouse click.
     /// An index into the picker's match list. Clamped by the receiver.
     PickerSelect(usize),
     PickerChoose,
     PickerCancel,
+    /// Drill into the highlighted directory without choosing it: the dialog
+    /// stays up and lists what is inside. `Tab` / `→`, and the footer's
+    /// drill-in button.
+    PickerDescend,
+    /// Climb to the parent of the browsed directory. `←`, and `Backspace`
+    /// on an empty filter.
+    PickerUp,
 }
 
 // --- pointer targets -------------------------------------------------------

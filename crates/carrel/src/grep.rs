@@ -28,6 +28,21 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// document, not enumerating a corpus.
 const MAX_HITS: usize = 500;
 
+/// How many matching lines travel with a hit. The count stays total, but a
+/// results document that quoted ten thousand lines would be a second copy of
+/// the library; eight shows the shape and the file itself shows the rest.
+const MATCH_LINES: usize = 8;
+
+/// One matching line inside a hit file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HitLine {
+    /// 1-based source line number — what the reader's `42G` and a `#L12`
+    /// link both mean.
+    pub lineno: u32,
+    /// The line itself, trimmed, for display.
+    pub line: String,
+}
+
 /// One matching file.
 #[derive(Clone, Debug)]
 pub struct Hit {
@@ -36,6 +51,8 @@ pub struct Hit {
     pub count: usize,
     /// The first matching line, trimmed, for the context row.
     pub first_line: String,
+    /// The first few matching lines, for the results document.
+    pub matches: Vec<HitLine>,
 }
 
 #[derive(Debug)]
@@ -80,27 +97,97 @@ fn grep_file(re: &carrel_core::Regex, path: &std::path::Path) -> Option<Hit> {
     }
     let text = std::fs::read_to_string(path).ok()?;
     let mut count = 0usize;
-    let mut first: Option<(usize, usize)> = None;
+    let mut matches: Vec<HitLine> = Vec::new();
     for m in re.find_iter(&text) {
-        if first.is_none() {
-            first = Some((m.start(), m.end()));
+        if matches.len() < MATCH_LINES {
+            let (lineno, line) = context_line(&text, m.start());
+            matches.push(HitLine { lineno, line });
         }
         count += 1;
     }
-    let (start, _) = first?;
-    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
-    let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
-    let first_line: String = text[line_start..line_end]
+    let first = matches.first()?;
+    Some(Hit {
+        path: path.to_path_buf(),
+        count,
+        first_line: first.line.clone(),
+        matches,
+    })
+}
+
+/// The 1-based number and trimmed text of the source line holding `byte`.
+fn context_line(text: &str, byte: usize) -> (u32, String) {
+    let line_start = text[..byte].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[byte..].find('\n').map_or(text.len(), |i| byte + i);
+    let lineno = u32::try_from(text[..byte].matches('\n').count() + 1).unwrap_or(u32::MAX);
+    let line: String = text[line_start..line_end]
         .trim()
         .chars()
         .filter(|c| !c.is_control())
         .take(120)
         .collect();
-    Some(Hit {
-        path: path.to_path_buf(),
-        count,
-        first_line,
-    })
+    (lineno, line)
+}
+
+/// Render search hits as a markdown document: a section per file with a link
+/// per match, so the outline, folding, breadcrumb and in-document search all
+/// work on results with no new machinery — the same idea as
+/// `carrel_core::diff`, which turns a diff into a document for the same
+/// reason.
+///
+/// Every match links to its file at its line (`path#L12`, GitHub's own
+/// anchor shape, which the reader jumps to as a row). Paths read relative
+/// to `root`, targets included, so the links resolve wherever the document
+/// is opened from — the opener points link resolution at the same root.
+#[must_use]
+pub fn render_results(root: &std::path::Path, query: &str, hits: &[Hit]) -> String {
+    use std::fmt::Write as _;
+    fn plural(n: usize, one: &str, many: &str) -> String {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {many}")
+        }
+    }
+    let total: usize = hits.iter().map(|h| h.count).sum();
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "# {} match {:?}\n",
+        plural(hits.len(), "file", "files"),
+        query
+    );
+    let _ = writeln!(
+        out,
+        "_{} in {}. Every line below is a link._\n",
+        plural(total, "match", "matches"),
+        plural(hits.len(), "file", "files"),
+    );
+    for h in hits {
+        let rel = h
+            .path
+            .strip_prefix(root)
+            .unwrap_or(&h.path)
+            .display()
+            .to_string();
+        let _ = writeln!(out, "## {rel} — {}", plural(h.count, "match", "matches"));
+        for m in &h.matches {
+            // Angle-bracket targets, because a vault path may hold a space;
+            // a code span for the text, because it may hold markdown.
+            let _ = writeln!(
+                out,
+                "- [{}](<{rel}#L{}>): `{}`",
+                m.lineno,
+                m.lineno,
+                m.line.replace('`', "’"),
+            );
+        }
+        if h.count > h.matches.len() {
+            let more = h.count - h.matches.len();
+            let _ = writeln!(out, "- […{more} more in {rel}](<{rel}>)");
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -176,6 +263,78 @@ mod tests {
         let (hits, done) = collect(&rx);
         assert!(hits.is_empty());
         assert!(done, "whitespace needle: immediate Done");
+    }
+
+    #[test]
+    fn hits_carry_line_numbers_capped_per_file() {
+        use std::fmt::Write as _;
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        let mut body = String::from("nothing here\n");
+        for i in 0..20 {
+            let _ = writeln!(body, "line {i} with a needle in it");
+        }
+        std::fs::write(&a, &body).unwrap();
+        let rx = spawn(vec![entry(&a)], "needle".into(), 0);
+        let (hits, _) = collect(&rx);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].count, 20, "the count stays total");
+        assert_eq!(hits[0].matches.len(), MATCH_LINES, "the lines are capped");
+        assert_eq!(hits[0].matches[0].lineno, 2);
+        assert!(hits[0].matches[0].line.contains("line 0"));
+        assert_eq!(hits[0].first_line, hits[0].matches[0].line);
+    }
+
+    #[test]
+    fn the_results_document_links_every_match_to_its_line() {
+        let root = std::path::Path::new("/vault");
+        let hits = vec![
+            Hit {
+                path: root.join("notes/arch.md"),
+                count: 3,
+                first_line: "a needle".into(),
+                matches: vec![
+                    HitLine {
+                        lineno: 12,
+                        line: "a needle".into(),
+                    },
+                    HitLine {
+                        lineno: 45,
+                        line: "another `tricky` [one]".into(),
+                    },
+                ],
+            },
+            Hit {
+                path: root.join("solo.md"),
+                count: 1,
+                first_line: "needle".into(),
+                matches: vec![HitLine {
+                    lineno: 1,
+                    line: "needle".into(),
+                }],
+            },
+        ];
+        let doc = render_results(root, "needle", &hits);
+        assert!(doc.contains("# 2 files match \"needle\""), "{doc}");
+        assert!(doc.contains("## notes/arch.md — 3 matches"), "{doc}");
+        assert!(
+            doc.contains("- [12](<notes/arch.md#L12>): `a needle`"),
+            "{doc}"
+        );
+        // Markdown inside a match cannot break the link: the text rides in a
+        // code span, with its backticks disarmed.
+        assert!(
+            doc.contains("`another ’tricky’ [one]`"),
+            "code span, not markup: {doc}"
+        );
+        // The capped file says where the rest went, as a link to the file.
+        assert!(
+            doc.contains("[…1 more in notes/arch.md](<notes/arch.md>)"),
+            "{doc}"
+        );
+        // And the whole thing parses: sections for the outline, links to click.
+        let parsed = carrel_core::Document::parse(&doc);
+        assert_eq!(parsed.links.len(), 4, "two matches + more + solo: {doc}");
     }
 
     #[test]

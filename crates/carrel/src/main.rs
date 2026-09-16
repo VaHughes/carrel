@@ -2086,6 +2086,15 @@ fn home_mouse_action(
     if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
         && let Some(hit) = targets.hit(m.column, m.row)
     {
+        // The picker's rows keep the file list's press-count idiom even
+        // though they are registered targets now (registration is what lets
+        // hover light them): one press selects, the second opens.
+        if let Action::PickerSelect(i) = hit.action {
+            return Some(match ptr.clicks.press(m.column, m.row) {
+                1 => Action::PickerSelect(i),
+                _ => Action::PickerChoose,
+            });
+        }
         return (hit.action != Action::Absorb).then_some(hit.action);
     }
     match m.kind {
@@ -2106,11 +2115,20 @@ fn home_mouse_action(
         MouseEventKind::Down(MouseButton::Left) => {
             let home = app.home()?;
             if home.mode == carrel::home::HomeMode::Picker {
-                let i = home.picker_row_at(m.column, m.row, app.cols, app.rows)?;
-                return Some(match ptr.clicks.press(m.column, m.row) {
-                    1 => Action::PickerSelect(i),
-                    _ => Action::PickerChoose,
-                });
+                // The rows usually act as targets above, which is also what
+                // lights them on hover; this geometry arm is the fallback for
+                // a click that arrives with no painted frame behind it.
+                if let Some(i) = home.picker_row_at(m.column, m.row, app.cols, app.rows) {
+                    return Some(match ptr.clicks.press(m.column, m.row) {
+                        1 => Action::PickerSelect(i),
+                        _ => Action::PickerChoose,
+                    });
+                }
+                // The dialog's buttons already acted above, and its chrome is
+                // absorbed there too. Anything else inside the box is dead
+                // air; anything outside it backs out of the dialog.
+                return (!home.picker_contains(m.column, m.row, app.cols, app.rows))
+                    .then_some(Action::PickerCancel);
             }
             // A continue row is its own affordance: it is numbered, and a
             // single click opens it. The file list keeps click-to-select /

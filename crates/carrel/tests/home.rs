@@ -83,7 +83,8 @@ mod picker {
     use carrel::home::HomeMode;
     use carrel_core::Document;
 
-    /// The picker as `d` leaves it: prefilled with the launch directory.
+    /// The picker as `d` leaves it: browsing the launch directory, nothing
+    /// typed, browsable before a single keystroke.
     ///
     /// `launch_dir` is set explicitly, exactly as the binary sets it — a test
     /// that left it `None` would fall through to the home root and so never
@@ -97,40 +98,33 @@ mod picker {
         app
     }
 
-    /// The picker with the prefill cleared — one Esc, which is what someone
-    /// heading somewhere unrelated presses before typing an absolute path.
-    fn picker_app_cleared(d: &tempfile::TempDir) -> App {
-        let mut app = picker_app(d);
-        update(&mut app, Action::HomeKey(SearchKey::Cancel));
-        assert!(app.home().unwrap().picker.typed.is_empty());
-        assert_eq!(app.home().unwrap().mode, HomeMode::Picker);
-        app
-    }
-
-    /// The maintainer's report, 2026-08-29: `d` opened on an empty input, so
-    /// `/live` meant the filesystem root and reaching a sibling of the
-    /// directory already on screen meant typing the whole path from `/`.
+    /// The dialog opens ON somewhere: parent, itself, children, places — not
+    /// on an empty prompt waiting for a path to be typed into it.
     #[test]
-    fn the_picker_opens_on_the_directory_carrel_was_run_from() {
+    fn the_picker_opens_browsing_where_carrel_was_run_from() {
         let d = tempfile::tempdir().unwrap();
         for sub in ["live", "archive"] {
             std::fs::create_dir(d.path().join(sub)).unwrap();
         }
         let app = picker_app(&d);
         let h = app.home().unwrap();
+        assert!(h.picker.typed.is_empty(), "nothing to type over");
+        assert_eq!(h.picker.browsing, d.path());
         assert_eq!(
-            h.picker.typed,
-            format!("{}/", d.path().display()),
-            "the input opens on the launch directory, slash and all",
-        );
-        assert_eq!(
-            h.picker.roots,
-            vec![
+            &h.picker.roots[..4],
+            &[
+                d.path().parent().unwrap().to_path_buf(),
                 d.path().to_path_buf(),
                 d.path().join("archive"),
                 d.path().join("live"),
             ],
-            "the launch directory leads what you can reach from it",
+            "parent, here, children: {:?}",
+            h.picker.roots,
+        );
+        assert_eq!(
+            h.picker.roots[h.picker.selected],
+            d.path().to_path_buf(),
+            "and the highlight is already on here",
         );
     }
 
@@ -152,88 +146,24 @@ mod picker {
 
         let h = app.home().unwrap();
         assert_eq!(
-            h.picker.typed,
-            format!("{}/", launched_in.path().display()),
-            "the input opens where the command was typed",
+            h.picker.browsing,
+            launched_in.path(),
+            "the dialog browses where the command was typed",
         );
-        assert_eq!(
-            h.picker.roots.first(),
-            Some(&launched_in.path().to_path_buf()),
-            "and the highlight is already on it: {:?}",
+        assert!(
+            h.picker.roots.contains(&launched_in.path().to_path_buf()),
+            "and here is on the list: {:?}",
             h.picker.roots,
         );
 
-        // So Enter alone — no typing — reads where you are.
+        // The highlight parks on "here", so Enter alone — no typing —
+        // reads where you are.
+        assert_eq!(
+            h.picker.roots[h.picker.selected],
+            launched_in.path().to_path_buf(),
+        );
         update(&mut app, Action::PickerChoose);
         assert_eq!(app.home().unwrap().root, launched_in.path());
-    }
-
-    /// The fallback for a reader whose working directory has been deleted out
-    /// from under them: no prefill, so the default menu still has something.
-    #[test]
-    fn a_launch_directory_that_is_gone_falls_back_to_the_default_menu() {
-        let d = tempfile::tempdir().unwrap();
-        let mut app = App::new_home(d.path().into(), vec![], 60, 16);
-        app.launch_dir = Some(std::path::PathBuf::from("/no/such/place/at/all"));
-        if let Some(h) = app.home_mut() {
-            h.places = vec![std::path::PathBuf::from("/fav/notes")];
-        }
-        update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
-        update(&mut app, Action::PickerOpen);
-
-        let h = app.home().unwrap();
-        assert!(h.picker.typed.is_empty(), "nothing to continue from");
-        assert_eq!(
-            h.picker.roots.first(),
-            Some(&std::path::PathBuf::from("/fav/notes")),
-            "so the remembered places lead: {:?}",
-            h.picker.roots,
-        );
-    }
-
-    /// Both typing styles have to continue from here — the leading slash is a
-    /// separator, not a jump to `/`.
-    #[test]
-    fn typing_continues_from_the_current_directory_with_or_without_a_slash() {
-        let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir(d.path().join("live")).unwrap();
-        std::fs::write(d.path().join("live").join("x.md"), "# x").unwrap();
-
-        for typed in ["/live", "live"] {
-            let mut app = picker_app(&d);
-            for c in typed.chars() {
-                update(&mut app, Action::HomeKey(SearchKey::Char(c)));
-            }
-            assert_eq!(
-                app.home().unwrap().picker.roots,
-                vec![d.path().join("live")],
-                "{typed:?} must resolve under the current directory",
-            );
-            assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
-            assert_eq!(app.home().unwrap().root, d.path().join("live"));
-        }
-    }
-
-    /// The prefill's escape hatch. Somewhere unrelated is still one Esc away,
-    /// and this is the only way to reach it — the input is text, so an
-    /// absolute path typed after the prefill would hang off the end of it.
-    #[test]
-    fn escape_clears_the_prefill_so_an_unrelated_path_can_still_be_typed() {
-        let d = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let mut app = picker_app(&d);
-        assert!(!app.home().unwrap().picker.typed.is_empty());
-
-        update(&mut app, Action::HomeKey(SearchKey::Cancel));
-        let h = app.home().unwrap();
-        assert!(h.picker.typed.is_empty(), "first Esc clears the prefill");
-        assert_eq!(h.mode, HomeMode::Picker, "and the picker stays up");
-
-        for c in target.path().to_str().unwrap().chars() {
-            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
-        }
-        update(&mut app, Action::PickerChoose);
-        assert_eq!(app.home().unwrap().root, target.path());
     }
 
     #[test]
@@ -255,13 +185,46 @@ mod picker {
         assert_eq!(app.home().unwrap().mode, HomeMode::Normal);
     }
 
+    /// A bare word filters the neighbourhood fuzzily; erasing it brings the
+    /// neighbourhood back.
+    #[test]
+    fn typing_a_word_filters_and_erasing_it_restores_the_neighbourhood() {
+        let d = tempfile::tempdir().unwrap();
+        for sub in ["zephyrine", "zephyrion", "plain"] {
+            std::fs::create_dir(d.path().join(sub)).unwrap();
+        }
+        let mut app = picker_app(&d);
+        for c in "zeph".chars() {
+            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+        }
+        let mut roots = app.home().unwrap().picker.roots.clone();
+        roots.sort();
+        assert_eq!(
+            roots,
+            vec![d.path().join("zephyrine"), d.path().join("zephyrion")],
+            "the filter narrows; it does not complete a prefix",
+        );
+        for _ in 0.."zeph".len() {
+            update(&mut app, Action::HomeKey(SearchKey::Backspace));
+        }
+        let h = app.home().unwrap();
+        assert!(h.picker.typed.is_empty());
+        assert!(
+            h.picker.roots.contains(&d.path().join("plain")),
+            "erased back to the neighbourhood: {:?}",
+            h.picker.roots,
+        );
+    }
+
+    /// A filter with a `/` in it is a path, not text: an absolute path typed
+    /// in full still resolves, even somewhere unrelated.
     #[test]
     fn typing_a_path_completes_it_and_choosing_it_changes_the_root() {
         let d = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         std::fs::write(target.path().join("x.md"), "# x").unwrap();
 
-        let mut app = picker_app_cleared(&d);
+        let mut app = picker_app(&d);
         for c in target.path().to_str().unwrap().chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
@@ -269,7 +232,7 @@ mod picker {
         assert_eq!(
             h.picker.typed.as_str(),
             target.path().to_str().unwrap(),
-            "typing must fill the picker's path",
+            "typing must fill the picker's filter",
         );
         assert_eq!(
             h.picker.roots,
@@ -297,7 +260,7 @@ mod picker {
         let target = tempfile::tempdir().unwrap();
         std::fs::write(target.path().join("x.md"), "# x").unwrap();
 
-        let mut app = picker_app_cleared(&d);
+        let mut app = picker_app(&d);
         for c in target.path().to_str().unwrap().chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
@@ -308,66 +271,35 @@ mod picker {
     }
 
     #[test]
-    fn a_partial_path_offers_every_directory_that_matches_it() {
-        let d = tempfile::tempdir().unwrap();
-        for sub in ["alpha", "album", "beta"] {
-            std::fs::create_dir(d.path().join(sub)).unwrap();
-        }
-        // Two letters, because the picker already holds the directory they
-        // are a prefix of.
-        let mut app = picker_app(&d);
-        for c in "al".chars() {
-            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
-        }
-        assert_eq!(
-            app.home().unwrap().picker.roots,
-            vec![d.path().join("album"), d.path().join("alpha")],
-        );
-        // Backspacing widens the list again — the completion is live, and it
-        // bottoms out at the prefill rather than at nothing.
-        update(&mut app, Action::HomeKey(SearchKey::Backspace));
-        update(&mut app, Action::HomeKey(SearchKey::Backspace));
-        assert_eq!(
-            app.home().unwrap().picker.roots,
-            vec![
-                d.path().join("album"),
-                d.path().join("alpha"),
-                d.path().join("beta"),
-            ],
-            "a trailing slash lists the directory whole",
-        );
-    }
-
-    #[test]
-    fn escape_clears_the_typed_path_before_it_closes_the_picker() {
+    fn escape_clears_the_filter_before_it_closes_the_picker() {
         let d = tempfile::tempdir().unwrap();
         let mut app = picker_app(&d);
-        update(&mut app, Action::HomeKey(SearchKey::Char('/')));
+        update(&mut app, Action::HomeKey(SearchKey::Char('z')));
         update(&mut app, Action::HomeKey(SearchKey::Cancel));
         let h = app.home().unwrap();
-        assert!(h.picker.typed.is_empty(), "first Esc clears the path");
+        assert!(h.picker.typed.is_empty(), "first Esc clears the filter");
         assert_eq!(h.mode, HomeMode::Picker, "and the picker stays up");
         update(&mut app, Action::HomeKey(SearchKey::Cancel));
         assert_eq!(app.home().unwrap().mode, HomeMode::Normal, "second closes");
     }
 
     #[test]
-    fn enter_follows_the_highlight_not_the_typed_prefix() {
-        // The trap this guards against: type a prefix, move the highlight
+    fn enter_follows_the_highlight_not_the_typed_filter() {
+        // The trap this guards against: type a filter, move the highlight
         // down to the second match, press Enter. The typed text must not
         // hijack the choice — it used to, which left the picker unable to
         // choose anything but the abandoned path until Esc.
         let d = tempfile::tempdir().unwrap();
-        for sub in ["alpha", "album"] {
+        for sub in ["zephyrine", "zephyrion"] {
             std::fs::create_dir(d.path().join(sub)).unwrap();
         }
         let mut app = picker_app(&d);
-        for c in "al".chars() {
+        for c in "zeph".chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
         update(&mut app, Action::HomeMove(1)); // down to the second match
         let expected = app.home().unwrap().picker.roots[1].clone();
-        assert_eq!(expected, d.path().join("alpha"));
+        assert!(expected.starts_with(d.path()), "{expected:?}");
         assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
         assert_eq!(app.home().unwrap().root, expected);
     }
@@ -375,7 +307,7 @@ mod picker {
     #[test]
     fn a_typed_path_that_is_not_a_directory_is_refused_out_loud() {
         let d = tempfile::tempdir().unwrap();
-        let mut app = picker_app_cleared(&d);
+        let mut app = picker_app(&d);
         let before = app.home().unwrap().root.clone();
         // Nothing matches, so Enter falls through to the typed text — which
         // has to be complained about rather than silently doing nothing.
@@ -390,13 +322,60 @@ mod picker {
         assert!(h.note.is_some(), "with a complaint on the status bar");
 
         // Erasing it all is not a path "" that earns the same complaint —
-        // the defaults come back and Enter takes the highlighted one.
+        // the neighbourhood comes back and Enter takes the highlighted one.
         for _ in 0.."/no/such/place".len() {
             update(&mut app, Action::HomeKey(SearchKey::Backspace));
         }
-        let expected = app.home().unwrap().picker.roots[0].clone();
+        let h = app.home().unwrap();
+        let expected = h.picker.roots[h.picker.selected].clone();
         assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
         assert_eq!(app.home().unwrap().root, expected);
+    }
+
+    /// Drilling in and climbing browse without choosing: the screen's root
+    /// does not move until Enter says so.
+    #[test]
+    fn descend_and_climb_browse_without_choosing() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("live")).unwrap();
+        std::fs::create_dir(d.path().join("live").join("inner")).unwrap();
+        let mut app = picker_app(&d);
+
+        let live = app
+            .home()
+            .unwrap()
+            .picker
+            .roots
+            .iter()
+            .position(|r| r == &d.path().join("live"))
+            .unwrap();
+        update(&mut app, Action::PickerSelect(live));
+        update(&mut app, Action::PickerDescend);
+        let h = app.home().unwrap();
+        assert_eq!(h.picker.browsing, d.path().join("live"));
+        assert_eq!(h.root, d.path(), "browsing is not choosing");
+        assert_eq!(h.mode, HomeMode::Picker, "the dialog stays up");
+        assert!(
+            h.picker
+                .roots
+                .contains(&d.path().join("live").join("inner"))
+        );
+
+        update(&mut app, Action::PickerUp);
+        let h = app.home().unwrap();
+        assert_eq!(h.picker.browsing, d.path());
+        assert_eq!(h.root, d.path());
+    }
+
+    /// Backspace on an empty filter climbs, the keyboard twin of the `..` row.
+    #[test]
+    fn backspace_on_an_empty_filter_climbs() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = picker_app(&d);
+        update(&mut app, Action::HomeKey(SearchKey::Backspace));
+        let h = app.home().unwrap();
+        assert_eq!(h.picker.browsing, d.path().parent().unwrap());
+        assert_eq!(h.mode, HomeMode::Picker);
     }
 
     #[test]
@@ -406,8 +385,14 @@ mod picker {
         let mut app = picker_app(&d);
         app.config_dir = Some(cfg.path().into());
 
-        update(&mut app, Action::PickerChoose); // the selected listed root
+        // The highlight parks on "here", so choosing at once reads it.
+        assert_eq!(
+            app.home().unwrap().picker.roots[app.home().unwrap().picker.selected],
+            d.path().to_path_buf(),
+        );
+        update(&mut app, Action::PickerChoose);
         let chosen = app.home().unwrap().root.clone();
+        assert_eq!(chosen, d.path());
         assert_eq!(
             carrel::config::load_root_in(cfg.path()),
             Some(chosen),
@@ -418,7 +403,7 @@ mod picker {
     #[test]
     fn picker_keys_never_leak_into_the_filter_behind_the_overlay() {
         let d = tempfile::tempdir().unwrap();
-        let mut app = picker_app_cleared(&d);
+        let mut app = picker_app(&d);
         update(&mut app, Action::HomeKey(SearchKey::Char('z')));
         let h = app.home().unwrap();
         assert!(
@@ -596,6 +581,58 @@ mod close_file {
     }
 }
 
+mod search_results {
+    use carrel::action::{Action, SearchKey};
+    use carrel::app::{App, update};
+    use carrel::grep::{Hit, HitLine};
+
+    /// The whole loop through the public API: search, read the hits as a
+    /// document, follow a match to its line, come back to the library.
+    #[test]
+    fn results_read_as_a_document_and_each_match_jumps_to_its_line() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("doc.md");
+        std::fs::write(&f, "first\nthe needle sits here\nlast\n").unwrap();
+        let (cached, _) = carrel::scan::walk_blocking(d.path());
+        let mut app = App::new_home(d.path().into(), cached, 60, 20);
+        app.library_root = Some(d.path().to_path_buf());
+
+        update(&mut app, Action::HomeSearchMode);
+        for c in "needle".chars() {
+            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+        }
+        // The event loop normally streams these in; inject directly.
+        if let Some(h) = app.home_mut() {
+            h.hits.push(Hit {
+                path: f.clone(),
+                count: 1,
+                first_line: "the needle sits here".into(),
+                matches: vec![HitLine {
+                    lineno: 2,
+                    line: "the needle sits here".into(),
+                }],
+            });
+        }
+        update(&mut app, Action::HomeOpenResults);
+        assert!(!app.is_home(), "Tab reads the results");
+        assert!(
+            app.doc.text.contains("doc.md — 1 match"),
+            "a section per file"
+        );
+
+        // The first link is the first match: following it opens the file.
+        update(&mut app, Action::LinkOpen(0));
+        assert_eq!(app.file.as_deref(), Some(f.as_path()));
+
+        // And `q` from there returns to the search it came from.
+        update(&mut app, Action::CloseFile);
+        assert!(app.is_home());
+        let h = app.home().unwrap();
+        assert_eq!(h.query, "needle", "the query survived the round trip");
+        assert_eq!(h.hits.len(), 1, "the hits did too");
+    }
+}
+
 /// The guard that makes click-to-open trustworthy: whatever file name is
 /// painted on a row, clicking that row must resolve to that same file.
 ///
@@ -649,8 +686,8 @@ fn clicking_a_row_resolves_to_the_file_painted_on_it() {
     }
 }
 
-/// Same round trip for the directory picker overlay: whatever path is painted
-/// on a row, clicking that row must resolve to that entry.
+/// Same round trip for the library dialog: whatever a row paints, clicking
+/// that row must resolve to the entry behind it.
 #[test]
 fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
     use ratatui::Terminal;
@@ -679,27 +716,41 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
     let buf = t.backend().buffer().clone();
 
     let home = app.home().unwrap();
-    // The painter writes "▸ {path}" one cell inside the box and clips it to
-    // the box with `set_stringn`, so a row shows at most `w - 3` cells of the
-    // path itself (ASCII here, so cells == chars). The contract under test is
-    // that a row paints exactly as much of its entry as fits — not that every
-    // entry fits.
+    // The painter writes rows as `▸/␣ mark path` one cell inside the box and
+    // clips to it, so a row shows at most `w - 5` cells of the path itself
+    // (ASCII here, so cells == chars). Two rows paint labels instead of
+    // paths: the parent is `..`, and where you are carries `· here`.
     let entries = u16::try_from(home.picker_entries()).unwrap();
     let (_, _, box_w, _) = carrel::home::picker_geometry(cols, rows, entries);
-    let budget = usize::from(box_w) - 3;
+    let budget = usize::from(box_w) - 5;
+    let browsing = home.picker.browsing.clone();
+    let parent = browsing.parent().map(std::path::Path::to_path_buf);
     let mut checked = 0;
     for row in 0..rows {
         let Some(i) = home.picker_row_at(cols / 2, row, cols, rows) else {
             continue;
         };
         let painted: String = (0..cols).map(|c| buf[(c, row)].symbol()).collect();
-        let expected = home.picker.roots[i].display().to_string();
-        let shown: String = expected.chars().take(budget).collect();
-        assert!(
-            painted.contains(&shown),
-            "row {row}: click resolves to {expected:?} but the row paints {:?}",
-            painted.trim()
-        );
+        let root = &home.picker.roots[i];
+        if Some(root) == parent.as_ref() {
+            assert!(
+                painted.contains(".."),
+                "row {row}: the parent must paint as `..`, paints {painted:?}",
+            );
+        } else {
+            let path = root.display().to_string();
+            let shown: String = path.chars().take(budget).collect();
+            assert!(
+                painted.contains(&shown),
+                "row {row}: click resolves to {path:?} but the row paints {painted:?}",
+            );
+            if root == &browsing {
+                assert!(
+                    painted.contains("· here"),
+                    "row {row}: where you are must say so: {painted:?}",
+                );
+            }
+        }
         checked += 1;
     }
     let (_, _, visible) = home.picker_view(cols, rows);
@@ -743,15 +794,19 @@ fn a_filter_ranks_fuzzily_instead_of_substring_order() {
     assert!(h2.entries[h2.filtered[0]].path.ends_with("unread-note.md"));
 }
 
-/// Places lead the EMPTY menu — the picker opens on the launch directory, and
-/// Esc clears that prefill to reach the remembered places. Leading the opened
-/// list was what put the last directory read in ahead of the one the command
-/// was typed in; see `the_launch_directory_beats_the_saved_root…`.
+/// Places are listed in the opened dialog — the dialog opens browsing the
+/// launch directory, and the remembered favourites are part of its rows.
+/// Choosing a directory records it as a place, newest first.
 #[test]
-fn places_lead_the_empty_picker_menu_and_a_choice_becomes_one() {
+fn places_are_listed_in_the_opened_dialog_and_a_choice_becomes_one() {
     let d = tempfile::tempdir().unwrap();
+    let fav = tempfile::tempdir().unwrap();
     let cfg = tempfile::tempdir().unwrap();
-    std::fs::write(cfg.path().join("config"), "place = /fav/notes\n").unwrap();
+    std::fs::write(
+        cfg.path().join("config"),
+        format!("place = {}\n", fav.path().display()),
+    )
+    .unwrap();
 
     let mut app = App::new_home(d.path().into(), vec![], 60, 16);
     app.config_dir = Some(cfg.path().into());
@@ -762,16 +817,11 @@ fn places_lead_the_empty_picker_menu_and_a_choice_becomes_one() {
     }
     update(&mut app, Action::HomeKey(SearchKey::Cancel)); // -> Normal
     update(&mut app, Action::PickerOpen);
-    assert_eq!(
-        app.home().unwrap().picker.roots.first(),
-        Some(&d.path().to_path_buf()),
-        "the launch directory leads the opened list, not a place",
-    );
-    update(&mut app, Action::HomeKey(SearchKey::Cancel)); // clear the prefill
     let h = app.home().unwrap();
-    assert_eq!(
-        h.picker.roots.first(),
-        Some(&std::path::PathBuf::from("/fav/notes"))
+    assert!(
+        h.picker.roots.contains(&fav.path().to_path_buf()),
+        "the remembered place is among the rows: {:?}",
+        h.picker.roots,
     );
 
     // Choosing a directory records it as a place, newest first.
@@ -787,7 +837,7 @@ fn places_lead_the_empty_picker_menu_and_a_choice_becomes_one() {
     update(&mut app, Action::PickerChoose);
     let places = carrel::config::load_places_in(cfg.path());
     assert_eq!(places.first(), Some(&target), "{places:?}");
-    assert!(places.contains(&std::path::PathBuf::from("/fav/notes")));
+    assert!(places.contains(&fav.path().to_path_buf()));
 }
 
 /// The path row's targets must cover the segments they name, edge to edge.

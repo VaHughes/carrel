@@ -413,21 +413,44 @@ in\-order subsequence, ranked best\-first \(em as it is in the outline picker.
 .TP
 .B /
 Search inside every file; enter opens at the match.
+.B Tab
+reads the hits as a document instead — a section per file with a link per
+match, on the same machinery that reads a diff — so the outline, folding and
+a second search all work on the results, and every match jumps to its line.
 .TP
 .B d
-Choose a directory. The input opens on the directory
+Browse for a directory. The library dialog opens on the directory
 .B carrel
-was run from \(em highlight and all, so enter alone reads where you are \(em and
-\fBlive\fR and \fB/live\fR both mean a subdirectory of it rather than a path
-from the filesystem root. A saved
-.B root
-does not change that: the working directory is what \fBd\fR means by "here".
-\fBEsc\fR clears the input back to empty, which is how an unrelated absolute
-path is typed and how the remembered places are reached; they lead the empty
-menu. Typing completes against the filesystem;
-arrows, \fBCtrl\-J\fR/\fBCtrl\-K\fR or \fBCtrl\-N\fR/\fBCtrl\-P\fR move,
-enter chooses. Typing owns the letters here, so \fBj\fR and \fBk\fR are
-part of the path.
+was run from \(em or the screen's own root when that is gone \(em showing its
+parent, itself, its children and the remembered places, so it is browsable
+before anything is typed: the parent row climbs, the row marked
+.I here
+is where you are, a star marks a favourite. Type to narrow the list \(em the
+match is fuzzy, as in the file filter. A filter with a
+.B /
+in it, or starting with
+.BR ~ ,
+completes a path against the filesystem instead, so an absolute path still
+types straight in.
+.B Tab
+or
+.B →
+drills into the highlighted folder without choosing it,
+.B ←
+goes up (as does Backspace on an empty filter); arrows,
+.BR Ctrl\-J / Ctrl\-K
+or
+.BR Ctrl\-N / Ctrl\-P
+move, enter opens the highlighted directory,
+.B Esc
+clears the filter first and closes the dialog only when there is nothing
+left to clear. Click a row to select it, double\-click to open it; the
+buttons and the corner cross close it, and a click outside it backs out.
+Typing owns the letters here, so
+.B j
+and
+.B k
+are part of the filter.
 .TP
 .B Mouse
 Click a file to select it, double\-click to open it. The same works in the

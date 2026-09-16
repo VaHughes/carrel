@@ -191,27 +191,27 @@ pub fn resume_from(path: PathBuf, permille: Option<u16>, words: Option<u32>) -> 
     })
 }
 
-/// The directory picker overlay: an input line and the directories it matches.
+/// The library browser overlay: where you are, where you can go, and a
+/// filter that narrows it.
 ///
-/// There is no fixed menu of roots any more and no `Other…` row. Typing IS
-/// the picker — [`directory_matches`] re-lists on every keystroke — so the
-/// places a given machine actually keeps documents are found by looking
-/// rather than by guessing at `~/Documents/GitHub`.
+/// The dialog opens ON the home screen's root — its parent, itself, its
+/// children and the remembered places — so it is browsable before a single
+/// keystroke. Typing filters the rows fuzzily; a filter containing `/` (or
+/// starting with `~`) is read as a path prefix instead, the shell idiom, so
+/// an absolute path still types straight in.
 #[derive(Clone, Debug, Default)]
 pub struct Picker {
-    /// Directories matching [`Self::typed`], freshly listed from disk.
-    /// Never `$HOME` itself while nothing is typed — see [`directory_matches`].
+    /// Directories currently offered, freshly listed from disk.
     pub roots: Vec<PathBuf>,
     pub selected: usize,
-    /// The path being typed. Empty means "offer the defaults".
-    ///
-    /// Opens **prefilled with the directory `carrel` was run from** — see
-    /// [`picker_prefill`]. Esc clears it back to empty, which is how an
-    /// unrelated absolute path still gets typed, and how the remembered
-    /// places are reached.
+    /// The fuzzy filter. Empty means "offer the neighbourhood".
     pub typed: String,
     /// First visible row of `roots`; see [`window_first`].
     pub top: usize,
+    /// The directory whose children are listed. `Tab`/`→` moves it into the
+    /// highlight, `←` (and `Backspace` on an empty filter) to its parent.
+    /// Empty until the dialog opens, which points it at the home root.
+    pub browsing: PathBuf,
 }
 
 #[derive(Debug)]
@@ -638,7 +638,9 @@ impl Home {
     /// Which picker entry the pointer is over, or `None` off the entry rows.
     ///
     /// The inverse of [`Self::picker_view`], which paint also uses. Neither
-    /// the title row nor the input row is an entry.
+    /// the title row nor the input row is an entry — and neither is the
+    /// button row along the bottom, which reaches `update` as its own
+    /// registered targets instead.
     #[must_use]
     pub fn picker_row_at(&self, col: u16, row: u16, cols: u16, screen_rows: u16) -> Option<usize> {
         let ((bx, by, width, _), first, visible) = self.picker_view(cols, screen_rows);
@@ -653,6 +655,76 @@ impl Home {
         }
         let i = first + usize::from(row - top);
         (i < self.picker.roots.len()).then_some(i)
+    }
+
+    /// Whether a cell is inside the picker's box: clicks there belong to the
+    /// dialog (a row, a button, or swallowed chrome) while clicks outside it
+    /// back out of the dialog entirely.
+    #[must_use]
+    pub fn picker_contains(&self, col: u16, row: u16, cols: u16, screen_rows: u16) -> bool {
+        let ((bx, by, width, height), _, _) = self.picker_view(cols, screen_rows);
+        col >= bx && col < bx.saturating_add(width) && row >= by && row < by.saturating_add(height)
+    }
+
+    /// Re-list the picker's rows from its browsing directory and filter.
+    ///
+    /// The highlight parks on "here" while nothing is typed — Enter alone
+    /// then reads where you already are — and on the top match once a filter
+    /// narrows the list.
+    pub fn relist_picker(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let browsing = self.picker.browsing.clone();
+        self.picker.roots = picker_contents_in(
+            &browsing,
+            &self.picker.typed,
+            &self.places,
+            home_dir().as_deref(),
+            &cwd,
+        );
+        self.picker.selected = if self.picker.typed.trim().is_empty() {
+            self.picker
+                .roots
+                .iter()
+                .position(|r| r == &browsing)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        self.picker.top = 0;
+    }
+
+    /// Drill into the highlighted directory without committing to it: the
+    /// dialog stays up and lists what is inside. `false` when the highlight
+    /// is not a directory (a vanishing race), which commits nothing.
+    pub fn picker_descend(&mut self) -> bool {
+        let Some(next) = self.picker.roots.get(self.picker.selected).cloned() else {
+            return false;
+        };
+        if !next.is_dir() {
+            return false;
+        }
+        self.picker.browsing = next;
+        self.picker.typed.clear();
+        self.relist_picker();
+        true
+    }
+
+    /// Climb to the parent of the browsed directory. `false` at the
+    /// filesystem root (or with nowhere to climb from), which moves nothing.
+    pub fn picker_up(&mut self) -> bool {
+        let next = self
+            .picker
+            .browsing
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf);
+        let Some(next) = next else {
+            return false;
+        };
+        self.picker.browsing = next;
+        self.picker.typed.clear();
+        self.relist_picker();
+        true
     }
 
     /// Put the selection on an absolute index, clamped to the list.
@@ -733,14 +805,6 @@ impl Home {
         self.note = None;
         self.refilter();
     }
-
-    /// Convenience for the tests and the event loop: `directory_matches`
-    /// against the current directory.
-    #[must_use]
-    pub fn matches_for(query: &str) -> Vec<PathBuf> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        directory_matches(query, &cwd)
-    }
 }
 
 /// Two rows per hit in [`HomeMode::Search`]: the name and its context line.
@@ -765,8 +829,7 @@ pub struct Crumb {
 
 /// The root as clickable segments, shallowest first.
 ///
-/// `$HOME` collapses into a single `~`, the way the directory picker already
-/// spells it ([`picker_prefill`]) and the way anyone reading a path expects
+/// `$HOME` collapses into a single `~`, the way anyone reading a path expects
 /// to see it — a home path is otherwise three segments of pure noise before
 /// the part that means anything.
 #[must_use]
@@ -862,32 +925,78 @@ pub fn directory_matches_in(query: &str, cwd: &Path, home: Option<&Path>) -> Vec
     list_dirs(&dir, &prefix)
 }
 
-/// What the picker's input opens with: the directory `carrel` was run from
-/// (`App::launch_dir`), with the trailing slash that makes it a **prefix**
-/// rather than a destination.
-///
-/// Without it the input opened empty, so `/live` meant the filesystem root and
-/// every path had to be typed from `/` even to reach a sibling of the
-/// directory already on screen (maintainer report, 2026-08-29). With it both
-/// `/live` and `live` continue from here: `Path` folds the doubled separator,
-/// so `…/Work//live` and `…/Work/live` name the same file. The trailing slash
-/// also means the picker opens **listing where you can go from here**, which
-/// an input holding a bare directory name would not. `PickerOpen` puts the
-/// directory itself back at the head of that listing, so the path in the
-/// input is still the row Enter chooses.
-///
-/// A directory that is gone prefills nothing, so the default menu — the
-/// remembered places, then where you are — still has something to offer.
+/// Whether the picker's filter is a path to complete rather than text to
+/// match: anything with a separator in it, or a `~` root. A bare word
+/// filters the neighbourhood fuzzily; the moment a slash appears the shell
+/// idiom takes over and completion runs against the filesystem.
 #[must_use]
-pub fn picker_prefill(root: &Path) -> String {
-    if !root.is_dir() {
-        return String::new();
+pub fn picker_path_mode(filter: &str) -> bool {
+    filter.contains('/') || filter.starts_with('~')
+}
+
+/// The rows the library browser offers for a browsing directory and filter.
+///
+/// With no filter this is the neighbourhood in browsing order: the parent
+/// (`..`, the mouse's way up), the directory itself (the orientation anchor,
+/// marked "here" on screen), its children, the remembered places, then the
+/// top level of `$HOME` for discovery. A typed filter fuzzy-ranks all of
+/// that — best match first, ties keeping browsing order, exactly as the file
+/// filter does — and a path-shaped filter falls back to [`directory_matches`]
+/// instead, so an absolute path typed in full still resolves.
+///
+/// # Two rules, both learned the hard way
+///
+/// **The home directory itself is never offered** while nothing is typed.
+/// Scanning all of `~` means descending into every cache, container,
+/// virtualenv and mail spool on the machine. Its *subdirectories* are
+/// offered, and someone who genuinely means `~` can type it; it should not
+/// be one keystroke away by accident.
+///
+/// **Nothing is hard-coded.** This replaced a fixed probe for
+/// `~/Documents/GitHub` and `~/Documents`, which found nothing at all on a
+/// machine that keeps its repositories somewhere else — and every machine
+/// keeps them somewhere else. Listing beats guessing.
+#[must_use]
+pub fn picker_contents_in(
+    browsing: &Path,
+    filter: &str,
+    places: &[PathBuf],
+    home: Option<&Path>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    if picker_path_mode(filter) {
+        return directory_matches_in(filter, cwd, home);
     }
-    let mut s = root.to_string_lossy().into_owned();
-    if !s.ends_with('/') {
-        s.push('/');
+    let mut out: Vec<PathBuf> = Vec::new();
+    if !browsing.as_os_str().is_empty() {
+        if let Some(p) = browsing.parent().filter(|p| !p.as_os_str().is_empty()) {
+            out.push(p.to_path_buf());
+        }
+        out.push(browsing.to_path_buf());
+        out.extend(list_dirs(browsing, ""));
     }
-    s
+    out.extend(places.iter().cloned());
+    if filter.trim().is_empty()
+        && let Some(h) = home
+    {
+        out.extend(list_dirs(h, ""));
+    }
+    // First seat wins; vanished directories drop out rather than offering
+    // a row whose only answer is "not a directory".
+    let mut seen = HashSet::new();
+    out.retain(|p| seen.insert(p.clone()));
+    out.retain(|p| p.is_dir());
+    let needle = filter.trim().to_lowercase();
+    if !needle.is_empty() {
+        let mut scored: Vec<(i32, PathBuf)> = out
+            .into_iter()
+            .filter_map(|p| crate::fuzzy::score(&p.to_string_lossy(), &needle).map(|s| (s, p)))
+            .collect();
+        scored.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
+        out = scored.into_iter().map(|(_, p)| p).collect();
+    }
+    out.truncate(MAX_MATCHES);
+    out
 }
 
 /// With nothing typed: where you are, then the top level of your home.
@@ -1188,11 +1297,13 @@ mod tests {
                 path: PathBuf::from("/root/alpha.md"),
                 count: 2,
                 first_line: "a".into(),
+                matches: Vec::new(),
             },
             crate::grep::Hit {
                 path: PathBuf::from("/root/beta.md"),
                 count: 1,
                 first_line: "b".into(),
+                matches: Vec::new(),
             },
         ];
         let (top, _) = list_geometry(BIG.0, BIG.1, BIG.2, 0);
@@ -1218,6 +1329,7 @@ mod tests {
             path: PathBuf::from("/root/alpha.md"),
             count: 1,
             first_line: String::new(),
+            matches: Vec::new(),
         }];
         h.select(0);
         assert_eq!(h.hit_selected, 0);
@@ -1927,46 +2039,142 @@ mod tests {
     }
 
     #[test]
-    fn the_prefill_is_the_current_directory_with_a_trailing_slash() {
-        let d = tempfile::tempdir().unwrap();
-        let p = picker_prefill(d.path());
-        assert_eq!(p, format!("{}/", d.path().display()));
-        assert!(
-            picker_prefill(Path::new(&p)).ends_with('/') && !p.ends_with("//"),
-            "an already-slashed root does not grow a second one: {p}"
-        );
+    fn a_slash_marks_a_filter_as_a_path_and_a_bare_word_as_text() {
+        assert!(!picker_path_mode(""));
+        assert!(!picker_path_mode("live"));
+        assert!(picker_path_mode("/live"));
+        assert!(picker_path_mode("a/b"));
+        assert!(picker_path_mode("~/notes"));
+        assert!(picker_path_mode("~"));
     }
 
-    /// The whole reason the prefill can end in a slash: the doubled separator
-    /// a typed `/live` produces has to name the same directory `live` does.
+    /// The neighbourhood, in browsing order: the parent first (the mouse's
+    /// way up), then where you are, then the children, the places, and the
+    /// top of `$HOME` for discovery.
     #[test]
-    fn a_typed_slash_after_the_prefill_resolves_under_it_not_at_the_root() {
-        let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir(d.path().join("live")).unwrap();
-        let prefill = picker_prefill(d.path());
-        for typed in ["/live", "live"] {
-            assert_eq!(
-                directory_matches(&format!("{prefill}{typed}"), Path::new("/")),
-                vec![d.path().join("live")],
-                "{typed:?} after the prefill must stay under it",
-            );
-        }
-        // And the prefill alone lists what is under it.
+    fn an_empty_filter_offers_the_neighbourhood_in_browsing_order() {
+        let d = tree();
+        let browsing = d.path().join("work");
+        std::fs::create_dir(browsing.join("inner")).unwrap();
+        let fav = d.path().join("workshop");
+        let h = fake_home();
+        let roots = picker_contents_in(
+            &browsing,
+            "",
+            std::slice::from_ref(&fav),
+            Some(h.path()),
+            Path::new("/"),
+        );
+        let parent = d.path().to_path_buf();
         assert_eq!(
-            directory_matches(&prefill, Path::new("/")),
-            vec![d.path().join("live")],
+            &roots[..4],
+            &[parent, browsing.clone(), browsing.join("inner"), fav],
+            "parent, here, children, places: {roots:?}",
+        );
+        assert!(
+            roots.contains(&h.path().join("alpha")),
+            "and home's top level for discovery: {roots:?}",
+        );
+        assert!(
+            !roots.contains(&h.path().to_path_buf()),
+            "$HOME itself, never"
         );
     }
 
-    /// A root that has been deleted out from under the reader prefills
-    /// nothing, so the default menu still has something to offer.
+    /// Typing narrows the neighbourhood fuzzily — best match first — rather
+    /// than completing a path prefix.
     #[test]
-    fn a_root_that_is_not_a_directory_prefills_nothing() {
-        assert!(picker_prefill(Path::new("/no/such/place/at/all")).is_empty());
-        let d = tempfile::tempdir().unwrap();
-        let f = d.path().join("a.md");
-        std::fs::write(&f, "# a").unwrap();
-        assert!(picker_prefill(&f).is_empty(), "a file is not a directory");
+    fn a_bare_word_filters_fuzzily_not_as_a_prefix() {
+        let d = tree();
+        let browsing = d.path().to_path_buf();
+        let roots = picker_contents_in(&browsing, "worsh", &[], None, Path::new("/"));
+        assert_eq!(roots, vec![d.path().join("workshop")]);
+        // A subsequence, not a prefix: "wk" still finds it.
+        let roots = picker_contents_in(&browsing, "wk", &[], None, Path::new("/"));
+        assert!(roots.contains(&d.path().join("work")));
+        // …and what matches nothing is an empty list.
+        assert!(picker_contents_in(&browsing, "zzz", &[], None, Path::new("/")).is_empty());
+    }
+
+    /// Vanished directories drop out instead of offering a row whose only
+    /// answer is "not a directory".
+    #[test]
+    fn a_place_that_is_gone_is_not_offered() {
+        let d = tree();
+        let gone = PathBuf::from("/no/such/place/at/all");
+        let roots = picker_contents_in(d.path(), "", &[gone], None, Path::new("/"));
+        assert!(!roots.is_empty(), "the neighbourhood still shows");
+        assert!(
+            roots.iter().all(|r| r.is_dir()),
+            "nothing offered that is not a directory: {roots:?}"
+        );
+    }
+
+    /// Drilling in moves the browsing directory and clears the filter; the
+    /// highlight parks back at the top of the new listing.
+    #[test]
+    fn descending_lists_what_is_inside_and_climbing_comes_back() {
+        let d = tree();
+        let mut h = home();
+        h.picker.browsing = d.path().to_path_buf();
+        h.picker.roots = picker_contents_in(d.path(), "", &[], None, Path::new("/"));
+        h.picker.selected = h
+            .picker
+            .roots
+            .iter()
+            .position(|r| r == &d.path().join("work"))
+            .unwrap();
+        assert!(h.picker_descend());
+        assert_eq!(h.picker.browsing, d.path().join("work"));
+        assert!(h.picker.typed.is_empty());
+        assert_eq!(
+            h.picker.roots[h.picker.selected],
+            d.path().join("work"),
+            "the highlight parks back on here"
+        );
+        assert!(h.picker.roots.contains(&d.path().join("work")));
+
+        assert!(h.picker_up());
+        assert_eq!(h.picker.browsing, d.path());
+        assert!(h.picker.roots.contains(&d.path().join("workshop")));
+    }
+
+    #[test]
+    fn climbing_stops_at_the_filesystem_root() {
+        let mut h = home();
+        h.picker.browsing = PathBuf::from("/");
+        assert!(!h.picker_up(), "nowhere above the root");
+        assert_eq!(h.picker.browsing, PathBuf::from("/"));
+    }
+
+    #[test]
+    fn descending_onto_a_file_commits_nothing() {
+        let mut h = home();
+        let d = tree();
+        h.picker.browsing = d.path().to_path_buf();
+        h.picker.roots = vec![d.path().join("note.md")];
+        assert!(!h.picker_descend());
+        assert_eq!(h.picker.browsing, d.path());
+    }
+
+    /// Inside the box is the dialog's; outside it is a click that backs out.
+    #[test]
+    fn picker_contains_splits_the_screen_at_the_box_edge() {
+        let mut h = home();
+        h.mode = HomeMode::Picker;
+        h.picker.roots = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        let (cols, rows) = (80u16, 24u16);
+        let ((x, y, w, hh), _, _) = h.picker_view(cols, rows);
+        assert!(h.picker_contains(x + 1, y + 2, cols, rows), "an entry row");
+        assert!(h.picker_contains(x, y, cols, rows), "the title row");
+        assert!(
+            !h.picker_contains(x + w, y + 2, cols, rows),
+            "past the edge"
+        );
+        assert!(
+            !h.picker_contains(x + 1, y + hh, cols, rows),
+            "below the box: {hh}"
+        );
     }
 
     #[test]

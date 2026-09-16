@@ -4,6 +4,26 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Search results read as a document.** `Tab` in home-screen search opens the
+  hits as generated markdown — a section per file with a link per match — on
+  the same machinery that reads a diff, so the outline, folding, breadcrumb,
+  links and a second search all work on results with no new UI. Every match
+  links to its file at its line (`path#L12`, GitHub's own anchor shape, which
+  links everywhere now understand); the document itself is pathless, so `q`
+  returns to the search it came from.
+- **The directory picker is a library browser now.** `d` used to open on a
+  path prompt prefilled with the launch directory, and reaching anywhere
+  meant typing a path prefix from memory. It opens on the neighbourhood
+  instead — the parent (`..`), where you are (`●`, marked "here"), its
+  children, the remembered places (`★`), then the top of `$HOME` — browsable
+  before a single keystroke. Typing filters the rows fuzzily, as the file
+  filter does; a filter with a `/` in it (or starting with `~`) completes a
+  path against the filesystem, so absolute paths still type straight in.
+  `Tab`/`→` drills into the highlight without choosing it, `←` (and
+  `Backspace` on an empty filter) climbs, and everything is clickable: rows
+  select on one click and open on two, hover lights them, the dialog has
+  `[ open ⏎ ]` and `[ cancel ]` buttons plus a corner `✕`, and a click
+  outside it backs out.
 - **`cargo install carrel` builds again without `--locked`.** On 2026-09-02
   the mermaid renderer's upstream published `merman-ascii 0.8.0-alpha.6`, and
   the `merman 0.8.0-alpha.5` carrel pins asks for its sibling crates by caret

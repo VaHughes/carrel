@@ -2191,7 +2191,7 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
     }
 
     if home.mode == HomeMode::Picker {
-        paint_picker(frame, home, area);
+        paint_picker(frame, home, area, targets);
     }
 }
 
@@ -2477,12 +2477,16 @@ fn paint_breadcrumb(frame: &mut Frame, app: &App, text: Rect) {
     buf.set_stringn(x, 0, &line, app.text_w() as usize, theme::dim());
 }
 
-fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
+fn paint_picker(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targets) {
     // Geometry from `Home::picker_view`, which `Home::picker_row_at` inverts
-    // to turn a click into a directory. One derivation, both ways.
+    // to turn a click into a directory. One derivation, both ways. The rows,
+    // the corner `✕` and the buttons register themselves as targets over the
+    // box's own `Absorb`, so hover lights them and clicks land on them — the
+    // same shape as every other overlay pane.
     let ((px, py, width, height), first, visible) = home.picker_view(area.width, area.height);
     let bx = Rect::new(area.x + px, area.y + py, width, height);
     let w = width;
+    targets.push(Action::Absorb, Zone::new(bx.x, bx.y, w, height), Z_OVERLAY);
 
     let buf = frame.buffer_mut();
     // Clear underneath so the list does not show through the overlay.
@@ -2496,9 +2500,15 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
         );
     }
     buf.set_stringn(bx.x, bx.y, " choose a directory", w as usize, theme::dim());
+    // The corner affordance a mouse user looks for first.
+    if w >= 6 {
+        let xx = bx.x + w - 4;
+        buf.set_stringn(xx, bx.y, " ✕ ", 3, theme::dim());
+        targets.push(Action::PickerCancel, Zone::new(xx, bx.y, 3, 1), Z_OVERLAY);
+    }
 
-    // The input row. The path is right-anchored inside it, because what you
-    // are typing is the END of a path and that is the part worth seeing.
+    // The input row. The filter is right-anchored inside it, because what you
+    // are typing is the END of a name and that is the part worth seeing.
     if bx.height > 1 {
         let inner = usize::from(w.saturating_sub(4));
         let typed: String = {
@@ -2533,14 +2543,7 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
         if yy >= bx.bottom() {
             break;
         }
-        let sel = i == home.picker.selected;
-        let style = if sel {
-            theme::selected()
-        } else {
-            Style::default()
-        };
-        let text = format!("{} {}", if sel { "▸" } else { " " }, root.display());
-        buf.set_stringn(bx.x + 1, yy, &text, w.saturating_sub(1) as usize, style);
+        paint_picker_row(buf, targets, home, root, i, yy, bx);
     }
 
     // An empty list is a dead end unless it says so.
@@ -2553,6 +2556,112 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect) {
             theme::dim(),
         );
     }
+
+    // The button row along the bottom, in place of the old trailing blank:
+    // commit the highlight, or back out. Both already live in the footer;
+    // this is the copy a mouse user is actually looking at.
+    if height >= 4 {
+        let yy = bx.y + height - 1;
+        let right = bx.x + w;
+        let mut x = bx.x + 1;
+        put(buf, &mut x, yy, right, " ", Style::default());
+        push_button(
+            buf,
+            targets,
+            &mut x,
+            yy,
+            right,
+            "[ open ⏎ ]",
+            Action::PickerChoose,
+        );
+        put(buf, &mut x, yy, right, "   ", Style::default());
+        push_button(
+            buf,
+            targets,
+            &mut x,
+            yy,
+            right,
+            "[ cancel ]",
+            Action::PickerCancel,
+        );
+    }
+}
+
+/// One library row: registered over the box's `Absorb` so hover lights it,
+/// painted with the markers that say what it is — `..` climbs, `●` is where
+/// you are, `★` is a remembered place — the leaf bright, its parent dim.
+fn paint_picker_row(
+    buf: &mut ratatui::buffer::Buffer,
+    targets: &mut Targets,
+    home: &Home,
+    root: &std::path::PathBuf,
+    i: usize,
+    yy: u16,
+    bx: Rect,
+) {
+    targets.push(
+        Action::PickerSelect(i),
+        Zone::new(bx.x, yy, bx.width, 1),
+        Z_OVERLAY,
+    );
+    let sel = i == home.picker.selected;
+    let style = if sel {
+        theme::selected()
+    } else {
+        Style::default()
+    };
+    let is_here = root == &home.picker.browsing;
+    let is_up = !is_here && home.picker.browsing.parent().is_some_and(|p| p == root);
+    let mark = if is_here {
+        "●"
+    } else if home.places.contains(root) {
+        "★"
+    } else {
+        " "
+    };
+    let right = bx.x + bx.width;
+    let mut x = bx.x + 1;
+    put(
+        buf,
+        &mut x,
+        yy,
+        right,
+        &format!("{} {mark} ", if sel { "▸" } else { " " }),
+        style,
+    );
+    if is_up {
+        put(buf, &mut x, yy, right, "..", style);
+    } else {
+        let full = root.display().to_string();
+        match full.rfind('/') {
+            Some(idx) => {
+                put(buf, &mut x, yy, right, &full[..=idx], theme::dim());
+                put(buf, &mut x, yy, right, &full[idx + 1..], style);
+            }
+            None => put(buf, &mut x, yy, right, &full, style),
+        }
+        if is_here {
+            put(buf, &mut x, yy, right, "  · here", theme::dim());
+        }
+    }
+}
+
+/// One dialog button: painted in the button slot and registered exactly where
+/// the paint put it, clamped to the row so a narrow box can never register a
+/// zone past the frame the guard test measures.
+fn push_button(
+    buf: &mut ratatui::buffer::Buffer,
+    targets: &mut Targets,
+    x: &mut u16,
+    y: u16,
+    right: u16,
+    label: &str,
+    action: Action,
+) {
+    let from = *x;
+    put(buf, x, y, right, label, theme::button());
+    let w = x.saturating_sub(from).min(right.saturating_sub(from));
+    targets.push(action, Zone::new(from, y, w, 1), Z_OVERLAY);
 }
 
 #[cfg(test)]
@@ -2988,7 +3097,7 @@ mod tests {
         let buf = buffer_of(&app, 60, 20);
         let text: String = (0..20).map(|y| line(&buf, y) + "\n").collect();
         assert!(
-            text.contains("directory: type, from here"),
+            text.contains("library: browse folders"),
             "home rows painted:\n{text}"
         );
     }
@@ -3452,9 +3561,9 @@ mod tests {
     fn the_picker_overlays_the_list() {
         let mut app = home_app(4, 60, 20);
         crate::app::update(&mut app, Action::PickerOpen);
-        // Esc clears the prefilled current directory, so this frame does not
-        // depend on whether the fixture's root exists on the host machine.
-        crate::app::update(&mut app, Action::HomeKey(SearchKey::Cancel));
+        // The dialog opens ready to filter, so typing `/` path-completes
+        // from the filesystem root — `/` being one directory every
+        // machine has — without depending on the fixture's root.
         crate::app::update(&mut app, Action::HomeKey(SearchKey::Char('/')));
         let buf = buffer_of(&app, 60, 20);
         let all: String = (0..20)
@@ -3466,7 +3575,29 @@ mod tests {
         assert!(all.contains("› /▏"), "no input row:\n{all}");
         // …and the matches for it are listed beneath, `/` being one
         // directory every machine has.
-        assert!(all.contains("▸ /"), "no match list:\n{all}");
+        assert!(all.contains("▸"), "no highlight:\n{all}");
+        assert!(all.contains("/bin"), "no match list:\n{all}");
+        // …with the dialog's own buttons along the bottom and a way out
+        // in the corner, so a mouse never has to find the footer.
+        assert!(all.contains("[ open ⏎ ]"), "no open button:\n{all}");
+        assert!(all.contains("[ cancel ]"), "no cancel button:\n{all}");
+        assert!(all.contains("✕"), "no corner close:\n{all}");
+    }
+
+    #[test]
+    fn the_picker_marks_where_you_are_and_where_you_can_go() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("live")).unwrap();
+        let mut app = App::new_home(d.path().into(), vec![], 60, 20);
+        crate::app::update(&mut app, Action::PickerOpen);
+        let buf = buffer_of(&app, 60, 20);
+        let all: String = (0..20)
+            .map(|y| line(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains(".."), "the way up:\n{all}");
+        assert!(all.contains("· here"), "the orientation anchor:\n{all}");
+        assert!(all.contains("live"), "the children:\n{all}");
     }
 
     #[test]

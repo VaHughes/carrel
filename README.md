@@ -33,8 +33,9 @@ Everything below installs the terminal reader.
 
 Carrel reads only the directory you point it at: the one named on the command line, else the
 `root` you last chose, else the directory you are standing in. Anything wider is a root you
-choose yourself — `d` opens on the directory you ran `carrel` in, offering it and its
-subdirectories, and any other path is typed. It
+choose yourself — `d` browses from the directory you ran `carrel` in, offering parent,
+itself, children and remembered places, narrowed by typing; a filter with a `/` in it
+completes a path against the filesystem instead. It
 sends nothing anywhere — remote images in documents are never fetched; they render as their alt
 text. The index it caches lives under `$XDG_CACHE_HOME/carrel` and holds file paths and
 modification times, nothing else.
@@ -360,8 +361,10 @@ The module map, the decisions already made, and the pinned dependencies are in
       falls into shadow; the quiet place, made literal
 - [x] `<details>`/`<summary>` folds natively — the summary becomes a fold point, reusing
       section folding wholesale
-- [ ] Search results read as a document — a section per file with context lines,
-      searchable again, on the same machinery that reads a diff
+- [x] Search results read as a document — `Tab` in home-screen search opens the
+      hits as generated markdown, a section per file with a link per match, so the
+      outline, folding and a second search all work on the results, and every match
+      jumps to its line
 - [ ] Image lightbox — Enter opens an image full-screen, kitty protocol first and
       half-block fallback everywhere; `[`/`]` walks the images of the document
 - [x] Fuzzy matching for the home filter and the outline picker — best alignment wins,
@@ -382,11 +385,11 @@ The module map, the decisions already made, and the pinned dependencies are in
 - [x] Document info card (`I`; `g` belongs to the gg prefix) — words, minutes, structure,
       links, when it last changed
 - [x] Places — favourite roots remembered by the picker, newest first, capped at eight;
-      choosing a directory records it, and `Esc` in the picker is what offers them
+      choosing a directory records it, and the dialog always lists them, starred
 - [x] A home list that keeps up — the tree is walked again while the list is on screen, so
-      a file written elsewhere appears without a restart; and `d` opens the picker on the
-      directory you ran `carrel` in, highlight and all, so enter alone reads where you are
-      and a typed path continues from there
+      a file written elsewhere appears without a restart; and `d` browses from the directory
+      you ran `carrel` in, highlight parked on here, so enter alone reads where you are,
+      typing filters, and `Tab` drills in
 - [ ] Hyphenation at narrow measures — pattern-based breaks below roughly 70 columns
 - [x] Auto-read mode (`A`) — the view drifts down a row every 300 ms; any deliberate
       motion takes the wheel back, and the end of the document stops it gently

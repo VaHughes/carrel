@@ -688,8 +688,14 @@ mod tests {
             A::PickerOpen => Chrome,      // `d directory`
             A::HomeFilterMode => Chrome,  // `i filter`
             A::HomeSearchMode => Chrome,  // `/ search`
+            A::HomeOpenResults => Chrome, // `tab results`
             A::HomeKey(_) => Chrome,      // `esc back`
             A::PickerChoose => Chrome,    // `enter choose`
+            // `→ drill in` rides the footer's button row; `← up` is key-only
+            // (the `..` row is how a pointer climbs — it selects and opens
+            // the parent rather than sending this).
+            A::PickerDescend => Chrome,
+            A::PickerUp => KeyboardOnly,
             A::MenuOpen { .. } => Chrome, // the `≡`, and every right-click
             A::HomeUp => Chrome,          // the `↑` at the head of the path row
             A::HomeCrumb(_) => Chrome,    // a segment of the path row

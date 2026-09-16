@@ -212,19 +212,34 @@ impl Keys {
 
         match mode {
             HomeMode::Picker => match key.code {
-                // Two-stage escape, so `Esc` first clears a typed path and
+                // Two-stage escape, so `Esc` first clears a typed filter and
                 // only then closes the overlay. `HomeKey` carries both.
                 KeyCode::Esc => Some(Action::HomeKey(SearchKey::Cancel)),
                 KeyCode::Char(c) => Some(Action::HomeKey(SearchKey::Char(c))),
                 KeyCode::Backspace => Some(Action::HomeKey(SearchKey::Backspace)),
+                // Browsing without choosing: into the highlight, or up one.
+                // `Tab` is free here — nothing else in the dialog wants it —
+                // and the arrows mirror it for whoever reaches for them.
+                // (`HomeMove` owns `↑`/`↓` above; these own the sideways pair.)
+                KeyCode::Tab | KeyCode::Right => Some(Action::PickerDescend),
+                KeyCode::Left => Some(Action::PickerUp),
                 _ => None,
             },
             // Typing filters (or edits the content query). There are no
-            // plain-letter commands here, which is why `Esc` exists.
-            HomeMode::Filter | HomeMode::Search => match key.code {
+            // plain-letter commands here, which is why `Esc` exists. `Tab`
+            // is the exception: in search it reads the hits as a document,
+            // and nothing typeable is lost by spending it.
+            HomeMode::Filter => match key.code {
                 KeyCode::Char(c) => Some(Action::HomeKey(SearchKey::Char(c))),
                 KeyCode::Backspace => Some(Action::HomeKey(SearchKey::Backspace)),
                 KeyCode::Esc => Some(Action::HomeKey(SearchKey::Cancel)),
+                _ => None,
+            },
+            HomeMode::Search => match key.code {
+                KeyCode::Char(c) => Some(Action::HomeKey(SearchKey::Char(c))),
+                KeyCode::Backspace => Some(Action::HomeKey(SearchKey::Backspace)),
+                KeyCode::Esc => Some(Action::HomeKey(SearchKey::Cancel)),
+                KeyCode::Tab => Some(Action::HomeOpenResults),
                 _ => None,
             },
             HomeMode::Normal => match key.code {
@@ -474,6 +489,9 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::SelectBlock(_)
         | A::HomeNormalMode
         | A::PickerChoose
+        | A::PickerDescend
+        | A::PickerUp
+        | A::HomeOpenResults
         | A::PickerCancel => return None,
     })
 }
@@ -554,9 +572,12 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("§", "finding"),
     ("i", "filter names: type to narrow"),
     ("/", "search inside files"),
+    ("Tab", "results as a document"),
     ("Esc", "clear filter, then leave it"),
     ("§", "other"),
-    ("d", "directory: type, from here"),
+    ("d", "library: browse folders"),
+    ("Tab →", "drill into the folder"),
+    ("←", "up one level"),
     ("Backspace", "up one directory"),
     ("click a segment", "of the path row: go there"),
     ("right-click", "a menu, anywhere"),
@@ -663,6 +684,7 @@ pub const HINT_HOME_FILTER: &[Hint] = &[
 pub const HINT_HOME_SEARCH: &[Hint] = &[
     says("type", "query"),
     hint("enter", "open first", Action::HomeOpen),
+    hint("tab", "results", Action::HomeOpenResults),
     hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
 ];
 /// The one-time invitation, shown on the first launch that has never
@@ -676,14 +698,15 @@ pub const HINT_HOME_SEARCH: &[Hint] = &[
 /// and a `cat`.
 pub const HINT_FIRST_RUN: &[Hint] = &[says("click", "anything"), says("right-click", "for a menu")];
 pub const HINT_HOME_PICKER: &[Hint] = &[
-    says("type", "a path"),
+    says("type", "filter"),
     // The arrows, not `^j/^k`, even though the Ctrl pair is the less
     // guessable one: whoever is reading the footer is reading it because
     // they do not know what to do, and a cryptic key there leaves them
     // unsure the obvious one even works. A vim user who presses `j`, watches
-    // it land in the path, and opens help finds `Ctrl-J`/`Ctrl-K` at once.
+    // it land in the filter, and opens help finds `Ctrl-J`/`Ctrl-K` at once.
     hint("↑/↓", "move", Action::HomeMove(1)),
-    hint("enter", "choose", Action::PickerChoose),
+    hint("→", "drill in", Action::PickerDescend),
+    hint("enter", "open", Action::PickerChoose),
     hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
 ];
 
@@ -995,6 +1018,41 @@ mod tests {
     }
 
     #[test]
+    fn tab_in_search_reads_the_results_as_a_document() {
+        let mut m = Keys::new();
+        assert_eq!(
+            m.map_home(code(KeyCode::Tab), HomeMode::Search),
+            Some(Action::HomeOpenResults),
+        );
+        assert_eq!(
+            m.map_home(code(KeyCode::Tab), HomeMode::Filter),
+            None,
+            "the filter spends no key it does not need"
+        );
+        assert_eq!(m.map_home(code(KeyCode::Tab), HomeMode::Normal), None);
+    }
+
+    #[test]
+    fn tab_and_sideways_arrows_browse_without_choosing() {
+        let mut m = Keys::new();
+        assert_eq!(
+            m.map_home(code(KeyCode::Tab), HomeMode::Picker),
+            Some(Action::PickerDescend),
+        );
+        assert_eq!(
+            m.map_home(code(KeyCode::Right), HomeMode::Picker),
+            Some(Action::PickerDescend),
+        );
+        assert_eq!(
+            m.map_home(code(KeyCode::Left), HomeMode::Picker),
+            Some(Action::PickerUp),
+        );
+        // Nowhere else: the file list has no folder to drill into.
+        assert_eq!(m.map_home(code(KeyCode::Tab), HomeMode::Normal), None);
+        assert_eq!(m.map_home(code(KeyCode::Left), HomeMode::Normal), None);
+    }
+
+    #[test]
     fn the_z_prefix_folds_za_zm_zr() {
         let mut m = Keys::new();
         assert_eq!(m.map(k('z'), false), None, "z waits");
@@ -1058,6 +1116,7 @@ mod tests {
                 "F" => vec![k('F')],
                 "y" => vec![k('y')],
                 "↑/↓" => vec![code(KeyCode::Down)],
+                "→" => vec![code(KeyCode::Right)],
                 "spc" => vec![k(' ')],
                 "/" => vec![k('/')],
                 "o" => vec![k('o')],

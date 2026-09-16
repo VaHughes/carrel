@@ -351,7 +351,7 @@ fn the_home_screen_survives_a_pty_round_trip_too() {
     );
 }
 
-/// The picker opens on the directory the command was run in, through the real
+/// The picker browses the directory the command was run in, through the real
 /// binary — the half `App::launch_dir` cannot cover, because nothing but a
 /// real run sets it.
 ///
@@ -390,20 +390,57 @@ fn the_picker_opens_on_the_directory_the_command_was_run_in() {
     // Compared by name, not by whole path: `/tmp` is a symlink on some hosts
     // and `current_dir` hands back the resolved one.
     let name = d.path().file_name().unwrap().to_string_lossy().into_owned();
-    let saved = elsewhere
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
     assert!(raw.contains("choose a directory"), "the picker must be up");
     assert!(
-        raw.contains(&format!("{name}/")),
-        "the input must open on the working directory {name}/",
+        raw.contains(&name),
+        "the dialog must browse the working directory {name}",
     );
+    assert!(raw.contains("· here"), "with where you are marked as here");
+}
+
+/// Searching and reading the results as a document, through the real binary:
+/// type a query, `Tab` opens the hits as a document, Ctrl-C leaves.
+///
+/// The sleeps stage the keys — the background grep needs a beat to stream
+/// its hits in before `Tab` can read them — the way the rescan smoke stages
+/// its file write.
+#[test]
+fn search_results_read_as_a_document_end_to_end() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("doc.md"), "# Doc\n\nthe needle sits here\n").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    let cfg = d.path().join("cfg");
+    let state = d.path().join("state");
+    let cmd = format!(
+        "( sleep 2; printf '/needle'; sleep 3; printf '\\t'; sleep 1; printf '\\003' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {bin}' '{}' >/dev/null 2>&1",
+        cfg.display(),
+        state.display(),
+        d.path().join("cache").display(),
+        d.path().display(),
+        out.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+
     assert!(
-        !raw.contains(&format!("{saved}/")),
-        "and never on the saved root {saved}/",
+        raw.contains("Every line below is a link"),
+        "the results document opened on the hits",
     );
+    assert!(raw.contains("doc.md — 1 match"), "with a section per file");
 }
 
 /// The home screen's list must pick up a file written while it is up.

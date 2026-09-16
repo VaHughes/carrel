@@ -528,6 +528,105 @@ fn an_open_pane_takes_every_click_inside_it() {
     }
 }
 
+/// **The library-dialog guard.**
+///
+/// The dialog registers every row, its corner `✕` and its buttons — hover
+/// lights them and clicks land on them — while its own background absorbs,
+/// so nothing underneath takes clicks through the overlay.
+#[test]
+fn the_library_dialog_registers_rows_buttons_and_close() {
+    use carrel::action::{Action, SearchKey};
+    use carrel::app::{App, update};
+
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir(d.path().join("zephyr-a")).unwrap();
+    std::fs::create_dir(d.path().join("zephyr-b")).unwrap();
+    let mut app = App::new_home(d.path().into(), vec![], 80, 24);
+    app.launch_dir = Some(d.path().into());
+    update(&mut app, Action::PickerOpen);
+    // Narrow to the two controlled rows: neither the tempdir's random name
+    // nor the machine's real `$HOME` can match this filter.
+    for c in "zephyr".chars() {
+        update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+    }
+    assert_eq!(app.home().unwrap().picker.roots.len(), 2);
+
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer();
+    let text_at = |z: carrel::action::Zone| -> String {
+        (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect()
+    };
+
+    // One target per row, each sitting on the directory it names.
+    let mut rows: Vec<_> = painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| matches!(t.action, Action::PickerSelect(_)))
+        .collect();
+    rows.sort_by_key(|t| t.zone.y);
+    assert_eq!(rows.len(), 2, "one target per filtered row");
+    let names: Vec<String> = rows.iter().map(|t| text_at(t.zone)).collect();
+    assert!(
+        names.iter().any(|n| n.contains("zephyr-a"))
+            && names.iter().any(|n| n.contains("zephyr-b")),
+        "each row target must cover its own directory: {names:?}"
+    );
+    for target in &rows {
+        let Action::PickerSelect(i) = target.action else {
+            unreachable!()
+        };
+        assert_eq!(
+            painted
+                .targets
+                .hit(target.zone.x + 1, target.zone.y)
+                .map(|h| h.action),
+            Some(Action::PickerSelect(i)),
+            "a click on the row must resolve to the row"
+        );
+    }
+
+    // The buttons sit on their own words.
+    let open = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::PickerChoose)
+        .expect("an open button");
+    assert!(
+        text_at(open.zone).contains("open"),
+        "the open button must sit on its word"
+    );
+    let cancels: Vec<_> = painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| t.action == Action::PickerCancel)
+        .collect();
+    assert_eq!(cancels.len(), 2, "the corner ✕ and the cancel button");
+    let words: Vec<String> = cancels.iter().map(|t| text_at(t.zone)).collect();
+    assert!(
+        words.iter().any(|w| w.contains('✕')) && words.iter().any(|w| w.contains("cancel")),
+        "each cancel target must sit on its own word: {words:?}"
+    );
+
+    // The dialog's own chrome absorbs: the input row is inside the box and
+    // on no row or button.
+    let home = app.home().unwrap();
+    let ((bx, by, _, _), _, _) = home.picker_view(80, 24);
+    assert_eq!(
+        painted.targets.hit(bx + 2, by + 1).map(|h| h.action),
+        Some(Action::Absorb),
+        "a click on the dialog's input row is swallowed, not passed through"
+    );
+}
+
 /// The gutter is as tall as the text, not as tall as the terminal.
 ///
 /// `margin_row_at` bounded `row < top` and nothing else, so a click on the

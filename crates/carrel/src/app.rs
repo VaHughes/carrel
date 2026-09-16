@@ -227,6 +227,11 @@ pub struct App {
     /// config the two differ from the first frame, and the one the reader
     /// means by "here" is the one they typed the command in.
     pub launch_dir: Option<std::path::PathBuf>,
+    /// The root a results document's links resolve against. A results
+    /// document is pathless like a pipe, but its links are library paths —
+    /// they resolve against the searched root, not the working directory a
+    /// pipe uses. Set by opening results, cleared by opening anything else.
+    pub results_root: Option<std::path::PathBuf>,
     /// Where reading positions persist. Same contract as `config_dir`:
     /// `None` in every constructor, set by the BINARY at startup, so no test
     /// can ever write the real state file.
@@ -520,6 +525,7 @@ impl App {
             pending_open: None,
             config_dir: None,
             launch_dir: None,
+            results_root: None,
             state_dir: None,
             wrap_tables: false,
             hints: true,
@@ -680,6 +686,7 @@ impl App {
             .to_string_lossy()
             .into_owned();
         self.file = Some(path.to_path_buf());
+        self.results_root = None;
         self.forget_derived_state();
         // A different document: the panes that answered questions about the
         // one we are leaving would otherwise keep answering them.
@@ -698,6 +705,54 @@ impl App {
         self.resolve_wikilinks();
         self.restore_position();
         Ok(())
+    }
+
+    /// Read the home screen's search hits as a document: a section per file
+    /// with a link per match, on the same machinery that reads a diff — so
+    /// the outline, folding, breadcrumb, links and in-document search all
+    /// work on results with no new code paths.
+    ///
+    /// The document is pathless, like a pipe: no position persists, no
+    /// reload watches it, and leaving it pushes no history — it is a desk,
+    /// not a place, so `q` from a file opened through it returns to the home
+    /// screen rather than to the desk. Its links resolve against `root`
+    /// through [`Self::results_root`], never against the working directory.
+    pub fn open_results(&mut self, root: &Path, query: &str, hits: &[crate::grep::Hit]) {
+        self.save_position();
+        // Generated markdown, never sniffed as a diff: it is already one.
+        self.diff_ok = false;
+        let src = crate::grep::render_results(root, query, hits);
+        self.doc = self.parse_adapting(&src);
+        self.load_marks();
+        self.mtime = None;
+        self.matches = None;
+        self.forward = None;
+        self.mode = Mode::Normal;
+        self.view = ViewState::new();
+        self.layout = Layout::with_measure(
+            &self.doc,
+            self.bleed_w(),
+            self.text_w(),
+            HashMap::new(),
+            false,
+        );
+        self.path = format!("search: {query}");
+        self.file = None;
+        self.results_root = Some(root.to_path_buf());
+        self.forget_derived_state();
+        self.backlinks = None;
+        self.mark_list = None;
+        self.rebuild_math_art();
+        self.words = word_count(&self.doc.text);
+        self.has_headings = self
+            .doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
+        if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
+            self.home_stash = Some(h);
+        }
+        self.resolve_wikilinks();
     }
 
     /// Does following this link leave the library?
@@ -850,14 +905,17 @@ impl App {
         self.resolve_wikilinks();
     }
 
-    /// The directory links resolve against: the document's own, or the
-    /// working directory for a pathless (piped) document — `git show |
-    /// carrel` run inside a repo makes its relative links work.
+    /// The directory links resolve against: the document's own, the searched
+    /// root for a results document, or the working directory for a pathless
+    /// (piped) document — `git show | carrel` run inside a repo makes its
+    /// relative links work.
     fn doc_dir(&self) -> PathBuf {
         self.file
             .as_deref()
             .and_then(Path::parent)
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+            .map(Path::to_path_buf)
+            .or_else(|| self.results_root.clone())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     /// The blocks a fold hides: everything strictly inside a folded
@@ -2053,6 +2111,26 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             };
         }
 
+        // `Tab` in content search: read the hits as a document rather than
+        // opening one file. Like `HomeOpen` this does no I/O of its own —
+        // the hits are already in memory — so the no-I/O rule still holds.
+        Action::HomeOpenResults => {
+            let Some((root, query, hits)) = app.home().and_then(|h| {
+                (h.mode == HomeMode::Search)
+                    .then(|| (h.root.clone(), h.query.clone(), h.hits.clone()))
+            }) else {
+                return Outcome::Idle;
+            };
+            if hits.is_empty() {
+                if let Some(h) = app.home_mut() {
+                    h.note = Some("no results — type to search".into());
+                }
+                return Outcome::Redraw;
+            }
+            app.open_results(&root, &query, &hits);
+            return Outcome::Redraw;
+        }
+
         // A click in the picker. Clamped, so an index from a frame that has
         // since changed can never point past the last match.
         Action::PickerSelect(i) => {
@@ -2162,44 +2240,29 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::PickerOpen => {
-            // Opens on the directory `carrel` was run from — `App::launch_dir`
-            // — so what you type continues from here instead of from `/`, and
-            // the highlight is already on "here" before a single keystroke.
-            //
-            // It used to open on the home screen's ROOT with the remembered
-            // places leading the list, which meant that with a saved `root =`
-            // in the config the first thing `d` offered was the last directory
-            // you read in, not the one you had just `cd`-ed to (maintainer
-            // report, 2026-09-01). Places are the EMPTY menu's job now, the
-            // rule the typing arm already followed: one Esc clears the prefill
-            // and brings them back.
-            //
-            // The launch directory leads its own children rather than being
-            // merely typed above them, because `directory_matches` reads a
-            // trailing slash as "list what is INSIDE" — without this row the
-            // path in the input would be the one thing Enter could not choose.
+            // The library browser opens ON a directory: the one `carrel` was
+            // run from when it is still there (maintainer report, 2026-09-01
+            // — with a saved root on file, `d` offered the last directory
+            // read in rather than the one just `cd`-ed to), else the screen's
+            // own root. Either way the dialog lists the neighbourhood —
+            // parent, itself, children, remembered places — so it is
+            // browsable before a single keystroke, and the highlight is
+            // already on "here" before one.
             let start = app
                 .launch_dir
                 .clone()
+                .filter(|d| d.is_dir())
                 .or_else(|| app.home().map(|h| h.root.clone()));
-            let prefill = start
-                .as_deref()
-                .map(crate::home::picker_prefill)
-                .unwrap_or_default();
-            let lead = if prefill.is_empty() {
-                // Nowhere to continue from: fall back to the remembered places
-                // ahead of the default menu, which is what `d` always did.
-                app.home().map(|h| h.places.clone()).unwrap_or_default()
-            } else {
-                start.into_iter().collect()
-            };
-            let mut roots = merge_places(lead, Home::matches_for(&prefill));
-            roots.dedup();
             if let Some(h) = app.home_mut() {
-                h.picker.roots = roots;
+                if let Some(start) = start {
+                    h.picker.browsing = start;
+                } else {
+                    h.picker.browsing = h.root.clone();
+                }
+                h.picker.typed.clear();
                 h.picker.selected = 0;
                 h.picker.top = 0;
-                h.picker.typed = prefill;
+                h.relist_picker();
                 h.mode = HomeMode::Picker;
             }
             return Outcome::Redraw;
@@ -2303,17 +2366,26 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         }
         // In the picker, keystrokes belong to the picker alone — NOTHING may
         // fall through to the filter hidden behind the overlay, a corruption
-        // that used to stay invisible until Esc. Typing edits the path and
-        // re-lists the directories that match it.
+        // that used to stay invisible until Esc. Typing filters the rows and
+        // re-lists them; a filter with a `/` in it completes a path instead.
         Action::HomeKey(k) if h.mode == HomeMode::Picker => {
             match k {
                 SearchKey::Char(c) => h.picker.typed.push(c),
                 SearchKey::Backspace => {
+                    if h.picker.typed.is_empty() {
+                        // Nothing to erase: climb instead, the keyboard twin
+                        // of the `..` row. The mouse has that row; the
+                        // keyboard has this and `←`.
+                        if !h.picker_up() {
+                            h.note = Some("already at the top".into());
+                        }
+                        return Outcome::Redraw;
+                    }
                     h.picker.typed.pop();
                 }
                 SearchKey::Accept => return Outcome::Idle,
                 // Two-stage escape, the same shape as the filter's: clear the
-                // path first, close the picker only when there is nothing
+                // filter first, close the picker only when there is nothing
                 // left to clear.
                 SearchKey::Cancel => {
                     if h.picker.typed.is_empty() {
@@ -2323,20 +2395,21 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                     h.picker.typed.clear();
                 }
             }
-            let typed = h.picker.typed.clone();
-            // Places lead the empty menu; once something is typed the
-            // filesystem's own completions take over.
-            let places = if typed.is_empty() {
-                h.places.clone()
-            } else {
-                Vec::new()
-            };
-            let mut roots = merge_places(places, Home::matches_for(&typed));
-            roots.dedup();
-            let h = app.home_mut().expect("home screen");
-            h.picker.roots = roots;
-            h.picker.selected = 0;
-            h.picker.top = 0;
+            h.relist_picker();
+            Outcome::Redraw
+        }
+        // Browse without choosing: into the highlight, or up one level. The
+        // dialog stays up either way; only Enter commits to a new root.
+        Action::PickerDescend => {
+            if h.mode != HomeMode::Picker || !h.picker_descend() {
+                return Outcome::Idle;
+            }
+            Outcome::Redraw
+        }
+        Action::PickerUp => {
+            if h.mode != HomeMode::Picker || !h.picker_up() {
+                return Outcome::Idle;
+            }
             Outcome::Redraw
         }
         Action::HomeKey(k) => {
@@ -3108,18 +3181,6 @@ fn footnote_jump(app: &mut App, h: u16) -> Outcome {
     Outcome::Redraw
 }
 
-/// Places ahead of the picker's own matches; a place that also matched the
-/// filesystem listing keeps its front-row seat once.
-fn merge_places(places: Vec<PathBuf>, matched: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut out = places;
-    for m in matched {
-        if !out.contains(&m) {
-            out.push(m);
-        }
-    }
-    out
-}
-
 /// Every distinct destination the open document points at, in reading order.
 ///
 /// Resolution is exactly the reader's own rule — wikilinks through
@@ -3395,23 +3456,42 @@ fn link_follow(app: &mut App) -> Outcome {
             return Outcome::Redraw;
         };
         let anchor = app.view.anchor;
-        if jump_to_fragment(app, frag) {
+        if let Some(row) = line_fragment(frag) {
+            jump_to_line(app, row);
+            app.push_history(here, anchor);
+        } else if jump_to_fragment(app, frag) {
             app.push_history(here, anchor);
         }
         return Outcome::Redraw;
     }
-    let target = here.parent().unwrap_or(Path::new(".")).join(bare);
+    // A results document is pathless like a pipe, but its links are library
+    // paths: they resolve against the searched root, never against the
+    // working directory a pipe uses.
+    let target = match app.results_root.clone() {
+        Some(root) if app.file.is_none() => root.join(bare),
+        _ => here.parent().unwrap_or(Path::new(".")).join(bare),
+    };
     if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
         return app.ask_before_leaving(id, &target);
     }
     let anchor = app.view.anchor;
+    // Leaving the results document pushes no history: there is no file to
+    // go back to, so `Ctrl-O` from the opened file follows the trail that
+    // already exists instead of stranding on a desk.
+    let from_results = app.file.is_none() && app.results_root.is_some();
     match app.open_path(&target) {
         Ok(()) => {
-            app.push_history(here, anchor);
+            if !from_results {
+                app.push_history(here, anchor);
+            }
             // A missing fragment in an opened file is not an error: you are
             // in the right document, at the top, and the note says why.
             if let Some(f) = frag.filter(|f| !f.is_empty()) {
-                jump_to_fragment(app, f);
+                if let Some(row) = line_fragment(f) {
+                    jump_to_line(app, row);
+                } else {
+                    jump_to_fragment(app, f);
+                }
             }
             Outcome::Redraw
         }
@@ -3537,6 +3617,24 @@ fn jump_to_wiki_fragment(app: &mut App, frag: &str) -> bool {
 
 /// Scroll the heading `#frag` names to the top of the view. `false` (with a
 /// note) when no heading matches.
+/// A `#L12` fragment (GitHub's own anchor shape) names a 1-based row;
+/// anything else is a heading slug for [`jump_to_fragment`].
+fn line_fragment(frag: &str) -> Option<u32> {
+    frag.strip_prefix('L')
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|&n| n >= 1)
+}
+
+/// Go to a 1-based row the way `42G` does — the same landing a reader gets
+/// typing the number themselves. An out-of-range row clamps, exactly as `G`
+/// past the end does.
+fn jump_to_line(app: &mut App, row: u32) {
+    let h = app.text_h();
+    app.view
+        .scroll_to(&app.doc, &app.layout, row.saturating_sub(1), h);
+}
+
 fn jump_to_fragment(app: &mut App, frag: &str) -> bool {
     let Some(at) = app.doc.fragment_target(frag) else {
         app.note = Some(format!("no such section: #{frag}"));
@@ -6139,6 +6237,96 @@ diff --git a/x.rs b/x.rs
     }
 
     #[test]
+    fn tab_reads_the_hits_as_a_document() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("doc.md");
+        std::fs::write(&f, "# T\n\nthe needle sits here\n").unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 12);
+        update(&mut a, Action::HomeSearchMode);
+        for c in "needle".chars() {
+            update(&mut a, Action::HomeKey(SearchKey::Char(c)));
+        }
+        // The loop normally streams these in; inject directly.
+        if let Some(h) = a.home_mut() {
+            h.hits.push(crate::grep::Hit {
+                path: f.clone(),
+                count: 1,
+                first_line: "the needle sits here".into(),
+                matches: vec![crate::grep::HitLine {
+                    lineno: 3,
+                    line: "the needle sits here".into(),
+                }],
+            });
+        }
+        update(&mut a, Action::HomeOpenResults);
+        assert!(!a.is_home(), "the results read as a document");
+        assert_eq!(a.file, None, "pathless, like a pipe");
+        assert_eq!(a.path, "search: needle");
+        assert_eq!(a.results_root.as_deref(), Some(d.path()));
+        assert!(a.doc.text.contains("doc.md"), "a section per file");
+        assert!(!a.doc.links.is_empty(), "with a link per match");
+        assert!(a.matches.is_none(), "clean read, not a search");
+
+        // …and `q` from it returns to the home screen it came from.
+        update(&mut a, Action::CloseFile);
+        assert!(a.is_home());
+    }
+
+    #[test]
+    fn tab_with_no_results_says_so_and_stays() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 10);
+        update(&mut a, Action::HomeSearchMode);
+        update(&mut a, Action::HomeOpenResults);
+        assert!(a.is_home(), "nowhere to read");
+        assert!(a.home().unwrap().note.is_some(), "with a note saying so");
+    }
+
+    #[test]
+    fn following_a_match_link_opens_its_file_at_its_line() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("doc.md");
+        let mut body = String::new();
+        for i in 1..=4 {
+            let _ = writeln!(body, "filler line {i}");
+        }
+        body.push_str("the needle sits here\n");
+        for i in 1..=40 {
+            let _ = writeln!(body, "trailing filler {i}");
+        }
+        std::fs::write(&f, &body).unwrap();
+        let mut a = App::new_home(d.path().into(), vec![], 40, 12);
+        a.library_root = Some(d.path().to_path_buf());
+        update(&mut a, Action::HomeSearchMode);
+        if let Some(h) = a.home_mut() {
+            h.query = "needle".into();
+            h.hits.push(crate::grep::Hit {
+                path: f.clone(),
+                count: 1,
+                first_line: "the needle sits here".into(),
+                matches: vec![crate::grep::HitLine {
+                    lineno: 5,
+                    line: "the needle sits here".into(),
+                }],
+            });
+        }
+        update(&mut a, Action::HomeOpenResults);
+        let id = a
+            .doc
+            .links
+            .iter()
+            .position(|l| l.contains("#L5"))
+            .expect("a line link");
+        update(
+            &mut a,
+            Action::LinkOpen(u32::try_from(id).unwrap_or(u32::MAX)),
+        );
+        assert_eq!(a.file.as_deref(), Some(f.as_path()));
+        assert_eq!(a.view.scroll_row, 4, "landed on source line 5, not the top");
+        assert!(a.history.is_empty(), "a desk leaves no trail");
+    }
+
+    #[test]
     fn opening_a_search_hit_lands_on_the_first_match_with_n_ready() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("doc.md");
@@ -6158,6 +6346,7 @@ diff --git a/x.rs b/x.rs
                 path: f.clone(),
                 count: 2,
                 first_line: "the needle sits here".into(),
+                matches: Vec::new(),
             });
         }
         update(&mut a, Action::HomeOpen);
@@ -6178,6 +6367,7 @@ diff --git a/x.rs b/x.rs
                     path: PathBuf::from(format!("/x/{i}.md")),
                     count: 1,
                     first_line: String::new(),
+                    matches: Vec::new(),
                 });
             }
         }
@@ -6197,6 +6387,7 @@ diff --git a/x.rs b/x.rs
                 path: PathBuf::from("/x/stale.md"),
                 count: 1,
                 first_line: String::new(),
+                matches: Vec::new(),
             });
         }
         update(&mut a, Action::HomeKey(SearchKey::Char('q')));
