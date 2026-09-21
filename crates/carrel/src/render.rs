@@ -735,7 +735,19 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let rows = crate::keys::help_matching(table, filter);
     let area = frame.area();
     if area.width < 20 || area.height < 4 {
-        return; // nothing legible fits; the toggle still works
+        // Nothing legible fits. Say so rather than returning: pressing `h`
+        // and watching the screen not change reads as a broken key, and the
+        // one reader most likely to press it is the one who needs the
+        // answer most.
+        let buf = frame.buffer_mut();
+        buf.set_stringn(
+            area.x,
+            area.y,
+            "help needs room",
+            area.width as usize,
+            theme::dim(),
+        );
+        return;
     }
     // 52 = 4 indent + 18 key column + 1 gap + 29 description columns — wide
     // enough that no row in either table truncates (the test pins the
@@ -1039,6 +1051,24 @@ fn paint_margin_outline(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 }
+/// An empty document, said out loud.
+///
+/// It used to paint a blank body under a status row reading `100%`, which
+/// is indistinguishable from a reader that failed to load something.
+/// Returns whether it handled the frame.
+fn paint_if_empty(frame: &mut Frame, app: &App, full: Rect) -> bool {
+    if !app.doc.text.is_empty() {
+        return false;
+    }
+    frame.buffer_mut().set_stringn(
+        full.x,
+        full.y,
+        "This file is empty.",
+        full.width as usize,
+        theme::dim(),
+    );
+    true
+}
 
 fn paint_rows(
     frame: &mut Frame,
@@ -1047,6 +1077,9 @@ fn paint_rows(
     painted: &mut Painted,
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) {
+    if paint_if_empty(frame, app, full) {
+        return;
+    }
     // One buffer for the whole frame: after the first block this allocates
     // nothing. There is no row cache — see layout.rs.
     let mut rows: Vec<Row> = Vec::new();
@@ -3240,6 +3273,31 @@ mod tests {
         let buf = buffer_of(&app, 60, 30);
         let text: String = (0..30).map(|y| line(&buf, y) + "\n").collect();
         assert!(text.contains("no key matches that"), "{text}");
+    }
+
+    /// **The degraded states used to look like bugs.**
+    ///
+    /// An empty document painted a blank body under a status row reading
+    /// `100%` — indistinguishable from a reader that failed to load. And
+    /// pressing `h` in a window under 20x4 changed nothing at all, which
+    /// reads as a broken key to exactly the person who needs help most.
+    #[test]
+    fn the_empty_and_too_small_states_say_which_they_are() {
+        let buf = frame_of("", 40, 10);
+        let text: String = (0..10).map(|y| line(&buf, y) + "\n").collect();
+        assert!(
+            text.contains("This file is empty."),
+            "an empty document says so:\n{text}"
+        );
+
+        let mut app = App::new("t.md".into(), Document::parse("body"), 16, 3);
+        app.help = Some(crate::app::Help::default());
+        let tiny = buffer_of(&app, 16, 3);
+        let tiny_text: String = (0..3).map(|y| line(&tiny, y) + "\n").collect();
+        assert!(
+            tiny_text.contains("help needs room"),
+            "help says why it cannot paint:\n{tiny_text}"
+        );
     }
 
     #[test]

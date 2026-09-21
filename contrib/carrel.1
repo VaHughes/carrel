@@ -499,6 +499,23 @@ Where the config, the reading positions and the index cache live; see
 Each falls back to the usual place under
 .B HOME
 when it is unset or empty.
+.SH CLIPBOARD
+Copying \(em a drag, a double or triple click,
+.B y
+on a code block, or a link \(em is sent to the terminal as an OSC 52
+sequence. Carrel writes it and reads no reply, because there is none: the
+sequence either is understood or is silently discarded, and nothing comes
+back either way. Carrel therefore reports what it sent, not what arrived.
+.PP
+If a copy seems to succeed and nothing pastes, the terminal dropped it.
+Some terminals refuse clipboard writes by default, and inside
+.BR tmux (1)
+the setting is
+.BR set\-clipboard .
+Carrel has no way to detect this and does not guess.
+.PP
+Nothing is ever written to a file, and no program is launched to do the
+copying.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/carrel/config

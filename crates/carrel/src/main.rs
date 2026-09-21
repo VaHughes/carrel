@@ -596,7 +596,7 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
     let src = match carrel::app::read_document(path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("carrel: {}: {e}", path.display());
+            eprintln!("{}", carrel::app::explain_open_error(path, &e));
             return ExitCode::FAILURE;
         }
     };
@@ -766,6 +766,26 @@ impl Images {
             rx: None,
             protocols: HashMap::new(),
             for_file: None,
+        }
+    }
+
+    /// What this terminal will actually draw images WITH, in words a reader
+    /// can act on.
+    ///
+    /// Nearly every terminal lands on half-blocks: `from_fontsize` sniffs
+    /// tmux and iTerm2 environment variables and nothing else, because the
+    /// stdio probe for kitty and sixel blocks on stdin and once left the
+    /// binary hanging (see the gotcha). Carrel said nothing about this while
+    /// the README promised "kitty protocol first", so a reader seeing a
+    /// coloured mosaic had no way to know whether that was carrel, their
+    /// terminal, or the file.
+    fn kind(&self) -> &'static str {
+        use ratatui_image::picker::ProtocolType as P;
+        match self.picker.protocol_type() {
+            P::Kitty => "kitty graphics",
+            P::Sixel => "sixel graphics",
+            P::Iterm2 => "iTerm2 graphics",
+            P::Halfblocks => "blocks of colour — this terminal offers no image protocol",
         }
     }
 
@@ -1214,6 +1234,8 @@ fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
         .to_string_lossy()
         .into_owned();
     let mut app = App::new(name, doc, size.width, size.height);
+    // What images will actually look like here, for the info card.
+    app.image_kind = Some(images.kind());
     app.diff_ok = diff_ok;
     app.diff_forced = diff_forced();
     app.file = Some(path.to_path_buf());
@@ -1434,6 +1456,8 @@ fn run_stdin(rx: &Receiver<String>) -> std::io::Result<Option<PathBuf>> {
         size.width,
         size.height,
     );
+    // What images will actually look like here, for the info card.
+    app.image_kind = Some(images.kind());
     app.streaming = true;
     // A pipe is the pager case: `git show | carrel` is the whole point.
     app.diff_ok = diff_forced().unwrap_or(true);
@@ -1568,6 +1592,8 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     // The cache paints before any syscall; the walk refines it.
     let cached = scan::load_cache(&root);
     let mut app = App::new_home(root.clone(), cached, size.width, size.height);
+    // What images will actually look like here, for the info card.
+    app.image_kind = Some(images.kind());
     app.state_dir = carrel::state::state_dir();
     // The one-time footer invitation. No state directory at all means we
     // cannot tell, and a line that might never go away is worse than one

@@ -4,6 +4,25 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Carrel stops pretending things worked.** Copying goes out as an OSC 52
+  sequence the terminal may simply drop — carrel writes it blind and there is
+  no reply to read — so it said "copied" whether or not anything arrived. It
+  still cannot detect this, but it now says where the clipboard comes from,
+  in the help sheet and in a new CLIPBOARD section of the man page. Images
+  are almost always coloured half-blocks (the kitty and sixel probes are
+  deliberately never run, because the query hangs on stdin) while the README
+  promised the kitty protocol; the document info card now names the protocol
+  actually in use. A file whose name is not markdown is still read as
+  markdown, and now says so instead of doing it silently. An empty document
+  says "This file is empty." rather than painting a blank page at 100%, and
+  pressing help in a window too small to hold it says so rather than looking
+  like a broken key.
+- **Failures are in words.** `carrel: plan.md: No such file or directory (os
+  error 2)` is now `carrel: plan.md: there is no such file`, and a binary
+  reports "this is not text — carrel reads markdown and other text files"
+  rather than "stream did not contain valid UTF-8". The same wording is used
+  for failures inside the reader.
+
 - **Carrel speaks plain words now.** The reader is for people who arrived at
   the terminal because an AI agent lives there, and the vocabulary had not
   caught up with that: the home screen's status bar literally printed

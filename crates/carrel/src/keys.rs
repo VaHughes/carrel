@@ -605,6 +605,14 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("menu button", "the ≡ on the status row"),
     ("hover", "the thing under it lights"),
     ("click a section", "of the heading bar: go there"),
+    // Carrel copies through OSC 52, which it writes blind: there is no
+    // reply to read, so it CANNOT know whether the terminal took it. It
+    // said "copied" either way, and a reader whose terminal drops the
+    // sequence — default tmux, some GNOME Terminal builds — was left with
+    // a success message and an empty clipboard and no way to tell why.
+    ("§", "copying"),
+    ("how it works", "carrel asks the terminal"),
+    ("if nothing pastes", "your terminal refused it"),
 ];
 
 /// The help sheet, home-screen side.

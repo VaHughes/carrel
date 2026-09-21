@@ -608,7 +608,11 @@ fn the_man_page_documents_every_key_the_help_overlay_does() {
     // Nothing is exempt any more: `.SS Mouse` names drag, click, double-click,
     // triple-click, wheel, the scrollbar and the lamp, so every reader row has
     // a real entry. A NEW gesture goes in the man page or it fails here.
-    const NOT_IN_MAN: &[&str] = &[];
+    // Prose, not keys. These two rows explain that copying goes out as an
+    // OSC 52 sequence the terminal may simply drop — there is nothing to
+    // press, so there is no `.B` entry to find. The man page carries the
+    // same explanation in its CLIPBOARD section.
+    const NOT_IN_MAN: &[&str] = &["how it works", "if nothing pastes"];
 
     let man = std::fs::read_to_string("../../contrib/carrel.1").expect("man page");
     // Section headers (`§`) are grouping, and prose rows like "double-click"

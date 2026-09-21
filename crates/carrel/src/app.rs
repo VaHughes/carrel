@@ -327,6 +327,14 @@ pub struct App {
     /// file — the same contract as `config_dir` and `state_dir`, and for the
     /// same reason: a test must never be able to reach the real config.
     pub max_width: u16,
+    /// How this terminal is actually drawing images, for the info card to
+    /// report. `None` in every constructor — `main.rs` sets it at startup,
+    /// the same contract as [`App::config_dir`]. It exists because carrel
+    /// falls back to coloured half-blocks on nearly every terminal (the
+    /// kitty and sixel probes are deliberately never run: the stdio query
+    /// hangs) and said nothing about it, while the README promised the
+    /// kitty protocol.
+    pub image_kind: Option<&'static str>,
 }
 
 /// Reader page margins, in cells: the text is inset from the terminal edges
@@ -557,6 +565,7 @@ impl App {
             rows,
             words: 0,
             max_width: config::DEFAULT_MEASURE,
+            image_kind: None,
         };
         // Math art is pure computation over the document -- no config, no
         // filesystem -- so the constructor may do it, and every entry point
@@ -695,6 +704,12 @@ impl App {
             .to_string_lossy()
             .into_owned();
         self.file = Some(path.to_path_buf());
+        // Carrel parses whatever it is handed as markdown, and never checked
+        // the extension — so `notes.txt` opened silently while the home
+        // screen, which lists only `.md`/`.markdown`, pretended it was not
+        // there. Say which it is doing rather than leaving the reader to
+        // wonder why their plain text grew headings.
+        self.note = non_markdown_note(path);
         self.results_root = None;
         self.forget_derived_state();
         // A different document: the panes that answered questions about the
@@ -1210,7 +1225,14 @@ impl App {
             ("headings", headings.to_string()),
             ("code blocks", code.to_string()),
             ("tables", tables.to_string()),
-            ("images", images.to_string()),
+            (
+                "images",
+                match (images, self.image_kind) {
+                    (0, _) => "0".to_string(),
+                    (n, Some(kind)) => format!("{n} · shown as {kind}"),
+                    (n, None) => n.to_string(),
+                },
+            ),
             ("math blocks", math.to_string()),
             ("links", format!("{internal} local · {external} external")),
             (
@@ -1699,6 +1721,46 @@ pub fn check_document_size(path: &Path) -> std::io::Result<()> {
 /// never meaningful in the first place. `take` closes both — the same shape
 /// `read_stdin_capped` in the binary already uses, whose comment claimed it
 /// did "exactly as `check_document_size` does for files" before that was true.
+/// A note for a document whose name does not say "markdown", or `None`.
+///
+/// Deliberately quiet for the extensions a reader would expect to work:
+/// markdown's own two, and the diff pair carrel adapts on purpose.
+fn non_markdown_note(path: &Path) -> Option<String> {
+    let ext = path.extension().and_then(|e| e.to_str())?.to_lowercase();
+    if matches!(ext.as_str(), "md" | "markdown" | "diff" | "patch") {
+        return None;
+    }
+    Some(format!("reading this .{ext} file as markdown"))
+}
+
+/// Why a document would not open, said the way a person would say it.
+///
+/// `std`'s own wording reaches the screen as
+/// `No such file or directory (os error 2)` and
+/// `stream did not contain valid UTF-8` — accurate, and noise to someone
+/// whose way into a terminal was an AI agent handing them a file. The errno
+/// tail in particular tells a reader nothing they can act on.
+#[must_use]
+pub fn open_failure_reason(e: &std::io::Error) -> String {
+    use std::io::ErrorKind as K;
+    match e.kind() {
+        K::NotFound => "there is no such file".to_string(),
+        K::PermissionDenied => "you do not have permission to read it".to_string(),
+        // `read_to_string` on a binary. Carrel reads text; saying which is
+        // the whole of what the reader needs to know.
+        K::InvalidData => {
+            "this is not text — carrel reads markdown and other text files".to_string()
+        }
+        _ => e.to_string(),
+    }
+}
+
+/// The same reason, as the line the binary prints before exiting 1.
+#[must_use]
+pub fn explain_open_error(path: &Path, e: &std::io::Error) -> String {
+    format!("carrel: {}: {}", path.display(), open_failure_reason(e))
+}
+
 pub fn read_document(path: &Path) -> std::io::Result<String> {
     use std::io::Read as _;
     check_document_size(path)?;
@@ -2175,7 +2237,11 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                     }
                     Err(e) => {
                         if let Some(h) = app.home_mut() {
-                            h.note = Some(format!("cannot open {}: {e}", path.display()));
+                            h.note = Some(format!(
+                                "cannot open {}: {}",
+                                path.display(),
+                                open_failure_reason(&e)
+                            ));
                         }
                         Outcome::Redraw
                     }
@@ -2193,7 +2259,11 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 // user into an empty reader wondering what happened.
                 Err(e) => {
                     if let Some(h) = app.home_mut() {
-                        h.note = Some(format!("cannot open {}: {e}", path.display()));
+                        h.note = Some(format!(
+                            "cannot open {}: {}",
+                            path.display(),
+                            open_failure_reason(&e)
+                        ));
                     }
                     Outcome::Redraw
                 }
@@ -2316,7 +2386,11 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 Ok(()) => Outcome::Redraw,
                 Err(e) => {
                     if let Some(h) = app.home_mut() {
-                        h.note = Some(format!("cannot open {}: {e}", path.display()));
+                        h.note = Some(format!(
+                            "cannot open {}: {}",
+                            path.display(),
+                            open_failure_reason(&e)
+                        ));
                     }
                     Outcome::Redraw
                 }
@@ -2904,7 +2978,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             match app.open_path(&path) {
                 Ok(()) => Outcome::Redraw,
                 Err(e) => {
-                    app.note = Some(format!("cannot open {}: {e}", path.display()));
+                    app.note = Some(format!(
+                        "cannot open {}: {}",
+                        path.display(),
+                        open_failure_reason(&e)
+                    ));
                     Outcome::Redraw
                 }
             }
@@ -2960,7 +3038,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             match app.open_path(&path) {
                 Ok(()) => Outcome::Redraw,
                 Err(e) => {
-                    app.note = Some(format!("cannot open {}: {e}", path.display()));
+                    app.note = Some(format!(
+                        "cannot open {}: {}",
+                        path.display(),
+                        open_failure_reason(&e)
+                    ));
                     Outcome::Redraw
                 }
             }
@@ -3619,7 +3701,11 @@ fn link_follow(app: &mut App) -> Outcome {
             Outcome::Redraw
         }
         Err(e) => {
-            app.note = Some(format!("cannot open {}: {e}", target.display()));
+            app.note = Some(format!(
+                "cannot open {}: {}",
+                target.display(),
+                open_failure_reason(&e)
+            ));
             Outcome::Redraw
         }
     }
@@ -3713,7 +3799,11 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
             }
         }
         Err(e) => {
-            app.note = Some(format!("cannot open {}: {e}", target.display()));
+            app.note = Some(format!(
+                "cannot open {}: {}",
+                target.display(),
+                open_failure_reason(&e)
+            ));
         }
     }
     Outcome::Redraw
@@ -3833,6 +3923,60 @@ mod tests {
     /// document actually scrolls, which several tests below depend on.
     fn app() -> App {
         App::new("t.md".into(), Document::parse(SRC), 20, 6)
+    }
+
+    /// **Failures say what went wrong, not what errno went wrong.**
+    #[test]
+    fn an_open_failure_is_explained_in_words_a_reader_can_act_on() {
+        use std::io::{Error, ErrorKind};
+
+        let no = Error::new(
+            ErrorKind::NotFound,
+            "No such file or directory (os error 2)",
+        );
+        assert_eq!(open_failure_reason(&no), "there is no such file");
+        assert_eq!(
+            explain_open_error(Path::new("/tmp/plan.md"), &no),
+            "carrel: /tmp/plan.md: there is no such file",
+            "no errno tail, which tells a reader nothing"
+        );
+
+        // `read_to_string` on a binary. Saying carrel reads TEXT is the
+        // whole of what the reader needs.
+        let bin = Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8");
+        assert!(
+            open_failure_reason(&bin).contains("not text"),
+            "got {:?}",
+            open_failure_reason(&bin)
+        );
+
+        // An error carrel has no better words for keeps the original.
+        let odd = Error::other("something specific and rare");
+        assert_eq!(open_failure_reason(&odd), "something specific and rare");
+    }
+
+    /// **A file that is not markdown is read anyway, and says so.**
+    ///
+    /// Carrel never checked the extension, so `notes.txt` opened silently
+    /// while the home screen — which lists only `.md`/`.markdown` — behaved
+    /// as though it did not exist.
+    #[test]
+    fn reading_a_non_markdown_file_says_that_is_what_it_is_doing() {
+        assert_eq!(
+            non_markdown_note(Path::new("/x/notes.txt")).as_deref(),
+            Some("reading this .txt file as markdown")
+        );
+        assert_eq!(
+            non_markdown_note(Path::new("/x/Notes.TXT")).as_deref(),
+            Some("reading this .txt file as markdown"),
+            "the extension is matched case-insensitively"
+        );
+        // Quiet for everything a reader would expect to just work.
+        for quiet in ["a.md", "a.markdown", "a.diff", "a.patch"] {
+            assert_eq!(non_markdown_note(Path::new(quiet)), None, "{quiet}");
+        }
+        // And quiet for a file with no extension at all — README, CHANGELOG.
+        assert_eq!(non_markdown_note(Path::new("/x/README")), None);
     }
 
     /// **The measure, stepped — the closest honest thing to a zoom.**
