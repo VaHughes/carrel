@@ -125,6 +125,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Toolchain (pinned)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08
+        with:
+          toolchain: "1.97"
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -253,6 +257,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Toolchain (pinned)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08
+        with:
+          toolchain: "1.97"
       - name: Install cached dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -305,6 +313,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Toolchain (pinned)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08
+        with:
+          toolchain: "1.97"
       - name: Install cached dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
