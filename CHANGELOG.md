@@ -4,6 +4,19 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A settings pane, on `,` or from the menu.** Carrel remembered nine
+  preferences and named the file they live in nowhere a reader would find it —
+  not in a menu, not in the help sheet, not in `--help`, only in the README.
+  The pane lists every one with the value it currently has, writes the change
+  immediately, and prints the path of the config file along the bottom. Every
+  row is clickable. The margin outline had no key at all and this is its first
+  way in from inside carrel.
+- **`carrel --tutorial` opens a built-in first document.** Carrel is a reader,
+  so the honest way to explain it is to hand you something to read: a page
+  that describes each thing on the page it is describing it on. It is offered
+  from the empty-folder dead end too, as `[ show me how carrel works ]` — the
+  likeliest place a first run lands.
+
 - **Carrel stops pretending things worked.** Copying goes out as an OSC 52
   sequence the terminal may simply drop — carrel writes it blind and there is
   no reply to read — so it said "copied" whether or not anything arrived. It

@@ -129,6 +129,17 @@ pub struct App {
     /// the rows derive from `marks` at every use, so a mark added or cleared
     /// under the pane shows immediately.
     pub mark_list: Option<usize>,
+    /// The settings pane's highlighted row, and whether it is open at all.
+    pub settings: Option<usize>,
+    /// Whether the file list labels rows from frontmatter. The live copy
+    /// that paint reads is `Home::show_titles`; this is the one the
+    /// settings pane writes, and the two are kept in step by `update`.
+    pub titles: bool,
+    /// The palette's name, for the settings pane to show. `theme.rs` owns
+    /// colours and so imports ratatui, which `app.rs` may never do (rule 6)
+    /// — `main.rs` sets this at startup and after each cycle, the same
+    /// contract as [`App::image_kind`].
+    pub theme_name: &'static str,
     /// The section tree in the left margin is wanted (config `outline_margin`).
     /// Whether it actually shows also needs [`Self::gutter_w`].
     pub outline_margin: bool,
@@ -566,6 +577,9 @@ impl App {
             words: 0,
             max_width: config::DEFAULT_MEASURE,
             image_kind: None,
+            settings: None,
+            titles: false,
+            theme_name: "terminal",
         };
         // Math art is pure computation over the document -- no config, no
         // filesystem -- so the constructor may do it, and every entry point
@@ -777,6 +791,43 @@ impl App {
             self.home_stash = Some(h);
         }
         self.resolve_wikilinks();
+    }
+
+    /// Open the built-in first document.
+    ///
+    /// Pathless, exactly like [`Self::open_results`] and a pipe: no position
+    /// persists against it, no reloader watches it, and `q` returns to the
+    /// file list rather than to a place on disk. Carrel is a reader, so the
+    /// honest way to explain it is to hand the reader something to read.
+    pub fn open_welcome(&mut self) {
+        self.save_position();
+        self.diff_ok = false;
+        self.doc = self.parse_adapting(WELCOME);
+        self.mtime = None;
+        self.matches = None;
+        self.forward = None;
+        self.mode = Mode::Normal;
+        self.view = ViewState::new();
+        self.layout = Layout::with_measure(
+            &self.doc,
+            self.bleed_w(),
+            self.text_w(),
+            HashMap::new(),
+            false,
+        );
+        self.path = "how carrel works".into();
+        self.file = None;
+        self.results_root = None;
+        self.forget_derived_state();
+        self.backlinks = None;
+        self.mark_list = None;
+        self.marks.clear();
+        self.rebuild_math_art();
+        self.words = word_count(&self.doc.text);
+        self.has_headings = true;
+        if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
+            self.home_stash = Some(h);
+        }
     }
 
     /// Does following this link leave the library?
@@ -1721,6 +1772,78 @@ pub fn check_document_size(path: &Path) -> std::io::Result<()> {
 /// never meaningful in the first place. `take` closes both — the same shape
 /// `read_stdin_capped` in the binary already uses, whose comment claimed it
 /// did "exactly as `check_document_size` does for files" before that was true.
+/// One row of the settings pane: what it is called, what it says now, and
+/// which config key it writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettingsRow {
+    pub label: &'static str,
+    pub value: String,
+    pub key: Setting,
+}
+
+/// The settings a reader can change from inside carrel.
+///
+/// Derived per call from the live `App`, never stored — the outline's rule,
+/// and for the same reason: a stored copy is a copy that can be wrong.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Setting {
+    Theme,
+    TextWidth,
+    Hints,
+    HeadingBar,
+    OutlineMargin,
+    Titles,
+}
+
+/// Every persisted preference, in the order the pane shows them.
+#[must_use]
+pub fn settings_rows(app: &App) -> Vec<SettingsRow> {
+    let on = |b: bool| if b { "on" } else { "off" }.to_string();
+    vec![
+        SettingsRow {
+            label: "Theme",
+            value: app.theme_name.to_string(),
+            key: Setting::Theme,
+        },
+        SettingsRow {
+            label: "Text width",
+            value: if app.max_width == 0 {
+                "the whole window".to_string()
+            } else {
+                format!("{} columns", app.max_width)
+            },
+            key: Setting::TextWidth,
+        },
+        SettingsRow {
+            label: "Hint row",
+            value: on(app.hints),
+            key: Setting::Hints,
+        },
+        SettingsRow {
+            label: "Heading bar",
+            value: on(app.breadcrumb),
+            key: Setting::HeadingBar,
+        },
+        SettingsRow {
+            label: "Outline in the margin",
+            value: on(app.outline_margin),
+            key: Setting::OutlineMargin,
+        },
+        SettingsRow {
+            label: "Titles in the file list",
+            value: on(app.titles),
+            key: Setting::Titles,
+        },
+    ]
+}
+
+/// The built-in first document.
+///
+/// Carrel is a reader, so the way to teach it is to hand the reader a page
+/// that describes each thing on the page it is describing it on. Offered
+/// from the empty-folder dead end, and by `carrel --tutorial`.
+pub const WELCOME: &str = include_str!("welcome.md");
+
 /// A note for a document whose name does not say "markdown", or `None`.
 ///
 /// Deliberately quiet for the extensions a reader would expect to work:
@@ -1835,6 +1958,92 @@ pub fn adapt(src: &str, diff_ok: bool) -> Document {
     }
 }
 
+/// Change the highlighted setting, and write it to the config file.
+///
+/// Every row here already had a key and a menu row; what it did not have was
+/// anywhere a reader could SEE the current value, or learn that a config
+/// file exists at all. So this deliberately reuses the existing actions
+/// rather than duplicating their persistence: one writer per setting.
+fn adjust_setting(app: &mut App, d: i32) -> Outcome {
+    let Some(at) = app.settings else {
+        return Outcome::Idle;
+    };
+    let Some(row) = settings_rows(app).get(at).cloned() else {
+        return Outcome::Idle;
+    };
+    match row.key {
+        Setting::Theme => {
+            // The palette belongs to the event loop, which owns the one
+            // global `theme.rs` slot; `update` can only ask.
+            app.theme_cycle = true;
+        }
+        Setting::TextWidth => step_measure(app, d),
+        Setting::Hints => return update(app, Action::HintsToggle),
+        Setting::HeadingBar => return update(app, Action::BreadcrumbToggle),
+        Setting::OutlineMargin => {
+            // There has never been a key for this one: it was config-only,
+            // so the pane is its first way in from inside carrel.
+            app.outline_margin = !app.outline_margin;
+            if let Some(dir) = app.config_dir.as_deref() {
+                let _ = crate::config::save_outline_margin_in(dir, app.outline_margin);
+            }
+            app.relayout(); // the gutter's columns come from / return to the text
+        }
+        Setting::Titles => {
+            app.titles = !app.titles;
+            let titles = app.titles;
+            if let Some(h) = app.home_mut() {
+                h.show_titles = titles;
+            }
+            if let Some(dir) = app.config_dir.as_deref() {
+                let _ = crate::config::save_titles_in(dir, app.titles);
+            }
+        }
+    }
+    Outcome::Redraw
+}
+
+/// The settings pane's own actions, or `None` if this was not one.
+///
+/// Lifted out of `update` so that function stays under the line lint; the
+/// pane's arms are a self-contained group and read better together.
+fn settings_action(app: &mut App, action: Action) -> Option<Outcome> {
+    match action {
+        Action::WelcomeOpen => {
+            app.open_welcome();
+            return Some(Outcome::Redraw);
+        }
+        Action::SettingsToggle => {
+            app.settings = if app.settings.is_some() {
+                None
+            } else {
+                Some(0)
+            };
+            return Some(Outcome::Redraw);
+        }
+        Action::SettingsMove(d) if app.settings.is_some() => {
+            let last = settings_rows(app).len().saturating_sub(1);
+            let at = app.settings.unwrap_or(0);
+            app.settings = Some(if d < 0 {
+                at.saturating_sub(d.unsigned_abs() as usize)
+            } else {
+                at.saturating_add(d.unsigned_abs() as usize).min(last)
+            });
+            return Some(Outcome::Redraw);
+        }
+        Action::SettingsPickAt(i) if app.settings.is_some() => {
+            let last = settings_rows(app).len().saturating_sub(1);
+            app.settings = Some((i as usize).min(last));
+            return Some(adjust_setting(app, 1));
+        }
+        Action::SettingsAdjust(d) if app.settings.is_some() => {
+            return Some(adjust_setting(app, d));
+        }
+        _ => {}
+    }
+    None
+}
+
 /// The reading measure, stepped.
 ///
 /// A terminal's font belongs to the emulator, so carrel cannot zoom. What it
@@ -1934,6 +2143,9 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     if let Action::MeasureStep(d) = action {
         step_measure(app, d);
         return Outcome::Redraw;
+    }
+    if let Some(out) = settings_action(app, action) {
+        return out;
     }
     if let Action::BreadcrumbToggle = action {
         app.breadcrumb = !app.breadcrumb;
@@ -3923,6 +4135,74 @@ mod tests {
     /// document actually scrolls, which several tests below depend on.
     fn app() -> App {
         App::new("t.md".into(), Document::parse(SRC), 20, 6)
+    }
+
+    /// **The settings pane shows every preference and writes it.**
+    ///
+    /// Carrel had nine config keys and named the file in no menu row, no
+    /// help line and not in `--help` — only in the README, which is exactly
+    /// where the reader this is for will never look.
+    #[test]
+    fn the_settings_pane_shows_values_and_saves_what_it_changes() {
+        let cfg = tempfile::tempdir().unwrap();
+        let mut a = App::new("t.md".into(), Document::parse("# h\n\nbody"), 120, 30);
+        a.config_dir = Some(cfg.path().to_path_buf());
+
+        update(&mut a, Action::SettingsToggle);
+        assert_eq!(a.settings, Some(0), "opens on the first row");
+
+        let rows = settings_rows(&a);
+        assert_eq!(rows[0].key, Setting::Theme);
+        assert!(
+            rows.iter().any(|r| r.key == Setting::OutlineMargin),
+            "the margin outline had no key at all; the pane is its only way in"
+        );
+
+        // Walk to the hint row and turn it off. The value shown must follow.
+        let at = rows.iter().position(|r| r.key == Setting::Hints).unwrap();
+        update(&mut a, Action::SettingsMove(i32::try_from(at).unwrap()));
+        let before = a.hints;
+        update(&mut a, Action::SettingsAdjust(1));
+        assert_eq!(a.hints, !before, "the setting flipped");
+        assert_eq!(
+            settings_rows(&a)[at].value,
+            if a.hints { "on" } else { "off" },
+            "and the row says so"
+        );
+        assert_eq!(
+            crate::config::load_hints_in(cfg.path()),
+            Some(a.hints),
+            "and it is on disk"
+        );
+
+        // Clicking a row selects AND changes it, in one gesture.
+        let m = rows
+            .iter()
+            .position(|r| r.key == Setting::OutlineMargin)
+            .unwrap();
+        let margin = a.outline_margin;
+        update(&mut a, Action::SettingsPickAt(u32::try_from(m).unwrap()));
+        assert_eq!(a.settings, Some(m), "the click moved the highlight");
+        assert_eq!(a.outline_margin, !margin, "and changed the setting");
+
+        update(&mut a, Action::SettingsToggle);
+        assert_eq!(a.settings, None, "and it closes");
+    }
+
+    /// **The built-in first document opens with no file behind it.**
+    #[test]
+    fn the_welcome_document_is_pathless_like_a_pipe() {
+        let mut a = App::new_home(std::path::PathBuf::from("/root"), vec![], 80, 24);
+        update(&mut a, Action::WelcomeOpen);
+
+        assert!(!a.is_home(), "it opened the reader");
+        assert_eq!(a.file, None, "nothing on disk, so nothing to persist");
+        assert!(a.home_stash.is_some(), "and q comes back to the file list");
+        assert!(
+            a.doc.text.contains("carrel"),
+            "the built-in document actually parsed"
+        );
+        assert!(a.has_headings, "so the outline and heading bar work on it");
     }
 
     /// **Failures say what went wrong, not what errno went wrong.**

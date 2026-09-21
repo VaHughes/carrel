@@ -143,6 +143,9 @@ impl Keys {
             KeyCode::Char('}') => Some(Action::BlockStep(self.take())),
             KeyCode::Char('{') => Some(Action::BlockStep(-self.take())),
 
+            // `,` is the preferences key in a good deal of software, and
+            // carrel bound no comma at all, so it costs nothing.
+            KeyCode::Char(',') => Some(Action::SettingsToggle),
             KeyCode::Char('/') => Some(Action::SearchOpen(Direction::Forward)),
             KeyCode::Char('?') => Some(Action::SearchOpen(Direction::Backward)),
             KeyCode::Char('n') => Some(Action::MatchStep(self.take())),
@@ -269,6 +272,7 @@ impl Keys {
                 KeyCode::Char(c @ '1'..='3') => Some(Action::HomeResume(c as usize - '1' as usize)),
                 // `/` means "search content" everywhere else in carrel, so
                 // it does here too (wave E); `i` remains the filename filter.
+                KeyCode::Char(',') => Some(Action::SettingsToggle),
                 KeyCode::Char('i') => Some(Action::HomeFilterMode),
                 KeyCode::Char('/') => Some(Action::HomeSearchMode),
                 KeyCode::Char('G') | KeyCode::End => Some(Action::HomeGo(Edge::Last)),
@@ -367,6 +371,28 @@ impl Keys {
         }
     }
 
+    /// Settings-pane bindings: the bookmark pane's idiom — arrows move,
+    /// Enter changes the highlighted row, and the row's own sign keys nudge
+    /// it either way, which is what the text width needs and the booleans
+    /// do not mind.
+    #[must_use]
+    pub fn map_settings(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::SettingsMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::SettingsMove(-1)),
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::SettingsMove(1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::SettingsMove(-1)),
+            KeyCode::Enter | KeyCode::Char(' ' | '+' | '=') | KeyCode::Right => {
+                Some(Action::SettingsAdjust(1))
+            }
+            KeyCode::Char('-' | '_') | KeyCode::Left => Some(Action::SettingsAdjust(-1)),
+            KeyCode::Char(',' | 'q') | KeyCode::Esc => Some(Action::SettingsToggle),
+            _ => None,
+        }
+    }
+
     /// Outline-picker bindings: the home screen's idiom exactly — printable
     /// keys type, arrows and Ctrl-N/P move, Enter commits, Esc backs out.
     #[must_use]
@@ -452,6 +478,11 @@ pub const fn accel(a: Action) -> Option<&'static str> {
     Some(match a {
         A::Scroll(..) => "j k",
         A::HomePage(_) => "PgDn PgUp",
+        A::SettingsToggle => ",",
+        // A button, not a key: nothing to press, so nothing to print.
+        A::WelcomeOpen => return None,
+        A::SettingsMove(_) => "j k",
+        A::SettingsAdjust(_) | A::SettingsPickAt(_) => "\u{21b5}",
         A::MeasureStep(_) => "+ -",
         A::GoToStart => "gg",
         A::GoToEnd => "G",
@@ -579,6 +610,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("t", "wide tables: cards or columns"),
     ("r", "diagrams, math: drawn or text"),
     ("T", "next theme"),
+    (",", "settings"),
     ("h F1", "this help"),
     ("H", "hide / show the hint row"),
     ("B", "hide / show the heading bar"),
@@ -640,6 +672,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("click a segment", "of the path row: go there"),
     ("right-click", "a menu, anywhere"),
     ("T", "next theme"),
+    (",", "settings"),
     ("h F1", "this help (F1 while typing)"),
     ("H", "hide / show the hint row"),
     ("q Ctrl-C", "quit"),

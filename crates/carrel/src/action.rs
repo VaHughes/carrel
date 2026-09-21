@@ -310,6 +310,18 @@ pub enum Action {
     /// equivalent to a zoom in a terminal, where the font is the emulator's
     /// business and never ours.
     MeasureStep(i32),
+    /// The settings pane: every persisted preference, visible and clickable.
+    /// Carrel had nine config keys and named the file in no menu, help row
+    /// or `--help` line — only in the README.
+    SettingsToggle,
+    /// Open the built-in first document, from the empty-folder dead end.
+    WelcomeOpen,
+    SettingsMove(i32),
+    /// Change the highlighted setting. Booleans toggle whichever way this
+    /// is nudged; the text width steps by the sign.
+    SettingsAdjust(i32),
+    /// Click row `n`: select it and change it, in one gesture.
+    SettingsPickAt(u32),
     /// Open the selected file in the reader.
     HomeOpen,
     /// A keystroke into the filter, or into the picker's typed path.

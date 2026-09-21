@@ -169,6 +169,7 @@ pub fn draw_full(
         if app.outline.is_some() {
             paint_outline(frame, app, &mut painted.targets);
         }
+        paint_settings(frame, app, &mut painted.targets);
         paint_menu(frame, app, &mut painted.targets);
         paint_hover(frame, app, &painted.targets);
         settle_links(frame, painted);
@@ -241,6 +242,7 @@ pub fn draw_full(
     if app.mark_list.is_some() {
         paint_marks(frame, app, &mut painted.targets);
     }
+    paint_settings(frame, app, &mut painted.targets);
     if app.info {
         paint_info(frame, app, &mut painted.targets);
     }
@@ -306,6 +308,106 @@ fn settle_links(frame: &mut Frame, painted: &mut Painted) {
     for l in links.iter_mut() {
         if let Some(cell) = buf.cell((l.x, l.y)) {
             l.style = cell.style();
+        }
+    }
+}
+
+/// The settings pane: every persisted preference, with its current value,
+/// and the file they are written to.
+///
+/// Carrel had nine config keys and named the file in no menu row, no help
+/// line and not in `--help` — only in the README, which is exactly the
+/// place the reader this is for will never look. The menus could already
+/// toggle four of them; what none of them showed was the value.
+fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
+    let Some(selected) = app.settings else {
+        return;
+    };
+    let area = frame.area();
+    if area.width < 30 || area.height < 8 {
+        return;
+    }
+    let rows = crate::app::settings_rows(app);
+    let w = 60u16.min(area.width.saturating_sub(4));
+    let h = (u16::try_from(rows.len()).unwrap_or(u16::MAX) + 3)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let x = (area.width - w) / 2;
+    let y = (area.height - h) / 2;
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
+
+    // The config file, named where a reader will actually meet it.
+    let where_ = app.config_dir.as_deref().map_or_else(
+        || "nowhere to save".to_string(),
+        |d| d.join("config").display().to_string(),
+    );
+
+    let buf = frame.buffer_mut();
+    let blank = " ".repeat(w as usize);
+    for py in y..y + h {
+        buf.set_stringn(x, py, &blank, w as usize, theme::status());
+    }
+    let bar = "─".repeat(w as usize);
+    buf.set_stringn(
+        x,
+        y,
+        format!("┌ settings {bar}"),
+        w as usize,
+        theme::status(),
+    );
+    // Truncated from the LEFT: the tail of a path is the part that
+    // identifies it, and a right-truncated one shows a home directory and
+    // hides the filename.
+    let room = usize::from(w.saturating_sub(12));
+    let shown = if where_.chars().count() > room && room > 1 {
+        let skip = where_.chars().count() - (room - 1);
+        format!("…{}", where_.chars().skip(skip).collect::<String>())
+    } else {
+        where_
+    };
+    buf.set_stringn(
+        x,
+        y + h - 2,
+        format!("  saved in {shown}"),
+        w as usize,
+        theme::dim(),
+    );
+    buf.set_stringn(
+        x,
+        y + h - 1,
+        format!("└ ↵ change · ↑↓ move · esc close {bar}"),
+        w as usize,
+        theme::status(),
+    );
+
+    let inner = usize::from(h.saturating_sub(3));
+    for (i, row) in rows.iter().enumerate().take(inner) {
+        let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+        if py >= y + h - 2 {
+            break;
+        }
+        targets.push(
+            Action::SettingsPickAt(u32::try_from(i).unwrap_or(u32::MAX)),
+            Zone::new(x + 1, py, w.saturating_sub(1), 1),
+            Z_OVERLAY,
+        );
+        let style = if i == selected {
+            theme::selected()
+        } else {
+            theme::status()
+        };
+        // Label left, value right: the shape of every settings list there
+        // has ever been, so it reads without a legend.
+        let label = format!("  {}", row.label);
+        let lw = carrel_core::display_width(&label);
+        let vw = carrel_core::display_width(&row.value);
+        buf.set_stringn(x + 1, py, &blank, w.saturating_sub(1) as usize, style);
+        buf.set_stringn(x + 1, py, &label, w as usize, style);
+        // Right-aligned value, but only when the label leaves room for it —
+        // otherwise the label wins and the value is simply not shown.
+        if w > lw + vw + 4 {
+            let vx = x + w.saturating_sub(vw).saturating_sub(2);
+            buf.set_stringn(vx, py, &row.value, vw as usize, style);
         }
     }
 }
@@ -2398,6 +2500,21 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
                 Action::PickerOpen,
                 Z_CHROME,
             );
+            put(buf, &mut x, area.y, right, "  or  ", theme::dim());
+            // An empty folder is the likeliest place a first run lands —
+            // someone who ran `carrel` to see what it was, somewhere with
+            // no markdown in it. The one thing carrel can always offer
+            // there is something to read.
+            push_button(
+                buf,
+                targets,
+                &mut x,
+                area.y,
+                right,
+                "[ show me how carrel works ]",
+                Action::WelcomeOpen,
+                Z_CHROME,
+            );
         } else {
             let mut x = area.x + 2;
             let right = area.x + area.width;
@@ -3203,7 +3320,7 @@ mod tests {
         let closed = buffer_of(&app, 60, 30);
         let closed_text: String = (0..30).map(|y| line(&closed, y) + "\n").collect();
         assert!(
-            !closed_text.contains("this help"),
+            !closed_text.contains("line down / up"),
             "no overlay while closed"
         );
 
@@ -3214,7 +3331,7 @@ mod tests {
             open_text.contains("carrel — help"),
             "title painted:\n{open_text}"
         );
-        assert!(open_text.contains("this help"), "a reader row painted");
+        assert!(open_text.contains("line down / up"), "a reader row painted");
         assert!(open_text.contains("moving"), "a group heading painted");
     }
 

@@ -274,6 +274,7 @@ pub fn global(app: &App) -> Vec<Item> {
             Item::gap(),
             Item::new("Themes", Action::ThemeCycle),
             Item::new("Hint row", Action::HintsToggle),
+            Item::new("Settings…", Action::SettingsToggle),
             Item::gap(),
             Item::new("Help", Action::HelpToggle),
             // `map_home` binds `q` to Quit; the reader binds it to CloseFile
@@ -308,6 +309,7 @@ pub fn global(app: &App) -> Vec<Item> {
         Item::new("Themes", Action::ThemeCycle),
         Item::new("Hint row", Action::HintsToggle),
         Item::new("Heading bar", Action::BreadcrumbToggle),
+        Item::new("Settings…", Action::SettingsToggle),
         Item::gap(),
         Item::new("Help", Action::HelpToggle),
         Item::new(
@@ -765,6 +767,13 @@ mod tests {
             // wheel, which is already `HomeMove`, so this needs no button of
             // its own — it is a keyboard spelling of a gesture that exists.
             A::HomePage(_) => KeyboardOnly,
+            // The settings pane: its own rows, and a menu row to open it.
+            A::SettingsToggle => Menu("Settings…"),
+            // The empty-folder dead end offers it as a painted button;
+            // `carrel --tutorial` is the other way in. Chrome, not a menu
+            // row: a reader with files to read does not need it in a list.
+            A::WelcomeOpen => Chrome,
+            A::SettingsMove(_) | A::SettingsAdjust(_) | A::SettingsPickAt(_) => Pane,
             A::MarkNext => KeyboardOnly, // `Bookmarks…` lists them
             A::BacklinksMove(_) | A::ForwardMove(_) | A::MarkListMove(_) | A::OutlineMove(_) => {
                 KeyboardOnly // a click lands on the row; nothing steps toward it

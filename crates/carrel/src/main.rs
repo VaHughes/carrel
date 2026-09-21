@@ -49,6 +49,8 @@ USAGE:
     carrel --render <FILE> [W]   styled ANSI text (attributes and links,
                                  never colours) for embedding elsewhere
     carrel --render - [W]        piped input as styled ANSI text
+    carrel --tutorial            the built-in first document: what carrel
+                                 does, on a page you can try it all on
     carrel --help                (-h)
     carrel --version             (-V)
 
@@ -209,6 +211,25 @@ fn main() -> ExitCode {
         [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
         [a] if a == "-h" || a == "--help" => emit(USAGE),
+        // The built-in first document. It needs a terminal like any other
+        // reading session; piped, it prints as plain text, which is what a
+        // beginner running `carrel --tutorial | less` should get.
+        [a] if a == "--tutorial" => {
+            if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
+                match run_welcome() {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("carrel: {e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            } else {
+                emit(&carrel::plain::render(
+                    &carrel_core::Document::parse(carrel::app::WELCOME),
+                    80,
+                ))
+            }
+        }
         [a] if a == "-V" || a == "--version" => {
             emit(&format!("carrel {}\n", env!("CARGO_PKG_VERSION")))
         }
@@ -262,6 +283,7 @@ fn width_arg(w: &str) -> Result<u16, ExitCode> {
 const KNOWN_FLAGS: &[&str] = &[
     "-h",
     "--help",
+    "--tutorial",
     "-V",
     "--version",
     "--plain",
@@ -464,8 +486,10 @@ fn drive_backlinks(
 /// Home-screen preferences that live on `Home` rather than `App`.
 fn set_home_prefs(app: &mut App) {
     let c = config::load_all();
+    app.titles = c.titles.unwrap_or(false);
+    let titles = app.titles;
     if let Some(h) = app.home_mut() {
-        h.show_titles = c.titles.unwrap_or(false);
+        h.show_titles = titles;
         h.places = c.places;
     }
 }
@@ -1209,6 +1233,30 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
+/// The built-in first document.
+///
+/// Carrel is a reader, so the honest way to teach it is to hand the reader
+/// something to read — a page that describes each thing on the page it is
+/// describing it on. It is offered on a first run and from the empty-folder
+/// dead end, and `carrel --tutorial` opens it whenever anyone wants it.
+/// Open the built-in document. It has no path, so nothing is persisted
+/// against it and the reloader stays inert — the same shape as a pipe.
+fn run_welcome() -> std::io::Result<Option<PathBuf>> {
+    let doc = carrel_core::Document::parse(carrel::app::WELCOME);
+    let images = Images::detect();
+    let theme_note = startup_theme();
+    let terminal = ratatui::init();
+    let _guard = TerminalGuard::engage_mouse();
+    let size = terminal.size()?;
+    let mut app = App::new("welcome".into(), doc, size.width, size.height);
+    app.image_kind = Some(images.kind());
+    app.note = theme_note;
+    app.state_dir = carrel::state::state_dir();
+    apply_config(&mut app);
+    app.piped = Some(carrel::app::WELCOME.to_string());
+    run_loop(terminal, app, images, None)
+}
+
 fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
     let theme_note = startup_theme();
     // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
@@ -1758,6 +1806,8 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
         Keys::map_backlinks(k)
     } else if app.forward.is_some() {
         Keys::map_forward(k)
+    } else if app.settings.is_some() {
+        Keys::map_settings(k)
     } else if app.mark_list.is_some() {
         Keys::map_marks(k)
     } else if app.outline.is_some() {
