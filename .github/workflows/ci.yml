@@ -35,7 +35,7 @@ env:
 
 jobs:
   gates:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "x64", "ghostmachine", "build"]') }}
     steps:
       # Third-party actions pinned to commit SHAs: tags and branches are
       # mutable refs, and a compromised action repo can rewrite them. The
@@ -80,7 +80,7 @@ jobs:
   # user rather than here. `--locked` because the point is the committed
   # resolve, not whatever cargo would pick today.
   msrv:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "x64", "ghostmachine", "build"]') }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 

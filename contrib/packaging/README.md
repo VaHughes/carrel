@@ -153,3 +153,15 @@ out byte-identical, which is the result you want and not a reason to skip the st
   point 1. The same spec seeds an openSUSE OBS home project later.
 
 The full launch order lives in RELEASING.md in the private notes repo.
+
+
+## Ghostmachine release execution
+
+`release.yml` routes x64 Linux builds to `ghost-ci-public`, with an Ubuntu 22.04
+container preserving the GNU ABI baseline. Its container bootstrap installs the
+compiler, Git, curl, OpenSSL headers and musl tools before the normal dist steps.
+Native ARM and macOS artifacts still use GitHub's hosted runners. Keep all six
+targets, the gate dependency and action SHA pins when regenerating the workflow.
+The plan/global/host jobs also use Ghostmachine for owner events; external-fork
+PRs retain hosted checks. See `docs/DEVELOPMENT.md` for the required fork approval
+policy before enabling any public self-hosted runner.

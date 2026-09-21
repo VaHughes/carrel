@@ -155,3 +155,28 @@ Gotchas:
 
 Machine-local notes (tool inventory, credential locations, the private notes checkout) live
 in the gitignored `CLAUDE.local.md`.
+
+
+## Ghostmachine CI runners
+
+Owner pushes, same-repository PR checks and x64 Linux release jobs use the
+separate `ghost-ci-public` Ubuntu 24.04 VM on ghostmachine. Labels are
+`[self-hosted, linux, x64, ghostmachine, build]`. Build jobs serialize inside
+this VM; its filesystem, credentials and network are separate from private CI
+and production. The runner has no host filesystem mounts or LAN access.
+
+Native macOS and ARM release builds remain on free GitHub-hosted runners.
+External-fork PR jobs also use GitHub-hosted runners. Repository settings require
+approval for **all external contributors**, including returning contributors;
+this setting is essential because a fork can edit its own workflow routing.
+Before approving a fork workflow, inspect its full workflow changes and ensure
+no job targets `self-hosted`/`ghostmachine`. Do not approve a fork run that routes
+code into the persistent VM. Workflow `if`/`runs-on` expressions alone are not a
+security boundary against a modified fork workflow.
+
+x64 release builds use a digest-pinned Ubuntu 22.04 container to preserve the
+previous GNU libc baseline. Do not remove it when changing runner labels.
+`release.yml` remains hand-edited: preserve runner routing, the container and
+its dependency setup alongside the release gates and action SHA pins when
+upgrading cargo-dist. `dist plan` retains all six release targets. Operations:
+`work-bench/ghostmachine/ci-runners.md`.
