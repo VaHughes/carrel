@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Dead ends offer their way out.** An empty library paints a `[ choose a
+  directory ]` button that opens the picker, and a filter that matches
+  nothing paints `[ clear ]` to erase itself. The focused code block carries
+  a `[copy]` chip on its trailing blank row — same action as `y`, for the
+  hand already on the pointer.
 - **The help sheet types.** Every keystroke narrows it to the matching rows,
   fuzzily, with group headers dropping out of the way; arrows and `Ctrl-J` /
   `Ctrl-K` scroll, `F1` or a two-stage `Esc` closes. The letters belong to the

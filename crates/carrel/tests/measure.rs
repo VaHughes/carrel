@@ -687,6 +687,116 @@ fn every_breadcrumb_segment_target_covers_its_own_text() {
     }
 }
 
+/// **The empty-library and copy-button guards.**
+///
+/// The home screen's dead ends offer their way out as painted buttons, and
+/// the focused code block carries its copy action — every one registered
+/// exactly where its words are, so a click lands on what it says.
+#[test]
+fn dead_ends_carry_their_way_out_as_targets() {
+    use carrel::action::{Action, SearchKey};
+    use carrel::app::{App, update};
+
+    let text_at = |buf: &Buffer, z: carrel::action::Zone| -> String {
+        (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect()
+    };
+
+    // An empty library: the button opens the picker.
+    let mut app = App::new_home("/root".into(), vec![], 80, 24);
+    if let Some(h) = app.home_mut() {
+        h.scanning = false;
+    }
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer().clone();
+    let choose = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::PickerOpen)
+        .expect("a choose-a-directory button");
+    assert!(
+        text_at(&buf, choose.zone).contains("choose a directory"),
+        "the button must sit on its own words"
+    );
+    assert_eq!(
+        painted
+            .targets
+            .hit(choose.zone.x, choose.zone.y)
+            .map(|h| h.action),
+        Some(Action::PickerOpen),
+    );
+
+    // A starved filter: the button clears it. The library needs entries,
+    // or the empty-library button shows instead.
+    if let Some(h) = app.home_mut() {
+        use std::time::SystemTime;
+        h.entries = vec![
+            carrel::scan::Entry {
+                path: "/root/a.md".into(),
+                mtime: SystemTime::UNIX_EPOCH,
+            },
+            carrel::scan::Entry {
+                path: "/root/b.md".into(),
+                mtime: SystemTime::UNIX_EPOCH,
+            },
+        ];
+        h.refilter();
+    }
+    update(&mut app, Action::HomeFilterMode);
+    for c in "zzz".chars() {
+        update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+    }
+    let mut painted = carrel::render::Painted::default();
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer().clone();
+    let clear = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| matches!(t.action, Action::HomeKey(_)))
+        .expect("a clear-filter button");
+    assert!(
+        text_at(&buf, clear.zone).contains("clear"),
+        "the button must sit on its own word"
+    );
+
+    // A focused code block: the chip copies it.
+    let mut app = app_at(80, 24, "intro\n\n```sh\ncopy me\n```\n\ntail\n");
+    update(&mut app, Action::CodeStep(1));
+    let mut painted = carrel::render::Painted::default();
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer().clone();
+    let chip = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::YankBlock)
+        .expect("a copy chip on the focused block");
+    assert_eq!(
+        text_at(&buf, chip.zone),
+        "[copy]",
+        "the chip target must cover its word exactly"
+    );
+    assert_eq!(
+        painted
+            .targets
+            .hit(chip.zone.x, chip.zone.y)
+            .map(|h| h.action),
+        Some(Action::YankBlock),
+        "a click on the chip must copy",
+    );
+}
+
 /// The gutter is as tall as the text, not as tall as the terminal.
 ///
 /// `margin_row_at` bounded `row < top` and nothing else, so a click on the

@@ -938,6 +938,7 @@ fn paint_block_cursor(
     area: Rect,
     skip: u32,
     y: u16,
+    targets: &mut Targets,
 ) {
     // `PAD_LEFT` is 2, so there is always a screen column to the left of the
     // text area to put the bar in — and a code block BLEEDS to the full
@@ -975,6 +976,26 @@ fn paint_block_cursor(
         frame
             .buffer_mut()
             .set_stringn(area.x - 1, yy, "┃", 1, crate::theme::marker());
+    }
+    // The copy chip: one button on the block's trailing gap row, which the
+    // layout guarantees and nothing paints — decoration never covers text.
+    // Same action as `y`, for the hand already on the pointer.
+    let gap_y = y.saturating_add(u16::try_from(rows_here).unwrap_or(u16::MAX));
+    if gap_y >= area.y && gap_y < area.bottom() {
+        let label = "[copy]";
+        let chip_w = u16::try_from(label.len()).unwrap_or(u16::MAX);
+        let right = area.right();
+        let from = right.saturating_sub(chip_w);
+        if from > area.x {
+            frame
+                .buffer_mut()
+                .set_stringn(from, gap_y, label, label.len(), theme::button());
+            targets.push(
+                Action::YankBlock,
+                Zone::new(from, gap_y, chip_w, 1),
+                Z_CHROME,
+            );
+        }
     }
 }
 
@@ -1049,7 +1070,7 @@ fn paint_rows(
         // painter below sees the block's geometry and none of them has to
         // know the measure exists.
         let area = block_area(app, block, full);
-        paint_block_cursor(frame, app, block, area, skip, y);
+        paint_block_cursor(frame, app, block, area, skip, y, &mut painted.targets);
         // A rendered mermaid diagram paints its art lines instead of the
         // block's wrapped source — properly line-skipped on partial scroll,
         // which text can do and pixels cannot. Wider-than-viewport art
@@ -2183,7 +2204,7 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
     if home.mode == HomeMode::Search {
         paint_hits(frame, home, list);
     } else {
-        paint_entries(frame, home, list);
+        paint_entries(frame, home, list, targets);
     }
     paint_home_status(
         frame,
@@ -2305,21 +2326,67 @@ fn paint_path_row(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targ
     }
 }
 
-fn paint_entries(frame: &mut Frame, home: &Home, area: Rect) {
+fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targets) {
     if area.height == 0 {
         return;
     }
     let buf = frame.buffer_mut();
 
     if home.filtered.is_empty() {
-        let msg = if home.scanning {
-            "Looking…"
+        // Dead ends say what opens them: an empty library offers the picker,
+        // a starved filter offers to clear itself. Both ride actions the
+        // footer already teaches, so the buttons cannot lie.
+        if home.scanning {
+            buf.set_stringn(
+                area.x + 2,
+                area.y,
+                "Looking…",
+                area.width as usize,
+                theme::dim(),
+            );
         } else if home.entries.is_empty() {
-            "Nothing to read here. Press d to choose a directory."
+            let mut x = area.x + 2;
+            let right = area.x + area.width;
+            put(
+                buf,
+                &mut x,
+                area.y,
+                right,
+                "Nothing to read here. ",
+                theme::dim(),
+            );
+            push_button(
+                buf,
+                targets,
+                &mut x,
+                area.y,
+                right,
+                "[ choose a directory ]",
+                Action::PickerOpen,
+                Z_CHROME,
+            );
         } else {
-            "No file matches that filter."
-        };
-        buf.set_stringn(area.x + 2, area.y, msg, area.width as usize, theme::dim());
+            let mut x = area.x + 2;
+            let right = area.x + area.width;
+            put(
+                buf,
+                &mut x,
+                area.y,
+                right,
+                "No file matches that filter. ",
+                theme::dim(),
+            );
+            push_button(
+                buf,
+                targets,
+                &mut x,
+                area.y,
+                right,
+                "[ clear ]",
+                Action::HomeKey(crate::action::SearchKey::Cancel),
+                Z_CHROME,
+            );
+        }
         return;
     }
 
@@ -2598,6 +2665,7 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Target
             right,
             "[ open ⏎ ]",
             Action::PickerChoose,
+            Z_OVERLAY,
         );
         put(buf, &mut x, yy, right, "   ", Style::default());
         push_button(
@@ -2608,6 +2676,7 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Target
             right,
             "[ cancel ]",
             Action::PickerCancel,
+            Z_OVERLAY,
         );
     }
 }
@@ -2671,9 +2740,11 @@ fn paint_picker_row(
     }
 }
 
-/// One dialog button: painted in the button slot and registered exactly where
+/// One button: painted in the button slot and registered exactly where
 /// the paint put it, clamped to the row so a narrow box can never register a
-/// zone past the frame the guard test measures.
+/// zone past the frame the guard test measures. `hit` is the layer to
+/// register under (`Z_OVERLAY` for dialogs, `Z_CHROME` for page chrome).
+#[allow(clippy::too_many_arguments)]
 fn push_button(
     buf: &mut ratatui::buffer::Buffer,
     targets: &mut Targets,
@@ -2682,11 +2753,12 @@ fn push_button(
     right: u16,
     label: &str,
     action: Action,
+    hit: u8,
 ) {
     let from = *x;
     put(buf, x, y, right, label, theme::button());
     let w = x.saturating_sub(from).min(right.saturating_sub(from));
-    targets.push(action, Zone::new(from, y, w, 1), Z_OVERLAY);
+    targets.push(action, Zone::new(from, y, w, 1), hit);
 }
 
 #[cfg(test)]
@@ -3602,6 +3674,51 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(all.contains("Nothing to read here"), "{all}");
+        assert!(
+            all.contains("[ choose a directory ]"),
+            "with a button that opens the picker:\n{all}"
+        );
+    }
+
+    #[test]
+    fn a_starved_filter_offers_to_clear_itself() {
+        let mut app = home_app(2, 60, 16);
+        if let Screen::Home(h) = &mut app.screen {
+            // The fixture's entries never come from a real walk, so ending
+            // the scan would drop them as stale; still it instead.
+            h.scanning = false;
+            h.filter = "zzz-no-such-file".into();
+            h.refilter();
+        }
+        let buf = buffer_of(&app, 60, 16);
+        let all: String = (0..16)
+            .map(|y| line(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("No file matches that filter"), "{all}");
+        assert!(
+            all.contains("[ clear ]"),
+            "with a button that clears it:\n{all}"
+        );
+    }
+
+    #[test]
+    fn the_focused_code_block_carries_a_copy_button() {
+        let src = "intro\n\n```rust\nfn main() {}\n```\n";
+        let mut app = App::new("t.md".into(), Document::parse(src), 40, 10);
+        crate::app::update(&mut app, Action::CodeStep(1));
+        let buf = buffer_of(&app, 40, 10);
+        let all: String = (0..10).map(|y| line(&buf, y) + "\n").collect();
+        assert!(all.contains("[copy]"), "the chip follows the focus:\n{all}");
+
+        // Unfocused blocks carry none: the button is one, where you are.
+        let plain = buffer_of(
+            &App::new("t.md".into(), Document::parse(src), 40, 10),
+            40,
+            10,
+        );
+        let none: String = (0..10).map(|y| line(&plain, y) + "\n").collect();
+        assert!(!none.contains("[copy]"), "no focus, no chip:\n{none}");
     }
 
     #[test]

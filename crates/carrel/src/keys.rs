@@ -580,6 +580,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("] [", "next / previous code block"),
     ("X", "jump to the next task"),
     ("y", "copy the code block"),
+    ("click [copy]", "copy the focused block"),
     ("F", "follow a growing document"),
     ("A", "auto-read: drift down"),
     ("§", "mouse"),
