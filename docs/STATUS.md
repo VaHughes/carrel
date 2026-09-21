@@ -15,17 +15,37 @@ Last updated: 2026-09-21
   compile for every version on crates.io** until this ships. Prebuilt channels — the
   installer, Homebrew, COPR, the AUR recipes — build from the lock file and were never
   affected. The README says `cargo install carrel --locked` in the meantime.
-- Unreleased, newest first: dead-end buttons and the code-block `[copy]` chip (`7ce0b53`);
+- Unreleased, newest first: **the beginner slate** — plain words throughout, the
+  keys a beginner presses, honesty about what carrel cannot verify, a settings
+  pane on `,` and a built-in first document on `carrel --tutorial`; dead-end
+  buttons and the code-block `[copy]` chip (`7ce0b53`);
   the filterable help sheet (`c8ee8c2`); clickable breadcrumb segments (`721b117`); the
   library-browser picker and search results as a document (`0d11ad2`); the documentation
   restructure (`91f1816`); the merman pin (`95a3a0d`).
-- Working tree is clean. All five gates green as of 2026-09-21: **787 tests**, clippy
+- Working tree is clean. All five gates green as of 2026-09-21: **798 tests**, clippy
   zero-warning, `cargo fmt --check`, `check-discipline.sh`, `check-packaging.sh`.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list.
 
 ## Recently completed
 
+- Unreleased (2026-09-21) — **the beginner slate**, from an audit of what a
+  first-time reader meets. Vocabulary: one word per idea (collapse/expand,
+  folder, heading bar, hint row, bookmarks, focus, drawn/text, cards/columns,
+  keep up), the vim word `normal` gone from the home status bar, `gg` gone from
+  the resume note, `h help` not `h more`, `↑/↓ scroll` not `j/k scroll`. Keys:
+  Backspace/`←` back, `→` follow, `+`/`-` text width, PageUp/PageDown on home,
+  F3 find-next — all previously unbound, so vim loses nothing; Ctrl-C copies a
+  selection instead of quitting; Ctrl-G and Ctrl-Z stop swallowing the next
+  keystroke. Honesty: the clipboard, the image protocol, non-markdown files,
+  empty documents, a too-small help window, and human error messages. New: a
+  settings pane (`,`) listing all nine preferences with their values and the
+  config path, and `carrel --tutorial`.
+
+  **Deliberately not done:** `?` still opens a backward search and `Ctrl-F`
+  still pages down. Both are the vim/less meanings and rebinding them would
+  take something away; the click routes to help and search are the answer
+  instead, and both are now plainly labelled.
 - Unreleased (2026-09-16 / 09-21) — the library browser replacing the path-prompt picker,
   search results opening as a generated document, clickable breadcrumb segments, a help
   sheet that filters as you type, and painted ways out of the two home-screen dead ends
@@ -69,6 +89,12 @@ before that phase rather than during it.
 
 ## Recent decisions
 
+- 2026-09-21: **clicks over keybindings where a choice exists.** The beginner
+  slate adds bindings only for keys that were already unbound, and reaches for
+  a painted, clickable affordance everywhere else. `?` and `Ctrl-F` keep their
+  vim/less meanings for this reason. This refines, and does not overturn, the
+  2026-09-02 call that keybindings stay as they are: that one was about
+  relocating existing commands behind `Alt+`, which is still not happening.
 - 2026-09-07: documentation restructured into `AGENTS.md` + `docs/`; `CLAUDE.md` is now just
   `@AGENTS.md`. Note the public/private split: the old `CLAUDE.md` was gitignored because the
   maintainer keeps narrative/strategy material in the private notes repo. These new docs were

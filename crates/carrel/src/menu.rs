@@ -270,10 +270,11 @@ pub fn global(app: &App) -> Vec<Item> {
         return vec![
             Item::new("Filter names", Action::HomeFilterMode),
             Item::new("Search in files", Action::HomeSearchMode),
-            Item::new("Directory…", Action::PickerOpen),
+            Item::new("Choose a folder…", Action::PickerOpen),
             Item::gap(),
             Item::new("Themes", Action::ThemeCycle),
-            Item::new("Key hints", Action::HintsToggle),
+            Item::new("Hint row", Action::HintsToggle),
+            Item::new("Settings…", Action::SettingsToggle),
             Item::gap(),
             Item::new("Help", Action::HelpToggle),
             // `map_home` binds `q` to Quit; the reader binds it to CloseFile
@@ -294,20 +295,21 @@ pub fn global(app: &App) -> Vec<Item> {
         },
         Item::gap(),
         Item::new("Document info", Action::InfoToggle),
-        Item::new("Spotlight", Action::FocusToggle),
+        Item::new("Focus on one paragraph", Action::FocusToggle),
         Item::new("Auto-read", Action::AutoToggle),
         // Following pins the view to the end of a document that is still
         // growing. Nothing is growing here, so the row says so rather than
         // jumping to the end and claiming to follow it.
         if app.streaming {
-            Item::new("Follow the end", Action::FollowToggle)
+            Item::new("Keep up with the end", Action::FollowToggle)
         } else {
-            Item::new("Follow the end", Action::FollowToggle).greyed()
+            Item::new("Keep up with the end", Action::FollowToggle).greyed()
         },
         Item::gap(),
         Item::new("Themes", Action::ThemeCycle),
-        Item::new("Key hints", Action::HintsToggle),
-        Item::new("Breadcrumb", Action::BreadcrumbToggle),
+        Item::new("Hint row", Action::HintsToggle),
+        Item::new("Heading bar", Action::BreadcrumbToggle),
+        Item::new("Settings…", Action::SettingsToggle),
         Item::gap(),
         Item::new("Help", Action::HelpToggle),
         Item::new(
@@ -390,12 +392,12 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
     let mut items = match under(app, byte) {
         Under::Heading => vec![
             Item::like(
-                "Fold this section",
+                "Collapse this section",
                 Action::FoldToggle,
                 Action::FoldAt(byte),
             ),
-            Item::new("Fold all", Action::FoldAll),
-            Item::new("Unfold all", Action::UnfoldAll),
+            Item::new("Collapse all", Action::FoldAll),
+            Item::new("Expand all", Action::UnfoldAll),
         ],
         Under::Link(id, external) => {
             let mut v = Vec::new();
@@ -419,12 +421,12 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
                 Item::new("Next code block", Action::CodeStep(1)),
             ];
             if rendered {
-                v.push(Item::new("Rendered ↔ source", Action::RenderedToggle));
+                v.push(Item::new("Drawn ↔ text", Action::RenderedToggle));
             }
             v
         }
-        Under::Table => vec![Item::new("Cards ↔ wrapped", Action::TableToggle)],
-        Under::Footnote => vec![Item::new("Go to its definition", Action::FootnoteJump)],
+        Under::Table => vec![Item::new("Cards ↔ columns", Action::TableToggle)],
+        Under::Footnote => vec![Item::new("Go to the footnote text", Action::FootnoteJump)],
         Under::Task => vec![Item::new("Next task", Action::TaskStep(1))],
         Under::Text => {
             let mut v = Vec::new();
@@ -434,7 +436,7 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
                 v.push(Item::plain("Copy selection", Action::SelectRelease));
             }
             v.push(Item::plain("Select word", Action::SelectWord(byte)));
-            v.push(Item::plain("Select block", Action::SelectBlock(byte)));
+            v.push(Item::plain("Select paragraph", Action::SelectBlock(byte)));
             v
         }
     };
@@ -537,7 +539,7 @@ mod tests {
     #[test]
     fn a_greyed_row_can_be_neither_hovered_nor_chosen() {
         let mut m = menu(vec![
-            Item::new("Follow the end", Action::FollowToggle).greyed(),
+            Item::new("Keep up with the end", Action::FollowToggle).greyed(),
             Item::new("Help", Action::HelpToggle),
         ]);
         m.hover(0);
@@ -601,7 +603,7 @@ mod tests {
         let head = |byte: u32| context(&a, byte)[0].label;
         let at = |needle: &str| u32::try_from(a.doc.text.find(needle).expect(needle)).unwrap();
 
-        assert_eq!(head(at("Heading")), "Fold this section");
+        assert_eq!(head(at("Heading")), "Collapse this section");
         assert_eq!(head(at("plain")), "Select word");
         assert_eq!(head(at("let x")), "Copy code block");
     }
@@ -722,19 +724,19 @@ mod tests {
             // --- only a menu offers these ---
             A::Back => Menu("Back"),
             A::InfoToggle => Menu("Document info"),
-            A::FocusToggle => Menu("Spotlight"),
+            A::FocusToggle => Menu("Focus on one paragraph"),
             A::AutoToggle => Menu("Auto-read"),
-            A::BreadcrumbToggle => Menu("Breadcrumb"),
+            A::BreadcrumbToggle => Menu("Heading bar"),
             A::Quit => Menu("Quit"),
-            A::FoldAll => Menu("Fold all"),
-            A::UnfoldAll => Menu("Unfold all"),
+            A::FoldAll => Menu("Collapse all"),
+            A::UnfoldAll => Menu("Expand all"),
             A::LinkCopy => Menu("Copy link"),
             A::BacklinksToggle => Menu("What links here"),
             A::ForwardToggle => Menu("What this points at"),
             A::CodeStep(_) => Menu("Next code block"),
-            A::RenderedToggle => Menu("Rendered ↔ source"),
-            A::TableToggle => Menu("Cards ↔ wrapped"),
-            A::FootnoteJump => Menu("Go to its definition"),
+            A::RenderedToggle => Menu("Drawn ↔ text"),
+            A::TableToggle => Menu("Cards ↔ columns"),
+            A::FootnoteJump => Menu("Go to the footnote text"),
             A::TaskStep(_) => Menu("Next task"),
             A::MarkToggle => Menu("Bookmark here"),
             A::MarkListToggle => Menu("Bookmarks…"),
@@ -755,9 +757,23 @@ mod tests {
             // or from the menu row — so the toggle itself has no pointer
             // route, and does not need one.
             A::FoldToggle => KeyboardOnly,
+            // Widen / narrow the reading measure: a row of the settings
+            // pane, which is where every persisted preference is clickable.
+            A::MeasureStep(_) => Pane,
             A::GoToStart | A::GoToEnd => KeyboardOnly, // the scrollbar goes there
             A::GoToRow(_) | A::BlockStep(_) => KeyboardOnly, // counts and steps
             A::HomeGo(_) => KeyboardOnly,
+            // PgUp / PgDn on the home list. The pointer's equivalent is the
+            // wheel, which is already `HomeMove`, so this needs no button of
+            // its own — it is a keyboard spelling of a gesture that exists.
+            A::HomePage(_) => KeyboardOnly,
+            // The settings pane: its own rows, and a menu row to open it.
+            A::SettingsToggle => Menu("Settings…"),
+            // The empty-folder dead end offers it as a painted button;
+            // `carrel --tutorial` is the other way in. Chrome, not a menu
+            // row: a reader with files to read does not need it in a list.
+            A::WelcomeOpen => Chrome,
+            A::SettingsMove(_) | A::SettingsAdjust(_) | A::SettingsPickAt(_) => Pane,
             A::MarkNext => KeyboardOnly, // `Bookmarks…` lists them
             A::BacklinksMove(_) | A::ForwardMove(_) | A::MarkListMove(_) | A::OutlineMove(_) => {
                 KeyboardOnly // a click lands on the row; nothing steps toward it
@@ -825,12 +841,12 @@ mod tests {
         // above passes by visiting nothing.
         for label in [
             "Back",
-            "Fold this section",
+            "Collapse this section",
             "Copy link",
             "What links here",
-            "Rendered ↔ source",
-            "Cards ↔ wrapped",
-            "Go to its definition",
+            "Drawn ↔ text",
+            "Cards ↔ columns",
+            "Go to the footnote text",
             "Next task",
             "Bookmarks…",
         ] {
@@ -844,7 +860,7 @@ mod tests {
         let row = |a: &App| -> Item {
             *global(a)
                 .iter()
-                .find(|i| i.label == "Follow the end")
+                .find(|i| i.label == "Keep up with the end")
                 .expect("the row exists in both states")
         };
         assert!(!row(&a).pickable(), "nothing is growing yet");

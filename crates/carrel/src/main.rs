@@ -19,8 +19,8 @@ use carrel::render::{OscLink, Painted};
 use carrel::{config, home, render, scan};
 use carrel_core::{BlockIdx, Document, cluster_width, cols_for_doc_range, search, wrap};
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, KeyEventKind, MouseButton,
-    MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
@@ -49,6 +49,8 @@ USAGE:
     carrel --render <FILE> [W]   styled ANSI text (attributes and links,
                                  never colours) for embedding elsewhere
     carrel --render - [W]        piped input as styled ANSI text
+    carrel --tutorial            the built-in first document: what carrel
+                                 does, on a page you can try it all on
     carrel --help                (-h)
     carrel --version             (-V)
 
@@ -209,6 +211,25 @@ fn main() -> ExitCode {
         [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
         [a] if a == "-h" || a == "--help" => emit(USAGE),
+        // The built-in first document. It needs a terminal like any other
+        // reading session; piped, it prints as plain text, which is what a
+        // beginner running `carrel --tutorial | less` should get.
+        [a] if a == "--tutorial" => {
+            if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
+                match run_welcome() {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("carrel: {e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            } else {
+                emit(&carrel::plain::render(
+                    &carrel_core::Document::parse(carrel::app::WELCOME),
+                    80,
+                ))
+            }
+        }
         [a] if a == "-V" || a == "--version" => {
             emit(&format!("carrel {}\n", env!("CARGO_PKG_VERSION")))
         }
@@ -262,6 +283,7 @@ fn width_arg(w: &str) -> Result<u16, ExitCode> {
 const KNOWN_FLAGS: &[&str] = &[
     "-h",
     "--help",
+    "--tutorial",
     "-V",
     "--version",
     "--plain",
@@ -464,8 +486,10 @@ fn drive_backlinks(
 /// Home-screen preferences that live on `Home` rather than `App`.
 fn set_home_prefs(app: &mut App) {
     let c = config::load_all();
+    app.titles = c.titles.unwrap_or(false);
+    let titles = app.titles;
     if let Some(h) = app.home_mut() {
-        h.show_titles = c.titles.unwrap_or(false);
+        h.show_titles = titles;
         h.places = c.places;
     }
 }
@@ -596,7 +620,7 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
     let src = match carrel::app::read_document(path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("carrel: {}: {e}", path.display());
+            eprintln!("{}", carrel::app::explain_open_error(path, &e));
             return ExitCode::FAILURE;
         }
     };
@@ -766,6 +790,26 @@ impl Images {
             rx: None,
             protocols: HashMap::new(),
             for_file: None,
+        }
+    }
+
+    /// What this terminal will actually draw images WITH, in words a reader
+    /// can act on.
+    ///
+    /// Nearly every terminal lands on half-blocks: `from_fontsize` sniffs
+    /// tmux and iTerm2 environment variables and nothing else, because the
+    /// stdio probe for kitty and sixel blocks on stdin and once left the
+    /// binary hanging (see the gotcha). Carrel said nothing about this while
+    /// the README promised "kitty protocol first", so a reader seeing a
+    /// coloured mosaic had no way to know whether that was carrel, their
+    /// terminal, or the file.
+    fn kind(&self) -> &'static str {
+        use ratatui_image::picker::ProtocolType as P;
+        match self.picker.protocol_type() {
+            P::Kitty => "kitty graphics",
+            P::Sixel => "sixel graphics",
+            P::Iterm2 => "iTerm2 graphics",
+            P::Halfblocks => "blocks of colour — this terminal offers no image protocol",
         }
     }
 
@@ -1189,6 +1233,30 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
+/// The built-in first document.
+///
+/// Carrel is a reader, so the honest way to teach it is to hand the reader
+/// something to read — a page that describes each thing on the page it is
+/// describing it on. It is offered on a first run and from the empty-folder
+/// dead end, and `carrel --tutorial` opens it whenever anyone wants it.
+/// Open the built-in document. It has no path, so nothing is persisted
+/// against it and the reloader stays inert — the same shape as a pipe.
+fn run_welcome() -> std::io::Result<Option<PathBuf>> {
+    let doc = carrel_core::Document::parse(carrel::app::WELCOME);
+    let images = Images::detect();
+    let theme_note = startup_theme();
+    let terminal = ratatui::init();
+    let _guard = TerminalGuard::engage_mouse();
+    let size = terminal.size()?;
+    let mut app = App::new("welcome".into(), doc, size.width, size.height);
+    app.image_kind = Some(images.kind());
+    app.note = theme_note;
+    app.state_dir = carrel::state::state_dir();
+    apply_config(&mut app);
+    app.piped = Some(carrel::app::WELCOME.to_string());
+    run_loop(terminal, app, images, None)
+}
+
 fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
     let theme_note = startup_theme();
     // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
@@ -1214,6 +1282,8 @@ fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
         .to_string_lossy()
         .into_owned();
     let mut app = App::new(name, doc, size.width, size.height);
+    // What images will actually look like here, for the info card.
+    app.image_kind = Some(images.kind());
     app.diff_ok = diff_ok;
     app.diff_forced = diff_forced();
     app.file = Some(path.to_path_buf());
@@ -1434,6 +1504,8 @@ fn run_stdin(rx: &Receiver<String>) -> std::io::Result<Option<PathBuf>> {
         size.width,
         size.height,
     );
+    // What images will actually look like here, for the info card.
+    app.image_kind = Some(images.kind());
     app.streaming = true;
     // A pipe is the pager case: `git show | carrel` is the whole point.
     app.diff_ok = diff_forced().unwrap_or(true);
@@ -1568,6 +1640,8 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     // The cache paints before any syscall; the walk refines it.
     let cached = scan::load_cache(&root);
     let mut app = App::new_home(root.clone(), cached, size.width, size.height);
+    // What images will actually look like here, for the info card.
+    app.image_kind = Some(images.kind());
     app.state_dir = carrel::state::state_dir();
     // The one-time footer invitation. No state directory at all means we
     // cannot tell, and a line that might never go away is worse than one
@@ -1707,6 +1781,18 @@ fn apply_debounced_resize(
 /// the precedence: innermost overlay first, the home screen next, the reader
 /// last.
 fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action::Action> {
+    // Ctrl-C with something selected COPIES it, and quits only when there is
+    // nothing to copy. Raw mode clears ISIG, so this key is carrel's to
+    // define and no SIGINT is ever generated — which means the reflex a
+    // beginner brings from every other program (select, Ctrl-C) was
+    // destroying the program instead of filling the clipboard. `Q` and a
+    // Ctrl-C on an empty selection still quit, so the escape hatch is intact.
+    if k.code == KeyCode::Char('c')
+        && k.modifiers.contains(KeyModifiers::CONTROL)
+        && app.selection.is_some()
+    {
+        return Some(carrel::action::Action::SelectRelease);
+    }
     // A menu is the last thing opened, so it is the first thing that answers
     // — above every pane, and above the home screen's typing modes.
     if app.menu.is_some() {
@@ -1720,6 +1806,8 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
         Keys::map_backlinks(k)
     } else if app.forward.is_some() {
         Keys::map_forward(k)
+    } else if app.settings.is_some() {
+        Keys::map_settings(k)
     } else if app.mark_list.is_some() {
         Keys::map_marks(k)
     } else if app.outline.is_some() {
@@ -1919,8 +2007,18 @@ fn mouse_action(
                 ptr.dragging = Some(row - top);
                 None
             } else {
-                // Track click: one gentle page toward the pointer.
-                Some(Action::Scroll(Span::Page, if row < top { -1 } else { 1 }))
+                // Track click: go THERE. Paging one screen toward the
+                // pointer is the old terminal idiom; every graphical
+                // scrollbar a beginner has ever used jumps to the clicked
+                // position, and the thumb lands centred under the pointer
+                // because that is what `grab_offset = len / 2` means.
+                Some(Action::ScrollTo(drag_target(
+                    row,
+                    len / 2,
+                    text_h,
+                    total,
+                    max_scroll,
+                )))
             }
         }
         // A press in the text proper starts (or extends, on double/triple) a
@@ -2445,6 +2543,91 @@ mod tests {
     ///
     /// `run_home()` consulted only the outline, so a document opened from the
     /// home screen gave the backlinks, forward-links and bookmark panes the
+    /// **A click on the scrollbar track goes THERE.**
+    ///
+    /// It used to page one screen toward the pointer — the terminal idiom.
+    /// Every graphical scrollbar a beginner has used jumps to the clicked
+    /// position, and the thumb lands centred under the pointer.
+    #[test]
+    fn clicking_the_scrollbar_track_jumps_to_that_position() {
+        use carrel::action::{Action, Targets};
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+        // Tall enough that the bar has a real track to click in.
+        let src = "line of text\n".repeat(400);
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(&src), 80, 24);
+        assert!(app.layout.max_scroll(app.text_h()) > 0, "there is a track");
+
+        let targets = Targets::default();
+        let mut ptr = Pointer::default();
+        let bar_x = app.cols - 1;
+        let press = move |row: u16| MouseEvent {
+            kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            column: bar_x,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Near the bottom of the track: a jump deep into the document, not
+        // one page. `Scroll(Page, 1)` is exactly the old, wrong answer.
+        let low = app.text_y() + app.text_h() - 1;
+        let got = mouse_action(press(low), &app, &targets, &mut ptr);
+        match got {
+            Some(Action::ScrollTo(row)) => assert!(
+                row > u32::from(app.text_h()),
+                "a click near the end lands near the end, got row {row}"
+            ),
+            other => panic!("expected a jump, got {other:?}"),
+        }
+
+        // And from the far end, a click at the top of the track comes back.
+        // The app has to actually be scrolled first, or the thumb is still
+        // sitting at the top and the press is a GRAB, not a track click.
+        update(&mut app, Action::GoToEnd);
+        assert!(app.view.scroll_row > 0, "we are away from the top");
+        match mouse_action(press(app.text_y()), &app, &targets, &mut ptr) {
+            Some(Action::ScrollTo(row)) => assert!(
+                row < u32::from(app.text_h()),
+                "a click at the top of the track lands at the top, got {row}"
+            ),
+            other => panic!("expected a jump back, got {other:?}"),
+        }
+    }
+
+    /// **Ctrl-C is a copy key when there is something to copy.**
+    ///
+    /// Raw mode clears ISIG, so no SIGINT is ever generated and this key is
+    /// carrel's to define. It quit instantly from every state — so the
+    /// reflex a beginner brings from every other program (select some text,
+    /// press Ctrl-C) destroyed the program instead of filling the clipboard.
+    #[test]
+    fn ctrl_c_copies_a_selection_and_quits_only_without_one() {
+        use carrel::action::Action;
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut app = App::new(
+            "t.md".into(),
+            carrel_core::Document::parse("hello there"),
+            40,
+            10,
+        );
+        let mut keys = Keys::new();
+
+        assert_eq!(
+            key_action(&mut keys, &app, ctrl_c),
+            Some(Action::Quit),
+            "nothing selected: the escape hatch is intact"
+        );
+
+        app.selection = Some(0..5);
+        assert_eq!(
+            key_action(&mut keys, &app, ctrl_c),
+            Some(Action::SelectRelease),
+            "something selected: it copies instead of quitting"
+        );
+    }
+
     /// READER's keymap: `j` scrolled the document under the open pane instead
     /// of moving its cursor. Opening the same file directly was correct, which
     /// is exactly why nobody noticed.

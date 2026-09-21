@@ -129,6 +129,17 @@ pub struct App {
     /// the rows derive from `marks` at every use, so a mark added or cleared
     /// under the pane shows immediately.
     pub mark_list: Option<usize>,
+    /// The settings pane's highlighted row, and whether it is open at all.
+    pub settings: Option<usize>,
+    /// Whether the file list labels rows from frontmatter. The live copy
+    /// that paint reads is `Home::show_titles`; this is the one the
+    /// settings pane writes, and the two are kept in step by `update`.
+    pub titles: bool,
+    /// The palette's name, for the settings pane to show. `theme.rs` owns
+    /// colours and so imports ratatui, which `app.rs` may never do (rule 6)
+    /// — `main.rs` sets this at startup and after each cycle, the same
+    /// contract as [`App::image_kind`].
+    pub theme_name: &'static str,
     /// The section tree in the left margin is wanted (config `outline_margin`).
     /// Whether it actually shows also needs [`Self::gutter_w`].
     pub outline_margin: bool,
@@ -327,6 +338,14 @@ pub struct App {
     /// file — the same contract as `config_dir` and `state_dir`, and for the
     /// same reason: a test must never be able to reach the real config.
     pub max_width: u16,
+    /// How this terminal is actually drawing images, for the info card to
+    /// report. `None` in every constructor — `main.rs` sets it at startup,
+    /// the same contract as [`App::config_dir`]. It exists because carrel
+    /// falls back to coloured half-blocks on nearly every terminal (the
+    /// kitty and sixel probes are deliberately never run: the stdio query
+    /// hangs) and said nothing about it, while the README promised the
+    /// kitty protocol.
+    pub image_kind: Option<&'static str>,
 }
 
 /// Reader page margins, in cells: the text is inset from the terminal edges
@@ -557,6 +576,10 @@ impl App {
             rows,
             words: 0,
             max_width: config::DEFAULT_MEASURE,
+            image_kind: None,
+            settings: None,
+            titles: false,
+            theme_name: "terminal",
         };
         // Math art is pure computation over the document -- no config, no
         // filesystem -- so the constructor may do it, and every entry point
@@ -695,6 +718,12 @@ impl App {
             .to_string_lossy()
             .into_owned();
         self.file = Some(path.to_path_buf());
+        // Carrel parses whatever it is handed as markdown, and never checked
+        // the extension — so `notes.txt` opened silently while the home
+        // screen, which lists only `.md`/`.markdown`, pretended it was not
+        // there. Say which it is doing rather than leaving the reader to
+        // wonder why their plain text grew headings.
+        self.note = non_markdown_note(path);
         self.results_root = None;
         self.forget_derived_state();
         // A different document: the panes that answered questions about the
@@ -764,6 +793,43 @@ impl App {
         self.resolve_wikilinks();
     }
 
+    /// Open the built-in first document.
+    ///
+    /// Pathless, exactly like [`Self::open_results`] and a pipe: no position
+    /// persists against it, no reloader watches it, and `q` returns to the
+    /// file list rather than to a place on disk. Carrel is a reader, so the
+    /// honest way to explain it is to hand the reader something to read.
+    pub fn open_welcome(&mut self) {
+        self.save_position();
+        self.diff_ok = false;
+        self.doc = self.parse_adapting(WELCOME);
+        self.mtime = None;
+        self.matches = None;
+        self.forward = None;
+        self.mode = Mode::Normal;
+        self.view = ViewState::new();
+        self.layout = Layout::with_measure(
+            &self.doc,
+            self.bleed_w(),
+            self.text_w(),
+            HashMap::new(),
+            false,
+        );
+        self.path = "how carrel works".into();
+        self.file = None;
+        self.results_root = None;
+        self.forget_derived_state();
+        self.backlinks = None;
+        self.mark_list = None;
+        self.marks.clear();
+        self.rebuild_math_art();
+        self.words = word_count(&self.doc.text);
+        self.has_headings = true;
+        if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
+            self.home_stash = Some(h);
+        }
+    }
+
     /// Does following this link leave the library?
     ///
     /// A markdown file is untrusted input — a shared vault, a downloaded
@@ -794,7 +860,7 @@ impl App {
     /// Ask for a second Enter before leaving the library.
     fn ask_before_leaving(&mut self, id: LinkId, target: &Path) -> Outcome {
         self.note = Some(format!(
-            "outside the library — Enter again to open {}",
+            "outside this folder — Enter again to open {}",
             target.display()
         ));
         self.pending_open = Some((id, target.to_path_buf()));
@@ -1119,7 +1185,7 @@ impl App {
             let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
             self.view.anchor = saved.min(last);
             self.view.restore(&self.doc, &self.layout, self.text_h());
-            self.note = Some("resumed — gg for top".into());
+            self.note = Some("resumed where you left off · Home for the top".into());
         }
     }
 
@@ -1210,7 +1276,14 @@ impl App {
             ("headings", headings.to_string()),
             ("code blocks", code.to_string()),
             ("tables", tables.to_string()),
-            ("images", images.to_string()),
+            (
+                "images",
+                match (images, self.image_kind) {
+                    (0, _) => "0".to_string(),
+                    (n, Some(kind)) => format!("{n} · shown as {kind}"),
+                    (n, None) => n.to_string(),
+                },
+            ),
             ("math blocks", math.to_string()),
             ("links", format!("{internal} local · {external} external")),
             (
@@ -1699,6 +1772,118 @@ pub fn check_document_size(path: &Path) -> std::io::Result<()> {
 /// never meaningful in the first place. `take` closes both — the same shape
 /// `read_stdin_capped` in the binary already uses, whose comment claimed it
 /// did "exactly as `check_document_size` does for files" before that was true.
+/// One row of the settings pane: what it is called, what it says now, and
+/// which config key it writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettingsRow {
+    pub label: &'static str,
+    pub value: String,
+    pub key: Setting,
+}
+
+/// The settings a reader can change from inside carrel.
+///
+/// Derived per call from the live `App`, never stored — the outline's rule,
+/// and for the same reason: a stored copy is a copy that can be wrong.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Setting {
+    Theme,
+    TextWidth,
+    Hints,
+    HeadingBar,
+    OutlineMargin,
+    Titles,
+}
+
+/// Every persisted preference, in the order the pane shows them.
+#[must_use]
+pub fn settings_rows(app: &App) -> Vec<SettingsRow> {
+    let on = |b: bool| if b { "on" } else { "off" }.to_string();
+    vec![
+        SettingsRow {
+            label: "Theme",
+            value: app.theme_name.to_string(),
+            key: Setting::Theme,
+        },
+        SettingsRow {
+            label: "Text width",
+            value: if app.max_width == 0 {
+                "the whole window".to_string()
+            } else {
+                format!("{} columns", app.max_width)
+            },
+            key: Setting::TextWidth,
+        },
+        SettingsRow {
+            label: "Hint row",
+            value: on(app.hints),
+            key: Setting::Hints,
+        },
+        SettingsRow {
+            label: "Heading bar",
+            value: on(app.breadcrumb),
+            key: Setting::HeadingBar,
+        },
+        SettingsRow {
+            label: "Outline in the margin",
+            value: on(app.outline_margin),
+            key: Setting::OutlineMargin,
+        },
+        SettingsRow {
+            label: "Titles in the file list",
+            value: on(app.titles),
+            key: Setting::Titles,
+        },
+    ]
+}
+
+/// The built-in first document.
+///
+/// Carrel is a reader, so the way to teach it is to hand the reader a page
+/// that describes each thing on the page it is describing it on. Offered
+/// from the empty-folder dead end, and by `carrel --tutorial`.
+pub const WELCOME: &str = include_str!("welcome.md");
+
+/// A note for a document whose name does not say "markdown", or `None`.
+///
+/// Deliberately quiet for the extensions a reader would expect to work:
+/// markdown's own two, and the diff pair carrel adapts on purpose.
+fn non_markdown_note(path: &Path) -> Option<String> {
+    let ext = path.extension().and_then(|e| e.to_str())?.to_lowercase();
+    if matches!(ext.as_str(), "md" | "markdown" | "diff" | "patch") {
+        return None;
+    }
+    Some(format!("reading this .{ext} file as markdown"))
+}
+
+/// Why a document would not open, said the way a person would say it.
+///
+/// `std`'s own wording reaches the screen as
+/// `No such file or directory (os error 2)` and
+/// `stream did not contain valid UTF-8` — accurate, and noise to someone
+/// whose way into a terminal was an AI agent handing them a file. The errno
+/// tail in particular tells a reader nothing they can act on.
+#[must_use]
+pub fn open_failure_reason(e: &std::io::Error) -> String {
+    use std::io::ErrorKind as K;
+    match e.kind() {
+        K::NotFound => "there is no such file".to_string(),
+        K::PermissionDenied => "you do not have permission to read it".to_string(),
+        // `read_to_string` on a binary. Carrel reads text; saying which is
+        // the whole of what the reader needs to know.
+        K::InvalidData => {
+            "this is not text — carrel reads markdown and other text files".to_string()
+        }
+        _ => e.to_string(),
+    }
+}
+
+/// The same reason, as the line the binary prints before exiting 1.
+#[must_use]
+pub fn explain_open_error(path: &Path, e: &std::io::Error) -> String {
+    format!("carrel: {}: {}", path.display(), open_failure_reason(e))
+}
+
 pub fn read_document(path: &Path) -> std::io::Result<String> {
     use std::io::Read as _;
     check_document_size(path)?;
@@ -1773,6 +1958,125 @@ pub fn adapt(src: &str, diff_ok: bool) -> Document {
     }
 }
 
+/// Change the highlighted setting, and write it to the config file.
+///
+/// Every row here already had a key and a menu row; what it did not have was
+/// anywhere a reader could SEE the current value, or learn that a config
+/// file exists at all. So this deliberately reuses the existing actions
+/// rather than duplicating their persistence: one writer per setting.
+fn adjust_setting(app: &mut App, d: i32) -> Outcome {
+    let Some(at) = app.settings else {
+        return Outcome::Idle;
+    };
+    let Some(row) = settings_rows(app).get(at).cloned() else {
+        return Outcome::Idle;
+    };
+    match row.key {
+        Setting::Theme => {
+            // The palette belongs to the event loop, which owns the one
+            // global `theme.rs` slot; `update` can only ask.
+            app.theme_cycle = true;
+        }
+        Setting::TextWidth => step_measure(app, d),
+        Setting::Hints => return update(app, Action::HintsToggle),
+        Setting::HeadingBar => return update(app, Action::BreadcrumbToggle),
+        Setting::OutlineMargin => {
+            // There has never been a key for this one: it was config-only,
+            // so the pane is its first way in from inside carrel.
+            app.outline_margin = !app.outline_margin;
+            if let Some(dir) = app.config_dir.as_deref() {
+                let _ = crate::config::save_outline_margin_in(dir, app.outline_margin);
+            }
+            app.relayout(); // the gutter's columns come from / return to the text
+        }
+        Setting::Titles => {
+            app.titles = !app.titles;
+            let titles = app.titles;
+            if let Some(h) = app.home_mut() {
+                h.show_titles = titles;
+            }
+            if let Some(dir) = app.config_dir.as_deref() {
+                let _ = crate::config::save_titles_in(dir, app.titles);
+            }
+        }
+    }
+    Outcome::Redraw
+}
+
+/// The settings pane's own actions, or `None` if this was not one.
+///
+/// Lifted out of `update` so that function stays under the line lint; the
+/// pane's arms are a self-contained group and read better together.
+fn settings_action(app: &mut App, action: Action) -> Option<Outcome> {
+    match action {
+        Action::WelcomeOpen => {
+            app.open_welcome();
+            return Some(Outcome::Redraw);
+        }
+        Action::SettingsToggle => {
+            app.settings = if app.settings.is_some() {
+                None
+            } else {
+                Some(0)
+            };
+            return Some(Outcome::Redraw);
+        }
+        Action::SettingsMove(d) if app.settings.is_some() => {
+            let last = settings_rows(app).len().saturating_sub(1);
+            let at = app.settings.unwrap_or(0);
+            app.settings = Some(if d < 0 {
+                at.saturating_sub(d.unsigned_abs() as usize)
+            } else {
+                at.saturating_add(d.unsigned_abs() as usize).min(last)
+            });
+            return Some(Outcome::Redraw);
+        }
+        Action::SettingsPickAt(i) if app.settings.is_some() => {
+            let last = settings_rows(app).len().saturating_sub(1);
+            app.settings = Some((i as usize).min(last));
+            return Some(adjust_setting(app, 1));
+        }
+        Action::SettingsAdjust(d) if app.settings.is_some() => {
+            return Some(adjust_setting(app, d));
+        }
+        _ => {}
+    }
+    None
+}
+
+/// The reading measure, stepped.
+///
+/// A terminal's font belongs to the emulator, so carrel cannot zoom. What it
+/// can change is the column count prose wraps at, which is the thing a
+/// reader reaching for `+` actually wants. `0` means OFF — the whole window
+/// — and widening past the window lands there rather than on a measure
+/// wider than the screen, which would be a measure that silently does
+/// nothing.
+fn step_measure(app: &mut App, d: i32) {
+    const STEP: u16 = 5;
+    let full = app.bleed_w();
+    let now = if app.max_width == 0 {
+        full
+    } else {
+        app.max_width
+    };
+    app.max_width = if d > 0 {
+        let want = now.saturating_add(STEP);
+        if want >= full { 0 } else { want }
+    } else {
+        now.saturating_sub(STEP).max(crate::config::MIN_MEASURE)
+    };
+    app.note = Some(if app.max_width == 0 {
+        "text width: the whole window".to_string()
+    } else {
+        format!("text width: {} columns", app.max_width)
+    });
+    if let Some(dir) = app.config_dir.as_deref() {
+        let _ = crate::config::save_max_width_in(dir, app.max_width);
+    }
+    app.relayout();
+}
+
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
@@ -1836,6 +2140,13 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.relayout(); // the reader's text height changes with the row
         return Outcome::Redraw;
     }
+    if let Action::MeasureStep(d) = action {
+        step_measure(app, d);
+        return Outcome::Redraw;
+    }
+    if let Some(out) = settings_action(app, action) {
+        return out;
+    }
     if let Action::BreadcrumbToggle = action {
         app.breadcrumb = !app.breadcrumb;
         if let Some(dir) = app.config_dir.as_deref() {
@@ -1860,7 +2171,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
             Action::AutoToggle => {
                 app.auto_read = !app.auto_read;
                 app.note = Some(if app.auto_read {
-                    "auto-read on — any motion stops it".into()
+                    "auto-read on — scroll to stop it".into()
                 } else {
                     "auto-read off".into()
                 });
@@ -2138,7 +2449,11 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                     }
                     Err(e) => {
                         if let Some(h) = app.home_mut() {
-                            h.note = Some(format!("cannot open {}: {e}", path.display()));
+                            h.note = Some(format!(
+                                "cannot open {}: {}",
+                                path.display(),
+                                open_failure_reason(&e)
+                            ));
                         }
                         Outcome::Redraw
                     }
@@ -2156,7 +2471,11 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 // user into an empty reader wondering what happened.
                 Err(e) => {
                     if let Some(h) = app.home_mut() {
-                        h.note = Some(format!("cannot open {}: {e}", path.display()));
+                        h.note = Some(format!(
+                            "cannot open {}: {}",
+                            path.display(),
+                            open_failure_reason(&e)
+                        ));
                     }
                     Outcome::Redraw
                 }
@@ -2199,7 +2518,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         Action::HomeUp => {
             let Some(up) = app.home().and_then(crate::home::Home::parent) else {
                 if let Some(h) = app.home_mut() {
-                    h.note = Some("already at the top".into());
+                    h.note = Some("already at the top folder".into());
                 }
                 return Outcome::Redraw;
             };
@@ -2237,7 +2556,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             };
             if !root.is_dir() {
                 if let Some(h) = app.home_mut() {
-                    h.note = Some(format!("not a directory: {}", root.display()));
+                    h.note = Some(format!("not a folder: {}", root.display()));
                 }
                 return Outcome::Redraw;
             }
@@ -2261,7 +2580,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             if let Some(h) = app.home_mut() {
                 h.set_root(root, cached);
                 if let Err(e) = saved {
-                    h.note = Some(format!("could not save the default: {e}"));
+                    h.note = Some(format!("could not remember that folder: {e}"));
                 }
             }
             return Outcome::Redraw;
@@ -2279,7 +2598,11 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 Ok(()) => Outcome::Redraw,
                 Err(e) => {
                     if let Some(h) = app.home_mut() {
-                        h.note = Some(format!("cannot open {}: {e}", path.display()));
+                        h.note = Some(format!(
+                            "cannot open {}: {}",
+                            path.display(),
+                            open_failure_reason(&e)
+                        ));
                     }
                     Outcome::Redraw
                 }
@@ -2323,6 +2646,14 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         _ => {}
     }
 
+    // Captured before the borrow: `HomePage` needs the list's own height,
+    // and once `h` is held `app` is gone.
+    let page_rows = {
+        let resume = app.home().map_or(0, crate::home::Home::resume_shown);
+        crate::home::list_geometry(app.cols, app.rows, app.hints, resume)
+            .1
+            .max(1)
+    };
     let Some(h) = app.home_mut() else {
         return Outcome::Idle;
     };
@@ -2381,6 +2712,14 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::Redraw
         }
+        // A screenful. The page is the list's OWN height, from the same
+        // geometry function paint and hit-testing use — keys.rs has no
+        // viewport and would have had to guess a constant.
+        Action::HomePage(d) => {
+            let page = i32::from(page_rows);
+            h.move_by(if d < 0 { -page } else { page });
+            Outcome::Redraw
+        }
         Action::HomeMove(n) => {
             if h.mode == HomeMode::Picker {
                 let last = h.picker.roots.len().saturating_sub(1);
@@ -2429,7 +2768,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                         // of the `..` row. The mouse has that row; the
                         // keyboard has this and `←`.
                         if !h.picker_up() {
-                            h.note = Some("already at the top".into());
+                            h.note = Some("already at the top folder".into());
                         }
                         return Outcome::Redraw;
                     }
@@ -2535,7 +2874,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 
         Action::FoldToggle => {
             let Some(target) = app.fold_target() else {
-                app.note = Some("no section here to fold".into());
+                app.note = Some("no section here to collapse".into());
                 return Outcome::Redraw;
             };
             match target {
@@ -2783,7 +3122,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             if app.backlinks.is_some() {
                 app.backlinks = None;
             } else if app.file.is_none() {
-                app.note = Some("a piped document has no path to link to".into());
+                app.note = Some("a document read from a pipe has no folder to link from".into());
             } else {
                 app.backlinks = Some(Backlinks::default());
             }
@@ -2851,7 +3190,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             match app.open_path(&path) {
                 Ok(()) => Outcome::Redraw,
                 Err(e) => {
-                    app.note = Some(format!("cannot open {}: {e}", path.display()));
+                    app.note = Some(format!(
+                        "cannot open {}: {}",
+                        path.display(),
+                        open_failure_reason(&e)
+                    ));
                     Outcome::Redraw
                 }
             }
@@ -2907,7 +3250,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             match app.open_path(&path) {
                 Ok(()) => Outcome::Redraw,
                 Err(e) => {
-                    app.note = Some(format!("cannot open {}: {e}", path.display()));
+                    app.note = Some(format!(
+                        "cannot open {}: {}",
+                        path.display(),
+                        open_failure_reason(&e)
+                    ));
                     Outcome::Redraw
                 }
             }
@@ -2928,9 +3275,9 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.following = !app.following;
             if app.following {
                 app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
-                app.note = Some("following the end".into());
+                app.note = Some("keeping up with the end".into());
             } else {
-                app.note = Some("stopped following".into());
+                app.note = Some("stopped keeping up".into());
             }
             Outcome::Redraw
         }
@@ -3122,7 +3469,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                         back != 0 && i < back
                     };
                     if wrapped {
-                        app.note = Some("search wrapped".into());
+                        app.note = Some("wrapped round to the start".into());
                     }
                     (i + step) % len
                 }
@@ -3168,9 +3515,9 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.show_rendered = !app.show_rendered;
             app.note = Some(
                 if app.show_rendered {
-                    "rendered: art"
+                    "diagrams: drawn"
                 } else {
-                    "rendered: source"
+                    "diagrams: as text"
                 }
                 .to_string(),
             );
@@ -3182,7 +3529,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.wrap_tables = !app.wrap_tables;
             app.note = Some(
                 if app.wrap_tables {
-                    "tables: wrapped"
+                    "tables: columns"
                 } else {
                     "tables: cards"
                 }
@@ -3317,7 +3664,7 @@ fn forward_rows(app: &App) -> Vec<ForwardRow> {
 fn go_to_root(app: &mut App, root: std::path::PathBuf) -> Outcome {
     if !root.is_dir() {
         if let Some(h) = app.home_mut() {
-            h.note = Some(format!("not a directory: {}", root.display()));
+            h.note = Some(format!("not a folder: {}", root.display()));
         }
         return Outcome::Redraw;
     }
@@ -3489,7 +3836,7 @@ fn copy_link(app: &mut App, dest: &str) -> Outcome {
         return Outcome::Redraw;
     }
     app.clipboard = Some(url);
-    app.note = Some("copied to clipboard".to_string());
+    app.note = Some("copied the link".to_string());
     Outcome::Redraw
 }
 
@@ -3566,7 +3913,11 @@ fn link_follow(app: &mut App) -> Outcome {
             Outcome::Redraw
         }
         Err(e) => {
-            app.note = Some(format!("cannot open {}: {e}", target.display()));
+            app.note = Some(format!(
+                "cannot open {}: {}",
+                target.display(),
+                open_failure_reason(&e)
+            ));
             Outcome::Redraw
         }
     }
@@ -3595,7 +3946,7 @@ fn copy_selection(app: &mut App) {
     let Some(text) = app.doc.text.get(sel.start as usize..sel.end as usize) else {
         return;
     };
-    app.note = Some(format!("copied {} chars", text.chars().count()));
+    app.note = Some(format!("copied {} characters", text.chars().count()));
     app.clipboard = Some(text.to_string());
 }
 
@@ -3627,7 +3978,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         None => (url, None),
     };
     let Some(here) = app.file.clone() else {
-        app.note = Some("no file context to resolve a wikilink".into());
+        app.note = Some("a document read from a pipe cannot follow a [[link]]".into());
         return Outcome::Redraw;
     };
     if bare.is_empty() {
@@ -3643,7 +3994,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         return Outcome::Redraw;
     }
     let Some(target) = app.wiki.get(&id).cloned() else {
-        app.note = Some(format!("no note named '{bare}' here"));
+        app.note = Some(format!("no document named '{bare}' in this folder"));
         return Outcome::Redraw;
     };
     // A wikilink's first resolution rule is `here_dir.join(name)`, so
@@ -3660,7 +4011,11 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
             }
         }
         Err(e) => {
-            app.note = Some(format!("cannot open {}: {e}", target.display()));
+            app.note = Some(format!(
+                "cannot open {}: {}",
+                target.display(),
+                open_failure_reason(&e)
+            ));
         }
     }
     Outcome::Redraw
@@ -3782,6 +4137,194 @@ mod tests {
         App::new("t.md".into(), Document::parse(SRC), 20, 6)
     }
 
+    /// **The settings pane shows every preference and writes it.**
+    ///
+    /// Carrel had nine config keys and named the file in no menu row, no
+    /// help line and not in `--help` — only in the README, which is exactly
+    /// where the reader this is for will never look.
+    #[test]
+    fn the_settings_pane_shows_values_and_saves_what_it_changes() {
+        let cfg = tempfile::tempdir().unwrap();
+        let mut a = App::new("t.md".into(), Document::parse("# h\n\nbody"), 120, 30);
+        a.config_dir = Some(cfg.path().to_path_buf());
+
+        update(&mut a, Action::SettingsToggle);
+        assert_eq!(a.settings, Some(0), "opens on the first row");
+
+        let rows = settings_rows(&a);
+        assert_eq!(rows[0].key, Setting::Theme);
+        assert!(
+            rows.iter().any(|r| r.key == Setting::OutlineMargin),
+            "the margin outline had no key at all; the pane is its only way in"
+        );
+
+        // Walk to the hint row and turn it off. The value shown must follow.
+        let at = rows.iter().position(|r| r.key == Setting::Hints).unwrap();
+        update(&mut a, Action::SettingsMove(i32::try_from(at).unwrap()));
+        let before = a.hints;
+        update(&mut a, Action::SettingsAdjust(1));
+        assert_eq!(a.hints, !before, "the setting flipped");
+        assert_eq!(
+            settings_rows(&a)[at].value,
+            if a.hints { "on" } else { "off" },
+            "and the row says so"
+        );
+        assert_eq!(
+            crate::config::load_hints_in(cfg.path()),
+            Some(a.hints),
+            "and it is on disk"
+        );
+
+        // Clicking a row selects AND changes it, in one gesture.
+        let m = rows
+            .iter()
+            .position(|r| r.key == Setting::OutlineMargin)
+            .unwrap();
+        let margin = a.outline_margin;
+        update(&mut a, Action::SettingsPickAt(u32::try_from(m).unwrap()));
+        assert_eq!(a.settings, Some(m), "the click moved the highlight");
+        assert_eq!(a.outline_margin, !margin, "and changed the setting");
+
+        update(&mut a, Action::SettingsToggle);
+        assert_eq!(a.settings, None, "and it closes");
+    }
+
+    /// **The built-in first document opens with no file behind it.**
+    #[test]
+    fn the_welcome_document_is_pathless_like_a_pipe() {
+        let mut a = App::new_home(std::path::PathBuf::from("/root"), vec![], 80, 24);
+        update(&mut a, Action::WelcomeOpen);
+
+        assert!(!a.is_home(), "it opened the reader");
+        assert_eq!(a.file, None, "nothing on disk, so nothing to persist");
+        assert!(a.home_stash.is_some(), "and q comes back to the file list");
+        assert!(
+            a.doc.text.contains("carrel"),
+            "the built-in document actually parsed"
+        );
+        assert!(a.has_headings, "so the outline and heading bar work on it");
+    }
+
+    /// **Failures say what went wrong, not what errno went wrong.**
+    #[test]
+    fn an_open_failure_is_explained_in_words_a_reader_can_act_on() {
+        use std::io::{Error, ErrorKind};
+
+        let no = Error::new(
+            ErrorKind::NotFound,
+            "No such file or directory (os error 2)",
+        );
+        assert_eq!(open_failure_reason(&no), "there is no such file");
+        assert_eq!(
+            explain_open_error(Path::new("/tmp/plan.md"), &no),
+            "carrel: /tmp/plan.md: there is no such file",
+            "no errno tail, which tells a reader nothing"
+        );
+
+        // `read_to_string` on a binary. Saying carrel reads TEXT is the
+        // whole of what the reader needs.
+        let bin = Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8");
+        assert!(
+            open_failure_reason(&bin).contains("not text"),
+            "got {:?}",
+            open_failure_reason(&bin)
+        );
+
+        // An error carrel has no better words for keeps the original.
+        let odd = Error::other("something specific and rare");
+        assert_eq!(open_failure_reason(&odd), "something specific and rare");
+    }
+
+    /// **A file that is not markdown is read anyway, and says so.**
+    ///
+    /// Carrel never checked the extension, so `notes.txt` opened silently
+    /// while the home screen — which lists only `.md`/`.markdown` — behaved
+    /// as though it did not exist.
+    #[test]
+    fn reading_a_non_markdown_file_says_that_is_what_it_is_doing() {
+        assert_eq!(
+            non_markdown_note(Path::new("/x/notes.txt")).as_deref(),
+            Some("reading this .txt file as markdown")
+        );
+        assert_eq!(
+            non_markdown_note(Path::new("/x/Notes.TXT")).as_deref(),
+            Some("reading this .txt file as markdown"),
+            "the extension is matched case-insensitively"
+        );
+        // Quiet for everything a reader would expect to just work.
+        for quiet in ["a.md", "a.markdown", "a.diff", "a.patch"] {
+            assert_eq!(non_markdown_note(Path::new(quiet)), None, "{quiet}");
+        }
+        // And quiet for a file with no extension at all — README, CHANGELOG.
+        assert_eq!(non_markdown_note(Path::new("/x/README")), None);
+    }
+
+    /// **The measure, stepped — the closest honest thing to a zoom.**
+    ///
+    /// A terminal's font belongs to the emulator, so carrel cannot zoom.
+    /// What it CAN change is the column count prose wraps at, which is the
+    /// thing the reader actually wants when they reach for `+`.
+    #[test]
+    fn stepping_the_measure_widens_narrows_and_stops_at_the_floor() {
+        let cfg = tempfile::tempdir().unwrap();
+        let mut a = App::new("t.md".into(), Document::parse("body"), 200, 20);
+        a.config_dir = Some(cfg.path().to_path_buf());
+        a.max_width = 90;
+
+        update(&mut a, Action::MeasureStep(-1));
+        assert_eq!(a.max_width, 85, "one step narrower");
+        assert_eq!(a.note.as_deref(), Some("text width: 85 columns"));
+        assert_eq!(
+            crate::config::load_max_width_in(cfg.path()),
+            Some(85),
+            "and it is remembered"
+        );
+
+        update(&mut a, Action::MeasureStep(1));
+        assert_eq!(a.max_width, 90, "and back again");
+
+        // The floor holds however hard it is pushed.
+        for _ in 0..50 {
+            update(&mut a, Action::MeasureStep(-1));
+        }
+        assert_eq!(a.max_width, crate::config::MIN_MEASURE);
+
+        // Widening past the window means OFF, not a measure wider than the
+        // screen — which would be a measure that does nothing, silently.
+        for _ in 0..80 {
+            update(&mut a, Action::MeasureStep(1));
+        }
+        assert_eq!(a.max_width, 0, "widened off");
+        assert_eq!(a.note.as_deref(), Some("text width: the whole window"));
+    }
+
+    /// **`PageUp` / `PageDown` move by the list's OWN height.**
+    ///
+    /// They worked in the reader and were dead on the whole home screen.
+    /// The page is derived from `home::list_geometry`, the same function
+    /// paint and hit-testing use — keys.rs has no viewport and would have
+    /// had to guess a constant.
+    #[test]
+    fn paging_the_home_list_moves_one_screenful() {
+        let entries: Vec<_> = (0..200)
+            .map(|i| crate::scan::Entry {
+                path: format!("/root/f{i:03}.md").into(),
+                mtime: std::time::SystemTime::UNIX_EPOCH,
+            })
+            .collect();
+        let mut a = App::new_home("/root".into(), entries, 80, 24);
+        let (_, page) = crate::home::list_geometry(80, 24, a.hints, 0);
+        assert!(page > 1, "the fixture has a real page to move");
+
+        update(&mut a, Action::HomePage(1));
+        assert_eq!(a.home().unwrap().selected, usize::from(page));
+        update(&mut a, Action::HomePage(-1));
+        assert_eq!(a.home().unwrap().selected, 0, "and back");
+        // It clamps rather than running off the end.
+        update(&mut a, Action::HomePage(-1));
+        assert_eq!(a.home().unwrap().selected, 0);
+    }
+
     // --- walking the directory tree ---------------------------------------
 
     /// A real tree, because every one of these transitions checks `is_dir`.
@@ -3811,7 +4354,7 @@ mod tests {
         assert_eq!(a.home().unwrap().root, std::path::Path::new("/"));
         assert_eq!(
             a.home().unwrap().note.as_deref(),
-            Some("already at the top")
+            Some("already at the top folder")
         );
     }
 
@@ -4297,7 +4840,7 @@ mod tests {
         let h_cards = a.layout.height(BlockIdx(0));
         update(&mut a, Action::TableToggle);
         assert!(a.wrap_tables);
-        assert_eq!(a.note.as_deref(), Some("tables: wrapped"));
+        assert_eq!(a.note.as_deref(), Some("tables: columns"));
         assert_ne!(a.layout.height(BlockIdx(0)), h_cards, "relayout happened");
         update(&mut a, Action::TableToggle);
         assert!(!a.wrap_tables);
@@ -4417,9 +4960,9 @@ mod tests {
         update(&mut a, Action::MatchStep(1)); // -> 2 of 2
         assert_eq!(a.note, None, "no note mid-cycle");
         update(&mut a, Action::MatchStep(1)); // -> 1 of 2, wrapped
-        assert_eq!(a.note.as_deref(), Some("search wrapped"));
+        assert_eq!(a.note.as_deref(), Some("wrapped round to the start"));
         update(&mut a, Action::MatchStep(-1)); // back to 2 of 2, wrapped again
-        assert_eq!(a.note.as_deref(), Some("search wrapped"));
+        assert_eq!(a.note.as_deref(), Some("wrapped round to the start"));
     }
 
     #[test]
@@ -4505,7 +5048,10 @@ mod tests {
         b.state_dir = Some(state.path().to_path_buf());
         update(&mut b, Action::HomeOpen);
         assert_eq!(b.view.anchor, anchor, "silent resume");
-        assert_eq!(b.note.as_deref(), Some("resumed — gg for top"));
+        assert_eq!(
+            b.note.as_deref(),
+            Some("resumed where you left off · Home for the top")
+        );
     }
 
     #[test]
@@ -4633,7 +5179,10 @@ mod tests {
         update(&mut a, Action::LinkStep(1));
         update(&mut a, Action::LinkFollow);
         assert_eq!(a.path, "here.md", "did not navigate");
-        assert_eq!(a.note.as_deref(), Some("no note named 'No Such Note' here"));
+        assert_eq!(
+            a.note.as_deref(),
+            Some("no document named 'No Such Note' in this folder")
+        );
     }
 
     #[test]
@@ -4763,7 +5312,7 @@ mod tests {
         assert_eq!(a.selection, Some(alpha..alpha + 5), "grown to the pointer");
         update(&mut a, Action::SelectRelease);
         assert_eq!(a.clipboard.as_deref(), Some("alpha"));
-        assert_eq!(a.note.as_deref(), Some("copied 5 chars"));
+        assert_eq!(a.note.as_deref(), Some("copied 5 characters"));
         assert_eq!(
             a.selection,
             Some(alpha..alpha + 5),
@@ -5299,7 +5848,7 @@ mod tests {
             a.clipboard.take().as_deref(),
             Some("https://example.com/elsewhere")
         );
-        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+        assert_eq!(a.note.as_deref(), Some("copied the link"));
         assert!(a.forward.is_some(), "the pane stays open");
     }
 
@@ -5310,7 +5859,7 @@ mod tests {
         update(&mut a, Action::LinkStep(1));
         assert_eq!(update(&mut a, Action::LinkFollow), Outcome::Redraw);
         assert_eq!(a.clipboard.take().as_deref(), Some("https://example.com/x"));
-        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+        assert_eq!(a.note.as_deref(), Some("copied the link"));
         assert!(a.doc.text.contains("that"), "and the reader has not moved");
     }
 
@@ -5331,7 +5880,7 @@ mod tests {
             update(&mut a, Action::LinkStep(1));
             update(&mut a, Action::LinkFollow);
             assert_eq!(a.clipboard.take().as_deref(), Some(dest), "{dest}");
-            assert_eq!(a.note.as_deref(), Some("copied to clipboard"), "{dest}");
+            assert_eq!(a.note.as_deref(), Some("copied the link"), "{dest}");
         }
     }
 
@@ -5349,7 +5898,7 @@ mod tests {
             "no control character may reach the clipboard: {copied:?}"
         );
         assert_eq!(copied, "https://example.com/[31m");
-        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+        assert_eq!(a.note.as_deref(), Some("copied the link"));
     }
 
     #[test]
@@ -6157,7 +6706,7 @@ diff --git a/x.rs b/x.rs
             a.note
                 .as_deref()
                 .unwrap_or_default()
-                .contains("outside the library"),
+                .contains("outside this folder"),
             "expected a confirmation note, got {:?}",
             a.note
         );
@@ -6208,7 +6757,7 @@ diff --git a/x.rs b/x.rs
             a.note
                 .as_deref()
                 .unwrap_or_default()
-                .contains("outside the library"),
+                .contains("outside this folder"),
             "the confirmation must not survive a trip through another link"
         );
     }
@@ -6572,12 +7121,12 @@ diff --git a/x.rs b/x.rs
 
         update(&mut a, Action::RenderedToggle);
         assert!(!a.show_rendered);
-        assert_eq!(a.note.as_deref(), Some("rendered: source"));
+        assert_eq!(a.note.as_deref(), Some("diagrams: as text"));
         assert!(a.layout.total_rows() < with_art, "source rows are shorter");
 
         update(&mut a, Action::RenderedToggle);
         assert!(a.show_rendered);
-        assert_eq!(a.note.as_deref(), Some("rendered: art"));
+        assert_eq!(a.note.as_deref(), Some("diagrams: drawn"));
         assert_eq!(a.layout.total_rows(), with_art);
     }
 

@@ -687,6 +687,55 @@ fn every_breadcrumb_segment_target_covers_its_own_text() {
     }
 }
 
+/// **The home screen names its own exit.**
+///
+/// The reader's status row has said `q quit` since the click-first release.
+/// The home screen — the one a bare `carrel` opens on, and so the first one
+/// a beginner ever sees — said nothing at all, and with `hints = false` or a
+/// narrow window there was no `≡` and no hint row either: literally nothing
+/// on screen naming the way out.
+#[test]
+fn the_home_status_row_carries_a_visible_way_out() {
+    use carrel::action::Action;
+    use carrel::app::App;
+
+    let text_at = |buf: &Buffer, z: carrel::action::Zone| -> String {
+        (z.x..z.x + z.w)
+            .map(|x| buf[(x, z.y)].symbol().to_string())
+            .collect()
+    };
+
+    let mut app = App::new_home("/root".into(), vec![], 80, 24);
+    // Hints off is the worst case: no footer row to fall back on.
+    app.hints = false;
+    let mut painted = carrel::render::Painted::default();
+    let mut protocols = std::collections::HashMap::new();
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    t.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut protocols))
+        .unwrap();
+    let buf = t.backend().buffer().clone();
+
+    let quit = painted
+        .targets
+        .as_slice()
+        .iter()
+        .find(|t| t.action == Action::Quit)
+        .expect("the home status row must name the way out");
+    assert_eq!(
+        text_at(&buf, quit.zone),
+        "q quit",
+        "the button must sit on its own words"
+    );
+    assert_eq!(
+        painted
+            .targets
+            .hit(quit.zone.x, quit.zone.y)
+            .map(|h| h.action),
+        Some(Action::Quit),
+        "and a click on it must quit",
+    );
+}
+
 /// **The empty-library and copy-button guards.**
 ///
 /// The home screen's dead ends offer their way out as painted buttons, and
@@ -719,9 +768,9 @@ fn dead_ends_carry_their_way_out_as_targets() {
         .as_slice()
         .iter()
         .find(|t| t.action == Action::PickerOpen)
-        .expect("a choose-a-directory button");
+        .expect("a choose-a-folder button");
     assert!(
-        text_at(&buf, choose.zone).contains("choose a directory"),
+        text_at(&buf, choose.zone).contains("choose a folder"),
         "the button must sit on its own words"
     );
     assert_eq!(
@@ -889,7 +938,7 @@ fn every_footer_button_covers_its_own_hint() {
         )
     };
     assert_eq!(find(Action::OutlineToggle), " o outline ");
-    assert_eq!(find(Action::HelpToggle), " h more ");
+    assert_eq!(find(Action::HelpToggle), " h help ");
     assert_eq!(
         find(Action::SearchOpen(carrel::action::Direction::Forward)),
         " / search "

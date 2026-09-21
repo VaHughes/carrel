@@ -49,20 +49,20 @@ pub fn of(app: &App) -> Footer {
         return f('◉', "searching", keys::HINT_SEARCH_TYPING);
     }
     if app.selected_link.is_some() {
-        return f('●', "link", keys::HINT_LINK);
+        return f('●', "link picked", keys::HINT_LINK);
     }
     if app.matches.is_some() {
-        return f('●', "matches", keys::HINT_MATCHES);
+        return f('●', "found", keys::HINT_MATCHES);
     }
     // Following outranks ambient streaming: it is a mode the reader chose,
     // and its keys differ — detaching is the thing they will want next.
     if app.following {
-        return f('◉', "following", keys::HINT_FOLLOWING);
+        return f('◉', "keeping up", keys::HINT_FOLLOWING);
     }
     // Ambient, not a mode: every mode above outranks it, and the keys are
     // the ordinary reading set — only the lamp says content is arriving.
     if app.streaming {
-        return f('◉', "streaming", keys::HINT_STREAMING);
+        return f('◉', "arriving", keys::HINT_STREAMING);
     }
     // Lowest precedence of all: every mode above knows something more
     // specific to say, and `streaming` in particular has `F`, which exists
@@ -89,7 +89,7 @@ mod tests {
         let mut a = reader();
         a.streaming = true;
         let f = of(&a);
-        assert_eq!((f.bulb, f.word), ('◉', "streaming"));
+        assert_eq!((f.bulb, f.word), ('◉', "arriving"));
         // Streaming used to show the plain reading hints — "same keys,
         // different weather". It shows its own now, because `F` exists ONLY
         // while a document is growing and the footer is the one place anyone
@@ -104,7 +104,7 @@ mod tests {
 
         // …and following outranks it, being a mode the reader chose.
         update(&mut a, Action::FollowToggle);
-        assert_eq!((of(&a).bulb, of(&a).word), ('◉', "following"));
+        assert_eq!((of(&a).bulb, of(&a).word), ('◉', "keeping up"));
         update(&mut a, Action::FollowToggle);
 
         // …and EOF hands the lamp back to reading.
@@ -126,7 +126,7 @@ mod tests {
             update(&mut a, Action::SearchKey(SearchKey::Char(c)));
         }
         update(&mut a, Action::SearchKey(SearchKey::Accept));
-        assert_eq!((of(&a).bulb, of(&a).word), ('●', "matches"));
+        assert_eq!((of(&a).bulb, of(&a).word), ('●', "found"));
 
         update(&mut a, Action::HelpToggle);
         assert_eq!(
@@ -187,7 +187,7 @@ mod tests {
         update(&mut a, Action::SearchKey(SearchKey::Char('n')));
         update(&mut a, Action::SearchKey(SearchKey::Accept));
         update(&mut a, Action::LinkStep(1));
-        assert_eq!(of(&a).word, "link");
+        assert_eq!(of(&a).word, "link picked");
     }
 
     #[test]

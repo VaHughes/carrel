@@ -4,6 +4,73 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Two keys stop eating the next keystroke.** Ctrl-G and Ctrl-Z armed
+  carrel's `g` and `z` two-key sequences and then swallowed whatever came
+  next, with nothing on screen saying a sequence was pending — Ctrl-Z in
+  particular is the suspend reflex, and carrel runs with signals off. They do
+  nothing now. F3, which was unbound, finds the next match.
+- **A settings pane, on `,` or from the menu.** Carrel remembered nine
+  preferences and named the file they live in nowhere a reader would find it —
+  not in a menu, not in the help sheet, not in `--help`, only in the README.
+  The pane lists every one with the value it currently has, writes the change
+  immediately, and prints the path of the config file along the bottom. Every
+  row is clickable. The margin outline had no key at all and this is its first
+  way in from inside carrel.
+- **`carrel --tutorial` opens a built-in first document.** Carrel is a reader,
+  so the honest way to explain it is to hand you something to read: a page
+  that describes each thing on the page it is describing it on. It is offered
+  from the empty-folder dead end too, as `[ show me how carrel works ]` — the
+  likeliest place a first run lands.
+
+- **Carrel stops pretending things worked.** Copying goes out as an OSC 52
+  sequence the terminal may simply drop — carrel writes it blind and there is
+  no reply to read — so it said "copied" whether or not anything arrived. It
+  still cannot detect this, but it now says where the clipboard comes from,
+  in the help sheet and in a new CLIPBOARD section of the man page. Images
+  are almost always coloured half-blocks (the kitty and sixel probes are
+  deliberately never run, because the query hangs on stdin) while the README
+  promised the kitty protocol; the document info card now names the protocol
+  actually in use. A file whose name is not markdown is still read as
+  markdown, and now says so instead of doing it silently. An empty document
+  says "This file is empty." rather than painting a blank page at 100%, and
+  pressing help in a window too small to hold it says so rather than looking
+  like a broken key.
+- **Failures are in words.** `carrel: plan.md: No such file or directory (os
+  error 2)` is now `carrel: plan.md: there is no such file`, and a binary
+  reports "this is not text — carrel reads markdown and other text files"
+  rather than "stream did not contain valid UTF-8". The same wording is used
+  for failures inside the reader.
+
+- **Carrel speaks plain words now.** The reader is for people who arrived at
+  the terminal because an AI agent lives there, and the vocabulary had not
+  caught up with that: the home screen's status bar literally printed
+  `normal` (vim's mode name) whenever it had nothing to say, reopening a file
+  greeted you with `resumed — gg for top`, and the first chip in the hint row
+  was `j/k scroll`. Those now read as nothing, "resumed where you left off ·
+  Home for the top", and `↑/↓ scroll`. Throughout, one word per idea:
+  *collapse* and *expand* instead of fold/unfold, *folder* instead of
+  directory/library/root/place/level, *heading bar* instead of breadcrumb,
+  *hint row* instead of key hints/hint footer/lamplight row, *bookmarks*
+  instead of marks, *focus* instead of spotlight, *drawn ↔ text* for diagrams,
+  *cards ↔ columns* for wide tables, *keep up with the end* instead of follow,
+  and `h help` instead of `h more`. The keys are all unchanged.
+- **The keys a beginner presses do something.** Backspace and `←` go back
+  (`Ctrl-O` was the only way, and nobody guesses it), `→` follows a link,
+  `+`/`-` widen and narrow the text, and PageUp/PageDown work on the home
+  screen as they always have in the reader. Every one of these was unbound
+  before, so none of them takes anything away from anyone who knows vim.
+- **Ctrl-C copies when there is something to copy.** Carrel runs with signals
+  off, so Ctrl-C was its own binding and it quit instantly — meaning the
+  reflex everyone brings from every other program, select-then-Ctrl-C,
+  destroyed the program instead of filling the clipboard. With nothing
+  selected it still quits.
+- **A click on the scrollbar track goes there** instead of paging one screen
+  toward the pointer.
+- **The home screen names its way out.** Its status row now reads
+  `T theme · q quit`, both clickable, matching the reader's. With the hint row
+  turned off on a narrow window there had been nothing on screen naming quit
+  or help at all.
+
 - **Dead ends offer their way out.** An empty library paints a `[ choose a
   directory ]` button that opens the picker, and a filter that matches
   nothing paints `[ clear ]` to erase itself. The focused code block carries

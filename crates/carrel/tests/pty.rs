@@ -390,7 +390,7 @@ fn the_picker_opens_on_the_directory_the_command_was_run_in() {
     // Compared by name, not by whole path: `/tmp` is a symlink on some hosts
     // and `current_dir` hands back the resolved one.
     let name = d.path().file_name().unwrap().to_string_lossy().into_owned();
-    assert!(raw.contains("choose a directory"), "the picker must be up");
+    assert!(raw.contains("choose a folder"), "the picker must be up");
     assert!(
         raw.contains(&name),
         "the dialog must browse the working directory {name}",
@@ -608,7 +608,11 @@ fn the_man_page_documents_every_key_the_help_overlay_does() {
     // Nothing is exempt any more: `.SS Mouse` names drag, click, double-click,
     // triple-click, wheel, the scrollbar and the lamp, so every reader row has
     // a real entry. A NEW gesture goes in the man page or it fails here.
-    const NOT_IN_MAN: &[&str] = &[];
+    // Prose, not keys. These two rows explain that copying goes out as an
+    // OSC 52 sequence the terminal may simply drop — there is nothing to
+    // press, so there is no `.B` entry to find. The man page carries the
+    // same explanation in its CLIPBOARD section.
+    const NOT_IN_MAN: &[&str] = &["how it works", "if nothing pastes"];
 
     let man = std::fs::read_to_string("../../contrib/carrel.1").expect("man page");
     // Section headers (`§`) are grouping, and prose rows like "double-click"
@@ -807,8 +811,8 @@ fn a_right_click_opens_a_menu_and_a_click_on_a_row_acts() {
     // `q` closes an open menu, exactly as it closes every other pane.
     let cap = pty_run("doc.md", r"\033[<2;8;3M\033[<2;8;3mqq", d.path());
     assert!(
-        cap.contains("Fold this section"),
-        "a right-click on a heading offers to fold it"
+        cap.contains("Collapse this section"),
+        "a right-click on a heading offers to collapse it"
     );
     assert!(
         cap.contains("Search"),

@@ -119,14 +119,27 @@ impl Keys {
             KeyCode::Char(' ') | KeyCode::PageDown => Some(Action::Scroll(Span::Page, self.take())),
             KeyCode::Char('b') | KeyCode::PageUp => Some(Action::Scroll(Span::Page, -self.take())),
 
-            KeyCode::Char('g') => {
+            // `g` and `z` open a two-key sequence — but ONLY unmodified.
+            // The arms below have no `ctrl` guard of their own, so Ctrl-G
+            // and Ctrl-Z used to arm the prefix too and then swallow
+            // whatever was pressed next, with nothing on screen to say a
+            // prefix was pending. Ctrl-Z in particular is the suspend
+            // reflex, and carrel runs with signals off, so the reader got
+            // an invisible dead state instead of the job control they
+            // expected. Unmodified they are vim's own keys, untouched.
+            KeyCode::Char('g') if !ctrl => {
                 self.pending_g = true;
                 None
             }
-            KeyCode::Char('z') => {
+            KeyCode::Char('z') if !ctrl => {
                 self.pending_z = true;
                 None
             }
+            // Widen / narrow the reading measure. All three spellings of
+            // each sign, because a beginner reaching for zoom presses
+            // whichever one their keyboard shows.
+            KeyCode::Char('+' | '=') => Some(Action::MeasureStep(1)),
+            KeyCode::Char('-' | '_') => Some(Action::MeasureStep(-1)),
             KeyCode::Home => Some(Action::GoToStart),
             // Vim counts rows from 1; the row index is 0-based, so `1G` and
             // `gg` agree and `0G` cannot underflow.
@@ -138,14 +151,25 @@ impl Keys {
             KeyCode::Char('}') => Some(Action::BlockStep(self.take())),
             KeyCode::Char('{') => Some(Action::BlockStep(-self.take())),
 
+            // `,` is the preferences key in a good deal of software, and
+            // carrel bound no comma at all, so it costs nothing.
+            KeyCode::Char(',') => Some(Action::SettingsToggle),
             KeyCode::Char('/') => Some(Action::SearchOpen(Direction::Forward)),
             KeyCode::Char('?') => Some(Action::SearchOpen(Direction::Backward)),
+            // F3 is "find next" in a great deal of software and was
+            // unbound here, so it costs nothing to honour it.
+            KeyCode::F(3) => Some(Action::MatchStep(1)),
             KeyCode::Char('n') => Some(Action::MatchStep(self.take())),
             KeyCode::Char('N') => Some(Action::MatchStep(-self.take())),
 
             KeyCode::Tab => Some(Action::LinkStep(self.take())),
             KeyCode::BackTab => Some(Action::LinkStep(-self.take())),
-            KeyCode::Enter => Some(Action::LinkFollow),
+            KeyCode::Enter | KeyCode::Right => Some(Action::LinkFollow),
+            // The back reflex. `Ctrl-O` is vim's jumplist chord and nobody
+            // guesses it; Backspace and Left were both unbound here, so
+            // these cost a vim user nothing and hand everyone else the key
+            // every browser and file manager has taught them.
+            KeyCode::Backspace | KeyCode::Left => Some(Action::Back),
             KeyCode::Char('o') if ctrl => Some(Action::Back),
             KeyCode::Char('o') => Some(Action::OutlineToggle),
 
@@ -259,11 +283,14 @@ impl Keys {
                 KeyCode::Char(c @ '1'..='3') => Some(Action::HomeResume(c as usize - '1' as usize)),
                 // `/` means "search content" everywhere else in carrel, so
                 // it does here too (wave E); `i` remains the filename filter.
+                KeyCode::Char(',') => Some(Action::SettingsToggle),
                 KeyCode::Char('i') => Some(Action::HomeFilterMode),
                 KeyCode::Char('/') => Some(Action::HomeSearchMode),
                 KeyCode::Char('G') | KeyCode::End => Some(Action::HomeGo(Edge::Last)),
                 KeyCode::Home => Some(Action::HomeGo(Edge::First)),
-                KeyCode::Char('g') => {
+                KeyCode::PageDown => Some(Action::HomePage(1)),
+                KeyCode::PageUp => Some(Action::HomePage(-1)),
+                KeyCode::Char('g') if !ctrl => {
                     self.pending_g = true;
                     None
                 }
@@ -355,6 +382,28 @@ impl Keys {
         }
     }
 
+    /// Settings-pane bindings: the bookmark pane's idiom — arrows move,
+    /// Enter changes the highlighted row, and the row's own sign keys nudge
+    /// it either way, which is what the text width needs and the booleans
+    /// do not mind.
+    #[must_use]
+    pub fn map_settings(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::SettingsMove(1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::SettingsMove(-1)),
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::SettingsMove(1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::SettingsMove(-1)),
+            KeyCode::Enter | KeyCode::Char(' ' | '+' | '=') | KeyCode::Right => {
+                Some(Action::SettingsAdjust(1))
+            }
+            KeyCode::Char('-' | '_') | KeyCode::Left => Some(Action::SettingsAdjust(-1)),
+            KeyCode::Char(',' | 'q') | KeyCode::Esc => Some(Action::SettingsToggle),
+            _ => None,
+        }
+    }
+
     /// Outline-picker bindings: the home screen's idiom exactly — printable
     /// keys type, arrows and Ctrl-N/P move, Enter commits, Esc backs out.
     #[must_use]
@@ -439,6 +488,13 @@ pub const fn accel(a: Action) -> Option<&'static str> {
     use Action as A;
     Some(match a {
         A::Scroll(..) => "j k",
+        A::HomePage(_) => "PgDn PgUp",
+        A::SettingsToggle => ",",
+        // A button, not a key: nothing to press, so nothing to print.
+        A::WelcomeOpen => return None,
+        A::SettingsMove(_) => "j k",
+        A::SettingsAdjust(_) | A::SettingsPickAt(_) => "\u{21b5}",
+        A::MeasureStep(_) => "+ -",
         A::GoToStart => "gg",
         A::GoToEnd => "G",
         A::GoToRow(_) => "42G",
@@ -540,49 +596,50 @@ pub fn first(keys: &str) -> &str {
 /// The help sheet, reader side. A `§` row opens a group. The drift test
 /// below holds this table and the dispatcher together; edit them as one.
 pub const READER_HELP: &[(&str, &str)] = &[
-    ("§", "motions"),
-    ("j k ↓ ↑", "line down / up"),
+    ("§", "moving"),
+    ("↓ ↑ j k", "line down / up"),
     ("Ctrl-E Ctrl-Y", "line down / up"),
     ("Ctrl-D Ctrl-U", "half page"),
-    ("Space b PgDn PgUp", "page"),
+    ("Space PgDn PgUp b", "page down / up"),
     ("Ctrl-F Ctrl-B", "page"),
-    ("{ }", "previous / next block"),
+    ("{ }", "previous / next paragraph"),
     ("gg G Home End", "start / end"),
-    ("42G", "go to row 42"),
+    ("42G", "go to line 42"),
     ("§", "search"),
     ("/ ?", "search forward / backward"),
-    ("n N", "next / previous match"),
+    ("n N F3", "next / previous match"),
     ("zz zt zb", "match to middle/top/bottom"),
     ("§", "links"),
     ("Tab Shift-Tab", "select next / previous link"),
     ("Enter", "follow the selected link"),
-    ("Ctrl-O", "back"),
-    ("Esc", "clear selection & search"),
+    ("Ctrl-O", "back to the previous document"),
+    ("Esc", "clear selection and search"),
     ("§", "view"),
     ("o", "outline: jump to a section"),
-    ("za", "fold this section / <details>"),
-    ("zM zR", "fold all / open all"),
-    ("t", "tables: cards / wrapped"),
-    ("r", "diagrams & math: art / source"),
-    ("T", "cycle themes"),
+    ("za", "collapse this section"),
+    ("zM zR", "collapse all / expand all"),
+    ("t", "wide tables: cards or columns"),
+    ("r", "diagrams, math: drawn or text"),
+    ("T", "next theme"),
+    (",", "settings"),
     ("h F1", "this help"),
-    ("H", "hide / show the key hints"),
-    ("B", "hide / show the breadcrumb"),
+    ("H", "hide / show the hint row"),
+    ("B", "hide / show the heading bar"),
     ("I", "document info"),
-    ("S", "spotlight the paragraph"),
+    ("S", "dim all but this paragraph"),
     ("q", "close file (or quit)"),
     ("Q Ctrl-C", "quit"),
     ("m '", "bookmark here / go to next"),
     ("\"", "list bookmarks — enter jumps"),
-    ("%", "footnote ↔ its definition"),
+    ("%", "footnote ↔ its text"),
     ("L", "what links here"),
     ("l", "what this points at"),
     ("] [", "next / previous code block"),
     ("X", "jump to the next task"),
     ("y", "copy the code block"),
     ("click [copy]", "copy the focused block"),
-    ("F", "follow a growing document"),
-    ("A", "auto-read: drift down"),
+    ("F", "keep up as it arrives"),
+    ("A", "scroll slowly on its own"),
     ("§", "mouse"),
     ("drag", "select — copies on release"),
     ("2× click", "select word, 3× the block"),
@@ -590,7 +647,15 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("right-click", "a menu for what is under it"),
     ("menu button", "the ≡ on the status row"),
     ("hover", "the thing under it lights"),
-    ("click a section", "of the breadcrumb: go there"),
+    ("click a section", "of the heading bar: go there"),
+    // Carrel copies through OSC 52, which it writes blind: there is no
+    // reply to read, so it CANNOT know whether the terminal took it. It
+    // said "copied" either way, and a reader whose terminal drops the
+    // sequence — default tmux, some GNOME Terminal builds — was left with
+    // a success message and an empty clipboard and no way to tell why.
+    ("§", "copying"),
+    ("how it works", "carrel asks the terminal"),
+    ("if nothing pastes", "your terminal refused it"),
 ];
 
 /// The help sheet, home-screen side.
@@ -607,20 +672,20 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("double-click", "open it"),
     ("1 2 3", "continue reading"),
     ("§", "finding"),
-    ("i", "filter names: type to narrow"),
+    ("i", "filter by name: just type"),
     ("/", "search inside files"),
-    ("Tab", "results as a document"),
-    ("Esc", "clear filter, then leave it"),
+    ("Tab", "open the results as a page"),
+    ("Esc", "clear the filter, then close"),
     ("§", "other"),
-    ("d", "library: browse folders"),
-    ("Tab →", "drill into the folder"),
-    ("←", "up one level"),
-    ("Backspace", "up one directory"),
+    ("d", "choose another folder"),
+    ("Tab →", "go into the folder"),
+    ("← Backspace", "up one folder"),
     ("click a segment", "of the path row: go there"),
     ("right-click", "a menu, anywhere"),
-    ("T", "cycle themes"),
+    ("T", "next theme"),
+    (",", "settings"),
     ("h F1", "this help (F1 while typing)"),
-    ("H", "hide / show the key hints"),
+    ("H", "hide / show the hint row"),
     ("q Ctrl-C", "quit"),
 ];
 
@@ -687,30 +752,30 @@ const fn says(key: &'static str, label: &'static str) -> Hint {
 }
 
 pub const HINT_READING: &[Hint] = &[
-    hint("j/k", "scroll", Action::Scroll(Span::Line, 1)),
+    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
     hint("spc", "page", Action::Scroll(Span::Page, 1)),
     hint("/", "search", Action::SearchOpen(Direction::Forward)),
     hint("o", "outline", Action::OutlineToggle),
-    hint("h", "more", Action::HelpToggle),
+    hint("h", "help", Action::HelpToggle),
 ];
 pub const HINT_SEARCH_TYPING: &[Hint] = &[
     hint("enter", "jump", Action::SearchKey(SearchKey::Accept)),
     hint("esc", "cancel", Action::SearchKey(SearchKey::Cancel)),
 ];
 pub const HINT_STREAMING: &[Hint] = &[
-    hint("j/k", "scroll", Action::Scroll(Span::Line, 1)),
-    hint("F", "follow the end", Action::FollowToggle),
-    hint("y", "copy block", Action::YankBlock),
-    hint("h", "more", Action::HelpToggle),
+    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
+    hint("F", "keep up", Action::FollowToggle),
+    hint("y", "copy code", Action::YankBlock),
+    hint("h", "help", Action::HelpToggle),
 ];
 pub const HINT_FOLLOWING: &[Hint] = &[
     hint("F", "stop", Action::FollowToggle),
-    hint("k", "detach", Action::Scroll(Span::Line, -1)),
-    hint("y", "copy block", Action::YankBlock),
-    hint("h", "more", Action::HelpToggle),
+    hint("↑", "step back", Action::Scroll(Span::Line, -1)),
+    hint("y", "copy code", Action::YankBlock),
+    hint("h", "help", Action::HelpToggle),
 ];
 pub const HINT_MATCHES: &[Hint] = &[
-    hint("n/N", "next/prev", Action::MatchStep(1)),
+    hint("n/N", "next / previous", Action::MatchStep(1)),
     hint("zz", "center", Action::Recenter(Where::Middle)),
     hint("esc", "clear", Action::Dismiss),
 ];
@@ -720,33 +785,33 @@ pub const HINT_LINK: &[Hint] = &[
     hint("esc", "clear", Action::Dismiss),
 ];
 pub const HINT_OUTLINE: &[Hint] = &[
-    says("type", "narrow"),
+    says("type", "to filter"),
     hint("enter", "go", Action::OutlineJump),
-    hint("esc", "back", Action::OutlineKey(SearchKey::Cancel)),
+    hint("esc", "close", Action::OutlineKey(SearchKey::Cancel)),
 ];
 pub const HINT_HELP: &[Hint] = &[
-    says("type", "narrow"),
+    says("type", "to filter"),
     hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
-    hint("esc", "back", Action::HelpKey(SearchKey::Cancel)),
+    hint("esc", "close", Action::HelpKey(SearchKey::Cancel)),
 ];
 pub const HINT_HOME_BROWSE: &[Hint] = &[
-    hint("j/k", "move", Action::HomeMove(1)),
+    hint("↑/↓", "move", Action::HomeMove(1)),
     hint("enter", "open", Action::HomeOpen),
-    hint("d", "directory", Action::PickerOpen),
+    hint("d", "folder", Action::PickerOpen),
     hint("i", "filter", Action::HomeFilterMode),
     hint("/", "search", Action::HomeSearchMode),
-    hint("h", "more", Action::HelpToggle),
+    hint("h", "help", Action::HelpToggle),
 ];
 pub const HINT_HOME_FILTER: &[Hint] = &[
-    says("type", "narrow"),
+    says("type", "to filter"),
     hint("enter", "open", Action::HomeOpen),
-    hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
+    hint("esc", "close", Action::HomeKey(SearchKey::Cancel)),
 ];
 pub const HINT_HOME_SEARCH: &[Hint] = &[
-    says("type", "query"),
+    says("type", "to search"),
     hint("enter", "open first", Action::HomeOpen),
     hint("tab", "results", Action::HomeOpenResults),
-    hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
+    hint("esc", "close", Action::HomeKey(SearchKey::Cancel)),
 ];
 /// The one-time invitation, shown on the first launch that has never
 /// remembered a reading position — and replaced by the ordinary hints the
@@ -759,16 +824,16 @@ pub const HINT_HOME_SEARCH: &[Hint] = &[
 /// and a `cat`.
 pub const HINT_FIRST_RUN: &[Hint] = &[says("click", "anything"), says("right-click", "for a menu")];
 pub const HINT_HOME_PICKER: &[Hint] = &[
-    says("type", "filter"),
+    says("type", "to filter"),
     // The arrows, not `^j/^k`, even though the Ctrl pair is the less
     // guessable one: whoever is reading the footer is reading it because
     // they do not know what to do, and a cryptic key there leaves them
     // unsure the obvious one even works. A vim user who presses `j`, watches
     // it land in the filter, and opens help finds `Ctrl-J`/`Ctrl-K` at once.
     hint("↑/↓", "move", Action::HomeMove(1)),
-    hint("→", "drill in", Action::PickerDescend),
+    hint("→", "go in", Action::PickerDescend),
     hint("enter", "open", Action::PickerChoose),
-    hint("esc", "back", Action::HomeKey(SearchKey::Cancel)),
+    hint("esc", "close", Action::HomeKey(SearchKey::Cancel)),
 ];
 
 /// The scrollbar thumb's `(top, len)` in bar rows.
@@ -1141,8 +1206,8 @@ mod tests {
     fn help_filtering_is_fuzzy_and_drops_group_headers() {
         let rows = help_matching(HOME_HELP, "");
         assert_eq!(rows.len(), HOME_HELP.len(), "empty shows everything");
-        let rows = help_matching(READER_HELP, "fold");
-        assert!(!rows.is_empty(), "something mentions folding");
+        let rows = help_matching(READER_HELP, "collapse");
+        assert!(!rows.is_empty(), "something mentions collapsing");
         for &i in &rows {
             assert_ne!(READER_HELP[i].0, "§", "groups never match");
         }
@@ -1241,6 +1306,7 @@ mod tests {
                 "F" => vec![k('F')],
                 "y" => vec![k('y')],
                 "↑/↓" => vec![code(KeyCode::Down)],
+                "↑" => vec![code(KeyCode::Up)],
                 "→" => vec![code(KeyCode::Right)],
                 "spc" => vec![k(' ')],
                 "/" => vec![k('/')],
@@ -1349,6 +1415,73 @@ mod tests {
     fn n_steps_matches_and_respects_a_count() {
         assert_eq!(seq(&[k('3'), k('n')]), vec![Action::MatchStep(3)]);
         assert_eq!(seq(&[k('N')]), vec![Action::MatchStep(-1)]);
+    }
+
+    /// **The keys a beginner presses that used to do nothing.**
+    ///
+    /// Each of these was unbound before, so none of them takes anything
+    /// away from a vim user — that is the whole reason they were free to
+    /// take. Break-checked: each assertion fails against the old keymap.
+    #[test]
+    fn the_beginner_reflex_keys_are_bound_and_cost_vim_nothing() {
+        let mut m = Keys::new();
+        // The back reflex, from every browser and file manager there is.
+        assert_eq!(m.map(code(KeyCode::Backspace), false), Some(Action::Back));
+        assert_eq!(m.map(code(KeyCode::Left), false), Some(Action::Back));
+        // Right follows a link, the same as Enter.
+        assert_eq!(m.map(code(KeyCode::Right), false), Some(Action::LinkFollow));
+        // The zoom reflex, spelled every way a keyboard prints it.
+        for c in ['+', '='] {
+            assert_eq!(m.map(k(c), false), Some(Action::MeasureStep(1)), "{c}");
+        }
+        for c in ['-', '_'] {
+            assert_eq!(m.map(k(c), false), Some(Action::MeasureStep(-1)), "{c}");
+        }
+        // PageUp/PageDown worked in the reader and were dead on the whole
+        // home screen.
+        assert_eq!(
+            m.map_home(code(KeyCode::PageDown), HomeMode::Normal),
+            Some(Action::HomePage(1)),
+        );
+        assert_eq!(
+            m.map_home(code(KeyCode::PageUp), HomeMode::Normal),
+            Some(Action::HomePage(-1)),
+        );
+        // Ctrl-G and Ctrl-Z used to arm the `g` / `z` prefixes and then
+        // eat the next keystroke, with nothing on screen saying why.
+        assert_eq!(m.map(ctrl('g'), false), None, "Ctrl-G arms nothing");
+        assert_eq!(
+            m.map(k('j'), false),
+            Some(Action::Scroll(Span::Line, 1)),
+            "so the key after it is not swallowed"
+        );
+        assert_eq!(m.map(ctrl('z'), false), None, "Ctrl-Z arms nothing");
+        assert_eq!(
+            m.map(k('j'), false),
+            Some(Action::Scroll(Span::Line, 1)),
+            "nor after that one"
+        );
+        // …but the bare vim prefixes still work.
+        assert_eq!(m.map(k('z'), false), None, "z arms the prefix");
+        assert_eq!(m.map(k('z'), false), Some(Action::Recenter(Where::Middle)));
+
+        // F3 is "find next" almost everywhere, and was unbound.
+        assert_eq!(
+            m.map(code(KeyCode::F(3)), false),
+            Some(Action::MatchStep(1))
+        );
+
+        // …and the vim set is untouched by all of it.
+        assert_eq!(
+            m.map(k('j'), false),
+            Some(Action::Scroll(Span::Line, 1)),
+            "j still scrolls"
+        );
+        assert_eq!(
+            m.map(code(KeyCode::Enter), false),
+            Some(Action::LinkFollow),
+            "Enter still follows"
+        );
     }
 
     #[test]

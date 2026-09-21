@@ -505,7 +505,7 @@ mod links {
             Some("https://example.com/x"),
             "the URL leaves through the clipboard outbox"
         );
-        assert_eq!(app.note.as_deref(), Some("copied to clipboard"));
+        assert_eq!(app.note.as_deref(), Some("copied the link"));
         assert!(app.history.is_empty(), "nothing to go back to");
     }
 

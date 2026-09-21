@@ -169,6 +169,7 @@ pub fn draw_full(
         if app.outline.is_some() {
             paint_outline(frame, app, &mut painted.targets);
         }
+        paint_settings(frame, app, &mut painted.targets);
         paint_menu(frame, app, &mut painted.targets);
         paint_hover(frame, app, &painted.targets);
         settle_links(frame, painted);
@@ -241,6 +242,7 @@ pub fn draw_full(
     if app.mark_list.is_some() {
         paint_marks(frame, app, &mut painted.targets);
     }
+    paint_settings(frame, app, &mut painted.targets);
     if app.info {
         paint_info(frame, app, &mut painted.targets);
     }
@@ -310,6 +312,106 @@ fn settle_links(frame: &mut Frame, painted: &mut Painted) {
     }
 }
 
+/// The settings pane: every persisted preference, with its current value,
+/// and the file they are written to.
+///
+/// Carrel had nine config keys and named the file in no menu row, no help
+/// line and not in `--help` — only in the README, which is exactly the
+/// place the reader this is for will never look. The menus could already
+/// toggle four of them; what none of them showed was the value.
+fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
+    let Some(selected) = app.settings else {
+        return;
+    };
+    let area = frame.area();
+    if area.width < 30 || area.height < 8 {
+        return;
+    }
+    let rows = crate::app::settings_rows(app);
+    let w = 60u16.min(area.width.saturating_sub(4));
+    let h = (u16::try_from(rows.len()).unwrap_or(u16::MAX) + 3)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let x = (area.width - w) / 2;
+    let y = (area.height - h) / 2;
+    targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
+
+    // The config file, named where a reader will actually meet it.
+    let where_ = app.config_dir.as_deref().map_or_else(
+        || "nowhere to save".to_string(),
+        |d| d.join("config").display().to_string(),
+    );
+
+    let buf = frame.buffer_mut();
+    let blank = " ".repeat(w as usize);
+    for py in y..y + h {
+        buf.set_stringn(x, py, &blank, w as usize, theme::status());
+    }
+    let bar = "─".repeat(w as usize);
+    buf.set_stringn(
+        x,
+        y,
+        format!("┌ settings {bar}"),
+        w as usize,
+        theme::status(),
+    );
+    // Truncated from the LEFT: the tail of a path is the part that
+    // identifies it, and a right-truncated one shows a home directory and
+    // hides the filename.
+    let room = usize::from(w.saturating_sub(12));
+    let shown = if where_.chars().count() > room && room > 1 {
+        let skip = where_.chars().count() - (room - 1);
+        format!("…{}", where_.chars().skip(skip).collect::<String>())
+    } else {
+        where_
+    };
+    buf.set_stringn(
+        x,
+        y + h - 2,
+        format!("  saved in {shown}"),
+        w as usize,
+        theme::dim(),
+    );
+    buf.set_stringn(
+        x,
+        y + h - 1,
+        format!("└ ↵ change · ↑↓ move · esc close {bar}"),
+        w as usize,
+        theme::status(),
+    );
+
+    let inner = usize::from(h.saturating_sub(3));
+    for (i, row) in rows.iter().enumerate().take(inner) {
+        let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+        if py >= y + h - 2 {
+            break;
+        }
+        targets.push(
+            Action::SettingsPickAt(u32::try_from(i).unwrap_or(u32::MAX)),
+            Zone::new(x + 1, py, w.saturating_sub(1), 1),
+            Z_OVERLAY,
+        );
+        let style = if i == selected {
+            theme::selected()
+        } else {
+            theme::status()
+        };
+        // Label left, value right: the shape of every settings list there
+        // has ever been, so it reads without a legend.
+        let label = format!("  {}", row.label);
+        let lw = carrel_core::display_width(&label);
+        let vw = carrel_core::display_width(&row.value);
+        buf.set_stringn(x + 1, py, &blank, w.saturating_sub(1) as usize, style);
+        buf.set_stringn(x + 1, py, &label, w as usize, style);
+        // Right-aligned value, but only when the label leaves room for it —
+        // otherwise the label wins and the value is simply not shown.
+        if w > lw + vw + 4 {
+            let vx = x + w.saturating_sub(vw).saturating_sub(2);
+            buf.set_stringn(vx, py, &row.value, vw as usize, style);
+        }
+    }
+}
+
 /// The bookmark list (`"`): every mark with its context line. Rows derive
 /// from `App::marks` at every frame, so a mark toggled under the pane shows
 /// immediately.
@@ -346,7 +448,7 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     buf.set_stringn(
         x,
         y + h - 1,
-        format!("└ {} marks · ↵ go · esc close {bar}", app.marks.len()),
+        format!("└ {} bookmarks · ↵ go · esc close {bar}", app.marks.len()),
         w as usize,
         theme::status(),
     );
@@ -569,7 +671,7 @@ fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
         let marker = if row.target.is_some() {
             "▸"
         } else {
-            "⌾ no fetch"
+            "⌾ never opened"
         };
         buf.set_stringn(
             x + 1,
@@ -735,7 +837,19 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let rows = crate::keys::help_matching(table, filter);
     let area = frame.area();
     if area.width < 20 || area.height < 4 {
-        return; // nothing legible fits; the toggle still works
+        // Nothing legible fits. Say so rather than returning: pressing `h`
+        // and watching the screen not change reads as a broken key, and the
+        // one reader most likely to press it is the one who needs the
+        // answer most.
+        let buf = frame.buffer_mut();
+        buf.set_stringn(
+            area.x,
+            area.y,
+            "help needs room",
+            area.width as usize,
+            theme::dim(),
+        );
+        return;
     }
     // 52 = 4 indent + 18 key column + 1 gap + 29 description columns — wide
     // enough that no row in either table truncates (the test pins the
@@ -759,7 +873,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     }
     let bar = "─".repeat(w as usize);
     let title = if filter.is_empty() {
-        "┌ carrel — keys".to_string()
+        "┌ carrel — help".to_string()
     } else {
         format!("┌ carrel — keys /{filter}")
     };
@@ -767,7 +881,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     buf.set_stringn(
         x,
         y + h - 1,
-        format!("└ type narrows · ↑↓ scroll · esc back {bar}"),
+        format!("└ type to filter · ↑↓ scroll · esc close {bar}"),
         w as usize,
         theme::status(),
     );
@@ -1039,6 +1153,24 @@ fn paint_margin_outline(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 }
+/// An empty document, said out loud.
+///
+/// It used to paint a blank body under a status row reading `100%`, which
+/// is indistinguishable from a reader that failed to load something.
+/// Returns whether it handled the frame.
+fn paint_if_empty(frame: &mut Frame, app: &App, full: Rect) -> bool {
+    if !app.doc.text.is_empty() {
+        return false;
+    }
+    frame.buffer_mut().set_stringn(
+        full.x,
+        full.y,
+        "This file is empty.",
+        full.width as usize,
+        theme::dim(),
+    );
+    true
+}
 
 fn paint_rows(
     frame: &mut Frame,
@@ -1047,6 +1179,9 @@ fn paint_rows(
     painted: &mut Painted,
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) {
+    if paint_if_empty(frame, app, full) {
+        return;
+    }
     // One buffer for the whole frame: after the first block this allocates
     // nothing. There is no row cache — see layout.rs.
     let mut rows: Vec<Row> = Vec::new();
@@ -2361,8 +2496,23 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
                 &mut x,
                 area.y,
                 right,
-                "[ choose a directory ]",
+                "[ choose a folder ]",
                 Action::PickerOpen,
+                Z_CHROME,
+            );
+            put(buf, &mut x, area.y, right, "  or  ", theme::dim());
+            // An empty folder is the likeliest place a first run lands —
+            // someone who ran `carrel` to see what it was, somewhere with
+            // no markdown in it. The one thing carrel can always offer
+            // there is something to read.
+            push_button(
+                buf,
+                targets,
+                &mut x,
+                area.y,
+                right,
+                "[ show me how carrel works ]",
+                Action::WelcomeOpen,
                 Z_CHROME,
             );
         } else {
@@ -2483,8 +2633,8 @@ fn paint_hits(frame: &mut Frame, home: &Home, area: Rect) {
 fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targets: &mut Targets) {
     let left = match home.mode {
         HomeMode::Filter => format!("filter: {}", home.filter),
-        HomeMode::Normal => home.note.clone().unwrap_or_else(|| "normal".into()),
-        HomeMode::Picker => "choose a directory".into(),
+        HomeMode::Normal => home.note.clone().unwrap_or_default(),
+        HomeMode::Picker => "choose a folder".into(),
         HomeMode::Search => format!("search: {}", home.query),
     };
     let mut right = if home.mode == HomeMode::Search {
@@ -2503,6 +2653,12 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     if home.unreadable > 0 {
         let _ = write!(right, "   {} unreadable", home.unreadable);
     }
+    // The way out, in words. The reader's status row has said `q quit` since
+    // the click-first release; the home screen — the screen a bare `carrel`
+    // opens on, and so the first one a beginner ever sees — said nothing at
+    // all, and with `hints = false` or a narrow window there was no `≡` and
+    // no hint row either: literally nothing on screen naming the exit.
+    right.push_str("   T theme · q quit");
 
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
@@ -2523,6 +2679,16 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     let rx = stop.saturating_sub(rw);
     if rx > lx + carrel_core::display_width(&left) {
         buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
+        // Registered where the paint put them, the reader's rule exactly.
+        let mut button = |word: &str, action: Action| {
+            if let Some(at) = right.find(word) {
+                let dx = carrel_core::display_width(&right[..at]);
+                let w = carrel_core::display_width(word);
+                targets.push(action, Zone::new(rx + dx, area.y, w, 1), Z_CHROME);
+            }
+        };
+        button("T theme", Action::ThemeCycle);
+        button("q quit", Action::Quit);
     }
 }
 
@@ -2643,7 +2809,7 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Target
         buf.set_stringn(
             bx.x + 1,
             bx.y + 2,
-            "  no directory matches",
+            "  no folder matches",
             w.saturating_sub(1) as usize,
             theme::dim(),
         );
@@ -3154,7 +3320,7 @@ mod tests {
         let closed = buffer_of(&app, 60, 30);
         let closed_text: String = (0..30).map(|y| line(&closed, y) + "\n").collect();
         assert!(
-            !closed_text.contains("this help"),
+            !closed_text.contains("line down / up"),
             "no overlay while closed"
         );
 
@@ -3162,11 +3328,11 @@ mod tests {
         let open = buffer_of(&app, 60, 30);
         let open_text: String = (0..30).map(|y| line(&open, y) + "\n").collect();
         assert!(
-            open_text.contains("carrel — keys"),
+            open_text.contains("carrel — help"),
             "title painted:\n{open_text}"
         );
-        assert!(open_text.contains("this help"), "a reader row painted");
-        assert!(open_text.contains("motions"), "a group heading painted");
+        assert!(open_text.contains("line down / up"), "a reader row painted");
+        assert!(open_text.contains("moving"), "a group heading painted");
     }
 
     #[test]
@@ -3196,16 +3362,16 @@ mod tests {
         let mut app = App::new("t.md".into(), Document::parse("body text\n"), 60, 30);
         app.help = Some(crate::app::Help {
             scroll: 0,
-            filter: "fold".into(),
+            filter: "collapse".into(),
         });
         let buf = buffer_of(&app, 60, 30);
         let text: String = (0..30).map(|y| line(&buf, y) + "\n").collect();
         assert!(
-            text.contains("/fold"),
+            text.contains("/collapse"),
             "the title echoes the filter:\n{text}"
         );
         assert!(
-            text.contains("fold this section"),
+            text.contains("collapse this section"),
             "the matching row survives:\n{text}"
         );
         assert!(
@@ -3226,6 +3392,31 @@ mod tests {
         assert!(text.contains("no key matches that"), "{text}");
     }
 
+    /// **The degraded states used to look like bugs.**
+    ///
+    /// An empty document painted a blank body under a status row reading
+    /// `100%` — indistinguishable from a reader that failed to load. And
+    /// pressing `h` in a window under 20x4 changed nothing at all, which
+    /// reads as a broken key to exactly the person who needs help most.
+    #[test]
+    fn the_empty_and_too_small_states_say_which_they_are() {
+        let buf = frame_of("", 40, 10);
+        let text: String = (0..10).map(|y| line(&buf, y) + "\n").collect();
+        assert!(
+            text.contains("This file is empty."),
+            "an empty document says so:\n{text}"
+        );
+
+        let mut app = App::new("t.md".into(), Document::parse("body"), 16, 3);
+        app.help = Some(crate::app::Help::default());
+        let tiny = buffer_of(&app, 16, 3);
+        let tiny_text: String = (0..3).map(|y| line(&tiny, y) + "\n").collect();
+        assert!(
+            tiny_text.contains("help needs room"),
+            "help says why it cannot paint:\n{tiny_text}"
+        );
+    }
+
     #[test]
     fn the_home_help_shows_home_keys() {
         let mut app = home_app(3, 60, 20);
@@ -3233,7 +3424,7 @@ mod tests {
         let buf = buffer_of(&app, 60, 20);
         let text: String = (0..20).map(|y| line(&buf, y) + "\n").collect();
         assert!(
-            text.contains("library: browse folders"),
+            text.contains("choose another folder"),
             "home rows painted:\n{text}"
         );
     }
@@ -3420,7 +3611,7 @@ mod tests {
         let foot = line(&buf, 11);
         assert!(foot.starts_with("╭●"), "lamp first: {foot:?}");
         assert!(
-            foot.contains("reading") && foot.contains("j/k scroll"),
+            foot.contains("reading") && foot.contains("↑/↓ scroll"),
             "{foot:?}"
         );
         assert!(
@@ -3444,7 +3635,7 @@ mod tests {
     fn every_footer_hint_is_a_chip_on_the_status_surface() {
         let buf = frame_of("# T\n\nbody text here", 60, 12);
         let foot = line(&buf, 11);
-        let at = foot.find(" j/k scroll ").expect("the first chip");
+        let at = foot.find(" ↑/↓ scroll ").expect("the first chip");
         let at = u16::try_from(foot[..at].chars().count()).unwrap();
         let bg = theme::button().bg;
         assert!(bg.is_some(), "a button has a surface");
@@ -3545,22 +3736,22 @@ mod tests {
         let status = line(&buf, 11);
         assert!(status.starts_with("╰○"), "folded lamp: {status:?}");
         assert!(status.contains("t.md"));
-        assert!(!buffer_text(&buf).contains("j/k scroll"), "hints are gone");
+        assert!(!buffer_text(&buf).contains("↑/↓ scroll"), "hints are gone");
     }
 
     #[test]
-    fn a_narrow_footer_drops_hints_from_the_right_but_keeps_h_more() {
+    fn a_narrow_footer_drops_hints_from_the_right_but_keeps_help() {
         let buf = frame_of("# T\n\nbody", 36, 12);
         let foot = line(&buf, 11);
         assert!(
-            foot.contains("h more"),
+            foot.contains("h help"),
             "the door to help survives: {foot:?}"
         );
         assert!(
             !foot.contains("outline"),
             "rightmost hints dropped first: {foot:?}"
         );
-        assert!(foot.contains("j/k scroll"), "leftmost hints kept: {foot:?}");
+        assert!(foot.contains("↑/↓ scroll"), "leftmost hints kept: {foot:?}");
     }
 
     /// A root outside `$HOME` starts with the filesystem root, whose label
@@ -3586,7 +3777,7 @@ mod tests {
             foot.starts_with("╭●") && foot.contains("browse"),
             "{foot:?}"
         );
-        assert!(foot.contains("d directory"), "{foot:?}");
+        assert!(foot.contains("d folder"), "{foot:?}");
     }
 
     #[test]
@@ -3675,7 +3866,7 @@ mod tests {
             .join("\n");
         assert!(all.contains("Nothing to read here"), "{all}");
         assert!(
-            all.contains("[ choose a directory ]"),
+            all.contains("[ choose a folder ]"),
             "with a button that opens the picker:\n{all}"
         );
     }
@@ -3751,7 +3942,7 @@ mod tests {
             .map(|y| line(&buf, y))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(all.contains("choose a directory"), "{all}");
+        assert!(all.contains("choose a folder"), "{all}");
         // The input row echoes what is being typed, with a cursor after it.
         assert!(all.contains("› /▏"), "no input row:\n{all}");
         // …and the matches for it are listed beneath, `/` being one
