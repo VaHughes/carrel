@@ -297,11 +297,19 @@ pub enum Action {
     // --- home screen ---
     /// Move the selection. Signed; saturates.
     HomeMove(i32),
+    /// One screenful up or down the home list. The page is the list's own
+    /// height, derived in `update` from `home::list_geometry` — keys.rs has
+    /// no viewport, so it cannot compute one and must not guess a constant.
+    HomePage(i32),
     /// Put the selection on an absolute list index — what a mouse click
     /// produces. Clamped by the receiver, so a stale index is harmless.
     /// In search mode it indexes the hits rather than the files.
     HomeSelect(usize),
     HomeGo(Edge),
+    /// Widen or narrow the reading measure by a step. The closest honest
+    /// equivalent to a zoom in a terminal, where the font is the emulator's
+    /// business and never ours.
+    MeasureStep(i32),
     /// Open the selected file in the reader.
     HomeOpen,
     /// A keystroke into the filter, or into the picker's typed path.

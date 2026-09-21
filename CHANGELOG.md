@@ -4,6 +4,36 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Carrel speaks plain words now.** The reader is for people who arrived at
+  the terminal because an AI agent lives there, and the vocabulary had not
+  caught up with that: the home screen's status bar literally printed
+  `normal` (vim's mode name) whenever it had nothing to say, reopening a file
+  greeted you with `resumed — gg for top`, and the first chip in the hint row
+  was `j/k scroll`. Those now read as nothing, "resumed where you left off ·
+  Home for the top", and `↑/↓ scroll`. Throughout, one word per idea:
+  *collapse* and *expand* instead of fold/unfold, *folder* instead of
+  directory/library/root/place/level, *heading bar* instead of breadcrumb,
+  *hint row* instead of key hints/hint footer/lamplight row, *bookmarks*
+  instead of marks, *focus* instead of spotlight, *drawn ↔ text* for diagrams,
+  *cards ↔ columns* for wide tables, *keep up with the end* instead of follow,
+  and `h help` instead of `h more`. The keys are all unchanged.
+- **The keys a beginner presses do something.** Backspace and `←` go back
+  (`Ctrl-O` was the only way, and nobody guesses it), `→` follows a link,
+  `+`/`-` widen and narrow the text, and PageUp/PageDown work on the home
+  screen as they always have in the reader. Every one of these was unbound
+  before, so none of them takes anything away from anyone who knows vim.
+- **Ctrl-C copies when there is something to copy.** Carrel runs with signals
+  off, so Ctrl-C was its own binding and it quit instantly — meaning the
+  reflex everyone brings from every other program, select-then-Ctrl-C,
+  destroyed the program instead of filling the clipboard. With nothing
+  selected it still quits.
+- **A click on the scrollbar track goes there** instead of paging one screen
+  toward the pointer.
+- **The home screen names its way out.** Its status row now reads
+  `T theme · q quit`, both clickable, matching the reader's. With the hint row
+  turned off on a narrow window there had been nothing on screen naming quit
+  or help at all.
+
 - **Dead ends offer their way out.** An empty library paints a `[ choose a
   directory ]` button that opens the picker, and a filter that matches
   nothing paints `[ clear ]` to erase itself. The focused code block carries

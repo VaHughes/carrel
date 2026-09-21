@@ -794,7 +794,7 @@ impl App {
     /// Ask for a second Enter before leaving the library.
     fn ask_before_leaving(&mut self, id: LinkId, target: &Path) -> Outcome {
         self.note = Some(format!(
-            "outside the library — Enter again to open {}",
+            "outside this folder — Enter again to open {}",
             target.display()
         ));
         self.pending_open = Some((id, target.to_path_buf()));
@@ -1119,7 +1119,7 @@ impl App {
             let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
             self.view.anchor = saved.min(last);
             self.view.restore(&self.doc, &self.layout, self.text_h());
-            self.note = Some("resumed — gg for top".into());
+            self.note = Some("resumed where you left off · Home for the top".into());
         }
     }
 
@@ -1773,6 +1773,39 @@ pub fn adapt(src: &str, diff_ok: bool) -> Document {
     }
 }
 
+/// The reading measure, stepped.
+///
+/// A terminal's font belongs to the emulator, so carrel cannot zoom. What it
+/// can change is the column count prose wraps at, which is the thing a
+/// reader reaching for `+` actually wants. `0` means OFF — the whole window
+/// — and widening past the window lands there rather than on a measure
+/// wider than the screen, which would be a measure that silently does
+/// nothing.
+fn step_measure(app: &mut App, d: i32) {
+    const STEP: u16 = 5;
+    let full = app.bleed_w();
+    let now = if app.max_width == 0 {
+        full
+    } else {
+        app.max_width
+    };
+    app.max_width = if d > 0 {
+        let want = now.saturating_add(STEP);
+        if want >= full { 0 } else { want }
+    } else {
+        now.saturating_sub(STEP).max(crate::config::MIN_MEASURE)
+    };
+    app.note = Some(if app.max_width == 0 {
+        "text width: the whole window".to_string()
+    } else {
+        format!("text width: {} columns", app.max_width)
+    });
+    if let Some(dir) = app.config_dir.as_deref() {
+        let _ = crate::config::save_max_width_in(dir, app.max_width);
+    }
+    app.relayout();
+}
+
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
@@ -1836,6 +1869,10 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.relayout(); // the reader's text height changes with the row
         return Outcome::Redraw;
     }
+    if let Action::MeasureStep(d) = action {
+        step_measure(app, d);
+        return Outcome::Redraw;
+    }
     if let Action::BreadcrumbToggle = action {
         app.breadcrumb = !app.breadcrumb;
         if let Some(dir) = app.config_dir.as_deref() {
@@ -1860,7 +1897,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
             Action::AutoToggle => {
                 app.auto_read = !app.auto_read;
                 app.note = Some(if app.auto_read {
-                    "auto-read on — any motion stops it".into()
+                    "auto-read on — scroll to stop it".into()
                 } else {
                     "auto-read off".into()
                 });
@@ -2199,7 +2236,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         Action::HomeUp => {
             let Some(up) = app.home().and_then(crate::home::Home::parent) else {
                 if let Some(h) = app.home_mut() {
-                    h.note = Some("already at the top".into());
+                    h.note = Some("already at the top folder".into());
                 }
                 return Outcome::Redraw;
             };
@@ -2237,7 +2274,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             };
             if !root.is_dir() {
                 if let Some(h) = app.home_mut() {
-                    h.note = Some(format!("not a directory: {}", root.display()));
+                    h.note = Some(format!("not a folder: {}", root.display()));
                 }
                 return Outcome::Redraw;
             }
@@ -2261,7 +2298,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             if let Some(h) = app.home_mut() {
                 h.set_root(root, cached);
                 if let Err(e) = saved {
-                    h.note = Some(format!("could not save the default: {e}"));
+                    h.note = Some(format!("could not remember that folder: {e}"));
                 }
             }
             return Outcome::Redraw;
@@ -2323,6 +2360,14 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         _ => {}
     }
 
+    // Captured before the borrow: `HomePage` needs the list's own height,
+    // and once `h` is held `app` is gone.
+    let page_rows = {
+        let resume = app.home().map_or(0, crate::home::Home::resume_shown);
+        crate::home::list_geometry(app.cols, app.rows, app.hints, resume)
+            .1
+            .max(1)
+    };
     let Some(h) = app.home_mut() else {
         return Outcome::Idle;
     };
@@ -2381,6 +2426,14 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::Redraw
         }
+        // A screenful. The page is the list's OWN height, from the same
+        // geometry function paint and hit-testing use — keys.rs has no
+        // viewport and would have had to guess a constant.
+        Action::HomePage(d) => {
+            let page = i32::from(page_rows);
+            h.move_by(if d < 0 { -page } else { page });
+            Outcome::Redraw
+        }
         Action::HomeMove(n) => {
             if h.mode == HomeMode::Picker {
                 let last = h.picker.roots.len().saturating_sub(1);
@@ -2429,7 +2482,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                         // of the `..` row. The mouse has that row; the
                         // keyboard has this and `←`.
                         if !h.picker_up() {
-                            h.note = Some("already at the top".into());
+                            h.note = Some("already at the top folder".into());
                         }
                         return Outcome::Redraw;
                     }
@@ -2535,7 +2588,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 
         Action::FoldToggle => {
             let Some(target) = app.fold_target() else {
-                app.note = Some("no section here to fold".into());
+                app.note = Some("no section here to collapse".into());
                 return Outcome::Redraw;
             };
             match target {
@@ -2783,7 +2836,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             if app.backlinks.is_some() {
                 app.backlinks = None;
             } else if app.file.is_none() {
-                app.note = Some("a piped document has no path to link to".into());
+                app.note = Some("a document read from a pipe has no folder to link from".into());
             } else {
                 app.backlinks = Some(Backlinks::default());
             }
@@ -2928,9 +2981,9 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.following = !app.following;
             if app.following {
                 app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
-                app.note = Some("following the end".into());
+                app.note = Some("keeping up with the end".into());
             } else {
-                app.note = Some("stopped following".into());
+                app.note = Some("stopped keeping up".into());
             }
             Outcome::Redraw
         }
@@ -3122,7 +3175,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                         back != 0 && i < back
                     };
                     if wrapped {
-                        app.note = Some("search wrapped".into());
+                        app.note = Some("wrapped round to the start".into());
                     }
                     (i + step) % len
                 }
@@ -3168,9 +3221,9 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.show_rendered = !app.show_rendered;
             app.note = Some(
                 if app.show_rendered {
-                    "rendered: art"
+                    "diagrams: drawn"
                 } else {
-                    "rendered: source"
+                    "diagrams: as text"
                 }
                 .to_string(),
             );
@@ -3182,7 +3235,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.wrap_tables = !app.wrap_tables;
             app.note = Some(
                 if app.wrap_tables {
-                    "tables: wrapped"
+                    "tables: columns"
                 } else {
                     "tables: cards"
                 }
@@ -3317,7 +3370,7 @@ fn forward_rows(app: &App) -> Vec<ForwardRow> {
 fn go_to_root(app: &mut App, root: std::path::PathBuf) -> Outcome {
     if !root.is_dir() {
         if let Some(h) = app.home_mut() {
-            h.note = Some(format!("not a directory: {}", root.display()));
+            h.note = Some(format!("not a folder: {}", root.display()));
         }
         return Outcome::Redraw;
     }
@@ -3489,7 +3542,7 @@ fn copy_link(app: &mut App, dest: &str) -> Outcome {
         return Outcome::Redraw;
     }
     app.clipboard = Some(url);
-    app.note = Some("copied to clipboard".to_string());
+    app.note = Some("copied the link".to_string());
     Outcome::Redraw
 }
 
@@ -3595,7 +3648,7 @@ fn copy_selection(app: &mut App) {
     let Some(text) = app.doc.text.get(sel.start as usize..sel.end as usize) else {
         return;
     };
-    app.note = Some(format!("copied {} chars", text.chars().count()));
+    app.note = Some(format!("copied {} characters", text.chars().count()));
     app.clipboard = Some(text.to_string());
 }
 
@@ -3627,7 +3680,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         None => (url, None),
     };
     let Some(here) = app.file.clone() else {
-        app.note = Some("no file context to resolve a wikilink".into());
+        app.note = Some("a document read from a pipe cannot follow a [[link]]".into());
         return Outcome::Redraw;
     };
     if bare.is_empty() {
@@ -3643,7 +3696,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         return Outcome::Redraw;
     }
     let Some(target) = app.wiki.get(&id).cloned() else {
-        app.note = Some(format!("no note named '{bare}' here"));
+        app.note = Some(format!("no document named '{bare}' in this folder"));
         return Outcome::Redraw;
     };
     // A wikilink's first resolution rule is `here_dir.join(name)`, so
@@ -3782,6 +3835,72 @@ mod tests {
         App::new("t.md".into(), Document::parse(SRC), 20, 6)
     }
 
+    /// **The measure, stepped — the closest honest thing to a zoom.**
+    ///
+    /// A terminal's font belongs to the emulator, so carrel cannot zoom.
+    /// What it CAN change is the column count prose wraps at, which is the
+    /// thing the reader actually wants when they reach for `+`.
+    #[test]
+    fn stepping_the_measure_widens_narrows_and_stops_at_the_floor() {
+        let cfg = tempfile::tempdir().unwrap();
+        let mut a = App::new("t.md".into(), Document::parse("body"), 200, 20);
+        a.config_dir = Some(cfg.path().to_path_buf());
+        a.max_width = 90;
+
+        update(&mut a, Action::MeasureStep(-1));
+        assert_eq!(a.max_width, 85, "one step narrower");
+        assert_eq!(a.note.as_deref(), Some("text width: 85 columns"));
+        assert_eq!(
+            crate::config::load_max_width_in(cfg.path()),
+            Some(85),
+            "and it is remembered"
+        );
+
+        update(&mut a, Action::MeasureStep(1));
+        assert_eq!(a.max_width, 90, "and back again");
+
+        // The floor holds however hard it is pushed.
+        for _ in 0..50 {
+            update(&mut a, Action::MeasureStep(-1));
+        }
+        assert_eq!(a.max_width, crate::config::MIN_MEASURE);
+
+        // Widening past the window means OFF, not a measure wider than the
+        // screen — which would be a measure that does nothing, silently.
+        for _ in 0..80 {
+            update(&mut a, Action::MeasureStep(1));
+        }
+        assert_eq!(a.max_width, 0, "widened off");
+        assert_eq!(a.note.as_deref(), Some("text width: the whole window"));
+    }
+
+    /// **`PageUp` / `PageDown` move by the list's OWN height.**
+    ///
+    /// They worked in the reader and were dead on the whole home screen.
+    /// The page is derived from `home::list_geometry`, the same function
+    /// paint and hit-testing use — keys.rs has no viewport and would have
+    /// had to guess a constant.
+    #[test]
+    fn paging_the_home_list_moves_one_screenful() {
+        let entries: Vec<_> = (0..200)
+            .map(|i| crate::scan::Entry {
+                path: format!("/root/f{i:03}.md").into(),
+                mtime: std::time::SystemTime::UNIX_EPOCH,
+            })
+            .collect();
+        let mut a = App::new_home("/root".into(), entries, 80, 24);
+        let (_, page) = crate::home::list_geometry(80, 24, a.hints, 0);
+        assert!(page > 1, "the fixture has a real page to move");
+
+        update(&mut a, Action::HomePage(1));
+        assert_eq!(a.home().unwrap().selected, usize::from(page));
+        update(&mut a, Action::HomePage(-1));
+        assert_eq!(a.home().unwrap().selected, 0, "and back");
+        // It clamps rather than running off the end.
+        update(&mut a, Action::HomePage(-1));
+        assert_eq!(a.home().unwrap().selected, 0);
+    }
+
     // --- walking the directory tree ---------------------------------------
 
     /// A real tree, because every one of these transitions checks `is_dir`.
@@ -3811,7 +3930,7 @@ mod tests {
         assert_eq!(a.home().unwrap().root, std::path::Path::new("/"));
         assert_eq!(
             a.home().unwrap().note.as_deref(),
-            Some("already at the top")
+            Some("already at the top folder")
         );
     }
 
@@ -4297,7 +4416,7 @@ mod tests {
         let h_cards = a.layout.height(BlockIdx(0));
         update(&mut a, Action::TableToggle);
         assert!(a.wrap_tables);
-        assert_eq!(a.note.as_deref(), Some("tables: wrapped"));
+        assert_eq!(a.note.as_deref(), Some("tables: columns"));
         assert_ne!(a.layout.height(BlockIdx(0)), h_cards, "relayout happened");
         update(&mut a, Action::TableToggle);
         assert!(!a.wrap_tables);
@@ -4417,9 +4536,9 @@ mod tests {
         update(&mut a, Action::MatchStep(1)); // -> 2 of 2
         assert_eq!(a.note, None, "no note mid-cycle");
         update(&mut a, Action::MatchStep(1)); // -> 1 of 2, wrapped
-        assert_eq!(a.note.as_deref(), Some("search wrapped"));
+        assert_eq!(a.note.as_deref(), Some("wrapped round to the start"));
         update(&mut a, Action::MatchStep(-1)); // back to 2 of 2, wrapped again
-        assert_eq!(a.note.as_deref(), Some("search wrapped"));
+        assert_eq!(a.note.as_deref(), Some("wrapped round to the start"));
     }
 
     #[test]
@@ -4505,7 +4624,10 @@ mod tests {
         b.state_dir = Some(state.path().to_path_buf());
         update(&mut b, Action::HomeOpen);
         assert_eq!(b.view.anchor, anchor, "silent resume");
-        assert_eq!(b.note.as_deref(), Some("resumed — gg for top"));
+        assert_eq!(
+            b.note.as_deref(),
+            Some("resumed where you left off · Home for the top")
+        );
     }
 
     #[test]
@@ -4633,7 +4755,10 @@ mod tests {
         update(&mut a, Action::LinkStep(1));
         update(&mut a, Action::LinkFollow);
         assert_eq!(a.path, "here.md", "did not navigate");
-        assert_eq!(a.note.as_deref(), Some("no note named 'No Such Note' here"));
+        assert_eq!(
+            a.note.as_deref(),
+            Some("no document named 'No Such Note' in this folder")
+        );
     }
 
     #[test]
@@ -4763,7 +4888,7 @@ mod tests {
         assert_eq!(a.selection, Some(alpha..alpha + 5), "grown to the pointer");
         update(&mut a, Action::SelectRelease);
         assert_eq!(a.clipboard.as_deref(), Some("alpha"));
-        assert_eq!(a.note.as_deref(), Some("copied 5 chars"));
+        assert_eq!(a.note.as_deref(), Some("copied 5 characters"));
         assert_eq!(
             a.selection,
             Some(alpha..alpha + 5),
@@ -5299,7 +5424,7 @@ mod tests {
             a.clipboard.take().as_deref(),
             Some("https://example.com/elsewhere")
         );
-        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+        assert_eq!(a.note.as_deref(), Some("copied the link"));
         assert!(a.forward.is_some(), "the pane stays open");
     }
 
@@ -5310,7 +5435,7 @@ mod tests {
         update(&mut a, Action::LinkStep(1));
         assert_eq!(update(&mut a, Action::LinkFollow), Outcome::Redraw);
         assert_eq!(a.clipboard.take().as_deref(), Some("https://example.com/x"));
-        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+        assert_eq!(a.note.as_deref(), Some("copied the link"));
         assert!(a.doc.text.contains("that"), "and the reader has not moved");
     }
 
@@ -5331,7 +5456,7 @@ mod tests {
             update(&mut a, Action::LinkStep(1));
             update(&mut a, Action::LinkFollow);
             assert_eq!(a.clipboard.take().as_deref(), Some(dest), "{dest}");
-            assert_eq!(a.note.as_deref(), Some("copied to clipboard"), "{dest}");
+            assert_eq!(a.note.as_deref(), Some("copied the link"), "{dest}");
         }
     }
 
@@ -5349,7 +5474,7 @@ mod tests {
             "no control character may reach the clipboard: {copied:?}"
         );
         assert_eq!(copied, "https://example.com/[31m");
-        assert_eq!(a.note.as_deref(), Some("copied to clipboard"));
+        assert_eq!(a.note.as_deref(), Some("copied the link"));
     }
 
     #[test]
@@ -6157,7 +6282,7 @@ diff --git a/x.rs b/x.rs
             a.note
                 .as_deref()
                 .unwrap_or_default()
-                .contains("outside the library"),
+                .contains("outside this folder"),
             "expected a confirmation note, got {:?}",
             a.note
         );
@@ -6208,7 +6333,7 @@ diff --git a/x.rs b/x.rs
             a.note
                 .as_deref()
                 .unwrap_or_default()
-                .contains("outside the library"),
+                .contains("outside this folder"),
             "the confirmation must not survive a trip through another link"
         );
     }
@@ -6572,12 +6697,12 @@ diff --git a/x.rs b/x.rs
 
         update(&mut a, Action::RenderedToggle);
         assert!(!a.show_rendered);
-        assert_eq!(a.note.as_deref(), Some("rendered: source"));
+        assert_eq!(a.note.as_deref(), Some("diagrams: as text"));
         assert!(a.layout.total_rows() < with_art, "source rows are shorter");
 
         update(&mut a, Action::RenderedToggle);
         assert!(a.show_rendered);
-        assert_eq!(a.note.as_deref(), Some("rendered: art"));
+        assert_eq!(a.note.as_deref(), Some("diagrams: drawn"));
         assert_eq!(a.layout.total_rows(), with_art);
     }
 

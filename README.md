@@ -21,20 +21,21 @@ Everything below installs the terminal reader.
 
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/VaHughes/carrel/main/assets/demo.gif" alt="Carrel listing the markdown files in a directory, filtering to README.md, and scrolling through it" width="800">
+<img src="https://raw.githubusercontent.com/VaHughes/carrel/main/assets/demo.gif" alt="Carrel listing the markdown files in a folder, filtering to README.md, and scrolling through it" width="800">
 
 </div>
 
 > **Status: early, but it runs.** `carrel` shows you what is around you to read; `carrel FILE` opens
-> a reader with vim motions, incremental search, and a resize that keeps your place. Syntax
-> highlighting, tables, images and mermaid diagrams all render. See [Roadmap](#roadmap).
+> a reader you can click around in, with a search that keeps its place when the window
+> resizes. Syntax highlighting, tables, images and mermaid diagrams all render, and the vim
+> keys are there for anyone who already knows them. See [Roadmap](#roadmap).
 
 ### It never fetches anything
 
-Carrel reads only the directory you point it at: the one named on the command line, else the
-`root` you last chose, else the directory you are standing in. Anything wider is a root you
-choose yourself — `d` browses from the directory you ran `carrel` in, offering parent,
-itself, children and remembered places, narrowed by typing; a filter with a `/` in it
+Carrel reads only the folder you point it at: the one named on the command line, else the
+`root` you last chose, else the folder you are standing in. Anything wider is a root you
+choose yourself — `d` opens a folder browser on the folder you ran `carrel` in, offering
+parent, itself, children and your favourites, narrowed by typing; a filter with a `/` in it
 completes a path against the filesystem instead. It
 sends nothing anywhere — remote images in documents are never fetched; they render as their alt
 text. The index it caches lives under `$XDG_CACHE_HOME/carrel` and holds file paths and
@@ -42,7 +43,7 @@ modification times, nothing else.
 
 That first sentence is **enforced, not merely intended**. A markdown file is untrusted input — a
 shared vault, a downloaded README, anything you did not write — and a link in one can name any
-path on the machine. Links resolving inside your library follow as they always have; one
+path on the machine. Links resolving inside your folder follow as they always have; one
 resolving outside names the path and waits for a second Enter, so leaving is something you do
 rather than something a document does to you. Both paths are canonicalised, so a symlink out of
 the tree is caught too. The walk itself never follows symlinks and never reads an ignore file
@@ -65,13 +66,13 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 
 | | |
 |---|---|
-| **Search that survives reflow and resize** | Matches are byte offsets into the document, so the match set is bit-for-bit identical at any width and a highlight follows its text across a rewrap. Most readers lose or shift matches when the window resizes; carrel can't, by construction. The headline feature and the hardest part. |
-| **Everything worth doing is clickable** | Links, headings, fold markers, the outline, the panes, the hint row along the bottom — click them. Right-click for a menu of what is under the pointer, or press `≡` on the status row for everything else. Carrel is built for people whose way into the terminal was an AI coding agent and who now have a `PLAN.md` to read; they should not have to learn `zR` first. Every key still works, and `--no-mouse` hands the pointer back. |
-| **A comfortable measure** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
-| **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, foldable, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
+| **Search that survives a resize** | A match is a place in the text, not a place on the screen, so the same matches exist at any width and a highlight follows its text when the lines rewrap. Most readers lose or shift matches when the window resizes; carrel can't, by construction. The headline feature and the hardest part. |
+| **Everything worth doing is clickable** | Links, headings, collapse markers, the outline, the panes, the hint row along the bottom — click them. Right-click for a menu of what is under the pointer, or press `≡` on the status row for everything else. Carrel is built for people whose way into the terminal was an AI coding agent and who now have a `PLAN.md` to read; they should not have to learn `zR` first. Every key still works, and `--no-mouse` hands the pointer back. |
+| **A comfortable line length** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
+| **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, collapsible, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename — and walk the tree from the path row above the list, a segment at a time. |
-| **Clickable links** | Click a link, wherever it is painted: a markdown file beside it opens in the reader, and a URL is copied to your clipboard to paste where you want it. Real OSC 8 hyperlinks too, with graceful degradation. Carrel never fetches a URL and never launches a program to open one. |
-| **Correct emoji and wide characters** | Measured per grapheme cluster, never per codepoint. |
+| **Clickable links** | Click a link, wherever it is painted: a markdown file beside it opens in the reader, and a URL is copied to your clipboard to paste where you want it. In a terminal that supports it, a link is a real hyperlink too; elsewhere it is plain text. Carrel never fetches a URL and never launches a program to open one. |
+| **Correct emoji and wide characters** | Width is measured per visible character, not per code point, so emoji and CJK text line up instead of drifting. |
 | **Complete markdown** | CommonMark + GFM, footnotes, tables, definition lists, frontmatter, and LaTeX math as terminal box art. Every claim here is [a test](https://github.com/VaHughes/carrel/blob/main/crates/carrel/tests/conformance.rs). |
 | **A GUI, eventually** | Planned and designed for, **not yet built.** So that people who don't use terminals can read markdown too. |
 
@@ -144,8 +145,8 @@ when nothing matched, so `if carrel doc.md pattern; then` behaves like grep. Pip
 weight, slant, strike and OSC 8 links (never a colour) for embedding in another tool's
 output, and `carrel --tasks FILE` prints the document's task list as checkbox lines. While a producer is
 still writing, the reader is already open — and your position and search matches hold as
-content arrives, because positions never depend on the screen. Press `F` to pin the view
-to the end while it grows, and `y` to copy the code block you are looking at
+content arrives, because positions never depend on the screen. Press `F` to keep up with
+the end while it grows, and `y` to copy the code block you are looking at
 (`]` and `[` step between them).
 
 ### Diffs, and git's pager
@@ -153,7 +154,7 @@ to the end while it grows, and `y` to copy the code block you are looking at
 A pipe — or a `.diff` / `.patch` file — is read as a diff when it looks like one: a heading
 per commit and per file, hunks as code, additions and removals in your theme's own colours.
 Because files become *sections*, everything carrel already does to sections works on a
-diff: fold a file away with `za`, collapse the whole changeset with `zM`, jump between
+diff: collapse a file with `za`, collapse the whole changeset with `zM`, jump between
 files from the outline, and search across all of it without the results moving when you
 resize.
 
@@ -172,12 +173,12 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 
 | | |
 |---|---|
-| **The path row** | The directory you are in, under the banner, spelled as its own segments — `~ / Work / carrel / docs`. Click any one of them to go there; the `↑` at its head goes up one level, and `Backspace` does the same from the keyboard. |
-| **The `⌂`** | At the left of the reader's status row: back to the file list, rooted at the document's own directory when there is no list behind it to return to. |
-| **Right-click** | A menu for whatever is under the pointer — fold this section, copy this code block, open or copy this link, cards or wrapped for this table. Right-click anywhere else, or click the **`≡`** at the end of the status row, and you get the global menu instead. Every row shows the key that does the same thing. |
+| **The path row** | The folder you are in, under the banner, spelled as its own segments — `~ / Work / carrel / docs`. Click any one of them to go there; the `↑` at its head goes up one folder, and `Backspace` does the same from the keyboard. |
+| **The `⌂`** | At the left of the reader's status row: back to the file list, rooted at the document's own folder when there is no list behind it to return to. |
+| **Right-click** | A menu for whatever is under the pointer — collapse this section, copy this code block, open or copy this link, cards or columns for this table. Right-click anywhere else, or click the **`≡`** at the end of the status row, and you get the global menu instead. Every row shows the key that does the same thing. |
 | **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. |
-| **A heading, or a `▸` / `▾` in the margin** | Folds and unfolds that section, or that `<details>` block. |
-| **The hint row along the bottom** | Every hint is a button and looks like one — `spc page`, `/ search`, `o outline`, `h more`, each a chip on the status bar's surface. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
+| **A heading, or a `▸` / `▾` in the margin** | Collapses or expands that section, or that `<details>` block. |
+| **The hint row along the bottom** | Every hint is a button and looks like one — `↑/↓ scroll`, `/ search`, `o outline`, `h help`, each a chip on the status bar's surface. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
 | **A row in a pane** | The outline, the bookmark list and both link panes open the row under the pointer. |
 | **The margin outline** | Click a section to jump to it. |
 | **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
@@ -197,15 +198,15 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 
 | Key | Default | What it does |
 |---|---|---|
-| `max_width` | `90` | The reading measure: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
-| `theme` | `terminal`, or `omarchy` where there is one | Palette name — one of the seventeen listed under the example. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` cycles them in the app and saves your choice. |
-| `hints` | `true` | The lamplight hint row along the bottom. `H` toggles it. |
+| `max_width` | `90` | The line length: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
+| `theme` | `terminal`, or `omarchy` where there is one | Palette name — one of the seventeen listed under the example. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` steps to the next one in the app and saves your choice. |
+| `hints` | `true` | The hint row along the bottom. `H` toggles it. |
 | `titles` | `false` | Show each document's own title — `title:` from frontmatter, else its first heading — instead of its file name. Falls back to the name for a file that has neither. |
 | `outline_margin` | `false` | The section tree pinned in the left margin, current section lit, on terminals wide enough to spare the columns. Click a heading to jump. Off by default because it moves the text column. |
-| `breadcrumb` | `true` | The section path pinned atop the page while you scroll — `The Book ▸ Chapter ▸ Detail` — with a rule under it. `B` toggles it. Documents with no headings never show one. |
+| `breadcrumb` | `true` | The heading bar: the section path pinned atop the page while you scroll — `The Book ▸ Chapter ▸ Detail` — with a rule under it. `B` toggles it. Documents with no headings never show one. |
 | `mouse` | `true` | Capture the mouse, so clicks reach carrel rather than the terminal. Set `false` — or pass `--no-mouse` for one run — to hand the pointer back, and your terminal's own selection, scrollback and context menu work as they do anywhere else. Every action stays reachable from the keyboard either way. |
-| `root` | — | The directory the home screen lists. `d` picks one in the app. |
-| `place` | — | A remembered favourite root. `d` opens on the working directory; one `Esc` clears that input and the places are what it offers instead. This key repeats, newest first, capped at eight; choosing a root with `d` records it. |
+| `root` | — | The folder the home screen lists. `d` picks one in the app. |
+| `place` | — | A favourite root, starred in the folder browser `d` opens. This key repeats, newest first, capped at eight; choosing a root with `d` records it. |
 
 ```ini
 # ~/.config/carrel/config
@@ -270,7 +271,7 @@ version. Two things to know:
   — the symlink keeps pointing at a file that is gone. `carrel: command not found` after a clean
   means exactly this, not a broken PATH.
 - **The debug build is not the shipping build.** It is roughly twenty times the size and starts
-  noticeably slower on a large library; syntax highlighting and the initial walk are where you
+  noticeably slower on a large tree of files; syntax highlighting and the initial walk are where you
   will feel it. Point the link at `target/release/carrel` and `cargo build --release` if you are
   judging performance rather than behaviour.
 
@@ -332,7 +333,7 @@ The module map, the decisions already made, and the pinned dependencies are in
 - [x] OSC 8 hyperlinks, relative-link traversal with a history stack
 - [x] Syntax highlighting (syntect, semantic scopes not colours)
 - [x] Images (kitty protocol first, half-block fallback everywhere)
-- [x] Themes: 17 palettes, cycled live, persisted — plus the desktop's own on Omarchy
+- [x] Themes: 17 palettes, switched live, persisted — plus the desktop's own on Omarchy
 - [x] Help overlay, reading-position resume, `[[wikilinks]]`
 - [x] Mouse selection that copies clean text (drag, double-click word, triple-click block)
 - [x] Outline navigation, live reload, search inside every file
@@ -340,14 +341,14 @@ The module map, the decisions already made, and the pinned dependencies are in
 - [x] Frontmatter cards, definition lists, LaTeX math as box art, a conformance suite
 - [x] The reading desk begins: a 90-column measure with centred prose, a time-remaining
       estimate, and a home screen you can click
-- [x] stdin/pager mode — pipe in, stream as it arrives, keep your place
-- [x] A sticky heading breadcrumb: the enclosing sections, pinned while you scroll
-- [x] Section folding — `za`/`zM`/`zR` and click-a-heading; search always unfolds its target
-- [x] Diffs read as documents — `git show | carrel`, foldable per file, and git's pager
-- [x] Follow mode for a growing pipe; copy a code block with `y`
+- [x] stdin/pager mode — pipe in, read as it arrives, keep your place
+- [x] A heading bar: the enclosing sections, pinned while you scroll
+- [x] Collapsible sections — `za`/`zM`/`zR` and click-a-heading; search always expands its target
+- [x] Diffs read as documents — `git show | carrel`, collapsible per file, and git's pager
+- [x] Keep up with the end of a growing pipe; copy a code block with `y`
 - [x] Continue reading, bookmarks, backlinks, the outline in the margin
 - [x] Packaging: Homebrew, Fedora COPR, the shell installer, crates.io
-- [x] Click-first: links, fold markers, pane rows and the whole hint row are buttons,
+- [x] Click-first: links, collapse markers, pane rows and the whole hint row are buttons,
       on a click-target registry the paint pass fills; `--no-mouse` gives the pointer back
 - [x] Menus: right-click for what is under the pointer, `≡` for everything else, each row
       printing the key that does the same thing — every action carrel has is now reachable
@@ -359,11 +360,11 @@ The module map, the decisions already made, and the pinned dependencies are in
       bookmarks, reviewed from an overlay, exported as quote-and-note markdown
 - [x] Focus dimming (`S`) — everything outside the paragraph at the centre of the view
       falls into shadow; the quiet place, made literal
-- [x] `<details>`/`<summary>` folds natively — the summary becomes a fold point, reusing
-      section folding wholesale
+- [x] `<details>`/`<summary>` collapses natively — the summary becomes a collapse point,
+      reusing section collapsing wholesale
 - [x] Search results read as a document — `Tab` in home-screen search opens the
       hits as generated markdown, a section per file with a link per match, so the
-      outline, folding and a second search all work on the results, and every match
+      outline, collapsing and a second search all work on the results, and every match
       jumps to its line
 - [ ] Image lightbox — Enter opens an image full-screen, kitty protocol first and
       half-block fallback everywhere; `[`/`]` walks the images of the document
@@ -374,24 +375,24 @@ The module map, the decisions already made, and the pinned dependencies are in
       `--tasks` report, the count on the info card; ticking a box is editor creep.
       Home-screen progress glyphs stay out: counting honestly means reading whole files.
 - [ ] Tags — frontmatter `tags:` indexed lazily the way titles are, tag-filtered views
-- [x] A bookmark list overlay (`"`) — every mark with its context line, Enter jumps,
+- [x] A bookmark list overlay (`"`) — every bookmark with its context line, Enter jumps,
       Ctrl-O comes back
 - [x] Forward links (`l`) — what this note points at, the mirror of backlinks `L`
-- [ ] Wide-table horizontal scrolling — cards and wrapping both lose past some width
-- [x] Footnote jump-and-return — `%`, to the definition and back
+- [ ] Wide-table horizontal scrolling — cards and columns both lose past some width
+- [x] Footnote jump-and-return — `%`, to the footnote text and back
 - [x] `carrel --render` — styled ANSI output even when piped: weight, slant, strike and
       OSC 8 hyperlinks, never a colour, `NO_COLOR` reduces it to `--plain`; still never
       fetching anything itself
 - [x] Document info card (`I`; `g` belongs to the gg prefix) — words, minutes, structure,
       links, when it last changed
-- [x] Places — favourite roots remembered by the picker, newest first, capped at eight;
-      choosing a directory records it, and the dialog always lists them, starred
+- [x] Favourites — roots remembered by the folder browser, newest first, capped at eight;
+      choosing a folder records it, and the browser always lists them, starred
 - [x] A home list that keeps up — the tree is walked again while the list is on screen, so
-      a file written elsewhere appears without a restart; and `d` browses from the directory
+      a file written elsewhere appears without a restart; and `d` browses from the folder
       you ran `carrel` in, highlight parked on here, so enter alone reads where you are,
-      typing filters, and `Tab` drills in
+      typing filters, and `Tab` goes in
 - [ ] Hyphenation at narrow measures — pattern-based breaks below roughly 70 columns
-- [x] Auto-read mode (`A`) — the view drifts down a row every 300 ms; any deliberate
+- [x] Auto-read mode (`A`) — the view scrolls slowly on its own, a line every 300 ms; any deliberate
       motion takes the wheel back, and the end of the document stops it gently
 - [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**

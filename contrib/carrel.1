@@ -38,12 +38,13 @@ carrel \- a quiet place to read your markdown
 is a markdown reader \(em not an editor, not a workbench, a reading desk.
 .PP
 Run with no arguments it lists the markdown files around you, newest first,
-with type\-to\-filter and a directory picker. Given a
+with type\-to\-filter and a folder browser. Given a
 .I FILE
-it opens a reader with vim motions, incremental search that survives reflow and
+it opens a reader: click anything, search that keeps its place through a
 terminal resize, syntax highlighting, tables, images, and mermaid diagrams.
-Prose is set to a comfortable measure and centred rather than stretched across a
-wide terminal; tables, code and diagrams still use the full width.
+The vim keys are all there too, for those who already know them.
+Prose is set to a comfortable line length and centred rather than stretched
+across a wide terminal; tables, code and diagrams still use the full width.
 .PP
 Given a
 .I FILE
@@ -53,7 +54,7 @@ it prints matching lines and exits.
 .PP
 Piped input opens the reader too:
 .B git show HEAD:README.md | carrel
-streams the document in as it arrives, so a slow producer paints
+shows the document as it arrives, so a slow producer paints
 immediately and your position and search matches hold while content lands.
 .B carrel \-
 forces stdin mode; with stdout also piped the document renders as plain
@@ -123,7 +124,7 @@ Half a page forward and back.
 Jump to the start or the end.
 .TP
 .B 42G
-Jump to a row by number.
+Jump to a line by number.
 .TP
 .B { }
 Move to the previous or next block.
@@ -142,10 +143,10 @@ Next and previous match.
 Outline picker.
 .TP
 .B t
-Toggle wide tables between card view and wrapping in place.
+Toggle wide tables between cards and columns.
 .TP
 .B r
-Toggle rendered blocks \(em diagrams and math \(em between art and source.
+Toggle diagrams and math between drawn and text.
 .TP
 .B ] [
 Move to the next or previous code block. The one in focus is marked in the
@@ -162,11 +163,12 @@ carries a clickable
 chip on its trailing blank row.
 .TP
 .B F
-Follow a document that is still arriving on a pipe: the view stays at the end
-as content appears. Any deliberate move away detaches it.
+Keep up with the end of a document that is still arriving on a pipe: the view
+stays at the end as content appears. Any deliberate move away lets go.
 .TP
 .B A
-Auto\-read: the view drifts down a row at a time until any motion stops it.
+Auto\-read: the view scrolls slowly on its own, a line at a time, until any
+motion stops it.
 .TP
 .B L
 What links here \(em the documents that link to this one, by
@@ -205,7 +207,7 @@ to go. A reader does not spawn programs.
 Go back where you came from.
 .TP
 .B T
-Cycle themes. On an Omarchy desktop the rotation includes
+Next theme. On an Omarchy desktop the rotation includes
 .BR omarchy ,
 the palette derived from the theme the rest of the desktop is wearing.
 .TP
@@ -213,30 +215,30 @@ the palette derived from the theme the rest of the desktop is wearing.
 Help.
 .TP
 .B H
-Fold the hint footer.
+Hide the hint row.
 .TP
 .B B
-Hide or show the breadcrumb band (the enclosing sections, pinned atop the
-page while you scroll).
+Hide or show the heading bar (the enclosing sections, pinned atop the page
+while you scroll).
 .TP
 .B I
 Show or hide the document card: words, reading time, structure, links,
 when the file last changed.
 .TP
 .B S
-Spotlight: dim every paragraph except the one nearest the centre of the
-view.
+Focus on one paragraph: dim every paragraph except the one nearest the
+centre of the view.
 .TP
 .BR za ", " zM ", " zR
-Fold the current section behind its heading; fold every section; open all.
-A
+Collapse the current section behind its heading; collapse every section;
+expand all. A
 .B <details>
-block folds the same way behind its summary. Clicking a heading or a
-summary toggles its fold. Search and links unfold their targets.
+block collapses the same way behind its summary. Clicking a heading or a
+summary collapses or expands it. Search and links expand their targets.
 .TP
 .B %
-Jump to the footnote definition of the reference nearest above the view;
-inside a definition, back to its first reference.
+Jump to the footnote text of the reference nearest above the view; inside
+the footnote text, back to its first reference.
 Ctrl\-O returns.
 .TP
 .B Esc
@@ -251,7 +253,7 @@ Quit outright, whatever is open.
 .SS Mouse
 The reader takes the mouse, so the terminal's own selection is not available
 while it is up. What replaces it copies the document's text and nothing else:
-no scrollbar column, no fold markers, no margin outline.
+no scrollbar column, no collapse markers, no margin outline.
 .TP
 .B drag
 Select. The selection is copied when the button comes up, so there is no
@@ -262,23 +264,23 @@ One click sets where a selection starts, two select the word under the
 pointer, three the whole block. A click that never became a drag lands where
 it fell: on a heading, or on a
 .B <details>
-summary, it folds that section \(em the same toggle
+summary, it collapses or expands that section \(em the same toggle
 .B za
 gives. Where the margin outline is on, a click in its columns jumps to that
 section instead of starting a selection, and a click on a section of the
-sticky heading band jumps there too, with Ctrl\-O to come back.
+heading bar jumps there too, with Ctrl\-O to come back.
 .TP
 .B link
 Click a link, wherever it is painted \(em no need to select it first. A local
 markdown file opens in the reader; a URL is copied to the clipboard.
 .TP
-.B fold marker
+.B collapse marker
 The
 .BR \[u25B8] / \[u25BE]
-in the left margin is a button: click it to fold or unfold that section, or
-that
+in the left margin is a button: click it to collapse or expand that section,
+or that
 .B <details>
-block. It folds exactly what a click on the heading beside it folds.
+block. It collapses exactly what a click on the heading beside it collapses.
 .TP
 .B pane row
 In the outline, the bookmark list and the two link panes, a click opens the row
@@ -288,11 +290,11 @@ click inside it, so nothing reaches the document behind it.
 .TP
 .B right\-click
 Open a menu. In the document it is a menu for whatever is under the pointer
-\(em a heading offers folding, a link offers opening and copying, a code block
-offers copying, a table offers the card view \(em and it is positioned before
+\(em a heading offers collapsing, a link offers opening and copying, a code
+block offers copying, a table offers cards or columns \(em and it is positioned before
 it opens, so its rows act on what was clicked rather than on wherever the view
-happens to be. Anywhere else \(em the status row, the hint footer, the
-breadcrumb, the margin, the scrollbar, or the home screen \(em it opens the
+happens to be. Anywhere else \(em the status row, the hint row, the
+heading bar, the margin, the scrollbar, or the home screen \(em it opens the
 global menu instead.
 .TP
 .B menu button
@@ -316,18 +318,18 @@ row lights it, so the keyboard cursor follows the hand. Nothing is lit when a
 menu opens. Each row shows the key that does the same thing, which is how a
 menu teaches its own shortcuts; a row with no key is one only the menu offers.
 A greyed row says what carrel could do here and declines \(em
-.B Follow the end
+.B Keep up with the end
 on a document that is not growing, or
 .B Back
 with nothing behind you.
 .TP
 .B path row
-The line under the banner on the home screen is the directory you are
+The line under the banner on the home screen is the folder you are
 looking at, spelled as its own segments \(em
 .B ~ / Work / carrel / docs
 \(em and each one is a button: click it to go there. The
 .B \[u2191]
-at the head of the row goes up one level, and
+at the head of the row goes up one folder, and
 .B Backspace
 does the same from the keyboard. On a narrow terminal the row drops whole
 segments from the shallow end and marks the cut with
@@ -340,7 +342,7 @@ screen behind the document this is what
 .B q
 does; for a document opened directly, or piped in,
 .B q
-quits and this one opens a list rooted at the document's own directory
+quits and this one opens a list rooted at the document's own folder
 instead. Both icons \(em this and the
 .B \[u2261]
 at the other end \(em are dropped on a terminal too narrow to keep the
@@ -348,7 +350,7 @@ status text, since each has another way in.
 .TP
 .B hover
 Whatever the pointer is over lights up, if it is something a click would act
-on \(em a link, a button in the footer or the status row, a row of an open
+on \(em a link, a button in the hint row or the status row, a row of an open
 pane or of the home list. It is decoration and never a decision: a click
 always resolves from its own coordinates, so a terminal that does not report
 pointer motion loses the highlight and nothing else.
@@ -364,13 +366,13 @@ you took it by, so the view does not jump when the hand lands. Clicking the
 empty track pages one screen toward the click rather than teleporting there.
 .TP
 .B lamp
-The lamp on the bottom row is a switch: click it to fold the hint footer away,
-or to bring it back \(em the same as
+The lamp on the bottom row is a switch: click it to hide the hint row, or to
+bring it back \(em the same as
 .BR H .
 .SS Home screen
 .TP
-.B Backspace
-Up one directory. The path row above the list does the same by pointer, a
+.BR \[u2190] ", " Backspace
+Up one folder. The path row above the list does the same by pointer, a
 segment at a time.
 .TP
 .BR j ", " k ", " \(ua ", " \(da
@@ -392,13 +394,15 @@ Continue reading \(em reopen one of the three most recent documents at the
 line you left it on.
 .TP
 .B T
-Cycle themes.
+Next theme.
 .TP
 .B H
-Hide or show the key hints.
+Hide or show the hint row.
 .TP
 .BR h ", " F1
-This help. The sheet types: every keystroke narrows it to the matching
+This help, a sheet titled
+.IR "carrel \(em help" .
+The sheet types: every keystroke narrows it to the matching
 rows, arrows scroll, and Esc clears the filter first, closing the sheet
 only when there is nothing left to clear.
 .B F1
@@ -421,14 +425,14 @@ in\-order subsequence, ranked best\-first \(em as it is in the outline picker.
 Search inside every file; enter opens at the match.
 .B Tab
 reads the hits as a document instead — a section per file with a link per
-match, on the same machinery that reads a diff — so the outline, folding and
+match, on the same machinery that reads a diff — so the outline, collapsing and
 a second search all work on the results, and every match jumps to its line.
 .TP
 .B d
-Browse for a directory. The library dialog opens on the directory
+Choose a folder. The folder browser opens on the folder
 .B carrel
 was run from \(em or the screen's own root when that is gone \(em showing its
-parent, itself, its children and the remembered places, so it is browsable
+parent, itself, its children and your favourites, so it is browsable
 before anything is typed: the parent row climbs, the row marked
 .I here
 is where you are, a star marks a favourite. Type to narrow the list \(em the
@@ -441,15 +445,15 @@ types straight in.
 .B Tab
 or
 .B →
-drills into the highlighted folder without choosing it,
+goes into the highlighted folder without choosing it,
 .B ←
-goes up (as does Backspace on an empty filter); arrows,
+goes up one folder (as does Backspace on an empty filter); arrows,
 .BR Ctrl\-J / Ctrl\-K
 or
 .BR Ctrl\-N / Ctrl\-P
-move, enter opens the highlighted directory,
+move, enter opens the highlighted folder,
 .B Esc
-clears the filter first and closes the dialog only when there is nothing
+clears the filter first and closes the browser only when there is nothing
 left to clear. Click a row to select it, double\-click to open it; the
 buttons and the corner cross close it, and a click outside it backs out.
 Typing owns the letters here, so
@@ -460,7 +464,7 @@ are part of the filter.
 .TP
 .B Mouse
 Click a file to select it, double\-click to open it. The same works in the
-directory picker, and on the results of a file search.
+folder browser, and on the results of a file search.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -506,13 +510,13 @@ is safe to edit by hand: unknown keys and
 comments are ignored, so a config written for another version still opens. Of
 a key repeated by hand the FIRST line wins, except
 .BR place ,
-where every line counts. The eight keys are
+where every line counts. The nine keys are
 .RS
 .TP
 .B max_width
-The reading measure in columns \(em prose wraps here and centres on the page.
+The line length in columns \(em prose wraps here and centres on the page.
 Default 90; 0 turns it off and lets prose fill the terminal. Any other value
-below 20 is raised to 20, a measure narrower than that being unreadable rather
+below 20 is raised to 20, a line narrower than that being unreadable rather
 than merely narrow. Tables, code, images and diagrams ignore it and use the
 full width.
 .TP
@@ -534,10 +538,10 @@ know is not an error: it opens on
 .B terminal
 and says so.
 .B T
-cycles them and saves the choice.
+steps to the next and saves the choice.
 .TP
 .B hints
-The lamplight hint row along the bottom. Default true;
+The hint row along the bottom. Default true;
 .B H
 toggles it.
 .TP
@@ -548,7 +552,8 @@ from its frontmatter, else its first heading \(em instead of its file name.
 Default false; a file with neither keeps its name.
 .TP
 .B breadcrumb
-The section path pinned atop the page while you scroll, with a rule under it.
+The heading bar: the section path pinned atop the page while you scroll,
+with a rule under it.
 Default true;
 .B B
 toggles it. A document with no headings never shows one.
@@ -567,12 +572,12 @@ anywhere else.
 does the same for one run.
 .TP
 .B root
-The directory the home screen lists.
+The folder the home screen lists.
 .B d
 picks one in the app.
 .TP
 .B place
-A remembered favourite root, offered by the directory picker. This key
+A favourite root, starred in the folder browser. This key
 repeats, newest first, capped at eight; choosing a root with
 .B d
 records it.
@@ -594,7 +599,7 @@ Two tab\-separated files, written atomically so a crash cannot truncate them.
 .B positions
 holds reading positions, so a document reopens where you left it;
 .B bookmarks
-holds the marks
+holds the bookmarks
 .B m
 sets. Both keep the 500 most recent documents and drop the oldest beyond that
 \(em they are a convenience, not a database. A tab or a newline in a path is
@@ -608,7 +613,7 @@ file per root ever opened, the 32 most recent kept. The
 is a format version, so a change to the format invalidates the caches
 deliberately rather than by accident.
 .SH PRIVACY
-carrel reads only the directory you point it at and sends nothing anywhere.
+carrel reads only the folder you point it at and sends nothing anywhere.
 Remote images in documents are never fetched; they render as their alt text.
 .SH SEE ALSO
 Project home:

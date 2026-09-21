@@ -390,7 +390,7 @@ fn the_picker_opens_on_the_directory_the_command_was_run_in() {
     // Compared by name, not by whole path: `/tmp` is a symlink on some hosts
     // and `current_dir` hands back the resolved one.
     let name = d.path().file_name().unwrap().to_string_lossy().into_owned();
-    assert!(raw.contains("choose a directory"), "the picker must be up");
+    assert!(raw.contains("choose a folder"), "the picker must be up");
     assert!(
         raw.contains(&name),
         "the dialog must browse the working directory {name}",
@@ -807,8 +807,8 @@ fn a_right_click_opens_a_menu_and_a_click_on_a_row_acts() {
     // `q` closes an open menu, exactly as it closes every other pane.
     let cap = pty_run("doc.md", r"\033[<2;8;3M\033[<2;8;3mqq", d.path());
     assert!(
-        cap.contains("Fold this section"),
-        "a right-click on a heading offers to fold it"
+        cap.contains("Collapse this section"),
+        "a right-click on a heading offers to collapse it"
     );
     assert!(
         cap.contains("Search"),

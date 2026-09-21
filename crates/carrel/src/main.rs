@@ -19,8 +19,8 @@ use carrel::render::{OscLink, Painted};
 use carrel::{config, home, render, scan};
 use carrel_core::{BlockIdx, Document, cluster_width, cols_for_doc_range, search, wrap};
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, KeyEventKind, MouseButton,
-    MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
@@ -1707,6 +1707,18 @@ fn apply_debounced_resize(
 /// the precedence: innermost overlay first, the home screen next, the reader
 /// last.
 fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action::Action> {
+    // Ctrl-C with something selected COPIES it, and quits only when there is
+    // nothing to copy. Raw mode clears ISIG, so this key is carrel's to
+    // define and no SIGINT is ever generated — which means the reflex a
+    // beginner brings from every other program (select, Ctrl-C) was
+    // destroying the program instead of filling the clipboard. `Q` and a
+    // Ctrl-C on an empty selection still quit, so the escape hatch is intact.
+    if k.code == KeyCode::Char('c')
+        && k.modifiers.contains(KeyModifiers::CONTROL)
+        && app.selection.is_some()
+    {
+        return Some(carrel::action::Action::SelectRelease);
+    }
     // A menu is the last thing opened, so it is the first thing that answers
     // — above every pane, and above the home screen's typing modes.
     if app.menu.is_some() {
@@ -1919,8 +1931,18 @@ fn mouse_action(
                 ptr.dragging = Some(row - top);
                 None
             } else {
-                // Track click: one gentle page toward the pointer.
-                Some(Action::Scroll(Span::Page, if row < top { -1 } else { 1 }))
+                // Track click: go THERE. Paging one screen toward the
+                // pointer is the old terminal idiom; every graphical
+                // scrollbar a beginner has ever used jumps to the clicked
+                // position, and the thumb lands centred under the pointer
+                // because that is what `grab_offset = len / 2` means.
+                Some(Action::ScrollTo(drag_target(
+                    row,
+                    len / 2,
+                    text_h,
+                    total,
+                    max_scroll,
+                )))
             }
         }
         // A press in the text proper starts (or extends, on double/triple) a
@@ -2445,6 +2467,91 @@ mod tests {
     ///
     /// `run_home()` consulted only the outline, so a document opened from the
     /// home screen gave the backlinks, forward-links and bookmark panes the
+    /// **A click on the scrollbar track goes THERE.**
+    ///
+    /// It used to page one screen toward the pointer — the terminal idiom.
+    /// Every graphical scrollbar a beginner has used jumps to the clicked
+    /// position, and the thumb lands centred under the pointer.
+    #[test]
+    fn clicking_the_scrollbar_track_jumps_to_that_position() {
+        use carrel::action::{Action, Targets};
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+        // Tall enough that the bar has a real track to click in.
+        let src = "line of text\n".repeat(400);
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(&src), 80, 24);
+        assert!(app.layout.max_scroll(app.text_h()) > 0, "there is a track");
+
+        let targets = Targets::default();
+        let mut ptr = Pointer::default();
+        let bar_x = app.cols - 1;
+        let press = move |row: u16| MouseEvent {
+            kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            column: bar_x,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Near the bottom of the track: a jump deep into the document, not
+        // one page. `Scroll(Page, 1)` is exactly the old, wrong answer.
+        let low = app.text_y() + app.text_h() - 1;
+        let got = mouse_action(press(low), &app, &targets, &mut ptr);
+        match got {
+            Some(Action::ScrollTo(row)) => assert!(
+                row > u32::from(app.text_h()),
+                "a click near the end lands near the end, got row {row}"
+            ),
+            other => panic!("expected a jump, got {other:?}"),
+        }
+
+        // And from the far end, a click at the top of the track comes back.
+        // The app has to actually be scrolled first, or the thumb is still
+        // sitting at the top and the press is a GRAB, not a track click.
+        update(&mut app, Action::GoToEnd);
+        assert!(app.view.scroll_row > 0, "we are away from the top");
+        match mouse_action(press(app.text_y()), &app, &targets, &mut ptr) {
+            Some(Action::ScrollTo(row)) => assert!(
+                row < u32::from(app.text_h()),
+                "a click at the top of the track lands at the top, got {row}"
+            ),
+            other => panic!("expected a jump back, got {other:?}"),
+        }
+    }
+
+    /// **Ctrl-C is a copy key when there is something to copy.**
+    ///
+    /// Raw mode clears ISIG, so no SIGINT is ever generated and this key is
+    /// carrel's to define. It quit instantly from every state — so the
+    /// reflex a beginner brings from every other program (select some text,
+    /// press Ctrl-C) destroyed the program instead of filling the clipboard.
+    #[test]
+    fn ctrl_c_copies_a_selection_and_quits_only_without_one() {
+        use carrel::action::Action;
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut app = App::new(
+            "t.md".into(),
+            carrel_core::Document::parse("hello there"),
+            40,
+            10,
+        );
+        let mut keys = Keys::new();
+
+        assert_eq!(
+            key_action(&mut keys, &app, ctrl_c),
+            Some(Action::Quit),
+            "nothing selected: the escape hatch is intact"
+        );
+
+        app.selection = Some(0..5);
+        assert_eq!(
+            key_action(&mut keys, &app, ctrl_c),
+            Some(Action::SelectRelease),
+            "something selected: it copies instead of quitting"
+        );
+    }
+
     /// READER's keymap: `j` scrolled the document under the open pane instead
     /// of moving its cursor. Opening the same file directly was correct, which
     /// is exactly why nobody noticed.

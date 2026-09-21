@@ -346,7 +346,7 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     buf.set_stringn(
         x,
         y + h - 1,
-        format!("└ {} marks · ↵ go · esc close {bar}", app.marks.len()),
+        format!("└ {} bookmarks · ↵ go · esc close {bar}", app.marks.len()),
         w as usize,
         theme::status(),
     );
@@ -569,7 +569,7 @@ fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
         let marker = if row.target.is_some() {
             "▸"
         } else {
-            "⌾ no fetch"
+            "⌾ never opened"
         };
         buf.set_stringn(
             x + 1,
@@ -759,7 +759,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     }
     let bar = "─".repeat(w as usize);
     let title = if filter.is_empty() {
-        "┌ carrel — keys".to_string()
+        "┌ carrel — help".to_string()
     } else {
         format!("┌ carrel — keys /{filter}")
     };
@@ -767,7 +767,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     buf.set_stringn(
         x,
         y + h - 1,
-        format!("└ type narrows · ↑↓ scroll · esc back {bar}"),
+        format!("└ type to filter · ↑↓ scroll · esc close {bar}"),
         w as usize,
         theme::status(),
     );
@@ -2361,7 +2361,7 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
                 &mut x,
                 area.y,
                 right,
-                "[ choose a directory ]",
+                "[ choose a folder ]",
                 Action::PickerOpen,
                 Z_CHROME,
             );
@@ -2483,8 +2483,8 @@ fn paint_hits(frame: &mut Frame, home: &Home, area: Rect) {
 fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targets: &mut Targets) {
     let left = match home.mode {
         HomeMode::Filter => format!("filter: {}", home.filter),
-        HomeMode::Normal => home.note.clone().unwrap_or_else(|| "normal".into()),
-        HomeMode::Picker => "choose a directory".into(),
+        HomeMode::Normal => home.note.clone().unwrap_or_default(),
+        HomeMode::Picker => "choose a folder".into(),
         HomeMode::Search => format!("search: {}", home.query),
     };
     let mut right = if home.mode == HomeMode::Search {
@@ -2503,6 +2503,12 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     if home.unreadable > 0 {
         let _ = write!(right, "   {} unreadable", home.unreadable);
     }
+    // The way out, in words. The reader's status row has said `q quit` since
+    // the click-first release; the home screen — the screen a bare `carrel`
+    // opens on, and so the first one a beginner ever sees — said nothing at
+    // all, and with `hints = false` or a narrow window there was no `≡` and
+    // no hint row either: literally nothing on screen naming the exit.
+    right.push_str("   T theme · q quit");
 
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
@@ -2523,6 +2529,16 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     let rx = stop.saturating_sub(rw);
     if rx > lx + carrel_core::display_width(&left) {
         buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
+        // Registered where the paint put them, the reader's rule exactly.
+        let mut button = |word: &str, action: Action| {
+            if let Some(at) = right.find(word) {
+                let dx = carrel_core::display_width(&right[..at]);
+                let w = carrel_core::display_width(word);
+                targets.push(action, Zone::new(rx + dx, area.y, w, 1), Z_CHROME);
+            }
+        };
+        button("T theme", Action::ThemeCycle);
+        button("q quit", Action::Quit);
     }
 }
 
@@ -2643,7 +2659,7 @@ fn paint_picker(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Target
         buf.set_stringn(
             bx.x + 1,
             bx.y + 2,
-            "  no directory matches",
+            "  no folder matches",
             w.saturating_sub(1) as usize,
             theme::dim(),
         );
@@ -3162,11 +3178,11 @@ mod tests {
         let open = buffer_of(&app, 60, 30);
         let open_text: String = (0..30).map(|y| line(&open, y) + "\n").collect();
         assert!(
-            open_text.contains("carrel — keys"),
+            open_text.contains("carrel — help"),
             "title painted:\n{open_text}"
         );
         assert!(open_text.contains("this help"), "a reader row painted");
-        assert!(open_text.contains("motions"), "a group heading painted");
+        assert!(open_text.contains("moving"), "a group heading painted");
     }
 
     #[test]
@@ -3196,16 +3212,16 @@ mod tests {
         let mut app = App::new("t.md".into(), Document::parse("body text\n"), 60, 30);
         app.help = Some(crate::app::Help {
             scroll: 0,
-            filter: "fold".into(),
+            filter: "collapse".into(),
         });
         let buf = buffer_of(&app, 60, 30);
         let text: String = (0..30).map(|y| line(&buf, y) + "\n").collect();
         assert!(
-            text.contains("/fold"),
+            text.contains("/collapse"),
             "the title echoes the filter:\n{text}"
         );
         assert!(
-            text.contains("fold this section"),
+            text.contains("collapse this section"),
             "the matching row survives:\n{text}"
         );
         assert!(
@@ -3233,7 +3249,7 @@ mod tests {
         let buf = buffer_of(&app, 60, 20);
         let text: String = (0..20).map(|y| line(&buf, y) + "\n").collect();
         assert!(
-            text.contains("library: browse folders"),
+            text.contains("choose another folder"),
             "home rows painted:\n{text}"
         );
     }
@@ -3420,7 +3436,7 @@ mod tests {
         let foot = line(&buf, 11);
         assert!(foot.starts_with("╭●"), "lamp first: {foot:?}");
         assert!(
-            foot.contains("reading") && foot.contains("j/k scroll"),
+            foot.contains("reading") && foot.contains("↑/↓ scroll"),
             "{foot:?}"
         );
         assert!(
@@ -3444,7 +3460,7 @@ mod tests {
     fn every_footer_hint_is_a_chip_on_the_status_surface() {
         let buf = frame_of("# T\n\nbody text here", 60, 12);
         let foot = line(&buf, 11);
-        let at = foot.find(" j/k scroll ").expect("the first chip");
+        let at = foot.find(" ↑/↓ scroll ").expect("the first chip");
         let at = u16::try_from(foot[..at].chars().count()).unwrap();
         let bg = theme::button().bg;
         assert!(bg.is_some(), "a button has a surface");
@@ -3545,22 +3561,22 @@ mod tests {
         let status = line(&buf, 11);
         assert!(status.starts_with("╰○"), "folded lamp: {status:?}");
         assert!(status.contains("t.md"));
-        assert!(!buffer_text(&buf).contains("j/k scroll"), "hints are gone");
+        assert!(!buffer_text(&buf).contains("↑/↓ scroll"), "hints are gone");
     }
 
     #[test]
-    fn a_narrow_footer_drops_hints_from_the_right_but_keeps_h_more() {
+    fn a_narrow_footer_drops_hints_from_the_right_but_keeps_help() {
         let buf = frame_of("# T\n\nbody", 36, 12);
         let foot = line(&buf, 11);
         assert!(
-            foot.contains("h more"),
+            foot.contains("h help"),
             "the door to help survives: {foot:?}"
         );
         assert!(
             !foot.contains("outline"),
             "rightmost hints dropped first: {foot:?}"
         );
-        assert!(foot.contains("j/k scroll"), "leftmost hints kept: {foot:?}");
+        assert!(foot.contains("↑/↓ scroll"), "leftmost hints kept: {foot:?}");
     }
 
     /// A root outside `$HOME` starts with the filesystem root, whose label
@@ -3586,7 +3602,7 @@ mod tests {
             foot.starts_with("╭●") && foot.contains("browse"),
             "{foot:?}"
         );
-        assert!(foot.contains("d directory"), "{foot:?}");
+        assert!(foot.contains("d folder"), "{foot:?}");
     }
 
     #[test]
@@ -3675,7 +3691,7 @@ mod tests {
             .join("\n");
         assert!(all.contains("Nothing to read here"), "{all}");
         assert!(
-            all.contains("[ choose a directory ]"),
+            all.contains("[ choose a folder ]"),
             "with a button that opens the picker:\n{all}"
         );
     }
@@ -3751,7 +3767,7 @@ mod tests {
             .map(|y| line(&buf, y))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(all.contains("choose a directory"), "{all}");
+        assert!(all.contains("choose a folder"), "{all}");
         // The input row echoes what is being typed, with a cursor after it.
         assert!(all.contains("› /▏"), "no input row:\n{all}");
         // …and the matches for it are listed beneath, `/` being one
