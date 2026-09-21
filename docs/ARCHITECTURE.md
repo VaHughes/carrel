@@ -117,10 +117,10 @@ Key facts that are easy to get wrong:
 
 | Module | What it is |
 |---|---|
-| `main.rs` | Entry, `USAGE`, the event loop (`run_loop`, shared by file and piped entries), `paint` (every frame inside a DEC 2026 synchronized update plus the OSC 8 post-draw pass), mtime `Reloader`, rescan timer, signal handling. |
-| `app.rs` | The state machine — `App`, `update()`, folding, bookmarks, links, `reveal_byte`, `adapt` (the single funnel every parse goes through for diff detection), `text_size`/`text_x`/`text_y`. |
+| `main.rs` | Entry, `USAGE`, `key_action` (the ONE key dispatcher, called by both loops), the event loop (`run_loop`, shared by the file, piped and `--tutorial` entries), `paint` (every frame inside a DEC 2026 synchronized update plus the OSC 8 post-draw pass), mtime `Reloader`, rescan timer, signal handling. |
+| `app.rs` | The state machine — `App`, `update()`, folding, bookmarks, links, `reveal_byte`, `adapt` (the single funnel every parse goes through for diff detection), `text_size`/`text_x`/`text_y`, the settings rows (`settings_rows`, derived per call, never stored), and `WELCOME` (`welcome.md`, embedded with `include_str!` and opened pathless like a pipe). |
 | `action.rs` | The shared `Action` intent enum and the per-frame click-target registry (`Targets`). |
-| `keys.rs` | Vim motion set with a count register; help tables and footer hint tables with drift guards. |
+| `keys.rs` | Vim motion set with a count register, plus the beginner bindings — which by rule only ever claim keys that were **already unbound**, so the vim set is never diminished. Help tables and footer hint tables with drift guards. |
 | `view.rs`, `layout.rs` | Viewport (a `DocByte` anchor) and the frontend-side layout (`Layout::with_hidden`, `block_width(kind)` — exhaustive match over `NodeKind`). |
 | `render.rs` | Paints rows into the `Buffer`; never uses `Paragraph`/`Wrap`. Highlights by `Buffer::set_style` over a rect, never by splitting spans. `declare_wide_cells` works around ratatui#2651. |
 | `theme.rs` | The only file with a color. 17 palettes plus `omarchy` (derived from the desktop's `colors.toml`, `omarchy.rs`). |
@@ -155,6 +155,12 @@ Key facts:
 - **Never call `ratatui_image::Picker::from_query_stdio`** — its query thread steals stdin.
   Font size comes from `TIOCGWINSZ`, protocol from the environment. Pixels never enter the core.
 - **Sub-image scroll clipping is deferred** (top-anchored crop) until the GUI's image work.
+- **Carrel never reports success it cannot verify.** OSC 52 is written blind — there is no
+  reply — so the clipboard notes say what was sent, and the mechanism is documented in the
+  help sheet and the man page's CLIPBOARD section instead of being asserted. The image
+  protocol is likewise never probed (`from_query_stdio` hangs), so `Images::kind()` reports
+  what `from_fontsize` actually chose and the info card prints it rather than the README's
+  claim. Anything added here that cannot be checked must say so.
 - **Selection is a doc-byte range**; `cluster_at_col` in core is the pointer-hit inverse of
   `cols_for_doc_range`. Copy goes out via OSC 52.
 

@@ -8,17 +8,17 @@ Last updated: 2026-09-21
   fold-marker buttons, right-click and `≡` menus, footer chips, hover, the clickable path
   row, `⌂`, `--no-mouse`). Published to crates.io (both crates), GitHub releases (six unix
   targets + shell installer), Homebrew tap, Fedora COPR (F43/F44, x86_64 + aarch64).
-- **A release is owed.** Six commits sit unreleased on `main`, and the oldest of them is a
-  fix for a broken install: `merman-core` and `merman-ascii` are pinned exactly beside
+- **A release is owed.** Twelve commits sit unreleased on `main`, and the oldest that
+  matters is a fix for a broken install: `merman-core` and `merman-ascii` are pinned exactly beside
   `merman` (`95a3a0d`) because upstream published `merman-ascii 0.8.0-alpha.6` on
   2026-09-02 and the caret ranges let it resolve in, so **`cargo install carrel` fails to
   compile for every version on crates.io** until this ships. Prebuilt channels — the
   installer, Homebrew, COPR, the AUR recipes — build from the lock file and were never
   affected. The README says `cargo install carrel --locked` in the meantime.
-- Unreleased, newest first: **the beginner slate** — plain words throughout, the
-  keys a beginner presses, honesty about what carrel cannot verify, a settings
-  pane on `,` and a built-in first document on `carrel --tutorial`; dead-end
-  buttons and the code-block `[copy]` chip (`7ce0b53`);
+- Unreleased, newest first: **the beginner slate** (`efa4d81`, `c53c246`, `aea46b3`,
+  `3e5a4dc`) — plain words throughout, the keys a beginner presses, honesty about
+  what carrel cannot verify, a settings pane on `,` and a built-in first document on
+  `carrel --tutorial`; dead-end buttons and the code-block `[copy]` chip (`7ce0b53`);
   the filterable help sheet (`c8ee8c2`); clickable breadcrumb segments (`721b117`); the
   library-browser picker and search results as a document (`0d11ad2`); the documentation
   restructure (`91f1816`); the merman pin (`95a3a0d`).

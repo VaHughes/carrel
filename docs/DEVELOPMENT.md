@@ -99,6 +99,15 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
 - **A new clickable thing registers itself; it is never re-derived** (`Targets` in `action.rs`).
 - **A new key goes in the help tables, the man page (`contrib/carrel.1`), the completions,
   and the menus** — the guards above will tell you which one you forgot.
+- **One word per idea in anything the reader sees.** The 2026-09-21 pass settled the
+  vocabulary: *collapse*/*expand* (never fold), *folder* (never directory, library, root,
+  place or level), *heading bar* (never breadcrumb), *hint row* (never key hints or hint
+  footer), *bookmarks* (never marks), *focus* (never spotlight), *text width* (never
+  measure), *drawn ↔ text* for diagrams and math, *cards ↔ columns* for wide tables, *keep
+  up with the end* (never follow — which means following a *link*). Internal identifiers
+  keep their own names (`FoldToggle`, `library_root`, `breadcrumb.rs`); this rule is about
+  strings, help rows, menu labels, notes, the man page and the README. **Nothing enforces
+  it** — there is no compiler for prose — so check new strings against this list by hand.
 - **`theme.rs` is the only file with a color.** Diff scopes go in the *container*
   highlighting pass, not the ordered one.
 - **`block_rows` carries images, mermaid and math**; extend its `debug_assert`, never delete it.
@@ -119,6 +128,9 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
 - Config: `$XDG_CONFIG_HOME/carrel/config`, `key = value` lines. Keys: `max_width` (90),
   `theme`, `hints` (true), `titles` (false), `outline_margin` (false), `breadcrumb` (true),
   `mouse` (true), `root`, `place` (repeats, newest first, capped at eight). Unknown keys ignored.
+  The settings pane (`,`) shows all but `mouse`, `root` and `place` with their live values and
+  prints the file's path; each row writes through the one existing writer for that setting, so
+  the pane never becomes a second place persistence happens.
 - State: `$XDG_STATE_HOME/carrel` — reading positions (`permille`, `words`; the old 3-field
   form still parses) and bookmarks, per document.
 - Cache: `$XDG_CACHE_HOME/carrel` — the home-screen index (paths and mtimes only).
