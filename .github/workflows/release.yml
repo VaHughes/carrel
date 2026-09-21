@@ -173,7 +173,7 @@ jobs:
       # - 1 "global" task that builds universal installers
       # - N "local" tasks that build each platform's binaries and platform-specific installers
       matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
-    runs-on: ${{ matrix.runner == 'ubuntu-22.04' && fromJSON('["self-hosted", "linux", "x64", "ghostmachine", "build"]') || matrix.runner }}
+    runs-on: ${{ matrix.runner == 'ubuntu-22.04' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["self-hosted", "linux", "x64", "ghostmachine", "build"]') || matrix.runner }}
     container: ${{ matrix.runner == 'ubuntu-22.04' && 'ubuntu:22.04@sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02' || (matrix.container && matrix.container.image || null) }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
