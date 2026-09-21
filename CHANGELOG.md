@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Two keys stop eating the next keystroke.** Ctrl-G and Ctrl-Z armed
+  carrel's `g` and `z` two-key sequences and then swallowed whatever came
+  next, with nothing on screen saying a sequence was pending — Ctrl-Z in
+  particular is the suspend reflex, and carrel runs with signals off. They do
+  nothing now. F3, which was unbound, finds the next match.
 - **A settings pane, on `,` or from the menu.** Carrel remembered nine
   preferences and named the file they live in nowhere a reader would find it —
   not in a menu, not in the help sheet, not in `--help`, only in the README.

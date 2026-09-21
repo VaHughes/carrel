@@ -119,11 +119,19 @@ impl Keys {
             KeyCode::Char(' ') | KeyCode::PageDown => Some(Action::Scroll(Span::Page, self.take())),
             KeyCode::Char('b') | KeyCode::PageUp => Some(Action::Scroll(Span::Page, -self.take())),
 
-            KeyCode::Char('g') => {
+            // `g` and `z` open a two-key sequence — but ONLY unmodified.
+            // The arms below have no `ctrl` guard of their own, so Ctrl-G
+            // and Ctrl-Z used to arm the prefix too and then swallow
+            // whatever was pressed next, with nothing on screen to say a
+            // prefix was pending. Ctrl-Z in particular is the suspend
+            // reflex, and carrel runs with signals off, so the reader got
+            // an invisible dead state instead of the job control they
+            // expected. Unmodified they are vim's own keys, untouched.
+            KeyCode::Char('g') if !ctrl => {
                 self.pending_g = true;
                 None
             }
-            KeyCode::Char('z') => {
+            KeyCode::Char('z') if !ctrl => {
                 self.pending_z = true;
                 None
             }
@@ -148,6 +156,9 @@ impl Keys {
             KeyCode::Char(',') => Some(Action::SettingsToggle),
             KeyCode::Char('/') => Some(Action::SearchOpen(Direction::Forward)),
             KeyCode::Char('?') => Some(Action::SearchOpen(Direction::Backward)),
+            // F3 is "find next" in a great deal of software and was
+            // unbound here, so it costs nothing to honour it.
+            KeyCode::F(3) => Some(Action::MatchStep(1)),
             KeyCode::Char('n') => Some(Action::MatchStep(self.take())),
             KeyCode::Char('N') => Some(Action::MatchStep(-self.take())),
 
@@ -279,7 +290,7 @@ impl Keys {
                 KeyCode::Home => Some(Action::HomeGo(Edge::First)),
                 KeyCode::PageDown => Some(Action::HomePage(1)),
                 KeyCode::PageUp => Some(Action::HomePage(-1)),
-                KeyCode::Char('g') => {
+                KeyCode::Char('g') if !ctrl => {
                     self.pending_g = true;
                     None
                 }
@@ -596,7 +607,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("42G", "go to line 42"),
     ("§", "search"),
     ("/ ?", "search forward / backward"),
-    ("n N", "next / previous match"),
+    ("n N F3", "next / previous match"),
     ("zz zt zb", "match to middle/top/bottom"),
     ("§", "links"),
     ("Tab Shift-Tab", "select next / previous link"),
@@ -1436,6 +1447,30 @@ mod tests {
             m.map_home(code(KeyCode::PageUp), HomeMode::Normal),
             Some(Action::HomePage(-1)),
         );
+        // Ctrl-G and Ctrl-Z used to arm the `g` / `z` prefixes and then
+        // eat the next keystroke, with nothing on screen saying why.
+        assert_eq!(m.map(ctrl('g'), false), None, "Ctrl-G arms nothing");
+        assert_eq!(
+            m.map(k('j'), false),
+            Some(Action::Scroll(Span::Line, 1)),
+            "so the key after it is not swallowed"
+        );
+        assert_eq!(m.map(ctrl('z'), false), None, "Ctrl-Z arms nothing");
+        assert_eq!(
+            m.map(k('j'), false),
+            Some(Action::Scroll(Span::Line, 1)),
+            "nor after that one"
+        );
+        // …but the bare vim prefixes still work.
+        assert_eq!(m.map(k('z'), false), None, "z arms the prefix");
+        assert_eq!(m.map(k('z'), false), Some(Action::Recenter(Where::Middle)));
+
+        // F3 is "find next" almost everywhere, and was unbound.
+        assert_eq!(
+            m.map(code(KeyCode::F(3)), false),
+            Some(Action::MatchStep(1))
+        );
+
         // …and the vim set is untouched by all of it.
         assert_eq!(
             m.map(k('j'), false),
