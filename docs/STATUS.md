@@ -1,25 +1,35 @@
 # Status
 
-Last updated: 2026-09-07
+Last updated: 2026-09-21
 
 ## Current state
 
-- **Latest release: v2026.9.3** (the click-first release: link clicks, fold-marker buttons,
-  right-click and `≡` menus, footer chips, hover, the clickable path row, `⌂`, `--no-mouse`).
-  Published to crates.io (both crates), GitHub releases (six unix targets + shell installer),
-  Homebrew tap, Fedora COPR (F43/F44, x86_64 + aarch64).
-- **Unreleased on `main`:** `merman-core` and `merman-ascii` are now pinned exactly beside
-  `merman` (commit `95a3a0d`) so `cargo install carrel` builds again without `--locked`
-  after upstream published `merman-ascii 0.8.0-alpha.6` on 2026-09-02. Prebuilt channels were
-  never affected. This needs a release to reach crates.io; until then the README says
-  `cargo install carrel --locked`.
-- Working tree is clean. `cargo test --workspace`: **761 tests, all green** (2026-09-07,
-  rustc 1.98.1 locally; CI pins 1.97, MSRV 1.95).
+- **Latest release: v2026.9.3** (2026-09-03 — the click-first release: link clicks,
+  fold-marker buttons, right-click and `≡` menus, footer chips, hover, the clickable path
+  row, `⌂`, `--no-mouse`). Published to crates.io (both crates), GitHub releases (six unix
+  targets + shell installer), Homebrew tap, Fedora COPR (F43/F44, x86_64 + aarch64).
+- **A release is owed.** Six commits sit unreleased on `main`, and the oldest of them is a
+  fix for a broken install: `merman-core` and `merman-ascii` are pinned exactly beside
+  `merman` (`95a3a0d`) because upstream published `merman-ascii 0.8.0-alpha.6` on
+  2026-09-02 and the caret ranges let it resolve in, so **`cargo install carrel` fails to
+  compile for every version on crates.io** until this ships. Prebuilt channels — the
+  installer, Homebrew, COPR, the AUR recipes — build from the lock file and were never
+  affected. The README says `cargo install carrel --locked` in the meantime.
+- Unreleased, newest first: dead-end buttons and the code-block `[copy]` chip (`7ce0b53`);
+  the filterable help sheet (`c8ee8c2`); clickable breadcrumb segments (`721b117`); the
+  library-browser picker and search results as a document (`0d11ad2`); the documentation
+  restructure (`91f1816`); the merman pin (`95a3a0d`).
+- Working tree is clean. All five gates green as of 2026-09-21: **787 tests**, clippy
+  zero-warning, `cargo fmt --check`, `check-discipline.sh`, `check-packaging.sh`.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list.
 
 ## Recently completed
 
+- Unreleased (2026-09-16 / 09-21) — the library browser replacing the path-prompt picker,
+  search results opening as a generated document, clickable breadcrumb segments, a help
+  sheet that filters as you type, and painted ways out of the two home-screen dead ends
+  plus a `[copy]` chip on the focused code block.
 - 2026.9.3 — click-first: click-target registry (`Targets`), menus, hover, path row, footer
   chips, fixes to status-row/margin-outline hit bounds, pane keymap ownership, double-click
   slack, hyperlink repaint color and overlay bleed-through, man-page fold glyphs.
@@ -46,10 +56,10 @@ decision — do not propose them):
 5. Optional: set `HOMEBREW_TAP_TOKEN` and restore `publish-jobs = ["homebrew"]` to
    re-automate the formula push (currently hand-pushed each release).
 
-Features still open on the README roadmap: marginalia, search results as a document, image
-lightbox, word-level diff color, tags browser (deliberately not built — `/rust` on the home
-screen already retrieves; a browser adds discovery, wanted only if the vault persona is
-confirmed), wide-table horizontal scrolling, hyphenation at narrow measures.
+Features still open on the README roadmap: marginalia, image lightbox, word-level diff
+color, tags (a browser is deliberately not built — `/rust` on the home screen already
+retrieves; a browser adds discovery, wanted only if the vault persona is confirmed),
+wide-table horizontal scrolling, hyphenation at narrow measures.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) lands.
 
