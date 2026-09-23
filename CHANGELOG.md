@@ -4,6 +4,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+## 2026.9.23
+
 - **An image lightbox.** Click an image, choose Images from the menu, or press
   Enter at one to view it full-screen. `[` / `]` and arrows walk images; closing
   restores the reader without moving its position. Local images fit the window;

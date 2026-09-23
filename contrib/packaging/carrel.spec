@@ -2,7 +2,7 @@
 # .src.rpm and so needs rpmbuild locally. The exact command is in ../packaging/README.md.
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.9.3
+Version:        2026.9.23
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 License:        MIT OR Apache-2.0
@@ -58,6 +58,10 @@ cargo test --locked --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Wed Sep 23 2026 Joshua Hughes <hughes238@gmail.com> - 2026.9.23-1
+- Image lightbox, highlights and notes, word diffs and scrolling tables
+- Reader navigation, settings, tutorial and unlocked cargo install fix
+
 * Thu Sep 03 2026 Joshua Hughes <hughes238@gmail.com> - 2026.9.3-1
 - Click-first: links, headings, fold markers, pane rows, the home list
   and the path row above it are all clickable

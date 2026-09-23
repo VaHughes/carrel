@@ -192,7 +192,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 | **A row in a pane** | The outline, the bookmark list and both link panes open the row under the pointer. |
 | **The margin outline** | Click a section to jump to it. |
 | **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
-| **The scrollbar** | Drag the thumb, or click the track to page toward the pointer. The wheel scrolls, and gathers speed if you keep spinning it. |
+| **The scrollbar** | Drag the thumb, or click the track to jump to that position. The wheel scrolls, and gathers speed if you keep spinning it. |
 | **Hovering** | Whatever the pointer is over lights up, if clicking it would do something. Decoration only — a click always resolves from where it landed. |
 
 The trade is that your terminal's own text selection stops working while carrel has the
