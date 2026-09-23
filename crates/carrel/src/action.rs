@@ -87,6 +87,11 @@ pub enum Action {
     /// `t`: flip every table in the document between card view and the
     /// padded-wrap rendering. Transient — documents open in auto (cards).
     TableToggle,
+    /// Pan a table in columns view. None chooses the first visible table.
+    TableScroll {
+        block: Option<carrel_core::BlockIdx>,
+        delta: i32,
+    },
     /// `h` / `F1`: toggle the key-binding overlay. While it is up, scroll
     /// actions scroll the sheet, dismiss-shaped actions close it, and
     /// everything else is inert.

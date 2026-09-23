@@ -79,10 +79,14 @@ reopens one.
 | `position.rs` | `SrcByte` / `DocByte` / `NodeId` / `BlockIdx` / `Affinity`. Every position is a u32 byte offset by design (`cast_possible_truncation` is allowed for this reason; non-position narrowing casts use `u16::try_from`). |
 | `document.rs` | The display-text model with the **doc-to-source provenance table** (`Prov`) — the part no editor has, because editors have source space == doc space and a markdown reader does not. Paragraphs, headings, code, lists, quotes, tables, rules, inline style, frontmatter metadata cards, definition lists, footnotes, GFM alerts, `<details>`, wikilinks, `www.` autolinks, attached `^sup^`/`~sub~`. The pulldown-cmark event match has **no catch-all**: a parser bump that adds a variant fails to compile rather than silently dropping a construct. |
 | `search.rs` | Complete per spec. `Matches` holds no row/column/width/block. `intersecting()` implements the wrap-affinity rule as two half-open comparisons. `content_pattern` keeps grep (home-screen `/`) and reader matching identical. Measured: 648 µs for a 3-char literal over 1 MB; 0.74 ms per keystroke. |
-| `layout/` | The reflow layer. `units.rs` = all Unicode (UAX #14 break units, measured, width-independent); `pack.rs` = all fitting (never sees a string, so its invariants are testable against hand-built units); `mod.rs` = public API and the 64 KiB chunker. **Every block wraps through the same `wrap`** — what differs is the fit: code carries a continuation marker + hanging indent, tables arrive pre-aligned from parse, images/mermaid/math wrap their alt text while their real heights are a frontend override (`block_rows`). `proptests.rs` holds the property tests. |
+| `layout/` | The reflow layer. `units.rs` = all Unicode (UAX #14 break units, measured, width-independent); `pack.rs` = all fitting (never sees a string, so its invariants are testable against hand-built units); `mod.rs` = public API and the 64 KiB chunker. **Wrapping uses the same `wrap`** — what differs is the fit: code carries a continuation marker + hanging indent, tables arrive pre-aligned from parse, images/mermaid/math wrap their alt text while their real heights are a frontend override (`block_rows`). `proptests.rs` holds the property tests. |
 | `highlight.rs` | syntect scopes classified into semantic `TokenKind`s (including `Inserted`/`Deleted`/`Meta` for diffs). **Lazy** — `Document::tokens(b)` on first paint; parse-time highlighting would cost a code-heavy document ~100 ms. Two-pass classification (containers before innermost specificity); use `Scope::is_prefix_of`, never `build_string`. |
 | `math.rs` | LaTeX via `pulldown-latex` (pinned `=0.8.0`) to a cell-free `MathExpr`. Inline math enters `Document::text` already rendered — the display text is authoritative. |
 | `diff.rs` | Turns a unified diff or `git log -p` into markdown — a heading per commit and per file, hunks as `diff` fences — so folding, breadcrumb, outline and search work on diffs with no new code. Detection never touches a `.md` file. |
+
+Word-level diff emphasis lives in `highlight/diff_words.rs`: a bounded LCS over
+Unicode word boundaries within adjacent removal/addition runs splits the line tokens
+into semantic `InsertedWord` / `DeletedWord` ranges. It never rewrites display text.
 
 Key facts that are easy to get wrong:
 
@@ -144,6 +148,11 @@ Key facts:
 - **Two width budgets.** `text_size` returns `(prose, bleed, height)`; `text_w()` is the prose
   measure, `bleed_w()` the full area. `table_overflows` must get the bleed width.
   `paint_rows` takes the full area and shadows a per-block rect inside the loop.
+- **Columns-mode tables retain whole logical rows.** The frontend's `column_rows`
+  bypasses wrapping; `App::table_offsets` is transient viewport state, cleared on
+  document changes. `visible_row` clips at grapheme boundaries for both paint and
+  pointer inversion. Search reveals its column; offsets clamp to the current width.
+  Table controls register their own targets, including the block they act on.
 - **`App::reveal_byte` is the one gate** for every byte-targeted jump — a fold must never make
   a destination unreachable. Hidden blocks are zero rows and zero gap; `paint_rows` must skip
   them explicitly.

@@ -257,9 +257,11 @@ pub struct App {
     /// can ever write the real state file.
     pub state_dir: Option<std::path::PathBuf>,
     /// When `false` (the default), an overflowing table lays out as cards
-    /// instead of wrapping in place. `t` flips this. See
+    /// instead of horizontally scrolling columns. `t` flips this. See
     /// [`Action::TableToggle`].
     pub wrap_tables: bool,
+    /// Transient horizontal viewport per table; discarded when text changes.
+    pub table_offsets: HashMap<BlockIdx, u32>,
     /// The lamplight hint footer is showing. `H` and a click on the lamp
     /// toggle it; persisted through `config_dir` so the choice sticks.
     pub hints: bool,
@@ -556,6 +558,7 @@ impl App {
             results_root: None,
             state_dir: None,
             wrap_tables: false,
+            table_offsets: HashMap::new(),
             hints: true,
             help: None,
             outline: None,
@@ -699,6 +702,7 @@ impl App {
             )
         });
         self.mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        self.table_offsets.clear();
         self.doc = self.parse_adapting(&src);
         self.load_marks();
         self.matches = None;
@@ -760,6 +764,7 @@ impl App {
         // Generated markdown, never sniffed as a diff: it is already one.
         self.diff_ok = false;
         let src = crate::grep::render_results(root, query, hits);
+        self.table_offsets.clear();
         self.doc = self.parse_adapting(&src);
         self.load_marks();
         self.mtime = None;
@@ -802,6 +807,7 @@ impl App {
     pub fn open_welcome(&mut self) {
         self.save_position();
         self.diff_ok = false;
+        self.table_offsets.clear();
         self.doc = self.parse_adapting(WELCOME);
         self.mtime = None;
         self.matches = None;
@@ -939,6 +945,7 @@ impl App {
     /// re-read — a piped stream re-parses through here on every append.
     /// Sets no note: one reload is an event, a stream of them is weather.
     pub fn reload_from(&mut self, src: &str) {
+        self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
         self.layout = Layout::with_measure(
             &self.doc,
@@ -1097,7 +1104,26 @@ impl App {
         if self.unfold_to(byte) {
             self.relayout();
         }
+        self.reveal_table_byte(byte);
         self.view.reveal(&self.doc, &self.layout, byte, h, at);
+    }
+
+    /// Reveal horizontally without disturbing the vertical reading anchor.
+    fn reveal_table_byte(&mut self, byte: u32) {
+        let b = self.doc.block_at_doc(DocByte(byte));
+        if self.wrap_tables && self.table_max_offset(b) > 0 {
+            let mut rows = Vec::new();
+            self.layout.rows_for(&self.doc, b, &mut rows);
+            if let Some(row) = rows.iter().find(|r| r.doc.contains(&byte)) {
+                let prefix = &self.doc.text[row.doc.start as usize..byte as usize];
+                let col = crate::layout::table_columns(prefix);
+                let width = u32::from(self.block_span_x(b).1.saturating_sub(row.indent).max(1));
+                let offset = self.table_offset(b);
+                if col < offset || col >= offset.saturating_add(width.saturating_sub(1)) {
+                    self.table_offsets.insert(b, col.saturating_sub(width / 2));
+                }
+            }
+        }
     }
 
     /// Re-derive the page after `folded` changed: if the anchor's block is
@@ -1573,8 +1599,8 @@ impl App {
         let mut rows = Vec::new();
         self.layout.rows_for(&self.doc, block, &mut rows);
         let sub = usize::try_from(vrow.saturating_sub(self.layout.row_start(block))).ok()?;
-        let r = rows.get(sub)?;
-        if r.doc.is_empty() {
+        let r = self.visible_row(rows.get(sub)?);
+        if r.doc.is_empty() || col - block_x < r.indent {
             return None;
         }
         let text = self
@@ -1589,6 +1615,53 @@ impl App {
         ))
     }
 
+    /// Effective pan is clamped against the current viewport on every use.
+    #[must_use]
+    pub fn table_offset(&self, block: BlockIdx) -> u32 {
+        if !self.wrap_tables {
+            return 0;
+        }
+        self.table_offsets
+            .get(&block)
+            .copied()
+            .unwrap_or(0)
+            .min(self.table_max_offset(block))
+    }
+
+    #[must_use]
+    pub fn table_max_offset(&self, block: BlockIdx) -> u32 {
+        if block.get() >= self.doc.block_count() {
+            return 0;
+        }
+        let node = self.doc.node_for_block(block);
+        let NodeKind::Table { cols, .. } = &node.kind else {
+            return 0;
+        };
+        let total = cols.iter().fold(0u32, |a, &w| a + u32::from(w))
+            + 3 * cols.len().saturating_sub(1) as u32;
+        let available = self.block_span_x(block).1.saturating_sub(node.indent);
+        total.saturating_sub(u32::from(available))
+    }
+
+    #[must_use]
+    pub fn visible_row(&self, row: &carrel_core::Row) -> carrel_core::Row {
+        if self.wrap_tables
+            && matches!(
+                self.doc.node_for_block(row.block).kind,
+                NodeKind::Table { .. }
+            )
+        {
+            crate::layout::clipped_row(
+                &self.doc,
+                row,
+                self.table_offset(row.block),
+                self.block_span_x(row.block).1,
+            )
+        } else {
+            row.clone()
+        }
+    }
+
     #[must_use]
     pub fn searching(&self) -> bool {
         matches!(self.mode, Mode::Search { .. })
@@ -1596,9 +1669,35 @@ impl App {
 
     /// §3.5: rebuild the derived layer, then restore position from the anchor.
     pub fn on_resize(&mut self, cols: u16, rows: u16) {
+        // Preserve a visible search destination when a narrower viewport
+        // would otherwise clip it. A manually hidden match stays hidden.
+        let visible_match = self
+            .matches
+            .as_ref()
+            .and_then(|m| m.current.map(|i| m.ranges[i].start))
+            .filter(|&byte| {
+                let b = self.doc.block_at_doc(DocByte(byte));
+                if !self.wrap_tables
+                    || self.layout.height(b) == 0
+                    || !matches!(self.doc.node_for_block(b).kind, NodeKind::Table { .. })
+                {
+                    return false;
+                }
+                let mut rows = Vec::new();
+                self.layout.rows_for(&self.doc, b, &mut rows);
+                rows.iter().enumerate().any(|(i, row)| {
+                    let y = self.layout.row_start(b) + i as u32;
+                    y >= self.view.scroll_row
+                        && y < self.view.scroll_row + u32::from(self.text_h())
+                        && self.visible_row(row).doc.contains(&byte)
+                })
+            });
         self.cols = cols;
         self.rows = rows;
         self.relayout();
+        if let Some(byte) = visible_match {
+            self.reveal_table_byte(byte);
+        }
     }
 
     /// Rebuild layout — including image row-heights recomputed from stored
@@ -3525,6 +3624,39 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        Action::TableScroll { block, delta } => {
+            let block = block.or_else(|| {
+                (0..app.doc.block_count())
+                    .map(|i| BlockIdx(i as u32))
+                    .find(|&b| {
+                        app.table_max_offset(b) > 0
+                            && app.layout.height(b) > 0
+                            && app.layout.row_start(b)
+                                < app.view.scroll_row + u32::from(app.text_h())
+                            && app.layout.row_start(b) + app.layout.content_height(&app.doc, b)
+                                > app.view.scroll_row
+                    })
+            });
+            let Some(b) = block.filter(|&b| app.table_max_offset(b) > 0) else {
+                return Outcome::Idle;
+            };
+            if !app.wrap_tables {
+                app.wrap_tables = true;
+                app.relayout();
+                app.view.reveal(
+                    &app.doc,
+                    &app.layout,
+                    app.doc.node_for_block(b).doc.start,
+                    app.text_h(),
+                    Where::Top,
+                );
+            }
+            let next = i64::from(app.table_offset(b)) + i64::from(delta) * 8;
+            let next = u32::try_from(next.clamp(0, i64::from(app.table_max_offset(b))))
+                .expect("clamped table offset");
+            app.table_offsets.insert(b, next);
+            Outcome::Redraw
+        }
         Action::TableToggle => {
             app.wrap_tables = !app.wrap_tables;
             app.note = Some(
@@ -4833,7 +4965,7 @@ mod tests {
     }
 
     #[test]
-    fn t_toggles_tables_between_cards_and_wrapped_and_says_so() {
+    fn t_toggles_tables_between_cards_and_columns_and_says_so() {
         let wide = "| name | description |\n|---|---|\n\
                     | alpha | a value easily long enough to overflow |\n";
         let mut a = App::new("t.md".into(), Document::parse(wide), 30, 10);

@@ -416,7 +416,14 @@ Author: B <b@example.com>
         let toks = doc.tokens(block);
         let text_of = |k: TokenKind| -> Vec<&str> {
             toks.iter()
-                .filter(|t| t.kind == k)
+                .filter(|t| {
+                    t.kind == k
+                        || matches!(
+                            (k, t.kind),
+                            (TokenKind::Inserted, TokenKind::InsertedWord)
+                                | (TokenKind::Deleted, TokenKind::DeletedWord)
+                        )
+                })
                 .map(|t| &doc.text[t.doc.start as usize..t.doc.end as usize])
                 .collect()
         };

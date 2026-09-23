@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-21
+Last updated: 2026-09-22
 
 ## Current state
 
@@ -22,12 +22,23 @@ Last updated: 2026-09-21
   the filterable help sheet (`c8ee8c2`); clickable breadcrumb segments (`721b117`); the
   library-browser picker and search results as a document (`0d11ad2`); the documentation
   restructure (`91f1816`); the merman pin (`95a3a0d`).
-- Working tree is clean. All five gates green as of 2026-09-21: **798 tests**, clippy
-  zero-warning, `cargo fmt --check`, `check-discipline.sh`, `check-packaging.sh`.
+- Unreleased: **word-level diff highlighting and wide-table horizontal
+  scrolling**, with README, man page and changelog updates. All five gates green as
+  of 2026-09-22: **811 tests**, clippy zero-warning, `cargo fmt --check`,
+  `check-discipline.sh`, `check-packaging.sh`; all-target checks and the debug build
+  pass too. Color-sensitive PTY tests need `NO_COLOR` unset in this shell.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list.
 
 ## Recently completed
+
+- Unreleased (2026-09-22) — **word-level diff highlighting and horizontal table
+  scrolling**. Adjacent removed/added runs get bounded Unicode word comparison,
+  with stronger semantic tokens on changed words and punctuation; search and
+  selection still override their styles. Columns view (`t`) preserves whole table
+  rows; `Shift-←` / `Shift-→`, per-table buttons and the context menu pan across
+  them. Search reveals hidden columns, resize keeps a visible match in view, and
+  paint/pointer inversion share grapheme clipping. Cards remain the default.
 
 - Unreleased (2026-09-21) — **the beginner slate**, from an audit of what a
   first-time reader meets. Vocabulary: one word per idea (collapse/expand,
@@ -76,10 +87,10 @@ decision — do not propose them):
 5. Optional: set `HOMEBREW_TAP_TOKEN` and restore `publish-jobs = ["homebrew"]` to
    re-automate the formula push (currently hand-pushed each release).
 
-Features still open on the README roadmap: marginalia, image lightbox, word-level diff
-color, tags (a browser is deliberately not built — `/rust` on the home screen already
+Features still open on the README roadmap: marginalia, image lightbox, tags (a browser
+is deliberately not built — `/rust` on the home screen already
 retrieves; a browser adds discovery, wanted only if the vault persona is confirmed),
-wide-table horizontal scrolling, hyphenation at narrow measures.
+hyphenation at narrow measures.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) lands.
 

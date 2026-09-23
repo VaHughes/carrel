@@ -12,6 +12,8 @@
 //! [`MAX_HIGHLIGHT_BYTES`] are not highlighted at all: `fancy-regex` can
 //! backtrack, and a pathological megabyte of "code" must not stall parse.
 
+mod diff_words;
+
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -47,6 +49,10 @@ pub enum TokenKind {
     Deleted,
     /// Structural chrome inside a listing — a diff's `@@` hunk header.
     Meta,
+    /// A changed word within a replacement diff run.
+    InsertedWord,
+    /// A removed word within a replacement diff run.
+    DeletedWord,
     /// Unclassified. Never stored — a gap between tokens *is* `Plain`.
     Plain,
 }
@@ -219,7 +225,11 @@ pub fn highlight(lang: &str, text: &str, doc_base: u32) -> Vec<Token> {
             .all(|t| t.doc.end as usize <= doc_base as usize + text.len()),
         "token escaped the block"
     );
-    out
+    if syntax.name == "Diff" {
+        diff_words::emphasize(text, doc_base, out)
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]

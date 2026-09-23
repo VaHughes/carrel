@@ -4,6 +4,17 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Changed words stand out in diffs.** Adjacent removed and added runs compare
+  words and punctuation, emphasizing changes within the existing line colors.
+  Unicode and replacements spanning multiple lines work without changing the
+  searchable text. Large comparisons fall back to line colors to keep painting
+  responsive; under `NO_COLOR`, changed words remain underlined.
+- **Wide tables scroll sideways in columns view.** `t` still switches between
+  cards and columns. Columns now preserve complete rows: `Shift-←` / `Shift-→`,
+  clickable `[←]` / `[→]` buttons below the table, and its right-click menu pan
+  across them. Each table keeps its own offset. Search reveals hidden columns;
+  links, selection and wide characters follow the visible text.
+
 - **Two keys stop eating the next keystroke.** Ctrl-G and Ctrl-Z armed
   carrel's `g` and `z` two-key sequences and then swallowed whatever came
   next, with nothing on screen saying a sequence was pending — Ctrl-Z in

@@ -35,6 +35,7 @@ impl Keys {
     }
 
     /// Map one key press. `searching` selects the search-prompt binding set.
+    #[allow(clippy::too_many_lines)] // Keep the reader bindings in one dispatcher.
     pub fn map(&mut self, key: KeyEvent, searching: bool) -> Option<Action> {
         if searching {
             return Self::map_search(key);
@@ -63,6 +64,18 @@ impl Keys {
         }
 
         match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(Action::TableScroll {
+                    block: None,
+                    delta: -self.take(),
+                })
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(Action::TableScroll {
+                    block: None,
+                    delta: self.take(),
+                })
+            }
             // Ctrl chords first: Ctrl-B must not fall through to plain `b`.
             KeyCode::Char('c') if ctrl => Some(Action::Quit),
             KeyCode::Char('Q') => Some(Action::Quit),
@@ -509,6 +522,13 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::CloseFile => "q",
         A::ThemeCycle => "T",
         A::TableToggle => "t",
+        A::TableScroll { delta, .. } => {
+            if delta < 0 {
+                "Shift-←"
+            } else {
+                "Shift-→"
+            }
+        }
         A::RenderedToggle => "r",
         A::MarkToggle => "m",
         A::MarkNext => "'",
@@ -619,6 +639,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("za", "collapse this section"),
     ("zM zR", "collapse all / expand all"),
     ("t", "wide tables: cards or columns"),
+    ("Shift-← Shift-→", "scroll a wide table sideways"),
     ("r", "diagrams, math: drawn or text"),
     ("T", "next theme"),
     (",", "settings"),

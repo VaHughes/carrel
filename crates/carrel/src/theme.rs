@@ -930,6 +930,14 @@ pub fn token(kind: carrel_core::TokenKind) -> Style {
         // enough to tell them apart at a glance.
         K::Inserted => code.fg(p.ins).add_modifier(Modifier::BOLD),
         K::Deleted => code.fg(p.del_),
+        K::InsertedWord => code
+            .fg(p.code_bg)
+            .bg(p.ins)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        K::DeletedWord => code
+            .fg(p.code_bg)
+            .bg(p.del_)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         K::Meta => code.fg(p.comment).add_modifier(Modifier::BOLD),
         // `Plain`, and anything a future `TokenKind` adds: the block's own
         // colours. The enum is `#[non_exhaustive]`, so an upstream addition

@@ -338,7 +338,7 @@ enum Under {
     Link(LinkId, bool),
     /// A code block, and whether it has a rendered form to flip to.
     Code(bool),
-    Table,
+    Table(carrel_core::BlockIdx),
     /// A `[^name]` reference, which has a definition to jump to.
     Footnote,
     Task,
@@ -367,7 +367,7 @@ fn under(app: &App, byte: u32) -> Under {
             Under::Code(lang.as_deref() == Some("mermaid") && app.diagram_art.contains_key(&block))
         }
         NodeKind::Math => Under::Code(true),
-        NodeKind::Table { .. } => Under::Table,
+        NodeKind::Table { .. } => Under::Table(block),
         _ if on_footnote_ref(app, byte) => Under::Footnote,
         _ if node.prefix.as_ref().and_then(|p| p.task).is_some() => Under::Task,
         _ => Under::Text,
@@ -425,7 +425,33 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
             }
             v
         }
-        Under::Table => vec![Item::new("Cards ↔ columns", Action::TableToggle)],
+        Under::Table(block) => {
+            let max = app.table_max_offset(block);
+            let offset = app.table_offset(block);
+            vec![
+                Item::new("Cards ↔ columns", Action::TableToggle),
+                Item {
+                    enabled: max > 0 && (!app.wrap_tables || offset > 0),
+                    ..Item::new(
+                        "Scroll table left",
+                        Action::TableScroll {
+                            block: Some(block),
+                            delta: -1,
+                        },
+                    )
+                },
+                Item {
+                    enabled: max > 0 && offset < max,
+                    ..Item::new(
+                        "Scroll table right",
+                        Action::TableScroll {
+                            block: Some(block),
+                            delta: 1,
+                        },
+                    )
+                },
+            ]
+        }
         Under::Footnote => vec![Item::new("Go to the footnote text", Action::FootnoteJump)],
         Under::Task => vec![Item::new("Next task", Action::TaskStep(1))],
         Under::Text => {
@@ -735,6 +761,7 @@ mod tests {
             A::ForwardToggle => Menu("What this points at"),
             A::CodeStep(_) => Menu("Next code block"),
             A::RenderedToggle => Menu("Drawn ↔ text"),
+            A::TableScroll { .. } => Doc,
             A::TableToggle => Menu("Cards ↔ columns"),
             A::FootnoteJump => Menu("Go to the footnote text"),
             A::TaskStep(_) => Menu("Next task"),

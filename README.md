@@ -153,6 +153,8 @@ the end while it grows, and `y` to copy the code block you are looking at
 
 A pipe — or a `.diff` / `.patch` file — is read as a diff when it looks like one: a heading
 per commit and per file, hunks as code, additions and removals in your theme's own colours.
+Changed words and punctuation stand out within replacement lines, so prose edits are
+easy to spot; under `NO_COLOR`, they remain underlined.
 Because files become *sections*, everything carrel already does to sections works on a
 diff: collapse a file with `za`, collapse the whole changeset with `zM`, jump between
 files from the outline, and search across all of it without the results moving when you
@@ -166,6 +168,14 @@ git config core.pager carrel     # and then every git command that pages
 
 A `.md` file is **never** read as a diff, whatever it contains — so a document *about*
 diffs stays a document. `--diff` forces the reading, `--no-diff` refuses it.
+
+### Wide tables
+
+Wide tables open as cards. Press `t` or choose **Cards ↔ columns** from the
+right-click menu to keep their columns aligned. Use `Shift-←` / `Shift-→` to
+scroll the first visible wide table, or click its `[←]` / `[→]` buttons below
+it. Search automatically brings a match's column into view.
+
 
 ## Using the mouse
 
@@ -370,7 +380,7 @@ The module map, the decisions already made, and the pinned dependencies are in
       half-block fallback everywhere; `[`/`]` walks the images of the document
 - [x] Fuzzy matching for the home filter and the outline picker — best alignment wins,
       ranked; substring no longer
-- [ ] Word-level colour inside changed diff lines, so a prose review reads as prose
+- [x] Word-level colour inside changed diff lines, so a prose review reads as prose
 - [x] Task-list awareness without editing — task-jumping in the reader (`X`), a
       `--tasks` report, the count on the info card; ticking a box is editor creep.
       Home-screen progress glyphs stay out: counting honestly means reading whole files.
@@ -378,7 +388,8 @@ The module map, the decisions already made, and the pinned dependencies are in
 - [x] A bookmark list overlay (`"`) — every bookmark with its context line, Enter jumps,
       Ctrl-O comes back
 - [x] Forward links (`l`) — what this note points at, the mirror of backlinks `L`
-- [ ] Wide-table horizontal scrolling — cards and columns both lose past some width
+- [x] Wide-table horizontal scrolling — `t` selects columns; `Shift-←` / `Shift-→`
+      or the table’s `[←]` / `[→]` buttons pan across the full row; search reveals its column
 - [x] Footnote jump-and-return — `%`, to the footnote text and back
 - [x] `carrel --render` — styled ANSI output even when piped: weight, slant, strike and
       OSC 8 hyperlinks, never a colour, `NO_COLOR` reduces it to `--plain`; still never

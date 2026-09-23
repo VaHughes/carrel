@@ -1400,10 +1400,13 @@ fn paint_row(
 ) {
     let Painted { links, targets } = painted;
     let node = app.doc.node_for_block(block);
+    let original_indent = row.indent;
+    let clipped = app.visible_row(row);
+    let row = &clipped;
 
     // Card mode: an overflowing table lays out as label/value cards instead
-    // of wrapping in place, unless `t` has switched to the padded-wrap
-    // rendering. Recomputed at paint, never stored — the same rule `Layout`
+    // of keeping full rows, unless `t` has switched to horizontally
+    // scrollable columns. Recomputed at paint, never stored — the same rule `Layout`
     // used to decide the row stream in the first place.
     let cards = matches!(node.kind, NodeKind::Table { .. })
         && !app.layout.wrap_tables()
@@ -1450,9 +1453,59 @@ fn paint_row(
         // 1a. Decoration rows carry no text: a card rule, an image
         //     placeholder, or a block's trailing gap. Only a card rule
         //     (anchored away from the block's own start — Task 3's
-        //     discriminator) paints anything; image and gap rows fall
-        //     straight through to the return with just their quote bar.
+        //     discriminator) or the first gap row below a scrollable table
+        //     paints anything; the latter carries its pan controls.
         if let RowKind::Decoration = row.kind {
+            if app.wrap_tables
+                && app.table_max_offset(block) > 0
+                && row.doc.start == node.doc.start
+                && app.view.scroll_row + u32::from(y - app.text_y())
+                    == app.layout.row_start(block) + app.layout.content_height(&app.doc, block)
+            {
+                let offset = app.table_offset(block);
+                let max = app.table_max_offset(block);
+                let mut x = area.x + node.indent;
+                for (label, delta, enabled) in [("[←]", -1, offset > 0), ("[→]", 1, offset < max)]
+                {
+                    if x + 3 <= area.right() {
+                        buf.set_stringn(
+                            x,
+                            y,
+                            label,
+                            3,
+                            if enabled {
+                                theme::marker()
+                            } else {
+                                theme::dim()
+                            },
+                        );
+                        if enabled {
+                            targets.push(
+                                Action::TableScroll {
+                                    block: Some(block),
+                                    delta,
+                                },
+                                Zone::new(x, y, 3, 1),
+                                Z_DOC,
+                            );
+                        }
+                    }
+                    x = x.saturating_add(4);
+                }
+                if x < area.right() {
+                    buf.set_stringn(
+                        x,
+                        y,
+                        format!(
+                            "table {}–{}",
+                            offset + 1,
+                            offset + u32::from(area.width.saturating_sub(node.indent))
+                        ),
+                        usize::from(area.right() - x),
+                        theme::dim(),
+                    );
+                }
+            }
             if cards && row.doc.start != node.doc.start {
                 let x = area.x + node.indent;
                 let w = area.right().saturating_sub(x).min(app.layout.width());
@@ -1590,15 +1643,22 @@ fn paint_row(
             let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
             let row_w = carrel_core::display_width(row_text);
             let buf = frame.buffer_mut();
-            let mut cum = 0u16;
+            let mut cum = 0u32;
             for w in cols.iter().take(cols.len().saturating_sub(1)) {
-                cum = cum.saturating_add(*w);
+                cum = cum.saturating_add(u32::from(*w));
                 let off = cum.saturating_add(1); // the middle of the 3-cell gap
                 cum = cum.saturating_add(3);
-                if off >= row_w {
+                if !app.wrap_tables && off >= u32::from(row_w) {
                     break; // this visual row wrapped before the gap
                 }
-                let x = area.x + row.indent + off;
+                let offset = app.table_offset(block);
+                if off < offset {
+                    continue;
+                }
+                let x = area
+                    .x
+                    .saturating_add(original_indent)
+                    .saturating_add(u16::try_from(off - offset).unwrap_or(u16::MAX));
                 if x < area.right() {
                     buf.set_stringn(x, y, sep, 1, theme::quote_bar());
                 }

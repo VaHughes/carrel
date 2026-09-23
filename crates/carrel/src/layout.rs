@@ -51,7 +51,7 @@ pub struct Layout {
     /// protocol type comes anywhere near this file.
     block_rows: HashMap<BlockIdx, u32>,
     /// When `false` (the default), a table whose aligned form overflows
-    /// `width` lays out as cards instead of wrapping in place. `t` in the
+    /// `width` lays out as cards; `true` keeps aligned, horizontally scrollable rows. `t` in the
     /// reader flips `App::wrap_tables`, which is threaded through here on
     /// every relayout.
     wrap_tables: bool,
@@ -70,7 +70,7 @@ impl Layout {
     /// text, which is also the loading, failure, and remote-URL rendering.
     ///
     /// `wrap_tables` selects the table policy: `false` cards an overflowing
-    /// table (§3 of the card-view spec), `true` wraps it in place as before.
+    /// table (§3 of the card-view spec), `true` keeps full rows for horizontal scrolling.
     #[must_use]
     pub fn with_images(
         doc: &Document,
@@ -141,7 +141,9 @@ impl Layout {
                 // The card threshold tests the BLEED width, not the measure:
                 // a table that fits the terminal must not start transposing
                 // into cards merely because prose beside it got narrower.
-                if !wrap_tables && table_overflows(node, width) {
+                if wrap_tables && matches!(node.kind, NodeKind::Table { .. }) {
+                    column_rows(doc, b, |_| {})
+                } else if !wrap_tables && table_overflows(node, width) {
                     card_rows(doc, b, width, |_| {})
                 } else {
                     wrap(doc, b, bw, &cluster_width, |_| {})
@@ -253,7 +255,9 @@ impl Layout {
             // The SAME budget the height pass used, or the two disagree and
             // the eager height pass stops predicting the paint.
             let bw = self.block_width(&node.kind);
-            if !self.wrap_tables && table_overflows(node, self.width) {
+            if self.wrap_tables && matches!(node.kind, NodeKind::Table { .. }) {
+                column_rows(doc, b, |r| out.push(r));
+            } else if !self.wrap_tables && table_overflows(node, self.width) {
                 card_rows(doc, b, self.width, |r| out.push(r));
             } else {
                 wrap(doc, b, bw, &cluster_width, |r| out.push(r));
@@ -364,6 +368,72 @@ pub fn table_overflows(node: &Node, width: u16) -> bool {
         + 3 * (cols.len() as u32 - 1)
         + u32::from(node.indent);
     total > u32::from(width)
+}
+
+/// Column mode retains each logical row intact; only the viewport clips it.
+fn column_rows(doc: &Document, b: BlockIdx, mut sink: impl FnMut(Row)) -> u32 {
+    let node = doc.node_for_block(b);
+    let NodeKind::Table { cols, cell_starts } = &node.kind else {
+        return 0;
+    };
+    if cols.is_empty() {
+        return 0;
+    }
+    let ends = table_line_ends(doc, node, cell_starts, cols.len());
+    for (i, &end) in ends.iter().enumerate() {
+        sink(Row {
+            block: b,
+            doc: cell_starts[i * cols.len()]..end,
+            indent: node.indent,
+            kind: RowKind::Text {
+                first_in_block: i == 0,
+                continued: false,
+            },
+        });
+    }
+    ends.len() as u32
+}
+
+/// A table can span more cells than fit in a terminal's u16 dimensions.
+#[must_use]
+pub fn table_columns(text: &str) -> u32 {
+    use unicode_segmentation::UnicodeSegmentation;
+    text.graphemes(true)
+        .map(|g| u32::from(cluster_width(g)))
+        .sum()
+}
+
+/// Clip to whole graphemes. A wide glyph crossing either edge is blank,
+/// never half painted. Both paint and pointer inversion consume this row.
+#[must_use]
+pub fn clipped_row(doc: &Document, row: &Row, offset: u32, width: u16) -> Row {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut result = row.clone();
+    if row.doc.is_empty() {
+        return result;
+    }
+    let text = &doc.text[row.doc.start as usize..row.doc.end as usize];
+    let mut col = 0u32;
+    let left = offset;
+    let right = left + u32::from(width.saturating_sub(row.indent));
+    result.doc = row.doc.end..row.doc.end;
+    for (at, cluster) in text.grapheme_indices(true) {
+        let next = col + u32::from(cluster_width(cluster));
+        if col >= left && next <= right {
+            if result.doc.is_empty() {
+                result.doc.start = row.doc.start + at as u32;
+                result.indent = row
+                    .indent
+                    .saturating_add(u16::try_from(col - left).unwrap_or(u16::MAX));
+            }
+            result.doc.end = row.doc.start + (at + cluster.len()) as u32;
+        }
+        col = next;
+        if col > right {
+            break;
+        }
+    }
+    result
 }
 
 /// Line-end offsets per table row: the byte before the next row's first
@@ -810,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn wrap_tables_true_restores_the_old_wrapping_behaviour() {
+    fn column_mode_preserves_logical_rows_without_card_rules() {
         let doc = Document::parse(WIDE);
         let cards = Layout::with_images(&doc, 30, HashMap::new(), false);
         let wrapped = Layout::with_images(&doc, 30, HashMap::new(), true);
@@ -819,7 +889,7 @@ mod tests {
         assert!(
             r.iter().all(|row| !matches!(row.kind, RowKind::Decoration)
                 || row.doc.start == doc.node_for_block(BlockIdx(0)).doc.start),
-            "wrapped mode has no rule rows"
+            "column mode has no card rule rows"
         );
         assert_ne!(cards.height(BlockIdx(0)), wrapped.height(BlockIdx(0)));
     }

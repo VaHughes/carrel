@@ -172,6 +172,7 @@ dependencies = [
  "ratatui-image",
  "signal-hook",
  "tempfile",
+ "unicode-segmentation",
 ]
 
 [[package]]
