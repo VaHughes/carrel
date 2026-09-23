@@ -1,5 +1,6 @@
 # AUR package: carrel-bin (repacks the static musl release artifact).
-# Re-run `makepkg -f` against each release artifact after refreshing checksums.
+# Build-tested with `makepkg -f` against the v2026.9.23 x86_64 release archive.
+# Re-run against each release artifact after refreshing checksums.
 # Publishing still waits on AUR account registration reopening.
 # Maintainer: Joshua Hughes <hughes238@gmail.com>
 pkgname=carrel-bin
@@ -13,8 +14,8 @@ provides=('carrel')
 conflicts=('carrel')
 source_x86_64=("$url/releases/download/v$pkgver/carrel-x86_64-unknown-linux-musl.tar.xz")
 source_aarch64=("$url/releases/download/v$pkgver/carrel-aarch64-unknown-linux-musl.tar.xz")
-sha256sums_x86_64=('2c3b042b7bf66c5116d2982534dbb70aab60c0c537a4e3bc29c29dfa423b9308')
-sha256sums_aarch64=('612a05d7670f48753d5c3249640b6b04483123744963ad8909893a965dc5858b')
+sha256sums_x86_64=('9da6f94da13e13a930e813428c72f02dbb49ac6d5cabcb4b394d02b0a4cf6865')
+sha256sums_aarch64=('61b97d220441e5b55e3e70fdcd01fb3db99b7e1f75e4fe42a592572a94c33567')
 
 # dist FLATTENS every `include` entry to the archive root: `contrib/carrel.1`
 # arrives as `carrel.1`. The flat paths below were verified against the real

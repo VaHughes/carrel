@@ -4,35 +4,28 @@ Last updated: 2026-09-23
 
 ## Current state
 
-- **Latest release: v2026.9.3** (2026-09-03 — the click-first release: link clicks,
-  fold-marker buttons, right-click and `≡` menus, footer chips, hover, the clickable path
-  row, `⌂`, `--no-mouse`). Published to crates.io (both crates), GitHub releases (six unix
-  targets + shell installer), Homebrew tap, Fedora COPR (F43/F44, x86_64 + aarch64).
-- **v2026.9.23 is being prepared.** Changes since v2026.9.3 include an install fix; the oldest that
-  matters is a fix for a broken install: `merman-core` and `merman-ascii` are pinned exactly beside
-  `merman` (`95a3a0d`) because upstream published `merman-ascii 0.8.0-alpha.6` on
-  2026-09-02 and the caret ranges let it resolve in, so **`cargo install carrel` fails to
-  compile for every version on crates.io** until this ships. Prebuilt channels — the
-  installer, Homebrew, COPR, the AUR recipes — build from the lock file and were never
-  affected. The README says `cargo install carrel --locked` in the meantime.
-- Unreleased, newest first: **the beginner slate** (`efa4d81`, `c53c246`, `aea46b3`,
-  `3e5a4dc`) — plain words throughout, the keys a beginner presses, honesty about
-  what carrel cannot verify, a settings pane on `,` and a built-in first document on
-  `carrel --tutorial`; dead-end buttons and the code-block `[copy]` chip (`7ce0b53`);
-  the filterable help sheet (`c8ee8c2`); clickable breadcrumb segments (`721b117`); the
-  library-browser picker and search results as a document (`0d11ad2`); the documentation
-  restructure (`91f1816`); the merman pin (`95a3a0d`).
-- Unreleased: **word-level diff highlighting, wide-table horizontal scrolling,
-  image lightbox, and marginalia**, with README, man page and changelog updates.
-  All five gates green as of 2026-09-22: **843 tests**, clippy zero-warning, `cargo fmt --check`,
-  `check-discipline.sh`, `check-packaging.sh`; all-target checks and the debug build
-  pass too. Color-sensitive PTY tests need `NO_COLOR` unset in this shell.
+- **Latest release: v2026.9.23**, published to crates.io (both crates), GitHub
+  (six Unix targets and shell installer), the Homebrew tap, and Fedora COPR
+  (F43/F44, x86_64 and aarch64). COPR build 11025585 succeeded in all four
+  chroots, and each public repository's metadata contains the new binary package.
+  The release includes image lightbox, marginalia, word-level diffs, horizontal table
+  scrolling, the beginner slate, library browsing and filterable help.
+- A fresh **unlocked `cargo install carrel --version 2026.9.23` succeeds**, confirming
+  the exact `merman` sibling pins fix registry installs. The rendered crate README's
+  links and images all resolve.
+- All five local gates passed on 2026-09-23: **843 tests**, zero-warning clippy,
+  formatting, architectural discipline and packaging. All-target checks and the debug
+  build passed too; local `carrel` reports 2026.9.23. Color-sensitive PTY tests need
+  `NO_COLOR` unset in this shell.
+- Release verification: all public artifact checksums match; the shell installer
+  succeeds under a scratch home without changing real shell files; the musl archive
+  passes packaging checks and runs; the refreshed Arch binary recipe builds.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list.
 
 ## Recently completed
 
-- Unreleased (2026-09-22) — **image lightbox and marginalia**. Images open full-screen
+- 2026.9.23 (implemented 2026-09-22) — **image lightbox and marginalia**. Images open full-screen
   from a click, Enter at the image, or the Images menu; previous/next controls and
   close preserve reading position. Highlights (`v`) and notes (`a`) persist outside
   the document, reattach by quote/context, and retain unresolved text after edits.
@@ -40,7 +33,7 @@ Last updated: 2026-09-23
   multiline Unicode and bracketed paste; failed writes keep the draft. Piped notes
   survive link round trips and export via OSC 52.
 
-- Unreleased (2026-09-22) — **word-level diff highlighting and horizontal table
+- 2026.9.23 (implemented 2026-09-22) — **word-level diff highlighting and horizontal table
   scrolling**. Adjacent removed/added runs get bounded Unicode word comparison,
   with stronger semantic tokens on changed words and punctuation; search and
   selection still override their styles. Columns view (`t`) preserves whole table
@@ -48,7 +41,7 @@ Last updated: 2026-09-23
   them. Search reveals hidden columns, resize keeps a visible match in view, and
   paint/pointer inversion share grapheme clipping. Cards remain the default.
 
-- Unreleased (2026-09-21) — **the beginner slate**, from an audit of what a
+- 2026.9.23 (implemented 2026-09-21) — **the beginner slate**, from an audit of what a
   first-time reader meets. Vocabulary: one word per idea (collapse/expand,
   folder, heading bar, hint row, bookmarks, focus, drawn/text, cards/columns,
   keep up), the vim word `normal` gone from the home status bar, `gg` gone from
@@ -65,7 +58,7 @@ Last updated: 2026-09-23
   still pages down. Both are the vim/less meanings and rebinding them would
   take something away; the click routes to help and search are the answer
   instead, and both are now plainly labelled.
-- Unreleased (2026-09-16 / 09-21) — the library browser replacing the path-prompt picker,
+- 2026.9.23 (implemented 2026-09-16 / 09-21) — the library browser replacing the path-prompt picker,
   search results opening as a generated document, clickable breadcrumb segments, a help
   sheet that filters as you type, and painted ways out of the two home-screen dead ends
   plus a `[copy]` chip on the focused code block.
@@ -118,7 +111,7 @@ before that phase rather than during it.
   `@AGENTS.md`. Note the public/private split: the old `CLAUDE.md` was gitignored because the
   maintainer keeps narrative/strategy material in the private notes repo. These new docs were
   written to be publishable (how-to and code facts) and are tracked alongside the code.
-- 2026-09-03: `merman` sibling crates pinned exactly (see above).
+- 2026-09-03: `merman` sibling crates pinned exactly; shipped in v2026.9.23.
 - 2026-09-01: `release.yml` hand-edited (gate job, SHA-pinned actions); `dist init` is
   forbidden; recipe version stamps move into the release commit.
 - 2026-08-22: clicking a URL copies it, never opens a browser; Windows declined (Q19);
