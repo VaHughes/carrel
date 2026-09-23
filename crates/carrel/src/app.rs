@@ -129,6 +129,7 @@ pub struct App {
     /// the rows derive from `marks` at every use, so a mark added or cleared
     /// under the pane shows immediately.
     pub mark_list: Option<usize>,
+    pub notes: crate::annotation_state::Notes,
     /// The settings pane's highlighted row, and whether it is open at all.
     pub settings: Option<usize>,
     /// Whether the file list labels rows from frontmatter. The live copy
@@ -177,6 +178,7 @@ pub struct App {
     /// The accumulated piped document, retained so `Ctrl-O` can come back to
     /// it after following a link out — a pipe has no path to re-read.
     pub piped: Option<String>,
+    pub piped_notes: Vec<crate::marginalia::Annotation>,
     /// Folded heading ids. Doc-space and width-independent, so fold state
     /// cannot be invalidated by reflow, by construction. Cleared on reload —
     /// the ids indexed the old parse (the selection precedent).
@@ -268,6 +270,9 @@ pub struct App {
     /// `Some` while the help overlay is up: the sheet's row offset (clamped
     /// by the painter against its content) and the filter narrowing it.
     pub help: Option<Help>,
+    /// Full-screen image viewer; opening it never changes the reading anchor.
+    pub lightbox: Option<BlockIdx>,
+    pub image_errors: HashMap<BlockIdx, String>,
     /// `Some` while the outline picker is up. The heading list itself is
     /// DERIVED from `doc` at every use — nothing here can go stale.
     pub outline: Option<Outline>,
@@ -531,6 +536,7 @@ impl App {
             backlinks: None,
             forward: None,
             mark_list: None,
+            notes: crate::annotation_state::Notes::default(),
             outline_margin: false,
             marks: Vec::new(),
             diff_ok: false,
@@ -538,6 +544,7 @@ impl App {
             following: false,
             code_focus: None,
             piped: None,
+            piped_notes: Vec::new(),
             breadcrumb: true,
             has_headings,
             folded: std::collections::HashSet::new(),
@@ -561,6 +568,8 @@ impl App {
             table_offsets: HashMap::new(),
             hints: true,
             help: None,
+            lightbox: None,
+            image_errors: HashMap::new(),
             outline: None,
             menu: None,
             hover: None,
@@ -693,6 +702,9 @@ impl App {
     pub fn open_path(&mut self, path: &Path) -> std::io::Result<()> {
         self.save_position();
         let src = read_document(path)?;
+        if self.file.is_none() && self.piped.is_some() {
+            self.piped_notes.clone_from(&self.notes.entries);
+        }
         // A `.md` file is never sniffed; `.diff`/`.patch` always are. Set
         // before parsing, because `parse_adapting` reads it.
         self.diff_ok = self.diff_forced.unwrap_or_else(|| {
@@ -746,6 +758,7 @@ impl App {
         }
         self.resolve_wikilinks();
         self.restore_position();
+        crate::annotation_state::load(self);
         Ok(())
     }
 
@@ -781,6 +794,7 @@ impl App {
         );
         self.path = format!("search: {query}");
         self.file = None;
+        self.notes = crate::annotation_state::Notes::default();
         self.results_root = Some(root.to_path_buf());
         self.forget_derived_state();
         self.backlinks = None;
@@ -823,6 +837,7 @@ impl App {
         );
         self.path = "how carrel works".into();
         self.file = None;
+        self.notes = crate::annotation_state::Notes::default();
         self.results_root = None;
         self.forget_derived_state();
         self.backlinks = None;
@@ -916,6 +931,8 @@ impl App {
         self.folded.clear();
         self.folded_details.clear();
         self.image_dims.clear();
+        self.image_errors.clear();
+        self.lightbox = None;
         self.diagram_art.clear();
     }
 
@@ -947,6 +964,7 @@ impl App {
     pub fn reload_from(&mut self, src: &str) {
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
+        crate::annotation_state::reanchor(self);
         self.layout = Layout::with_measure(
             &self.doc,
             self.bleed_w(),
@@ -2199,6 +2217,12 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.hover = Some(at);
         return Outcome::Redraw;
     }
+    if app.lightbox.is_some() {
+        return lightbox_update(app, action);
+    }
+    if app.notes.pane.is_some() || app.notes.draft.is_some() {
+        return crate::annotation_state::update(app, action).unwrap_or(Outcome::Idle);
+    }
     // Opening a menu works from any state that can have one, and the menu
     // owns everything while it is up — it is the last thing opened, so it is
     // the first thing that answers. Both checks come before the toggles
@@ -2296,6 +2320,58 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         return home_update(app, action);
     }
     reader_update(app, action)
+}
+
+fn lightbox_update(app: &mut App, action: Action) -> Outcome {
+    match action {
+        Action::Dismiss | Action::CloseFile | Action::Back => {
+            app.lightbox = None;
+            Outcome::Redraw
+        }
+        Action::ImageStep(delta) => {
+            let blocks = crate::images::image_blocks(&app.doc);
+            let index = blocks
+                .iter()
+                .position(|b| Some(*b) == app.lightbox)
+                .unwrap_or(0);
+            if !blocks.is_empty() {
+                let next = (i64::try_from(index).unwrap_or(0) + i64::from(delta))
+                    .rem_euclid(i64::try_from(blocks.len()).unwrap_or(1));
+                app.lightbox = Some(blocks[usize::try_from(next).unwrap_or(0)]);
+            }
+            Outcome::Redraw
+        }
+        Action::Quit => Outcome::Quit,
+        _ => Outcome::Idle,
+    }
+}
+
+/// Open images without moving the underlying document or its selection.
+fn open_image(app: &mut App, requested: Option<BlockIdx>) -> Outcome {
+    let blocks = crate::images::image_blocks(&app.doc);
+    let current = app.layout.block_at_row(app.view.scroll_row);
+    let block = requested.filter(|b| blocks.contains(b)).or_else(|| {
+        requested
+            .is_none()
+            .then(|| {
+                blocks
+                    .iter()
+                    .find(|b| b.0 >= current.0)
+                    .or_else(|| blocks.first())
+                    .copied()
+            })
+            .flatten()
+    });
+    if let Some(block) = block {
+        app.lightbox = Some(block);
+        app.auto_read = false;
+        app.following = false;
+        app.info = false;
+        Outcome::Redraw
+    } else {
+        app.note = Some("No image here".into());
+        Outcome::Redraw
+    }
 }
 
 /// Transitions while the help sheet is up.
@@ -2933,6 +3009,9 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
 
 #[allow(clippy::too_many_lines)]
 fn reader_update(app: &mut App, action: Action) -> Outcome {
+    if let Some(outcome) = crate::annotation_state::update(app, action) {
+        return outcome;
+    }
     let h = app.text_h();
     // Notes are one-shot: whatever happens next replaces or clears them.
     app.note = None;
@@ -3094,7 +3173,17 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 
         Action::LinkStep(n) => link_step(app, n, h),
 
+        Action::ImageOpen(block) => open_image(app, block),
         Action::LinkFollow => {
+            let block = app.layout.block_at_row(app.view.scroll_row);
+            if app.selected_link.is_none()
+                && matches!(
+                    app.doc.node_for_block(block).kind,
+                    carrel_core::NodeKind::Image { .. }
+                )
+            {
+                return open_image(app, Some(block));
+            }
             app.following = false;
             link_follow(app)
         }
@@ -3841,6 +3930,10 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
     {
         app.save_position();
         app.file = None;
+        app.notes = crate::annotation_state::Notes {
+            entries: std::mem::take(&mut app.piped_notes),
+            ..crate::annotation_state::Notes::default()
+        };
         app.reload_from(&src);
         app.piped = Some(src);
         app.path = if app.streaming {

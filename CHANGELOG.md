@@ -4,6 +4,17 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **An image lightbox.** Click an image, choose Images from the menu, or press
+  Enter at one to view it full-screen. `[` / `]` and arrows walk images; closing
+  restores the reader without moving its position. Local images fit the window;
+  missing and remote images explain why they cannot be displayed.
+- **Highlights and notes, without touching the source.** `v` highlights a selection
+  or paragraph; `a` adds a note. `V` opens the notes list, `M` walks attached notes,
+  and the notes list offers clickable controls. Notes save atomically in the state
+  directory, reattach by quoted text after edits, and preserve unresolved quotes.
+  The list exports quote-and-note Markdown; piped documents export through OSC 52.
+  The note editor supports Unicode, multiline text, and bracketed paste.
+
 - **Changed words stand out in diffs.** Adjacent removed and added runs compare
   words and punctuation, emphasizing changes within the existing line colors.
   Unicode and replacements spanning multiple lines work without changing the

@@ -40,6 +40,21 @@ pub enum SearchKey {
     Cancel,
 }
 
+/// Editing a note changes its sidecar only, never the source document.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NoteKey {
+    Char(char),
+    Newline,
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
+    Save,
+    Cancel,
+}
+
 /// Which end of a list.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Edge {
@@ -50,6 +65,18 @@ pub enum Edge {
 /// One thing the reader can be asked to do.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Action {
+    HighlightAdd,
+    HighlightAt(u32),
+    NoteAt(u32),
+    NoteEdit,
+    NotesToggle,
+    NoteMove(i32),
+    NoteSelect(u32),
+    NoteJump,
+    NoteNext,
+    NoteDelete,
+    NotesExport,
+    NoteInput(NoteKey),
     /// Signed: positive is toward the end of the document.
     Scroll(Span, i32),
     GoToStart,
@@ -69,6 +96,10 @@ pub enum Action {
     LinkStep(i32),
     /// `Enter`. Follow the selected link if it is a relative markdown file.
     LinkFollow,
+    /// Open a document image; None chooses the next image from the reading position.
+    ImageOpen(Option<carrel_core::BlockIdx>),
+    /// Move through images while the full-screen viewer is open.
+    ImageStep(i32),
     /// A click on a painted link: select it and follow it in one intent. The
     /// payload indexes `Document::links` — the same currency `LinkId` wraps,
     /// kept primitive here so this file stays free of state-layer types.

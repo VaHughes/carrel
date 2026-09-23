@@ -43,7 +43,7 @@ records exactly this). Hence:
 5. **Never let the TUI dictate a core type.**
 6. **The TUI's state layer is ratatui-free.** `action`, `app`, `layout`, `view`, `plain`,
    `config`, `scan`, `home`, `images`, `state`, `wiki`, `grep`, `diagrams`, `footer`,
-   `breadcrumb`, `menu` never import ratatui, so behavior is tested with no terminal and a
+   `breadcrumb`, `menu`, `marginalia`, `annotation_state` never import ratatui, so behavior is tested with no terminal and a
    GTK frontend can reuse them verbatim.
 
 `./scripts/check-discipline.sh` enforces 1–4 and 6 mechanically (UI crates, ANSI escapes,
@@ -130,6 +130,7 @@ Key facts that are easy to get wrong:
 | `theme.rs` | The only file with a color. 17 palettes plus `omarchy` (derived from the desktop's `colors.toml`, `omarchy.rs`). |
 | `home.rs`, `scan.rs`, `grep.rs`, `fuzzy.rs` | The home screen: streamed `.gitignore`-aware scan (`ignore` crate, `require_git(false)`), cached index, 2 s rescan while listed, directory picker with path completion and remembered places, fuzzy filter, multi-file content search, frontmatter titles. |
 | `menu.rs`, `footer.rs`, `breadcrumb.rs` | Pure selectors for the right-click/`≡` menus, the lamplight hint row, and the sticky heading band. |
+| `marginalia.rs`, `annotation_state.rs`, `annotation_render.rs` | Quote/context-anchored notes and highlights, atomic sidecars and Markdown export, modal list/editor state, and the terminal notes pane. The first two modules have no UI dependencies. |
 | `state.rs`, `config.rs` | XDG state (reading positions, bookmarks) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. |
 | `stream.rs` | stdin on a thread with UTF-8 carry across chunks; keys arrive via `/dev/tty` (crossterm's native fallback). |
 | `images.rs`, `diagrams.rs`, `math_art.rs`, `wiki.rs`, `links.rs`, `plain.rs`, `ansi.rs` | Image sizing (kitty/halfblock via `ratatui-image`), mermaid box art (`merman`), TeX-lite math boxes, `[[wikilink]]` resolution, forward/backlinks with no index, `--plain` and `--render` output. |
@@ -163,6 +164,16 @@ Key facts:
   characters at collection.
 - **Never call `ratatui_image::Picker::from_query_stdio`** — its query thread steals stdin.
   Font size comes from `TIOCGWINSZ`, protocol from the environment. Pixels never enter the core.
+- **The lightbox is modal.** `App::lightbox` names an image block without moving
+  the document anchor; the existing image pipeline renders it fitted to the full
+  viewport. It owns keyboard and pointer input, including tiny windows. Closing
+  exposes the same reader position. No terminal query and no remote fetching.
+- **Marginalia never modifies the source.** `marginalia` stores doc-byte ranges,
+  quotes and context in per-document state sidecars; ambiguous/missing quotes stay
+  unresolved. Failed reads block writes; failed saves retain drafts. Pane state and
+  note traversal indices live separately from viewport coordinates. Piped notes
+  are retained across link round trips. The note editor alone enables bracketed
+  paste, and terminal restoration disables it on every exit path.
 - **Sub-image scroll clipping is deferred** (top-anchored crop) until the GUI's image work.
 - **Carrel never reports success it cannot verify.** OSC 52 is written blind — there is no
   reply — so the clipboard notes say what was sent, and the mechanism is documented in the

@@ -19,8 +19,8 @@ use carrel::render::{OscLink, Painted};
 use carrel::{config, home, render, scan};
 use carrel_core::{BlockIdx, Document, cluster_width, cols_for_doc_range, search, wrap};
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
@@ -96,6 +96,9 @@ KEYS (while reading):
     ] [                          next / previous code block
     X                            jump to the next task
     y                            copy the code block
+    v a                          highlight text / add a note
+    V M                          notes list / next note
+    Click image or Enter at it   full-screen image; [ ] browse, Esc closes
     F                            follow a document that is still arriving
     Mouse: click a link, a heading, a fold marker, a row of any list, or
     any hint along the bottom row. Right-click for a menu of whatever is
@@ -692,6 +695,7 @@ impl TerminalGuard {
                 std::io::stdout(),
                 EndSynchronizedUpdate,
                 DisableMouseCapture,
+                DisableBracketedPaste,
                 Show
             );
             prev(info);
@@ -730,6 +734,7 @@ impl TerminalGuard {
                     std::io::stdout(),
                     EndSynchronizedUpdate,
                     DisableMouseCapture,
+                    DisableBracketedPaste,
                     Show
                 );
                 ratatui::restore();
@@ -747,7 +752,12 @@ impl Drop for TerminalGuard {
         // synchronized_update` checks. Only the two ABNORMAL paths — a panic
         // unwinding out of `draw`, and a signal arriving mid-frame — can
         // leave one open, and both close it themselves.
-        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture, Show);
+        let _ = ratatui::crossterm::execute!(
+            std::io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            Show
+        );
         ratatui::restore();
     }
 }
@@ -761,6 +771,7 @@ struct Images {
     protocols: HashMap<BlockIdx, StatefulProtocol>,
     /// The file the current pipeline belongs to; a document change restarts it.
     for_file: Option<std::path::PathBuf>,
+    initialized: bool,
 }
 
 impl Images {
@@ -790,6 +801,7 @@ impl Images {
             rx: None,
             protocols: HashMap::new(),
             for_file: None,
+            initialized: false,
         }
     }
 
@@ -809,15 +821,16 @@ impl Images {
             P::Kitty => "kitty graphics",
             P::Sixel => "sixel graphics",
             P::Iterm2 => "iTerm2 graphics",
-            P::Halfblocks => "blocks of colour — this terminal offers no image protocol",
+            P::Halfblocks => "blocks of colour — no graphics protocol selected",
         }
     }
 
     /// (Re)start decoding when the open document changed.
     fn sync(&mut self, app: &mut App) {
-        if app.is_home() || app.file == self.for_file {
+        if app.is_home() || (self.initialized && app.file == self.for_file) {
             return;
         }
+        self.initialized = true;
         self.for_file.clone_from(&app.file);
         self.protocols.clear();
         let fs = self.picker.font_size();
@@ -843,7 +856,8 @@ impl Images {
                         .insert(block, self.picker.new_resize_protocol(img));
                     changed = true;
                 }
-                Ok(ImageMsg::Failed(_, e)) => {
+                Ok(ImageMsg::Failed(block, e)) => {
+                    app.image_errors.insert(block, e.clone());
                     app.note = Some(e);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -1252,6 +1266,7 @@ fn run_welcome() -> std::io::Result<Option<PathBuf>> {
     app.image_kind = Some(images.kind());
     app.note = theme_note;
     app.state_dir = carrel::state::state_dir();
+    carrel::annotation_state::load(&mut app);
     apply_config(&mut app);
     app.piped = Some(carrel::app::WELCOME.to_string());
     run_loop(terminal, app, images, None)
@@ -1289,6 +1304,7 @@ fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
     app.file = Some(path.to_path_buf());
     app.note = theme_note;
     app.state_dir = carrel::state::state_dir();
+    carrel::annotation_state::load(&mut app);
     // The one-time footer invitation. No state directory at all means we
     // cannot tell, and a line that might never go away is worse than one
     // that never appears.
@@ -1382,6 +1398,9 @@ fn run_loop(
                         break;
                     }
                 }
+                Event::Paste(text) if app.notes.draft.is_some() => {
+                    carrel::annotation_state::paste(&mut app, &text);
+                }
                 Event::Mouse(m) => match mouse_action(m, &app, &painted.targets, &mut ptr) {
                     Some(action) => {
                         if update(&mut app, action) == Outcome::Quit {
@@ -1468,6 +1487,7 @@ fn poll_stream(
     if grew && app.file.is_none() {
         app.reload_from(&buf);
         images.for_file = None;
+        images.initialized = false;
         diagrams.for_file = None;
         // Following is applied HERE, not in `update()`: the stream is drained
         // by the event loop, and no action fires when a chunk lands.
@@ -1532,6 +1552,7 @@ fn poll_reload(
         Some(Reload::Changed) => match app.reload() {
             Ok(()) => {
                 images.for_file = None;
+                images.initialized = false;
                 diagrams.for_file = None;
             }
             Err(e) => app.note = Some(format!("reload failed: {e}")),
@@ -1643,6 +1664,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     // What images will actually look like here, for the info card.
     app.image_kind = Some(images.kind());
     app.state_dir = carrel::state::state_dir();
+    carrel::annotation_state::load(&mut app);
     // The one-time footer invitation. No state directory at all means we
     // cannot tell, and a line that might never go away is worse than one
     // that never appears.
@@ -1713,6 +1735,9 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
                         break;
                     }
                 }
+                Event::Paste(text) if app.notes.draft.is_some() => {
+                    carrel::annotation_state::paste(&mut app, &text);
+                }
                 Event::Mouse(m) => match home_mouse_action(m, &app, &painted.targets, &mut ptr) {
                     Some(a) => {
                         if update(&mut app, a) == Outcome::Quit {
@@ -1781,6 +1806,14 @@ fn apply_debounced_resize(
 /// the precedence: innermost overlay first, the home screen next, the reader
 /// last.
 fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action::Action> {
+    if app.lightbox.is_some() {
+        keys.reset();
+        return Keys::map_lightbox(k);
+    }
+    if app.notes.draft.is_some() || app.notes.pane.is_some() {
+        keys.reset();
+        return Keys::map_notes(k, app.notes.draft.is_some());
+    }
     // Ctrl-C with something selected COPIES it, and quits only when there is
     // nothing to copy. Raw mode clears ISIG, so this key is carrel's to
     // define and no SIGINT is ever generated — which means the reflex a
@@ -1880,7 +1913,9 @@ fn hover_action(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::a
 /// the margin, the blank below the last line, the whole home screen — picks
 /// the global one.
 fn open_menu_at(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
-    if app.help.is_some()
+    if app.notes.draft.is_some()
+        || app.notes.pane.is_some()
+        || app.help.is_some()
         || app.outline.is_some()
         || app.backlinks.is_some()
         || app.forward.is_some()
@@ -1961,6 +1996,23 @@ fn mouse_action(
     use carrel::action::{Action, Span};
     use carrel::keys::{drag_target, thumb_geometry};
 
+    if app.lightbox.is_some() {
+        return if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+            targets.hit(m.column, m.row).map(|hit| hit.action)
+        } else {
+            None
+        };
+    }
+    if app.notes.draft.is_some() || app.notes.pane.is_some() {
+        return match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                targets.hit(m.column, m.row).map(|hit| hit.action)
+            }
+            MouseEventKind::ScrollDown if app.notes.draft.is_none() => Some(Action::NoteMove(1)),
+            MouseEventKind::ScrollUp if app.notes.draft.is_none() => Some(Action::NoteMove(-1)),
+            _ => None,
+        };
+    }
     if app.menu.is_some() {
         return menu_mouse(m, app, targets);
     }
@@ -2180,6 +2232,23 @@ fn home_mouse_action(
     }
     // The same two rules as the reader, in the same order — `key_action`'s
     // lesson applied to the pointer: one decision, not a copy per loop.
+    if app.lightbox.is_some() {
+        return if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+            targets.hit(m.column, m.row).map(|hit| hit.action)
+        } else {
+            None
+        };
+    }
+    if app.notes.draft.is_some() || app.notes.pane.is_some() {
+        return match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                targets.hit(m.column, m.row).map(|hit| hit.action)
+            }
+            MouseEventKind::ScrollDown if app.notes.draft.is_none() => Some(Action::NoteMove(1)),
+            MouseEventKind::ScrollUp if app.notes.draft.is_none() => Some(Action::NoteMove(-1)),
+            _ => None,
+        };
+    }
     if app.menu.is_some() {
         return menu_mouse(m, app, targets);
     }
@@ -2269,6 +2338,13 @@ fn paint(
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) -> std::io::Result<()> {
     synchronized(|| {
+        // Bracketed paste belongs to the note editor. Pasted newlines must
+        // become text, never the Enter command that saves a note.
+        if app.notes.draft.is_some() {
+            ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste)?;
+        } else {
+            ratatui::crossterm::execute!(std::io::stdout(), DisableBracketedPaste)?;
+        }
         terminal.draw(|f| {
             render::draw_full(f, app, painted, images);
             render::declare_wide_cells(f);
@@ -2760,5 +2836,32 @@ mod tests {
         // So is picking the wheel up again after a pause.
         w.last = Some((Instant::now().checked_sub(WHEEL_WINDOW * 2).unwrap(), false));
         assert_eq!(w.notch(false), 3, "a pause drops to a single step");
+    }
+}
+
+#[cfg(test)]
+mod lightbox_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn pathless_documents_start_decoding_absolute_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.png");
+        image::DynamicImage::new_rgb8(2, 2).save(&path).unwrap();
+        let source = format!("![local]({})", path.display());
+        let mut app = App::new(
+            "stdin".into(),
+            carrel_core::Document::parse(&source),
+            80,
+            24,
+        );
+        assert!(app.file.is_none());
+        let mut pipeline = Images::detect();
+        pipeline.sync(&mut app);
+        assert!(
+            pipeline.rx.is_some(),
+            "None filename must not suppress initial decode"
+        );
+        assert!(pipeline.initialized);
     }
 }

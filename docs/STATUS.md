@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-22
+Last updated: 2026-09-23
 
 ## Current state
 
@@ -8,7 +8,7 @@ Last updated: 2026-09-22
   fold-marker buttons, right-click and `≡` menus, footer chips, hover, the clickable path
   row, `⌂`, `--no-mouse`). Published to crates.io (both crates), GitHub releases (six unix
   targets + shell installer), Homebrew tap, Fedora COPR (F43/F44, x86_64 + aarch64).
-- **A release is owed.** Twelve commits sit unreleased on `main`, and the oldest that
+- **v2026.9.23 is being prepared.** Changes since v2026.9.3 include an install fix; the oldest that
   matters is a fix for a broken install: `merman-core` and `merman-ascii` are pinned exactly beside
   `merman` (`95a3a0d`) because upstream published `merman-ascii 0.8.0-alpha.6` on
   2026-09-02 and the caret ranges let it resolve in, so **`cargo install carrel` fails to
@@ -22,15 +22,23 @@ Last updated: 2026-09-22
   the filterable help sheet (`c8ee8c2`); clickable breadcrumb segments (`721b117`); the
   library-browser picker and search results as a document (`0d11ad2`); the documentation
   restructure (`91f1816`); the merman pin (`95a3a0d`).
-- Unreleased: **word-level diff highlighting and wide-table horizontal
-  scrolling**, with README, man page and changelog updates. All five gates green as
-  of 2026-09-22: **811 tests**, clippy zero-warning, `cargo fmt --check`,
+- Unreleased: **word-level diff highlighting, wide-table horizontal scrolling,
+  image lightbox, and marginalia**, with README, man page and changelog updates.
+  All five gates green as of 2026-09-22: **843 tests**, clippy zero-warning, `cargo fmt --check`,
   `check-discipline.sh`, `check-packaging.sh`; all-target checks and the debug build
   pass too. Color-sensitive PTY tests need `NO_COLOR` unset in this shell.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list.
 
 ## Recently completed
+
+- Unreleased (2026-09-22) — **image lightbox and marginalia**. Images open full-screen
+  from a click, Enter at the image, or the Images menu; previous/next controls and
+  close preserve reading position. Highlights (`v`) and notes (`a`) persist outside
+  the document, reattach by quote/context, and retain unresolved text after edits.
+  `V` reviews/edits/deletes/exports notes and `M` walks them. The editor supports
+  multiline Unicode and bracketed paste; failed writes keep the draft. Piped notes
+  survive link round trips and export via OSC 52.
 
 - Unreleased (2026-09-22) — **word-level diff highlighting and horizontal table
   scrolling**. Adjacent removed/added runs get bounded Unicode word comparison,
@@ -87,7 +95,7 @@ decision — do not propose them):
 5. Optional: set `HOMEBREW_TAP_TOKEN` and restore `publish-jobs = ["homebrew"]` to
    re-automate the formula push (currently hand-pushed each release).
 
-Features still open on the README roadmap: marginalia, image lightbox, tags (a browser
+Features still open on the README roadmap: tags (a browser
 is deliberately not built — `/rust` on the home screen already
 retrieves; a browser adds discovery, wanted only if the vault persona is confirmed),
 hyphenation at narrow measures.
@@ -109,8 +117,7 @@ before that phase rather than during it.
 - 2026-09-07: documentation restructured into `AGENTS.md` + `docs/`; `CLAUDE.md` is now just
   `@AGENTS.md`. Note the public/private split: the old `CLAUDE.md` was gitignored because the
   maintainer keeps narrative/strategy material in the private notes repo. These new docs were
-  written to be publishable (how-to and code facts), but whether to commit `AGENTS.md` and
-  `docs/` or gitignore them is the maintainer's call.
+  written to be publishable (how-to and code facts) and are tracked alongside the code.
 - 2026-09-03: `merman` sibling crates pinned exactly (see above).
 - 2026-09-01: `release.yml` hand-edited (gate job, SHA-pinned actions); `dist init` is
   forbidden; recipe version stamps move into the release commit.

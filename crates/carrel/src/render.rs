@@ -149,6 +149,16 @@ pub fn draw_full(
     // Cleared with the links, and for the same reason: what this frame does
     // not paint, this frame cannot be asked to click.
     painted.targets.clear();
+    if app.lightbox.is_some() {
+        paint_lightbox(frame, app, &mut painted.targets, images);
+        return;
+    }
+    if (app.notes.pane.is_some() || app.notes.draft.is_some())
+        && (frame.area().width < 12 || frame.area().height < 5)
+    {
+        crate::annotation_render::paint(frame, app, &mut painted.targets);
+        return;
+    }
     if let Screen::Home(h) = &app.screen {
         let area = frame.area();
         if area.width < 2 || area.height < 3 {
@@ -246,10 +256,100 @@ pub fn draw_full(
     if app.info {
         paint_info(frame, app, &mut painted.targets);
     }
+    crate::annotation_render::paint(frame, app, &mut painted.targets);
     // Last, and therefore on top of everything it was opened over.
     paint_menu(frame, app, &mut painted.targets);
     paint_hover(frame, app, &painted.targets);
     settle_links(frame, painted);
+}
+
+/// The viewer gets the whole frame, so no inline graphics or links leak beneath it.
+fn paint_lightbox(
+    frame: &mut Frame,
+    app: &App,
+    targets: &mut Targets,
+    images: &mut HashMap<BlockIdx, StatefulProtocol>,
+) {
+    let area = frame.area();
+    frame.buffer_mut().set_style(area, theme::body());
+    targets.push(
+        Action::Absorb,
+        Zone::new(area.x, area.y, area.width, area.height),
+        Z_OVERLAY,
+    );
+    let Some(block) = app.lightbox else { return };
+    let blocks = crate::images::image_blocks(&app.doc);
+    let index = blocks.iter().position(|b| *b == block).unwrap_or(0);
+    let node = app.doc.node_for_block(block);
+    let NodeKind::Image { url } = &node.kind else {
+        return;
+    };
+    let title = format!("Image {}/{}  {}", index + 1, blocks.len(), url);
+    frame
+        .buffer_mut()
+        .set_stringn(0, 0, title, usize::from(area.width), theme::status());
+    let body = Rect::new(0, 1, area.width, area.height.saturating_sub(3));
+    if body.height > 0 {
+        if let Some(protocol) = images.get_mut(&block) {
+            frame.render_stateful_widget(StatefulImage::new(), body, protocol);
+        } else {
+            let message = if let Some(error) = app.image_errors.get(&block) {
+                format!("Cannot display image: {error}")
+            } else if !crate::images::local_image_requests(
+                &app.doc,
+                app.file.as_deref().and_then(std::path::Path::parent),
+            )
+            .iter()
+            .any(|(b, _)| *b == block)
+            {
+                "Image unavailable: remote images are never fetched; relative paths need a document file.".into()
+            } else {
+                "Loading image…".into()
+            };
+            frame
+                .buffer_mut()
+                .set_stringn(0, 1, message, usize::from(area.width), theme::dim());
+            if body.height > 1 {
+                frame.buffer_mut().set_stringn(
+                    0,
+                    2,
+                    &app.doc.text[node.doc.start as usize..node.doc.end as usize],
+                    usize::from(area.width),
+                    theme::body(),
+                );
+            }
+        }
+    }
+    if area.height > 2 {
+        frame.buffer_mut().set_stringn(
+            0,
+            area.height - 2,
+            app.image_kind.unwrap_or("image display unavailable"),
+            usize::from(area.width),
+            theme::dim(),
+        );
+    }
+    if area.height > 1 {
+        let y = area.height - 1;
+        let mut x = 0u16;
+        for (label, action) in [
+            ("[close] ", Action::Dismiss),
+            ("[previous] ", Action::ImageStep(-1)),
+            ("[next]", Action::ImageStep(1)),
+        ] {
+            let width = u16::try_from(label.len())
+                .unwrap_or(u16::MAX)
+                .min(area.width.saturating_sub(x));
+            if width == 0 {
+                break;
+            }
+            frame
+                .buffer_mut()
+                .set_stringn(x, y, label, usize::from(width), theme::status());
+            targets.push(action, Zone::new(x, y, width, 1), Z_OVERLAY + 1);
+            x += width;
+        }
+    }
 }
 
 /// Light whatever this frame painted under the pointer.
@@ -1172,6 +1272,7 @@ fn paint_if_empty(frame: &mut Frame, app: &App, full: Rect) -> bool {
     true
 }
 
+#[allow(clippy::too_many_lines)] // one branch per painted block kind
 fn paint_rows(
     frame: &mut Frame,
     app: &App,
@@ -1277,6 +1378,11 @@ fn paint_rows(
                 let w = area.width.saturating_sub(node.indent);
                 let rect = Rect::new(x, y, w, u16::try_from(content_visible).unwrap_or(u16::MAX));
                 frame.render_stateful_widget(StatefulImage::new(), rect, proto);
+                painted.targets.push(
+                    Action::ImageOpen(Some(block)),
+                    Zone::new(rect.x, rect.y, rect.width, rect.height),
+                    Z_DOC,
+                );
             }
             let consumed = total.saturating_sub(skip).min(remaining);
             y += u16::try_from(consumed).unwrap_or(u16::MAX);
@@ -1293,6 +1399,13 @@ fn paint_rows(
             }
             paint_row(frame, app, block, row, area, y, painted);
             y += 1;
+        }
+        if matches!(app.doc.node_for_block(block).kind, NodeKind::Image { .. }) && y > first_y {
+            painted.targets.push(
+                Action::ImageOpen(Some(block)),
+                Zone::new(area.x, first_y, area.width, y - first_y),
+                Z_DOC,
+            );
         }
         // A folded heading wears its state: a gutter marker and a trailing
         // ellipsis. Decoration only — neither is in the text, so search and
@@ -1733,6 +1846,31 @@ fn paint_row(
                     // Stamped by `settle_links` after hover and the overlays.
                     style: Style::default(),
                 });
+            }
+        }
+    }
+
+    // Saved highlights sit below selection and search styles, in doc space.
+    for (index, entry) in app.notes.entries.iter().enumerate() {
+        if let Some(range) = &entry.range {
+            let clamped = range.start.max(row.doc.start)..range.end.min(row.doc.end);
+            if clamped.start < clamped.end {
+                let text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+                let (left, right) = cols_for_doc_range(text, row.doc.start, row.indent, &clamped);
+                let x = area.x.saturating_add(left);
+                let width = right
+                    .saturating_sub(left)
+                    .min(area.right().saturating_sub(x));
+                if width > 0 {
+                    frame.buffer_mut().set_style(
+                        Rect::new(x, y, width, 1),
+                        if app.notes.current == Some(index) {
+                            theme::annotation_current()
+                        } else {
+                            theme::annotation()
+                        },
+                    );
+                }
             }
         }
     }

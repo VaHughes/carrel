@@ -34,6 +34,44 @@ impl Keys {
         self.pending_z = false;
     }
 
+    /// Notes own text input while editing and list navigation otherwise.
+    #[must_use]
+    pub fn map_notes(key: KeyEvent, editing: bool) -> Option<Action> {
+        use crate::action::NoteKey as N;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if editing {
+            let input = match key.code {
+                KeyCode::Esc => N::Cancel,
+                KeyCode::Char('c') if ctrl => N::Cancel,
+                KeyCode::Char('s') if ctrl => N::Save,
+                KeyCode::Char('j') if ctrl => N::Newline,
+                KeyCode::Enter => N::Save,
+                KeyCode::Backspace => N::Backspace,
+                KeyCode::Delete => N::Delete,
+                KeyCode::Left => N::Left,
+                KeyCode::Right => N::Right,
+                KeyCode::Home => N::Home,
+                KeyCode::End => N::End,
+                KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+                    N::Char(c)
+                }
+                _ => return None,
+            };
+            return Some(Action::NoteInput(input));
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q' | 'V') => Some(Action::NotesToggle),
+            KeyCode::Down | KeyCode::Char('j') => Some(Action::NoteMove(1)),
+            KeyCode::Up | KeyCode::Char('k') => Some(Action::NoteMove(-1)),
+            KeyCode::Enter => Some(Action::NoteJump),
+            KeyCode::Char('a' | 'e') => Some(Action::NoteEdit),
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::NoteDelete),
+            KeyCode::Char('E') => Some(Action::NotesExport),
+            KeyCode::Char('Q') => Some(Action::Quit),
+            _ => None,
+        }
+    }
+
     /// Map one key press. `searching` selects the search-prompt binding set.
     #[allow(clippy::too_many_lines)] // Keep the reader bindings in one dispatcher.
     pub fn map(&mut self, key: KeyEvent, searching: bool) -> Option<Action> {
@@ -126,6 +164,10 @@ impl Keys {
             // eXecute-point: the next unchecked-or-checked task in the file.
             KeyCode::Char('X') => Some(Action::TaskStep(self.take())),
             KeyCode::Char('y') => Some(Action::YankBlock),
+            KeyCode::Char('v') => Some(Action::HighlightAdd),
+            KeyCode::Char('a') => Some(Action::NoteEdit),
+            KeyCode::Char('V') => Some(Action::NotesToggle),
+            KeyCode::Char('M') => Some(Action::NoteNext),
 
             KeyCode::Char('j') | KeyCode::Down => Some(Action::Scroll(Span::Line, self.take())),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::Scroll(Span::Line, -self.take())),
@@ -322,6 +364,20 @@ impl Keys {
     /// exactly as they do today), and the filter is case-insensitive, so
     /// nothing is lost by spending them. `Q` still quits outright.
     #[must_use]
+    pub fn map_lightbox(key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => Some(Action::Dismiss),
+            KeyCode::Char('[') | KeyCode::Left => Some(Action::ImageStep(-1)),
+            KeyCode::Char(']') | KeyCode::Right => Some(Action::ImageStep(1)),
+            KeyCode::Char('Q') => Some(Action::Quit),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::Quit)
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub fn map_help(key: KeyEvent) -> Option<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -504,7 +560,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::HomePage(_) => "PgDn PgUp",
         A::SettingsToggle => ",",
         // A button, not a key: nothing to press, so nothing to print.
-        A::WelcomeOpen => return None,
+        A::WelcomeOpen | A::ImageOpen(_) | A::ImageStep(_) => return None,
         A::SettingsMove(_) => "j k",
         A::SettingsAdjust(_) | A::SettingsPickAt(_) => "\u{21b5}",
         A::MeasureStep(_) => "+ -",
@@ -521,6 +577,14 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::Dismiss => "Esc",
         A::CloseFile => "q",
         A::ThemeCycle => "T",
+        A::HighlightAdd | A::HighlightAt(_) => "v",
+        A::NoteEdit | A::NoteAt(_) => "a",
+        A::NotesToggle => "V",
+        A::NoteNext => "M",
+        A::NotesExport => return None,
+        A::NoteMove(_) | A::NoteSelect(_) | A::NoteJump | A::NoteDelete | A::NoteInput(_) => {
+            return None;
+        }
         A::TableToggle => "t",
         A::TableScroll { delta, .. } => {
             if delta < 0 {
@@ -638,6 +702,10 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("o", "outline: jump to a section"),
     ("za", "collapse this section"),
     ("zM zR", "collapse all / expand all"),
+    ("v", "highlight selection/paragraph"),
+    ("a", "add or edit a note"),
+    ("V", "notes and highlights"),
+    ("M", "next note or highlight"),
     ("t", "wide tables: cards or columns"),
     ("Shift-← Shift-→", "scroll a wide table sideways"),
     ("r", "diagrams, math: drawn or text"),
@@ -1274,8 +1342,8 @@ mod tests {
         assert_eq!(m.map(k('R'), false), Some(Action::UnfoldAll));
         assert_eq!(
             m.map(k('a'), false),
-            None,
-            "a alone is nothing — the prefix was consumed"
+            Some(Action::NoteEdit),
+            "a alone edits a note — the prefix was consumed"
         );
     }
 

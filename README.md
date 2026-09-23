@@ -200,6 +200,29 @@ pointer. Most terminals let you **hold Shift** to bypass that and select as usua
 yours doesn't, or you would rather not, `--no-mouse` (or `mouse = false` in the config)
 gives the pointer back for good. Nothing becomes unreachable — every action has a key.
 
+### Images, highlights, and notes
+
+Click an image, press Enter at one when no link is selected, or choose **Images…**
+from the menu to open the lightbox. `[` / `]` or the arrow keys walk the document’s
+images; Esc, Enter, or `q` closes it and keeps your reading position. Local images
+fit the window using the available graphics protocol or colored blocks. Remote
+images are never fetched.
+
+Select text and press `v` to highlight it, or `a` to add a note. With no selection,
+these use the paragraph at your reading position. The right-click menu offers both.
+In the note editor, Enter or Ctrl-S saves, Ctrl-J adds a newline, and Esc cancels.
+Pasted text stays text, including newlines.
+
+`V` opens **Notes and highlights**; select a row to jump, edit, delete, or export.
+`M` walks attached notes and highlights. Notes live under
+`$XDG_STATE_HOME/carrel/marginalia/` (normally `~/.local/state/carrel/marginalia/`),
+never in the source document. They survive resizing and use the saved quote and
+surrounding text to find their place after an edit. Missing or ambiguous quotes
+remain available as unresolved notes. **Export** (`E` in the list) writes a
+quote-and-note Markdown file alongside the saved notes and reports its path.
+For piped documents, notes last for the session and export through the terminal
+clipboard (OSC 52).
+
 ## Configuration
 
 Optional. Carrel writes `$XDG_CONFIG_HOME/carrel/config` (or `~/.config/carrel/config`) itself
@@ -364,7 +387,7 @@ The module map, the decisions already made, and the pinned dependencies are in
       printing the key that does the same thing — every action carrel has is now reachable
       without knowing one, and a test says so exhaustively
 - [x] Hover, and one first-run line — the click-first pivot, finished
-- [ ] Marginalia — highlights and notes made while reading, stored in the state directory
+- [x] Marginalia — highlights and notes made while reading, stored in the state directory
       and never in the document; anchored on byte offsets, so they survive a resize by
       construction, re-finding themselves after an edit by the quoted text; walked like
       bookmarks, reviewed from an overlay, exported as quote-and-note markdown
@@ -376,8 +399,8 @@ The module map, the decisions already made, and the pinned dependencies are in
       hits as generated markdown, a section per file with a link per match, so the
       outline, collapsing and a second search all work on the results, and every match
       jumps to its line
-- [ ] Image lightbox — Enter opens an image full-screen, kitty protocol first and
-      half-block fallback everywhere; `[`/`]` walks the images of the document
+- [x] Image lightbox — click an image or press Enter at one to view it full-screen;
+      `[`/`]` walks the images, using the available terminal protocol or colored blocks
 - [x] Fuzzy matching for the home filter and the outline picker — best alignment wins,
       ranked; substring no longer
 - [x] Word-level colour inside changed diff lines, so a prose review reads as prose

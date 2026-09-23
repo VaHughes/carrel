@@ -146,6 +146,22 @@ Next and previous match.
 .B o
 Outline picker.
 .TP
+.B v
+Highlight the selected text, or the paragraph at the reading position.
+The source document is never modified.
+.TP
+.B a
+Add or edit a note for the selection or paragraph. Enter or Ctrl-S saves;
+Esc cancels, Ctrl-J inserts a newline. Pasting into the editor inserts text.
+.TP
+.B V
+Open notes and highlights. Arrows select, Enter jumps, a edits, Delete removes,
+and E exports quote-and-note Markdown to the state directory. Clickable buttons
+provide the same actions. Missing or ambiguous quotes stay in the list as unresolved.
+.TP
+.B M
+Go to the next attached note or highlight, wrapping at the end.
+.TP
 .B t
 Toggle wide tables between cards and columns.
 .TP
@@ -205,7 +221,9 @@ closes this pane, and the two link panes below.)
 Select the next or previous link.
 .TP
 .B Enter
-Follow the selected link. A markdown file beside this one opens in the reader;
+Follow the selected link. With no link selected and an image at the reading
+position, open its full-screen lightbox. Click an image or choose Images from
+the menu to open it too; [ and ] or arrows change images, Esc or q closes. A markdown file beside this one opens in the reader;
 any destination with a scheme \(em a URL, a
 .B mailto:
 address \(em is copied to the clipboard instead, to paste wherever you meant it

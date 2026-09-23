@@ -64,6 +64,15 @@ pub fn local_image_requests(doc: &Document, base: Option<&Path>) -> Vec<(BlockId
     out
 }
 
+/// Images in document order, including unavailable images whose alt text is useful.
+#[must_use]
+pub fn image_blocks(doc: &Document) -> Vec<BlockIdx> {
+    (0..doc.block_count())
+        .map(|b| BlockIdx(b as u32))
+        .filter(|b| matches!(doc.node_for_block(*b).kind, NodeKind::Image { .. }))
+        .collect()
+}
+
 /// Decode one file within the caps. Blocking — worker-thread only.
 fn decode_one(path: &Path) -> Result<image::DynamicImage, String> {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();

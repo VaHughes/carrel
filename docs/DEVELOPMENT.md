@@ -132,7 +132,10 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   prints the file's path; each row writes through the one existing writer for that setting, so
   the pane never becomes a second place persistence happens.
 - State: `$XDG_STATE_HOME/carrel` — reading positions (`permille`, `words`; the old 3-field
-  form still parses) and bookmarks, per document.
+  form still parses) and bookmarks, per document. `marginalia/<path-hash>.notes` stores
+  notes/highlights with a canonical path guard; `.md` beside it is an explicit export.
+  Tests inject scratch state directories. Piped notes stay in memory and export via
+  the terminal clipboard; notes never write the document itself.
 - Cache: `$XDG_CACHE_HOME/carrel` — the home-screen index (paths and mtimes only).
 - `READING_WPM` (200) is deliberately not configurable; `RESCAN_EVERY` is 2 s.
 

@@ -946,6 +946,27 @@ pub fn token(kind: carrel_core::TokenKind) -> Style {
     })
 }
 
+/// A saved highlight stays distinguishable without color too.
+#[must_use]
+pub fn annotation() -> Style {
+    tinted(
+        Style::default()
+            .bg(active().match_bg)
+            .add_modifier(Modifier::UNDERLINED),
+    )
+}
+
+#[must_use]
+pub fn annotation_current() -> Style {
+    let p = active();
+    tinted(
+        Style::default()
+            .fg(p.cur_fg)
+            .bg(p.cur_bg)
+            .add_modifier(Modifier::UNDERLINED),
+    )
+}
+
 /// The home-screen wordmark.
 #[must_use]
 pub fn wordmark() -> Style {

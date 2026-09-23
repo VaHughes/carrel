@@ -294,7 +294,9 @@ pub fn global(app: &App) -> Vec<Item> {
             Item::new("Back", Action::Back)
         },
         Item::gap(),
+        Item::new("Notes and highlights…", Action::NotesToggle),
         Item::new("Document info", Action::InfoToggle),
+        Item::new("Images…", Action::ImageOpen(None)),
         Item::new("Focus on one paragraph", Action::FocusToggle),
         Item::new("Auto-read", Action::AutoToggle),
         // Following pins the view to the end of a document that is still
@@ -471,6 +473,17 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
     items.push(Item::gap());
     // `…` means "opens something that asks for more" — CUA again, and the
     // reason the three overlays carry it and the toggles above do not.
+    items.push(Item::like(
+        "Highlight text",
+        Action::HighlightAdd,
+        Action::HighlightAt(byte),
+    ));
+    items.push(Item::like(
+        "Add note",
+        Action::NoteEdit,
+        Action::NoteAt(byte),
+    ));
+    items.push(Item::new("Notes and highlights…", Action::NotesToggle));
     items.push(Item::new("Search…", Action::SearchOpen(Direction::Forward)));
     items.push(Item::new("Outline…", Action::OutlineToggle));
     items.push(Item::new("Bookmarks…", Action::MarkListToggle));
@@ -750,6 +763,8 @@ mod tests {
             // --- only a menu offers these ---
             A::Back => Menu("Back"),
             A::InfoToggle => Menu("Document info"),
+            A::ImageOpen(_) => Menu("Images…"),
+            A::ImageStep(_) => Pane,
             A::FocusToggle => Menu("Focus on one paragraph"),
             A::AutoToggle => Menu("Auto-read"),
             A::BreadcrumbToggle => Menu("Heading bar"),
@@ -761,6 +776,15 @@ mod tests {
             A::ForwardToggle => Menu("What this points at"),
             A::CodeStep(_) => Menu("Next code block"),
             A::RenderedToggle => Menu("Drawn ↔ text"),
+            A::HighlightAt(_) | A::NoteAt(_) => Doc,
+            A::NoteMove(_) | A::NoteSelect(_) | A::NoteJump | A::NoteDelete | A::NoteInput(_) => {
+                Pane
+            }
+            A::HighlightAdd => Doc, // the context menu names the clicked paragraph
+            A::NoteEdit => Pane,
+            A::NotesToggle => Menu("Notes and highlights…"),
+            A::NoteNext => KeyboardOnly, // the notes list offers direct jumps
+            A::NotesExport => Pane,
             A::TableScroll { .. } => Doc,
             A::TableToggle => Menu("Cards ↔ columns"),
             A::FootnoteJump => Menu("Go to the footnote text"),

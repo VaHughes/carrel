@@ -12,6 +12,8 @@
 //! injected violation.
 
 pub mod action;
+pub mod annotation_render;
+pub mod annotation_state;
 pub mod ansi;
 pub mod app;
 pub mod breadcrumb;
@@ -25,6 +27,7 @@ pub mod images;
 pub mod keys;
 pub mod layout;
 pub mod links;
+pub mod marginalia;
 pub mod math_art;
 pub mod menu;
 pub mod omarchy;
