@@ -339,3 +339,39 @@ fn tiny_chrome_stays_inside_the_window_with_hints_disabled() {
         }
     }
 }
+
+#[test]
+fn compact_settings_show_the_whole_label_and_value() {
+    for (cols, rows) in [(24, 6), (12, 6), (32, 8)] {
+        let mut app = app(cols, rows);
+        app.max_width = 0;
+        update(&mut app, Action::SettingsToggle);
+        for selected in 0..carrel::app::settings_rows(&app).len() {
+            app.settings = Some(selected);
+            let setting = carrel::app::settings_rows(&app).remove(selected);
+            let (buf, painted) = frame(&app);
+            let target = painted
+                .targets
+                .as_slice()
+                .iter()
+                .find(|t| t.action == Action::SettingsPickAt(selected as u32))
+                .unwrap();
+            let z = target.zone;
+            let shown: String = (z.y..z.y + z.h)
+                .flat_map(|y| (z.x..z.x + z.w).map(move |x| (x, y)))
+                .map(|at| buf[at].symbol())
+                .collect();
+            let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            assert!(
+                compact(&shown).contains(&compact(setting.label)),
+                "{cols}x{rows} missing {} in {shown:?}",
+                setting.label
+            );
+            assert!(
+                compact(&shown).contains(&compact(&setting.value)),
+                "{cols}x{rows} missing {} in {shown:?}",
+                setting.value
+            );
+        }
+    }
+}

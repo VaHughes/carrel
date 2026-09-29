@@ -207,8 +207,9 @@ shrink; below 20 they disappear. Below 12 rows the heading bar and vertical
 padding give way to text, and below 8 rows the hint row does too. Your saved
 preferences return when the window grows. The **`≡`** menu remains visible.
 
-Compact panes use the whole window. Help wraps its descriptions; settings and
-menus keep the selected row visible. The document information card (`I`) wraps
+Compact panes use the whole window. Help wraps its descriptions; settings wrap long labels and values, and settings
+and menus keep the selected entry visible. The wheel navigates the open pane;
+settings also offer arrow buttons. The document information card (`I`) wraps
 long values and scrolls with the wheel, arrows, or its arrow buttons. Close a
 pane with its **×** button. Very small windows show a close control when a pane
 cannot fit. On home, short windows prioritize files over the banner and

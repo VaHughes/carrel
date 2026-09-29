@@ -541,6 +541,13 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
             .unwrap_or(u16::MAX)
             .saturating_add(3),
     );
+    let save_row = usize::from(h >= 10);
+    let inner = usize::from(h.saturating_sub(2)).saturating_sub(save_row);
+    let entries: Vec<_> = rows.iter().map(|row| setting_lines(row, w - 2)).collect();
+    if entries[selected].len() > inner {
+        small_panel(frame, targets, "settings", Action::SettingsToggle);
+        return;
+    }
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
 
     // The config file, named where a reader will actually meet it.
@@ -574,56 +581,97 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
     } else {
         where_
     };
-    buf.set_stringn(
-        x,
-        y + h - 2,
-        format!("  saved in {shown}"),
-        w as usize,
-        theme::dim(),
-    );
+    if save_row > 0 {
+        buf.set_stringn(
+            x,
+            y + h - 2,
+            format!("  saved in {shown}"),
+            w as usize,
+            theme::dim(),
+        );
+    }
     buf.set_stringn(
         x,
         y + h - 1,
-        format!("└ ↵ change · ↑↓ move · esc close {bar}"),
+        "└ ↑ ↓ · ↵ change",
         w as usize,
         theme::status(),
     );
 
-    let inner = usize::from(h.saturating_sub(3));
-    let first = selected.saturating_sub(inner.saturating_sub(1));
-    for (offset, row) in rows.iter().skip(first).take(inner).enumerate() {
-        let i = first + offset;
-        let py = y + 1 + u16::try_from(offset).unwrap_or(u16::MAX);
-        if py >= y + h - 2 {
+    paint_setting_entries(
+        buf,
+        targets,
+        Rect::new(x + 1, y + 1, w - 2, u16::try_from(inner).unwrap_or(0)),
+        &entries,
+        selected,
+    );
+    for (dx, label, action) in [
+        (2, "↑", Action::SettingsMove(-1)),
+        (4, "↓", Action::SettingsMove(1)),
+    ] {
+        buf.set_stringn(x + dx, y + h - 1, label, 1, theme::button());
+        targets.push(action, Zone::new(x + dx, y + h - 1, 1, 1), Z_OVERLAY);
+    }
+}
+
+/// Use two or more lines when a label and value would otherwise collide.
+fn setting_lines(row: &crate::app::SettingsRow, width: u16) -> Vec<String> {
+    let label_w = display_width(row.label);
+    let value_w = display_width(&row.value);
+    if label_w + value_w + 2 <= width {
+        let gap = " ".repeat(usize::from(width - label_w - value_w));
+        vec![format!("{}{gap}{}", row.label, row.value)]
+    } else {
+        let mut lines = crate::layout::wrap_ui_text(row.label, width);
+        lines.extend(
+            crate::layout::wrap_ui_text(&row.value, width.saturating_sub(2))
+                .into_iter()
+                .map(|value| format!("  {value}")),
+        );
+        lines
+    }
+}
+
+fn paint_setting_entries(
+    buf: &mut ratatui::buffer::Buffer,
+    targets: &mut Targets,
+    area: Rect,
+    entries: &[Vec<String>],
+    selected: usize,
+) {
+    let mut first = selected;
+    let mut used = entries[selected].len();
+    while first > 0 && used + entries[first - 1].len() <= usize::from(area.height) {
+        first -= 1;
+        used += entries[first].len();
+    }
+    let mut y = area.y;
+    for (index, lines) in entries.iter().enumerate().skip(first) {
+        let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        if height > area.bottom().saturating_sub(y) {
             break;
         }
-        targets.push(
-            Action::SettingsPickAt(u32::try_from(i).unwrap_or(u32::MAX)),
-            Zone::new(x + 1, py, w.saturating_sub(1), 1),
-            Z_OVERLAY,
-        );
-        let style = if i == selected {
+        let style = if index == selected {
             theme::selected()
         } else {
             theme::status()
         };
-        // Label left, value right: the shape of every settings list there
-        // has ever been, so it reads without a legend.
-        let label = format!("  {}", row.label);
-        let vw = carrel_core::display_width(&row.value);
-        buf.set_stringn(x + 1, py, &blank, w.saturating_sub(1) as usize, style);
-        buf.set_stringn(
-            x + 1,
-            py,
-            &label,
-            usize::from(w.saturating_sub(vw + 4)),
-            style,
-        );
-        // Keep the current value visible; shorten the label when space is tight.
-        if w > vw + 4 {
-            let vx = x + w.saturating_sub(vw).saturating_sub(2);
-            buf.set_stringn(vx, py, &row.value, vw as usize, style);
+        for line in lines {
+            buf.set_stringn(
+                area.x,
+                y,
+                " ".repeat(usize::from(area.width)),
+                usize::from(area.width),
+                style,
+            );
+            buf.set_stringn(area.x, y, line, usize::from(area.width), style);
+            y += 1;
         }
+        targets.push(
+            Action::SettingsPickAt(index as u32),
+            Zone::new(area.x, y - height, area.width, height),
+            Z_OVERLAY,
+        );
     }
 }
 

@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Compact pane controls.** Long settings labels and values wrap into complete
+  entries with clickable navigation arrows. The wheel follows the open pane's
+  arrow-key routing, including help on home, instead of scrolling the document
+  underneath or doing nothing.
+
 - **Small-terminal layouts.** Side margins shrink in narrow panes; short windows
   temporarily hide vertical padding, the heading bar, and then the hint row.
   Saved preferences return when space permits, and the menu launcher stays visible.

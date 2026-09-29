@@ -25,6 +25,15 @@ Last updated: 2026-09-29
 
 ## Recently completed
 
+- Unreleased follow-up (2026-09-29) — **complete settings entries and pane wheels**.
+  Long labels and values wrap instead of colliding; the selected entry fits as a
+  whole, with navigation buttons and a compact footer. In short panes the config
+  path gives way to entries. Wheel events use the keyboard's existing arrow
+  dispatcher for settings, help, outline, bookmarks, and link panes, preventing
+  document movement underneath; this also fixes help scrolling on home.
+  Verification: 858 tests and all five gates passed, along with all-target checks;
+  debug binary rebuilt and settings inspected in real 24×6 and 12×6 PTYs.
+
 - Unreleased (2026-09-29) — **small-terminal layouts**. Reading margins and chrome
   adapt without overwriting preferences (40×6 now has five reading rows instead of
   one); the menu launcher remains visible. Compact panes use the window, help wraps,

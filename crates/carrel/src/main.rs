@@ -1994,6 +1994,32 @@ fn menu_mouse(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::act
     }
 }
 
+/// Pane wheels use the same arrow dispatcher as the keyboard, without
+/// consuming the reader's pending count. Document scrolling keeps acceleration.
+fn pane_wheel(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let code = match m.kind {
+        MouseEventKind::ScrollDown => KeyCode::Down,
+        MouseEventKind::ScrollUp => KeyCode::Up,
+        _ => return None,
+    };
+    if app.help.is_some()
+        || app.backlinks.is_some()
+        || app.forward.is_some()
+        || app.settings.is_some()
+        || app.mark_list.is_some()
+        || app.outline.is_some()
+    {
+        key_action(
+            &mut Keys::new(),
+            app,
+            KeyEvent::new(code, KeyModifiers::NONE),
+        )
+    } else {
+        None
+    }
+}
+
 /// Pointer events for the reader.
 ///
 /// Desktop scrollbar semantics, because anything else feels jarring:
@@ -2029,6 +2055,9 @@ fn mouse_action(
     }
     if app.menu.is_some() {
         return menu_mouse(m, app, targets);
+    }
+    if let Some(action) = pane_wheel(m, app) {
+        return Some(action);
     }
     if matches!(m.kind, MouseEventKind::Down(MouseButton::Right)) {
         return open_menu_at(m, app);
@@ -2265,6 +2294,9 @@ fn home_mouse_action(
     }
     if app.menu.is_some() {
         return menu_mouse(m, app, targets);
+    }
+    if let Some(action) = pane_wheel(m, app) {
+        return Some(action);
     }
     if matches!(m.kind, MouseEventKind::Down(MouseButton::Right)) {
         return open_menu_at(m, app);
@@ -2643,6 +2675,49 @@ mod tests {
             ),
             Some(Action::MenuMove(-1))
         );
+    }
+
+    #[test]
+    fn wheel_uses_the_open_panes_arrow_action_in_both_loops() {
+        use carrel::action::{Action, Span};
+        for home in [false, true] {
+            for (open, expected) in [
+                (Action::SettingsToggle, Action::SettingsMove(1)),
+                (Action::HelpToggle, Action::Scroll(Span::Line, 1)),
+                (Action::OutlineToggle, Action::OutlineMove(1)),
+                (Action::MarkListToggle, Action::MarkListMove(1)),
+                (Action::ForwardToggle, Action::ForwardMove(1)),
+            ] {
+                if home
+                    && matches!(
+                        open,
+                        Action::MarkListToggle | Action::ForwardToggle | Action::OutlineToggle
+                    )
+                {
+                    continue;
+                }
+                let mut app = if home {
+                    App::new_home("/docs".into(), vec![], 24, 6)
+                } else {
+                    App::new(
+                        "t.md".into(),
+                        carrel_core::Document::parse("# Heading\n\ntext\n"),
+                        24,
+                        6,
+                    )
+                };
+                app.marks.push(0);
+                update(&mut app, open);
+                let event = mouse(MouseEventKind::ScrollDown, 3, 3);
+                let mut pointer = Pointer::default();
+                let result = if home {
+                    home_mouse_action(event, &app, &Targets::new(), &mut pointer)
+                } else {
+                    mouse_action(event, &app, &Targets::new(), &mut pointer)
+                };
+                assert_eq!(result, Some(expected), "home={home}, pane={open:?}");
+            }
+        }
     }
 
     /// The scrollbar is as tall as the text, not as tall as the terminal.

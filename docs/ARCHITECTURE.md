@@ -151,7 +151,9 @@ Key facts:
   govern both home painting and hit-testing. `layout::panel_size` and `wrap_ui_text`
   serve compact panes without UI dependencies. Menu scroll windows preserve their
   top row through hover; targets retain original item indices. Information-card
-  scroll is separate from the document anchor.
+  scroll is separate from the document anchor. Settings windows count wrapped
+  entry rows and keep the selected entry whole. Pane wheel events reuse
+  `key_action` with an arrow event so keyboard and pointer routing cannot drift.
 - **Two width budgets.** `text_size` returns `(prose, bleed, height)`; `text_w()` is the prose
   measure, `bleed_w()` the full area. `table_overflows` must get the bleed width.
   `paint_rows` takes the full area and shadows a per-block rect inside the loop.
