@@ -68,7 +68,7 @@ fn zero_reproduces_the_pre_measure_geometry_exactly() {
 fn a_terminal_narrower_than_its_own_chrome_does_not_underflow() {
     let (prose, bleed, h) = App::text_size(1, 1, true, false, DEFAULT_MEASURE, 0);
     assert_eq!((prose, bleed, h), (0, 0, 0));
-    assert_eq!(App::text_x(1, DEFAULT_MEASURE, 0), 2);
+    assert_eq!(App::text_x(1, DEFAULT_MEASURE, 0), 0);
 }
 
 // --- what binds and what bleeds ---

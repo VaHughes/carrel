@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-23
+Last updated: 2026-09-29
 
 ## Current state
 
@@ -24,6 +24,20 @@ Last updated: 2026-09-23
   authoritative done/open list.
 
 ## Recently completed
+
+- Unreleased (2026-09-29) — **small-terminal layouts**. Reading margins and chrome
+  adapt without overwriting preferences (40×6 now has five reading rows instead of
+  one); the menu launcher remains visible. Compact panes use the window, help wraps,
+  settings selections stay visible, information cards wrap and scroll, and close
+  controls survive tiny sizes. Menus scroll by keys, wheel, or buttons while hover
+  preserves the window. Home prioritizes file rows and keeps resume hit-testing honest.
+  Adversarial checks cover resize thresholds, zero-sized frames, Unicode pointer
+  inversion, search/anchor preservation, actual close actions, and menu mouse dispatch.
+  Verification: 856 tests passed; clippy, formatting, architecture, packaging, and
+  all-target checks passed. The local debug binary was rebuilt and real PTY screens
+  inspected at 40×6, 32×8, and 24×6/8.
+  Hyphenation remains separate: language selection and synthetic-glyph copy/search
+  behavior require their own design; no document-text or core layout changes here.
 
 - 2026.9.23 (implemented 2026-09-22) — **image lightbox and marginalia**. Images open full-screen
   from a click, Enter at the image, or the Images menu; previous/next controls and
@@ -100,6 +114,16 @@ notes' `research.md`): Q29 (dual-frontend prior-art study, P0) and Q33 (P1), to 
 before that phase rather than during it.
 
 ## Recent decisions
+
+- 2026-09-29: **Small terminals prioritize reading space and reachable controls.**
+  The brainstorm considered automatic hyphenation, a minimum-size warning, manual
+  compact mode, and automatic adaptation. Chosen: automatic, reversible adaptation,
+  full-window compact panes, and scrolling for overflow. A resize must not change
+  preferences, document bytes, search matches, or the reading anchor; a clipped pane
+  must not accept invisible choices. [Ratatui's layout guidance](https://ratatui.rs/concepts/layout/)
+  supports deriving layout from available rectangles; [Unicode UAX #14](https://unicode.org/reports/tr14/)
+  distinguishes line breaking from language-dependent hyphenation. The latter remains
+  separate work rather than silently assuming English for every document.
 
 - 2026-09-21: **clicks over keybindings where a choice exists.** The beginner
   slate adds bindings only for keys that were already unbound, and reaches for

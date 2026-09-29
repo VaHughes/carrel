@@ -17,6 +17,24 @@ pub const SPLASH_W: u16 = 19;
 pub const BANNER_MIN_COLS: u16 = SPLASH_W + 6;
 pub const BANNER_MIN_ROWS: u16 = 17;
 
+/// Header decoration gives way to file rows in a short window.
+#[must_use]
+pub const fn header_rows(cols: u16, rows: u16) -> u16 {
+    if cols >= BANNER_MIN_COLS && rows >= BANNER_MIN_ROWS {
+        7
+    } else if rows >= 6 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Resume shortcuts remain available by number when their band is hidden.
+#[must_use]
+pub const fn visible_resume(cols: u16, rows: u16, resume: u16) -> u16 {
+    if cols >= 32 && rows >= 12 { resume } else { 0 }
+}
+
 /// The file list's `(top row, height)` inside a terminal of this size.
 ///
 /// **The ONE derivation of the home screen's list geometry.** `render.rs`
@@ -32,13 +50,13 @@ pub const BANNER_MIN_ROWS: u16 = 17;
 pub const fn list_geometry(cols: u16, rows: u16, hints: bool, resume: u16) -> (u16, u16) {
     // Banner: lamp row, 3 shade rows, desk, then the tagline and a blank.
     // Small terminal: just the wordmark. Both are followed by the root line.
-    let header = if cols >= BANNER_MIN_COLS && rows >= BANNER_MIN_ROWS {
-        7
+    let header = header_rows(cols, rows);
+    let top = header + 1 + resume_band(visible_resume(cols, rows, resume));
+    let chrome = if crate::app::App::show_hints(rows, hints) {
+        2
     } else {
         1
     };
-    let top = header + 1 + resume_band(resume);
-    let chrome = if hints { 2 } else { 1 };
     let bottom = rows.saturating_sub(chrome);
     (top, bottom.saturating_sub(top))
 }
@@ -69,7 +87,11 @@ pub const PICKER_ROWS: u16 = 12;
 /// so a two-match list is a small box rather than a mostly-empty one.
 #[must_use]
 pub const fn picker_geometry(cols: u16, screen_rows: u16, entries: u16) -> (u16, u16, u16, u16) {
-    let width = clamp_u16(cols.saturating_sub(8), 10, 60);
+    let width = if cols < 60 || screen_rows < 16 {
+        cols
+    } else {
+        clamp_u16(cols.saturating_sub(8), 10, 60)
+    };
     let full = min_u16(PICKER_ROWS + 3, screen_rows);
     // At least one entry row, so "no directory matches" has somewhere to go.
     let wanted = if entries == 0 { 1 } else { entries };
@@ -583,15 +605,11 @@ impl Home {
     /// document.
     #[must_use]
     pub fn resume_row_at(&self, row: u16, cols: u16, rows: u16) -> Option<usize> {
-        let shown = self.resume_shown();
+        let shown = visible_resume(cols, rows, self.resume_shown());
         if shown == 0 {
             return None;
         }
-        let header = if cols >= BANNER_MIN_COLS && rows >= BANNER_MIN_ROWS {
-            7
-        } else {
-            1
-        };
+        let header = header_rows(cols, rows);
         // header, the root line, then the band's own label row.
         let first = header + 2;
         if row < first || row >= first + shown {

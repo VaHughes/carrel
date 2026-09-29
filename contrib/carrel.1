@@ -284,6 +284,16 @@ otherwise quit.
 .TP
 .BR Q ", " Ctrl\-C
 Quit outright, whatever is open.
+.SS Small terminals
+Narrow windows reduce the side margins. Below twelve rows the heading bar and
+vertical padding give way to reading space; below eight rows the hint row does too.
+These adaptations do not change saved preferences. The menu launcher stays visible.
+Compact panes use the whole window, help descriptions wrap, and selections stay
+visible. The information card wraps long values; arrows or the wheel scroll its
+contents. Panes have clickable close buttons. Short menus scroll with the wheel
+or their arrow buttons, and omit shortcuts when labels need the space.
+The home screen prioritizes files over decoration and continue-reading rows;
+numbered resume shortcuts remain available.
 .SS Mouse
 The reader takes the mouse, so the terminal's own selection is not available
 while it is up. What replaces it copies the document's text and nothing else:

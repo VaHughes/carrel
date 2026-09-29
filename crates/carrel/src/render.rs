@@ -159,6 +159,9 @@ pub fn draw_full(
         crate::annotation_render::paint(frame, app, &mut painted.targets);
         return;
     }
+    if paint_tiny_modal(frame, app, &mut painted.targets) {
+        return;
+    }
     if let Screen::Home(h) = &app.screen {
         let area = frame.area();
         if area.width < 2 || area.height < 3 {
@@ -217,11 +220,17 @@ pub fn draw_full(
     // `doc_span_at` hit-tests against — and the top edge comes through
     // `text_y` for exactly the same reason, so a click cannot resolve to a
     // different byte than the one under the pointer.
-    let text = Rect::new(crate::app::PAD_LEFT, app.text_y(), bw, th);
+    let text = Rect::new(App::side_pad(area.width), app.text_y(), bw, th);
     // The bar keeps the true right edge but aligns its track with the text
     // rows, so thumb geometry and the drag hit-test share one coordinate.
     let bar = Rect::new(area.width.saturating_sub(1), app.text_y(), 1, th);
-    let status_y = area.height.saturating_sub(if app.hints { 2 } else { 1 });
+    let status_y = area
+        .height
+        .saturating_sub(if App::show_hints(area.height, app.hints) {
+            2
+        } else {
+            1
+        });
     let status = Rect::new(0, status_y, area.width, 1);
 
     paint_margin_outline(frame, app, text);
@@ -229,7 +238,7 @@ pub fn draw_full(
     paint_scrollbar(frame, app, bar);
     paint_status(frame, app, status, &mut painted.targets);
     paint_breadcrumb(frame, app, text, &mut painted.targets);
-    if app.hints {
+    if App::show_hints(area.height, app.hints) {
         paint_footer(
             frame,
             app,
@@ -237,30 +246,34 @@ pub fn draw_full(
             &mut painted.targets,
         );
     }
-    if app.help.is_some() {
-        paint_help(frame, app, &mut painted.targets);
-    }
-    if app.outline.is_some() {
-        paint_outline(frame, app, &mut painted.targets);
-    }
-    if app.backlinks.is_some() {
-        paint_backlinks(frame, app, &mut painted.targets);
-    }
-    if app.forward.is_some() {
-        paint_forward(frame, app, &mut painted.targets);
-    }
-    if app.mark_list.is_some() {
-        paint_marks(frame, app, &mut painted.targets);
-    }
-    paint_settings(frame, app, &mut painted.targets);
-    if app.info {
-        paint_info(frame, app, &mut painted.targets);
-    }
-    crate::annotation_render::paint(frame, app, &mut painted.targets);
+    paint_reader_panels(frame, app, &mut painted.targets);
     // Last, and therefore on top of everything it was opened over.
     paint_menu(frame, app, &mut painted.targets);
     paint_hover(frame, app, &painted.targets);
     settle_links(frame, painted);
+}
+
+fn paint_reader_panels(frame: &mut Frame, app: &App, targets: &mut Targets) {
+    if app.help.is_some() {
+        paint_help(frame, app, targets);
+    }
+    if app.outline.is_some() {
+        paint_outline(frame, app, targets);
+    }
+    if app.backlinks.is_some() {
+        paint_backlinks(frame, app, targets);
+    }
+    if app.forward.is_some() {
+        paint_forward(frame, app, targets);
+    }
+    if app.mark_list.is_some() {
+        paint_marks(frame, app, targets);
+    }
+    paint_settings(frame, app, targets);
+    if app.info {
+        paint_info(frame, app, targets);
+    }
+    crate::annotation_render::paint(frame, app, targets);
 }
 
 /// The viewer gets the whole frame, so no inline graphics or links leak beneath it.
@@ -412,6 +425,93 @@ fn settle_links(frame: &mut Frame, painted: &mut Painted) {
     }
 }
 
+fn paint_tiny_modal(frame: &mut Frame, app: &App, targets: &mut Targets) -> bool {
+    if frame.area().width < 12 || frame.area().height < 3 {
+        let pane = if app.menu.is_some() {
+            Some(("menu", Action::MenuClose))
+        } else if app.help.is_some() {
+            Some(("help", Action::Dismiss))
+        } else if app.settings.is_some() {
+            Some(("settings", Action::SettingsToggle))
+        } else if app.outline.is_some() {
+            Some(("outline", Action::OutlineToggle))
+        } else if app.mark_list.is_some() {
+            Some(("bookmarks", Action::MarkListToggle))
+        } else if app.backlinks.is_some() {
+            Some(("links here", Action::BacklinksToggle))
+        } else if app.forward.is_some() {
+            Some(("links", Action::ForwardToggle))
+        } else if app.info {
+            Some(("document", Action::InfoToggle))
+        } else {
+            None
+        };
+        if let Some((name, close)) = pane {
+            small_panel(frame, targets, name, close);
+            return true;
+        }
+    }
+    false
+}
+
+/// Compact panes use the whole window, keeping their title and a way out.
+/// Large windows retain the existing centered cards.
+fn panel_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let (w, h) = crate::layout::panel_size(area.width, area.height, width, height);
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
+}
+
+fn panel_close(
+    buf: &mut ratatui::buffer::Buffer,
+    targets: &mut Targets,
+    area: Rect,
+    action: Action,
+) {
+    let x = area.right() - 3;
+    buf.set_stringn(x, area.y, " × ", 3, theme::button());
+    targets.push(action, Zone::new(x, area.y, 3, 1), Z_OVERLAY);
+}
+
+/// Even an unusably small modal must announce itself and offer a pointer exit.
+fn small_panel(frame: &mut Frame, targets: &mut Targets, title: &str, close: Action) {
+    let area = frame.area();
+    if area.is_empty() {
+        return;
+    }
+    targets.push(
+        Action::Absorb,
+        Zone::new(area.x, area.y, area.width, area.height),
+        Z_MENU,
+    );
+    let buf = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        buf.set_stringn(
+            area.x,
+            y,
+            " ".repeat(usize::from(area.width)),
+            usize::from(area.width),
+            theme::status(),
+        );
+    }
+    buf.set_stringn(
+        area.x,
+        area.y,
+        format!("{title} needs room"),
+        usize::from(area.width),
+        theme::status(),
+    );
+    let label = if area.width >= 7 { "[close]" } else { "×" };
+    let w = display_width(label).min(area.width);
+    let y = area.bottom() - 1;
+    buf.set_stringn(area.x, y, label, usize::from(w), theme::button());
+    targets.push(close, Zone::new(area.x, y, w, 1), Z_MENU);
+}
+
 /// The settings pane: every persisted preference, with its current value,
 /// and the file they are written to.
 ///
@@ -424,16 +524,23 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
         return;
     };
     let area = frame.area();
-    if area.width < 30 || area.height < 8 {
+    if area.width < 12 || area.height < 4 {
+        small_panel(frame, targets, "settings", Action::SettingsToggle);
         return;
     }
     let rows = crate::app::settings_rows(app);
-    let w = 60u16.min(area.width.saturating_sub(4));
-    let h = (u16::try_from(rows.len()).unwrap_or(u16::MAX) + 3)
-        .min(area.height.saturating_sub(2))
-        .max(5);
-    let x = (area.width - w) / 2;
-    let y = (area.height - h) / 2;
+    let Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    } = panel_rect(
+        area,
+        60,
+        u16::try_from(rows.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(3),
+    );
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
 
     // The config file, named where a reader will actually meet it.
@@ -455,6 +562,8 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
         w as usize,
         theme::status(),
     );
+    panel_close(buf, targets, Rect::new(x, y, w, h), Action::SettingsToggle);
+
     // Truncated from the LEFT: the tail of a path is the part that
     // identifies it, and a right-truncated one shows a home directory and
     // hides the filename.
@@ -481,8 +590,10 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
 
     let inner = usize::from(h.saturating_sub(3));
-    for (i, row) in rows.iter().enumerate().take(inner) {
-        let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+    let first = selected.saturating_sub(inner.saturating_sub(1));
+    for (offset, row) in rows.iter().skip(first).take(inner).enumerate() {
+        let i = first + offset;
+        let py = y + 1 + u16::try_from(offset).unwrap_or(u16::MAX);
         if py >= y + h - 2 {
             break;
         }
@@ -499,13 +610,17 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
         // Label left, value right: the shape of every settings list there
         // has ever been, so it reads without a legend.
         let label = format!("  {}", row.label);
-        let lw = carrel_core::display_width(&label);
         let vw = carrel_core::display_width(&row.value);
         buf.set_stringn(x + 1, py, &blank, w.saturating_sub(1) as usize, style);
-        buf.set_stringn(x + 1, py, &label, w as usize, style);
-        // Right-aligned value, but only when the label leaves room for it —
-        // otherwise the label wins and the value is simply not shown.
-        if w > lw + vw + 4 {
+        buf.set_stringn(
+            x + 1,
+            py,
+            &label,
+            usize::from(w.saturating_sub(vw + 4)),
+            style,
+        );
+        // Keep the current value visible; shorten the label when space is tight.
+        if w > vw + 4 {
             let vx = x + w.saturating_sub(vw).saturating_sub(2);
             buf.set_stringn(vx, py, &row.value, vw as usize, style);
         }
@@ -520,16 +635,23 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         return;
     };
     let area = frame.area();
-    if area.width < 24 || area.height < 6 {
+    if area.width < 12 || area.height < 3 {
+        small_panel(frame, targets, "bookmarks", Action::MarkListToggle);
         return;
     }
-    let w = 64u16.min(area.width.saturating_sub(4));
-    let rows_needed = u16::try_from(app.marks.len()).unwrap_or(u16::MAX);
-    let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
-    let x = (area.width - w) / 2;
-    let y = (area.height - h) / 2;
-    // The pane owns its rectangle the way it owns the keyboard: a click on any
-    // part of it is absorbed here, unless a row pushed after this takes it.
+    let Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    } = panel_rect(
+        area,
+        64,
+        u16::try_from(app.marks.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(4),
+    );
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
@@ -545,6 +667,8 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         w as usize,
         theme::status(),
     );
+    panel_close(buf, targets, Rect::new(x, y, w, h), Action::MarkListToggle);
+
     buf.set_stringn(
         x,
         y + h - 1,
@@ -604,16 +728,23 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
 fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(bl) = &app.backlinks else { return };
     let area = frame.area();
-    if area.width < 24 || area.height < 6 {
+    if area.width < 12 || area.height < 3 {
+        small_panel(frame, targets, "links here", Action::BacklinksToggle);
         return;
     }
-    let w = 64u16.min(area.width.saturating_sub(4));
-    let rows_needed = u16::try_from(bl.rows.len() * 2).unwrap_or(u16::MAX);
-    let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
-    let x = (area.width - w) / 2;
-    let y = (area.height - h) / 2;
-    // The pane owns its rectangle the way it owns the keyboard: a click on any
-    // part of it is absorbed here, unless a row pushed after this takes it.
+    let Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    } = panel_rect(
+        area,
+        64,
+        u16::try_from(bl.rows.len() * 2)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(4),
+    );
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
@@ -629,6 +760,8 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         w as usize,
         theme::status(),
     );
+    panel_close(buf, targets, Rect::new(x, y, w, h), Action::BacklinksToggle);
+
     let foot = if bl.done {
         format!("└ {} found · ↵ open · esc close {bar}", bl.rows.len())
     } else {
@@ -693,16 +826,19 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
 fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(pane) = &app.forward else { return };
     let area = frame.area();
-    if area.width < 24 || area.height < 6 {
+    if area.width < 12 || area.height < 3 {
+        small_panel(frame, targets, "links", Action::ForwardToggle);
         return;
     }
-    let w = 64u16.min(area.width.saturating_sub(4));
-    let rows_needed = u16::try_from(pane.rows.len() * 2).unwrap_or(u16::MAX);
-    let h = (rows_needed + 2).min(area.height.saturating_sub(2)).max(4);
-    let x = (area.width - w) / 2;
-    let y = (area.height - h) / 2;
-    // The pane owns its rectangle the way it owns the keyboard: a click on any
-    // part of it is absorbed here, unless a row pushed after this takes it.
+    let rect = panel_rect(
+        area,
+        64,
+        u16::try_from(pane.rows.len() * 2)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(4),
+    );
+    let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
@@ -718,6 +854,8 @@ fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
         w as usize,
         theme::status(),
     );
+    panel_close(buf, targets, Rect::new(x, y, w, h), Action::ForwardToggle);
+
     buf.set_stringn(
         x,
         y + h - 1,
@@ -797,21 +935,17 @@ fn short_dest(dest: &str) -> String {
 }
 
 /// The document-info card (`I`): what kind of document this is, derived
-/// fresh every frame. Passive — it never owns the keyboard.
+/// fresh every frame. Scroll moves the card while it is visible.
 fn paint_info(frame: &mut Frame, app: &App, targets: &mut Targets) {
-    let rows = app.info_rows();
+    let lines = app.info_lines();
     let area = frame.area();
-    if area.width < 40 || area.height < 8 {
+    if area.width < 12 || area.height < 3 {
+        small_panel(frame, targets, "document", Action::InfoToggle);
         return;
     }
-    let w = 56u16.min(area.width.saturating_sub(4));
-    let h = (u16::try_from(rows.len()).unwrap_or(u16::MAX) + 2)
-        .min(area.height.saturating_sub(2))
-        .max(4);
-    let x = (area.width - w) / 2;
-    let y = (area.height - h) / 2;
-    // The pane owns its rectangle the way it owns the keyboard: a click on any
-    // part of it is absorbed here, unless a row pushed after this takes it.
+    let (w, h) = app.info_size();
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + (area.height - h) / 2;
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
@@ -827,31 +961,42 @@ fn paint_info(frame: &mut Frame, app: &App, targets: &mut Targets) {
         w as usize,
         theme::status(),
     );
-    buf.set_stringn(
-        x,
-        y + h - 1,
-        format!("└ I close {bar}"),
-        w as usize,
-        theme::status(),
-    );
+    panel_close(buf, targets, Rect::new(x, y, w, h), Action::InfoToggle);
 
-    // Labels pad to the longest label; values clip at the card's edge.
-    let label_w = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0) + 2;
-    let inner = usize::from(w.saturating_sub(3));
-    for (i, (label, value)) in rows.iter().enumerate().take(inner) {
-        let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
-        if py >= y + h - 1 {
-            break;
-        }
-        let line = format!("{label:<label_w$}{value}");
-        buf.set_stringn(x + 2, py, &line, w as usize - 3, theme::body());
+    buf.set_stringn(x, y + h - 1, format!("└{bar}"), w as usize, theme::status());
+    if w >= 18 {
+        buf.set_stringn(x + w - 8, y + h - 1, "I close", 7, theme::status());
+    }
+
+    let inner = usize::from(h.saturating_sub(2));
+    let first = app.info_scroll.min(lines.len().saturating_sub(inner));
+    for (i, line) in lines.iter().skip(first).take(inner).enumerate() {
         buf.set_stringn(
-            x + 2,
-            py,
-            format!("{label:<label_w$}"),
-            w as usize - 3,
-            theme::dim(),
+            x + 1,
+            y + 1 + u16::try_from(i).unwrap_or(0),
+            line,
+            usize::from(w - 2),
+            theme::body(),
         );
+    }
+    for (dx, label, action, visible) in [
+        (
+            1,
+            " ↑ ",
+            Action::Scroll(crate::action::Span::Line, -1),
+            first > 0,
+        ),
+        (
+            5,
+            " ↓ ",
+            Action::Scroll(crate::action::Span::Line, 1),
+            first + inner < lines.len(),
+        ),
+    ] {
+        if visible {
+            buf.set_stringn(x + dx, y + h - 1, label, 3, theme::button());
+            targets.push(action, Zone::new(x + dx, y + h - 1, 3, 1), Z_OVERLAY);
+        }
     }
 }
 
@@ -859,17 +1004,23 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(picker) = &app.outline else { return };
     let matches = app.outline_matches();
     let area = frame.area();
-    if area.width < 20 || area.height < 4 {
+    if area.width < 12 || area.height < 3 {
+        small_panel(frame, targets, "outline", Action::OutlineToggle);
         return;
     }
-    let w = 52u16.min(area.width.saturating_sub(2));
-    let h = (u16::try_from(matches.len()).unwrap_or(u16::MAX) + 2)
-        .min(area.height.saturating_sub(2))
-        .max(3);
-    let x = (area.width - w) / 2;
-    let y = (area.height - h) / 2;
-    // The pane owns its rectangle the way it owns the keyboard: a click on any
-    // part of it is absorbed here, unless a row pushed after this takes it.
+    let Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    } = panel_rect(
+        area,
+        52,
+        u16::try_from(matches.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(3),
+    );
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
@@ -884,6 +1035,8 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
         format!("┌ outline /{} {bar}", picker.filter)
     };
     buf.set_stringn(x, y, title, w as usize, theme::status());
+    panel_close(buf, targets, Rect::new(x, y, w, h), Action::OutlineToggle);
+
     buf.set_stringn(
         x,
         y + h - 1,
@@ -936,34 +1089,23 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let filter = app.help.as_ref().map_or("", |h| h.filter.as_str());
     let rows = crate::keys::help_matching(table, filter);
     let area = frame.area();
-    if area.width < 20 || area.height < 4 {
-        // Nothing legible fits. Say so rather than returning: pressing `h`
-        // and watching the screen not change reads as a broken key, and the
-        // one reader most likely to press it is the one who needs the
-        // answer most.
-        let buf = frame.buffer_mut();
-        buf.set_stringn(
-            area.x,
-            area.y,
-            "help needs room",
-            area.width as usize,
-            theme::dim(),
-        );
+    if area.width < 12 || area.height < 3 {
+        small_panel(frame, targets, "help", Action::Dismiss);
         return;
     }
-    // 52 = 4 indent + 18 key column + 1 gap + 29 description columns — wide
-    // enough that no row in either table truncates (the test pins the
-    // longest one).
-    let w = 52u16.min(area.width.saturating_sub(2));
-    // Three rows at minimum — title, one content row, bar — so an empty
-    // filter still has somewhere to say so.
-    let h = (u16::try_from(rows.len()).unwrap_or(u16::MAX) + 2)
-        .max(3)
-        .min(area.height.saturating_sub(2));
-    let x = (area.width - w) / 2;
-    let y = (area.height - h) / 2;
-    // The pane owns its rectangle the way it owns the keyboard: a click on any
-    // part of it is absorbed here, unless a row pushed after this takes it.
+    let Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    } = panel_rect(
+        area,
+        52,
+        u16::try_from(rows.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(3),
+    );
     targets.push(Action::Absorb, Zone::new(x, y, w, h), Z_OVERLAY);
     let buf = frame.buffer_mut();
 
@@ -978,6 +1120,8 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
         format!("┌ carrel — keys /{filter}")
     };
     buf.set_stringn(x, y, format!("{title} {bar}"), w as usize, theme::status());
+    panel_close(buf, targets, Rect::new(x, y, w, h), Action::Dismiss);
+
     buf.set_stringn(
         x,
         y + h - 1,
@@ -987,22 +1131,44 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
 
     let inner_h = usize::from(h - 2);
-    let max_scroll = rows.len().saturating_sub(inner_h);
-    let scroll = usize::from(app.help.as_ref().map_or(0, |hel| hel.scroll)).min(max_scroll);
-    let mut shown = 0usize;
-    for (i, &r) in rows.iter().skip(scroll).take(inner_h).enumerate() {
-        let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+    let mut lines = Vec::new();
+    for &r in &rows {
         let (key, desc) = table[r];
-        if key == "§" {
-            buf.set_stringn(x, py, format!("  {desc}"), w as usize, theme::selected());
+        let heading = key == "§";
+        let label = if heading {
+            desc.to_string()
+        } else if w >= 52 {
+            format!("   {key:<18} {desc}")
         } else {
-            let line = format!("    {key:<18} {desc}");
-            buf.set_stringn(x, py, line, w as usize, theme::status());
+            format!("{key}  {desc}")
+        };
+        if w >= 52 {
+            lines.push((label, heading));
+        } else {
+            lines.extend(
+                crate::layout::wrap_ui_text(&label, w - 2)
+                    .into_iter()
+                    .map(|line| (line, heading)),
+            );
         }
-        shown += 1;
     }
-    if shown == 0 && h > 2 {
-        buf.set_stringn(x, y + 1, "  no key matches that", w as usize, theme::dim());
+    let scroll = usize::from(app.help.as_ref().map_or(0, |h| h.scroll))
+        .min(lines.len().saturating_sub(inner_h));
+    for (i, (line, heading)) in lines.iter().skip(scroll).take(inner_h).enumerate() {
+        buf.set_stringn(
+            x + 1,
+            y + 1 + u16::try_from(i).unwrap_or(0),
+            line,
+            usize::from(w - 2),
+            if *heading {
+                theme::selected()
+            } else {
+                theme::status()
+            },
+        );
+    }
+    if lines.is_empty() {
+        buf.set_stringn(x, y + 1, " no key matches that", w as usize, theme::dim());
     }
 }
 
@@ -2074,12 +2240,8 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
-    // **The icons are the first thing to go when the row is tight.** They
-    // cost two columns each, and on a narrow terminal that is the difference
-    // between showing the reading percentage and not. An affordance that
-    // pushes the thing it sits beside off the screen is not an improvement,
-    // and both of these have another way in — `q`, and a right-click
-    // anywhere in the chrome.
+    // The optional home icon gives way first. The menu launcher survives
+    // even a long filename, so small panes keep a visible route to commands.
     let icons = icons_fit(area.width, lx, &left, &right);
     let lx = if icons {
         // The way back to the file list, at the head of the row where the
@@ -2091,15 +2253,17 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     } else {
         lx
     };
-    buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
+    buf.set_stringn(
+        lx,
+        area.y,
+        &left,
+        usize::from(area.right().saturating_sub(lx + 2)),
+        theme::status(),
+    );
     // The launcher takes the last column before anything else is placed, so
     // the status text is measured against what is left rather than painted
     // over it.
-    let stop = if icons {
-        paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets)
-    } else {
-        area.right()
-    };
+    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
     // Display width, never a scalar count — `right` is an arbitrary URL when a
     // link is selected and `left` is a user's filename, so either can carry
     // CJK or emoji. `put` nine lines down already measures this way, and
@@ -2169,7 +2333,8 @@ fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let area = frame.area();
     let z = menu.zone(area.width, area.height);
     if z.w < 4 || z.h < 3 {
-        return; // nothing legible fits; Esc and a click outside still close it
+        small_panel(frame, targets, "menu", Action::MenuClose);
+        return;
     }
     // The box owns its rectangle: a click on a gap, a greyed row or the
     // border must not reach whatever is behind it.
@@ -2195,8 +2360,10 @@ fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
 
     let accel_dx = menu.accel_dx(z.w);
     let rows = usize::from(z.h - 2);
-    for (i, item) in menu.items.iter().take(rows).enumerate() {
-        let y = z.y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
+    let first = menu.first(area.width, area.height);
+    for (offset, item) in menu.items.iter().skip(first).take(rows).enumerate() {
+        let i = first + offset;
+        let y = z.y + 1 + u16::try_from(offset).unwrap_or(u16::MAX);
         let lit = menu.selected == Some(i);
         let style = if lit {
             theme::selected()
@@ -2215,22 +2382,42 @@ fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
         if item.action.is_none() {
             continue; // a gap is a blank line, CUA §3.5.5, not a rule
         }
-        buf.set_stringn(z.x + 2, y, item.label, inner.saturating_sub(2), style);
-        // Left-aligned inside a right-hand column: the accelerators' FIRST
-        // characters line up, which is what makes the column scannable.
-        buf.set_stringn(
-            z.x + accel_dx,
-            y,
-            item.accel,
-            usize::from(z.w.saturating_sub(accel_dx + 1)),
-            if lit { style } else { theme::dim() },
-        );
+        let show_accel = display_width(item.label).saturating_add(3) <= accel_dx.saturating_sub(1);
+        let label_w = if show_accel {
+            usize::from(accel_dx.saturating_sub(3))
+        } else {
+            inner.saturating_sub(2)
+        };
+        buf.set_stringn(z.x + 2, y, item.label, label_w, style);
+        if show_accel {
+            buf.set_stringn(
+                z.x + accel_dx,
+                y,
+                item.accel,
+                usize::from(z.w.saturating_sub(accel_dx + 1)),
+                if lit { style } else { theme::dim() },
+            );
+        }
         if item.pickable() {
             targets.push(
                 Action::MenuPick(u32::try_from(i).unwrap_or(u32::MAX)),
                 Zone::new(z.x + 1, y, z.w.saturating_sub(2), 1),
                 Z_MENU,
             );
+        }
+    }
+    if z.w >= 8 {
+        let close_x = z.x + z.w - 4;
+        buf.set_stringn(close_x, z.y, " × ", 3, theme::button());
+        targets.push(Action::MenuClose, Zone::new(close_x, z.y, 3, 1), Z_MENU);
+        if first > 0 {
+            buf.set_stringn(z.x + 1, z.y, " ↑ ", 3, theme::button());
+            targets.push(Action::MenuMove(-1), Zone::new(z.x + 1, z.y, 3, 1), Z_MENU);
+        }
+        if first + rows < menu.items.len() {
+            let y = z.y + z.h - 1;
+            buf.set_stringn(z.x + 1, y, " ↓ ", 3, theme::button());
+            targets.push(Action::MenuMove(1), Zone::new(z.x + 1, y, 3, 1), Z_MENU);
         }
     }
 }
@@ -2260,15 +2447,20 @@ fn fold_lamp(
     if hints {
         return area.x;
     }
-    buf.set_stringn(area.x, area.y, "╰○ ", 3, theme::dim());
+    let width = area.width.saturating_sub(2).min(3);
+    if width == 0 {
+        return area.x;
+    }
+    let label = if width < 3 { "○" } else { "╰○ " };
+    buf.set_stringn(area.x, area.y, label, usize::from(width), theme::dim());
     // The folded lamp is the only way back to the hints by pointer, so it
     // registers exactly as the lit one does.
     targets.push(
         Action::HintsToggle,
-        Zone::new(area.x, area.y, 3, 1),
+        Zone::new(area.x, area.y, width, 1),
         Z_CHROME,
     );
-    area.x + 3
+    area.x + width
 }
 
 /// Advance-and-paint for the footer's segments: writes `s` at `*x`, clipped
@@ -2433,7 +2625,11 @@ use crate::home::{BANNER_MIN_COLS, BANNER_MIN_ROWS, SPLASH_W};
 /// file, numbered so a click and the number key reach the same row. Returns
 /// the row the file list starts on.
 fn paint_resume(frame: &mut Frame, home: &Home, area: Rect, mut y: u16) -> u16 {
-    let shown = usize::from(home.resume_shown());
+    let shown = usize::from(crate::home::visible_resume(
+        area.width,
+        area.height,
+        home.resume_shown(),
+    ));
     if shown > 0 {
         let buf = frame.buffer_mut();
         buf.set_stringn(
@@ -2505,7 +2701,7 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
             y += 1;
             buf.set_stringn(x, y, TAGLINE, area.width as usize, theme::dim());
             y += 2;
-        } else {
+        } else if crate::home::header_rows(area.width, area.height) > 0 {
             buf.set_stringn(area.x, y, "carrel", area.width as usize, theme::wordmark());
             y += 1;
         }
@@ -2531,7 +2727,11 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
         y, list_top,
         "the header painted to row {y} but list_geometry says {list_top}"
     );
-    let chrome = if app.hints { 2 } else { 1 };
+    let chrome = if App::show_hints(area.height, app.hints) {
+        2
+    } else {
+        1
+    };
     let list_bottom = area.bottom().saturating_sub(chrome);
     let list = Rect::new(area.x, list_top, area.width, list_h);
     if home.mode == HomeMode::Search {
@@ -2546,7 +2746,7 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
         Rect::new(area.x, list_bottom, area.width, 1),
         targets,
     );
-    if app.hints {
+    if App::show_hints(area.height, app.hints) {
         paint_footer(
             frame,
             app,
@@ -2601,7 +2801,12 @@ fn paint_path_row(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targ
         put(buf, &mut x, area.y, right, "↑", theme::lamp());
         targets.push(
             Action::HomeUp,
-            Zone::new(from, area.y, x.saturating_sub(from), 1),
+            Zone::new(
+                from,
+                area.y,
+                x.saturating_sub(from).min(right.saturating_sub(from)),
+                1,
+            ),
             Z_CHROME,
         );
     }
@@ -2653,7 +2858,12 @@ fn paint_path_row(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targ
         put(buf, &mut x, area.y, right, &c.label, style);
         targets.push(
             Action::HomeCrumb(i),
-            Zone::new(from, area.y, x.saturating_sub(from), 1),
+            Zone::new(
+                from,
+                area.y,
+                x.saturating_sub(from).min(right.saturating_sub(from)),
+                1,
+            ),
             Z_CHROME,
         );
     }
@@ -2861,16 +3071,18 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
-    buf.set_stringn(lx, area.y, &left, area.width as usize, theme::status());
+    buf.set_stringn(
+        lx,
+        area.y,
+        &left,
+        usize::from(area.right().saturating_sub(lx + 2)),
+        theme::status(),
+    );
     // The home screen gets the same launcher as the reader — it is the one
     // affordance that says a menu exists at all, and a reader who has not
-    // opened a file yet is the one most likely to need it — and drops it on
-    // the same terms.
-    let stop = if icons_fit(area.width, lx, &left, &right) {
-        paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets)
-    } else {
-        area.right()
-    };
+    // opened a file yet is the one most likely to need it. Keep it visible
+    // even when the filename or status text must clip.
+    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
     // Display width, never a scalar count — the same rule as the reader's
     // status row, where a wide filename or URL once collided with the count.
     let rw = carrel_core::display_width(&right);
@@ -3206,20 +3418,25 @@ mod tests {
 
     #[test]
     fn the_breadcrumb_band_paints_the_path_and_a_rule() {
-        let src = "# Top\n\nintro\n\n## Mid\n\nbody one\n\nbody two\n\nbody three\n";
-        let mut app = App::new("t.md".into(), Document::parse(src), 40, 8);
+        let src = "# Top\n\nintro\n\n## Mid\n\nbody one\n\nbody two\n\nbody three\n\nfour\n\nfive\n\nsix\n";
+        let mut app = App::new("t.md".into(), Document::parse(src), 40, 12);
         // Scroll until "body two" is the top visible content.
         while {
             let b = app.layout.block_at_row(app.view.scroll_row);
             let n = app.doc.node_for_block(b);
             !app.doc.text[n.doc.start as usize..n.doc.end as usize].starts_with("body two")
         } {
+            let before = app.view.scroll_row;
             crate::app::update(
                 &mut app,
                 crate::action::Action::Scroll(crate::action::Span::Line, 1),
             );
+            assert!(
+                app.view.scroll_row > before,
+                "test destination must be scrollable"
+            );
         }
-        let buf = buffer_of(&app, 40, 8);
+        let buf = buffer_of(&app, 40, 12);
         assert!(
             line(&buf, 0).contains("Top ▸ Mid"),
             "crumb row: {:?}",
@@ -3237,8 +3454,8 @@ mod tests {
 
         // Band off: classic geometry, blank top margin.
         app.breadcrumb = false;
-        app.on_resize(40, 8);
-        let buf = buffer_of(&app, 40, 8);
+        app.on_resize(40, 12);
+        let buf = buffer_of(&app, 40, 12);
         assert_eq!(line(&buf, 0), "", "top margin back to blank");
     }
 
@@ -3262,10 +3479,20 @@ mod tests {
     /// `line`, in TEXT coordinates — the page margins cropped away.
     fn text_line(buf: &Buffer, y: u16) -> String {
         let full: String = (0..buf.area.width)
-            .map(|x| buf[(x, y + crate::app::PAD_TOP)].symbol())
+            .map(|x| {
+                buf[(
+                    x,
+                    y + if buf.area.height < 12 {
+                        0
+                    } else {
+                        crate::app::PAD_TOP
+                    },
+                )]
+                    .symbol()
+            })
             .collect();
         full.chars()
-            .skip(crate::app::PAD_LEFT as usize)
+            .skip(App::side_pad(buf.area.width) as usize)
             .collect::<String>()
             .trim_end()
             .to_string()
@@ -3273,7 +3500,14 @@ mod tests {
 
     /// A cell addressed in TEXT coordinates.
     fn tcell(buf: &Buffer, x: u16, y: u16) -> &ratatui::buffer::Cell {
-        &buf[(x + crate::app::PAD_LEFT, y + crate::app::PAD_TOP)]
+        &buf[(
+            x + App::side_pad(buf.area.width),
+            y + if buf.area.height < 12 {
+                0
+            } else {
+                crate::app::PAD_TOP
+            },
+        )]
     }
 
     #[test]
@@ -3344,7 +3578,7 @@ mod tests {
     #[test]
     fn the_reader_page_has_margins_on_all_four_sides() {
         use crate::app::{PAD_LEFT, PAD_TOP};
-        let buf = frame_of("hello\n", 30, 8);
+        let buf = frame_of("hello\n", 80, 24);
         // Top margin: the first row paints no text.
         assert_eq!(line(&buf, 0), "", "top margin row: {:?}", line(&buf, 0));
         // Left margin: the first line of text starts PAD_LEFT cells in.
@@ -3355,16 +3589,21 @@ mod tests {
         );
         // Bottom margin: the row above the status bar is blank; the status
         // sits above the lamplight footer, which owns the last row.
-        assert_eq!(line(&buf, 5), "", "bottom margin row: {:?}", line(&buf, 5));
-        assert!(
-            line(&buf, 6).contains("t.md"),
-            "status: {:?}",
-            line(&buf, 6)
+        assert_eq!(
+            line(&buf, 21),
+            "",
+            "bottom margin row: {:?}",
+            line(&buf, 21)
         );
         assert!(
-            line(&buf, 7).starts_with("╭●"),
+            line(&buf, 22).contains("t.md"),
+            "status: {:?}",
+            line(&buf, 22)
+        );
+        assert!(
+            line(&buf, 23).starts_with("╭●"),
             "footer: {:?}",
-            line(&buf, 7)
+            line(&buf, 23)
         );
     }
 
@@ -3372,9 +3611,9 @@ mod tests {
     fn the_status_line_names_the_file() {
         let buf = frame_of("hello\n", 24, 4);
         assert!(
-            line(&buf, 2).contains("t.md"),
+            line(&buf, 3).contains("t.md"),
             "status: {:?}",
-            line(&buf, 2)
+            line(&buf, 3)
         );
     }
 
@@ -3384,9 +3623,9 @@ mod tests {
     fn the_status_line_advertises_the_theme_key() {
         let buf = frame_of("hello\n", 40, 4);
         assert!(
-            line(&buf, 2).contains("T theme"),
+            line(&buf, 3).contains("T theme"),
             "status: {:?}",
-            line(&buf, 2)
+            line(&buf, 3)
         );
     }
 
@@ -3610,8 +3849,8 @@ mod tests {
         let tiny = buffer_of(&app, 16, 3);
         let tiny_text: String = (0..3).map(|y| line(&tiny, y) + "\n").collect();
         assert!(
-            tiny_text.contains("help needs room"),
-            "help says why it cannot paint:\n{tiny_text}"
+            tiny_text.contains("moving") && tiny_text.contains('×'),
+            "compact help has content and a close button:\n{tiny_text}"
         );
     }
 
@@ -3655,10 +3894,10 @@ mod tests {
 
     #[test]
     fn a_selection_spanning_a_wrap_paints_on_both_rows() {
-        // Width 12 → text width 7: "alpha beta" wraps after "alpha".
-        let mut app = App::new("t.md".into(), Document::parse("alpha beta\n"), 12, 6);
+        // Width 8 → text width 7: "alpha beta" wraps after "alpha".
+        let mut app = App::new("t.md".into(), Document::parse("alpha beta\n"), 8, 6);
         app.selection = Some(3..9); // "ha be" across the wrap
-        let buf = buffer_of(&app, 12, 6);
+        let buf = buffer_of(&app, 8, 6);
         assert!(
             tcell(&buf, 3, 0)
                 .style()
@@ -4237,7 +4476,7 @@ mod tests {
             text_line(&buf, 0)
         );
         // And the URL is in the status bar for copying.
-        assert!(line(&buf, 4).contains("example.com"), "{:?}", line(&buf, 4));
+        assert!(line(&buf, 5).contains("example.com"), "{:?}", line(&buf, 5));
     }
 
     #[test]

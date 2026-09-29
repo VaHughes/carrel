@@ -1953,6 +1953,14 @@ fn menu_mouse(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::act
         // an unchanged hover on every cell of a drag across the box would
         // repaint the screen once per column.
         MouseEventKind::Moved => {
+            // Border controls scroll from the current cursor. Clearing it on
+            // hover would make each click restart at the first/last item.
+            if targets
+                .hit(m.column, m.row)
+                .is_some_and(|hit| matches!(hit.action, Action::MenuMove(_) | Action::MenuClose))
+            {
+                return None;
+            }
             let want = row_at(m.column, m.row);
             let now = app.menu.as_ref().and_then(|menu| menu.selected);
             if want.map(|i| i as usize) == now {
@@ -1970,12 +1978,18 @@ fn menu_mouse(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::act
                 // key.
                 return Some(Action::MenuClose);
             }
-            row_at(m.column, m.row).map(Action::MenuPick)
+            targets
+                .hit(m.column, m.row)
+                .and_then(|hit| match hit.action {
+                    a @ (Action::MenuPick(_) | Action::MenuMove(_) | Action::MenuClose) => Some(a),
+                    _ => None,
+                })
         }
         // Right-clicking elsewhere moves the menu there rather than making
         // you close it first.
         MouseEventKind::Down(MouseButton::Right) if !inside => open_menu_at(m, app),
-        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => Some(Action::MenuClose),
+        MouseEventKind::ScrollDown => Some(Action::MenuMove(1)),
+        MouseEventKind::ScrollUp => Some(Action::MenuMove(-1)),
         _ => None,
     }
 }
@@ -2562,6 +2576,73 @@ mod tests {
             row,
             modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
         }
+    }
+
+    #[test]
+    fn small_menu_scroll_controls_reach_the_real_mouse_dispatcher() {
+        use carrel::action::Action;
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse("text"), 24, 6);
+        update(
+            &mut app,
+            Action::MenuOpen {
+                at: (23, 5),
+                byte: None,
+            },
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 6)).unwrap();
+        let mut painted = carrel::render::Painted::default();
+        terminal
+            .draw(|frame| carrel::render::draw_full(frame, &app, &mut painted, &mut HashMap::new()))
+            .unwrap();
+        for action in [Action::MenuMove(1), Action::MenuClose] {
+            let target = painted
+                .targets
+                .as_slice()
+                .iter()
+                .find(|t| t.action == action)
+                .unwrap();
+            if matches!(action, Action::MenuMove(_)) {
+                update(&mut app, Action::MenuMove(1));
+                assert_eq!(
+                    menu_mouse(
+                        mouse(MouseEventKind::Moved, target.zone.x, target.zone.y),
+                        &app,
+                        &painted.targets
+                    ),
+                    None,
+                    "hovering a scroll button must not clear the cursor it scrolls from"
+                );
+            }
+            assert_eq!(
+                menu_mouse(
+                    mouse(
+                        MouseEventKind::Down(MouseButton::Left),
+                        target.zone.x,
+                        target.zone.y
+                    ),
+                    &app,
+                    &painted.targets
+                ),
+                Some(action)
+            );
+        }
+        assert_eq!(
+            menu_mouse(
+                mouse(MouseEventKind::ScrollDown, 3, 3),
+                &app,
+                &painted.targets
+            ),
+            Some(Action::MenuMove(1))
+        );
+        assert_eq!(
+            menu_mouse(
+                mouse(MouseEventKind::ScrollUp, 3, 3),
+                &app,
+                &painted.targets
+            ),
+            Some(Action::MenuMove(-1))
+        );
     }
 
     /// The scrollbar is as tall as the text, not as tall as the terminal.

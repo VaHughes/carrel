@@ -146,6 +146,8 @@ pub struct Menu {
     /// given for it in the Turbo Vision sources was simply that it would
     /// look ugly. It is also honest: no row has been chosen yet.
     pub selected: Option<usize>,
+    /// First visible item, preserved when hovering inside a scrolled menu.
+    pub top: usize,
     /// The cell the pointer was on when this opened.
     pub at: (u16, u16),
 }
@@ -156,8 +158,21 @@ impl Menu {
         Self {
             items,
             selected: None,
+            top: 0,
             at,
         }
+    }
+
+    /// Derive the window from the same box the painter uses.
+    #[must_use]
+    pub fn first(&self, cols: u16, rows: u16) -> usize {
+        let height = usize::from(self.zone(cols, rows).h.saturating_sub(2));
+        crate::home::window_first(
+            self.top,
+            self.selected.unwrap_or(self.top),
+            self.items.len(),
+            height,
+        )
     }
 
     /// The widest label, and the widest accelerator, in display cells.

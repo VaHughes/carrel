@@ -58,7 +58,7 @@ fn switching() {
 
     // And the pixels agree: the page colour lands in real cells.
     assert!(theme::set_theme("dracula"));
-    let buf = frame(30, 8);
+    let buf = frame(80, 24);
     assert_eq!(
         buf[(0, 0)].bg,
         Color::Rgb(0x28, 0x2A, 0x36),
@@ -70,7 +70,7 @@ fn switching() {
         "H1 in dracula purple"
     );
     assert!(theme::set_theme("terminal"));
-    let buf = frame(30, 8);
+    let buf = frame(80, 24);
     assert_eq!(buf[(0, 3)].bg, Color::Reset, "terminal inherits the bg");
 
     // NO_COLOR monochrome (process-global, so it lives in this test too):
@@ -122,7 +122,7 @@ fn switching() {
     // not carrel's house green.
     assert_eq!(theme::heading(1).fg, Some(Color::Rgb(0x6e, 0x60, 0x80)));
 
-    let buf = frame(30, 8);
+    let buf = frame(80, 24);
     assert_eq!(
         buf[(0, 0)].bg,
         Color::Rgb(0x0e, 0x09, 0x1d),

@@ -90,16 +90,21 @@ mod tests {
     use carrel_core::Document;
 
     const SRC: &str = "\
-# Top\n\nintro paragraph\n\n## Middle\n\nmid one\n\nmid two\n\n### Inner\n\ndeep one\n\ndeep two\n";
+# Top\n\nintro paragraph\n\n## Middle\n\nmid one\n\nmid two\n\n### Inner\n\ndeep one\n\ndeep two\n\nend\n\nend\n\nend\n\nend\n";
 
     fn app_scrolled_to(needle: &str) -> App {
-        let mut a = App::new("t.md".into(), Document::parse(SRC), 40, 8);
+        let mut a = App::new("t.md".into(), Document::parse(SRC), 40, 12);
         let at = u32::try_from(a.doc.text.find(needle).expect("needle")).unwrap();
         while {
             let b = a.layout.block_at_row(a.view.scroll_row);
             a.doc.node_for_block(b).doc.end <= at
         } {
+            let before = a.view.scroll_row;
             update(&mut a, Action::Scroll(Span::Line, 1));
+            assert!(
+                a.view.scroll_row > before,
+                "test destination must be scrollable"
+            );
         }
         a
     }
@@ -119,7 +124,7 @@ mod tests {
     #[test]
     fn the_top_heading_itself_is_never_doubled() {
         // Put the "Inner" heading block exactly at the top visible row.
-        let mut a = App::new("t.md".into(), Document::parse(SRC), 40, 8);
+        let mut a = App::new("t.md".into(), Document::parse(SRC), 40, 12);
         let inner = (0..a.doc.block_count())
             .map(|i| carrel_core::BlockIdx(u32::try_from(i).unwrap()))
             .find(|b| {
@@ -129,7 +134,12 @@ mod tests {
             .expect("the Inner heading is a block");
         let row = a.layout.row_start(inner);
         while a.view.scroll_row < row {
+            let before = a.view.scroll_row;
             update(&mut a, Action::Scroll(Span::Line, 1));
+            assert!(
+                a.view.scroll_row > before,
+                "test destination must be scrollable"
+            );
         }
         assert_eq!(a.layout.block_at_row(a.view.scroll_row), inner);
         let c = of(&a, 40).expect("band on");
@@ -138,7 +148,7 @@ mod tests {
 
     #[test]
     fn above_the_first_heading_the_band_is_blank_not_absent() {
-        let a = App::new("t.md".into(), Document::parse(SRC), 40, 8);
+        let a = App::new("t.md".into(), Document::parse(SRC), 40, 12);
         let c = of(&a, 40).expect("band exists");
         // The top visible block is the H1 itself: path = [Top], popped = [].
         assert_eq!(words(&c), Vec::<&str>::new());
@@ -146,13 +156,13 @@ mod tests {
 
     #[test]
     fn no_headings_means_no_band_at_all() {
-        let a = App::new("t.md".into(), Document::parse("just prose\n"), 40, 8);
+        let a = App::new("t.md".into(), Document::parse("just prose\n"), 40, 12);
         assert_eq!(of(&a, 40), None);
     }
 
     #[test]
     fn toggled_off_means_none_even_with_headings() {
-        let mut a = App::new("t.md".into(), Document::parse(SRC), 40, 8);
+        let mut a = App::new("t.md".into(), Document::parse(SRC), 40, 12);
         a.breadcrumb = false;
         assert_eq!(of(&a, 40), None);
     }

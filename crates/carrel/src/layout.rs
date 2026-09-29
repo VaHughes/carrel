@@ -580,6 +580,53 @@ fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F
     n
 }
 
+/// Compact UI cards use the full window; large windows keep centered cards.
+#[must_use]
+pub fn panel_size(cols: u16, rows: u16, width: u16, height: u16) -> (u16, u16) {
+    if cols < 60 || rows < 16 {
+        (cols, rows)
+    } else {
+        (
+            width.min(cols.saturating_sub(4)),
+            height.min(rows.saturating_sub(2)),
+        )
+    }
+}
+
+/// Wrap plain UI text by words, splitting oversized words only at grapheme boundaries.
+#[must_use]
+pub fn wrap_ui_text(text: &str, width: u16) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut used = 0u16;
+    let width = width.max(1);
+    for word in text.split_whitespace() {
+        let w = carrel_core::display_width(word);
+        if used > 0 && used.saturating_add(1).saturating_add(w) > width {
+            rows.push(std::mem::take(&mut row));
+            used = 0;
+        }
+        if used > 0 {
+            row.push(' ');
+            used += 1;
+        }
+        for g in word.graphemes(true) {
+            let w = carrel_core::display_width(g);
+            if used > 0 && used.saturating_add(w) > width {
+                rows.push(std::mem::take(&mut row));
+                used = 0;
+            }
+            row.push_str(g);
+            used += w;
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

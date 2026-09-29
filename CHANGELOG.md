@@ -4,6 +4,16 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Small-terminal layouts.** Side margins shrink in narrow panes; short windows
+  temporarily hide vertical padding, the heading bar, and then the hint row.
+  Saved preferences return when space permits, and the menu launcher stays visible.
+- **Usable compact panes.** Help wraps descriptions, settings keep the selection
+  and values visible, information cards wrap and scroll, and panes offer close
+  buttons even when too small to display their content. Menus scroll with the
+  keyboard, wheel, or arrow buttons and keep pointer targets aligned after scrolling.
+- **Home prioritizes files.** Short windows hide the wordmark and continue-reading
+  band as needed, retaining numbered resume shortcuts and correct file hit-testing.
+
 ## 2026.9.23
 
 - **An image lightbox.** Click an image, choose Images from the menu, or press

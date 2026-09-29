@@ -313,6 +313,8 @@ pub struct App {
     /// The document-info card is showing (`I`). Pure presentation intent —
     /// the rows are derived fresh at every paint.
     pub info: bool,
+    /// Scroll within the information card, never within the document.
+    pub info_scroll: usize,
     /// Spotlight (`S`): dim every block but the one nearest the centre of
     /// the view. Presentation only — the painter reads it, nothing else.
     pub focus: bool,
@@ -426,6 +428,50 @@ const fn measure_of(bleed: u16, max_width: u16) -> u16 {
 }
 
 impl App {
+    /// Keep decoration out of scarce reading columns. A one-cell margin still
+    /// carries bookmarks and the code cursor in ordinary split panes.
+    #[must_use]
+    pub const fn side_pad(cols: u16) -> u16 {
+        if cols < 20 {
+            0
+        } else if cols < 60 {
+            1
+        } else {
+            PAD_LEFT
+        }
+    }
+
+    /// A short window borrows the hint row without changing its saved setting.
+    #[must_use]
+    pub const fn show_hints(rows: u16, wanted: bool) -> bool {
+        wanted && rows >= 8
+    }
+
+    /// Shared geometry for the information card's paint and scroll limit.
+    #[must_use]
+    pub fn info_size(&self) -> (u16, u16) {
+        crate::layout::panel_size(
+            self.cols,
+            self.rows,
+            56,
+            u16::try_from(self.info_rows().len())
+                .unwrap_or(u16::MAX)
+                .saturating_add(2),
+        )
+    }
+
+    /// Every field remains readable by wrapping and scrolling the card.
+    #[must_use]
+    pub fn info_lines(&self) -> Vec<String> {
+        let width = self.info_size().0.saturating_sub(2).max(1);
+        self.info_rows()
+            .into_iter()
+            .flat_map(|(label, value)| {
+                crate::layout::wrap_ui_text(&format!("{label}: {value}"), width)
+            })
+            .collect()
+    }
+
     /// The text area: `(prose width, bleed width, height)`. One column is
     /// reserved for the scrollbar and one row for the status line.
     ///
@@ -448,12 +494,19 @@ impl App {
         gutter: u16,
     ) -> (u16, u16, u16) {
         // Status row always; the lamplight hint row only while showing.
-        let chrome = if footer { 2 } else { 1 };
-        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT + gutter);
+        let chrome = if Self::show_hints(rows, footer) { 2 } else { 1 };
+        let bleed = cols.saturating_sub(1 + 2 * Self::side_pad(cols) + gutter);
         (
             measure_of(bleed, max_width),
             bleed,
-            rows.saturating_sub(chrome + Self::top_chrome(band) + PAD_BOTTOM),
+            rows.saturating_sub(
+                chrome
+                    + if rows < 12 {
+                        0
+                    } else {
+                        Self::top_chrome(band) + PAD_BOTTOM
+                    },
+            ),
         )
     }
 
@@ -464,10 +517,10 @@ impl App {
         if band { 2 } else { PAD_TOP }
     }
 
-    /// The band shows only when wanted AND the document has headings.
+    /// The band shows when wanted, headings exist, and the window has room.
     #[must_use]
     pub const fn band(&self) -> bool {
-        self.breadcrumb && self.has_headings
+        self.breadcrumb && self.has_headings && self.rows >= 12
     }
 
     /// The text area's top row, in absolute terminal cells.
@@ -477,21 +530,25 @@ impl App {
     /// no frame test will notice.
     #[must_use]
     pub const fn text_y(&self) -> u16 {
-        Self::top_chrome(self.band())
+        if self.rows < 12 {
+            0
+        } else {
+            Self::top_chrome(self.band())
+        }
     }
 
     /// The prose column's left edge, in absolute terminal cells.
     ///
-    /// [`PAD_LEFT`] is the *minimum* margin, not the left edge: past the
-    /// measure the margin grows to absorb the excess, so the text stays
+    /// [`Self::side_pad`] sets the minimum margin: past the measure the
+    /// margin grows to absorb the excess, so the text stays
     /// centred on the full area's axis instead of hugging the left wall.
     ///
     /// Hit-testing and paint both come through here. If they ever stop doing
     /// so, a click lands on the wrong byte and no frame test will notice.
     #[must_use]
     pub const fn text_x(cols: u16, max_width: u16, gutter: u16) -> u16 {
-        let bleed = cols.saturating_sub(1 + PAD_LEFT + PAD_RIGHT + gutter);
-        PAD_LEFT + gutter + (bleed - measure_of(bleed, max_width)) / 2
+        let bleed = cols.saturating_sub(1 + 2 * Self::side_pad(cols) + gutter);
+        Self::side_pad(cols) + gutter + (bleed - measure_of(bleed, max_width)) / 2
     }
 
     /// Columns reserved on the left for the margin outline.
@@ -577,6 +634,7 @@ impl App {
             first_run: false,
             theme_cycle: false,
             info: false,
+            info_scroll: 0,
             focus: false,
             auto_read: false,
             mtime: None,
@@ -1558,7 +1616,7 @@ impl App {
     /// Returns columns in screen space, already clamped to the text area.
     #[must_use]
     pub fn block_span_x(&self, block: BlockIdx) -> (u16, u16) {
-        let full_x = PAD_LEFT;
+        let full_x = Self::side_pad(self.cols);
         let full_w = self.bleed_w();
         let full_right = full_x.saturating_add(full_w);
         let prose_x = self.text_x_now();
@@ -1713,6 +1771,9 @@ impl App {
         self.cols = cols;
         self.rows = rows;
         self.relayout();
+        if let Some(menu) = &mut self.menu {
+            menu.top = menu.first(cols, rows);
+        }
         if let Some(byte) = visible_match {
             self.reveal_table_byte(byte);
         }
@@ -2278,13 +2339,14 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.relayout(); // the band's rows come from / return to the text
         return Outcome::Redraw;
     }
-    // The info card is passive — it never owns the keyboard — but `I`
-    // reaches it from any reader state, the way `H` and `B` do. So does the
+    // `I` reaches the information card from any reader state, the way `H`
+    // and `B` do. Scrolling is routed into the visible card below. So does the
     // spotlight, its neighbour in the capital-toggle row.
     if !app.is_home() {
         match action {
             Action::InfoToggle => {
                 app.info = !app.info;
+                app.info_scroll = 0;
                 return Outcome::Redraw;
             }
             Action::FocusToggle => {
@@ -2316,10 +2378,36 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     if app.outline.is_some() {
         return outline_update(app, action);
     }
+    if let Some(outcome) = scroll_info(app, action) {
+        return outcome;
+    }
     if app.is_home() {
         return home_update(app, action);
     }
     reader_update(app, action)
+}
+
+fn scroll_info(app: &mut App, action: Action) -> Option<Outcome> {
+    if app.info
+        && app.settings.is_none()
+        && app.mark_list.is_none()
+        && app.backlinks.is_none()
+        && app.forward.is_none()
+        && let Action::Scroll(_, delta) = action
+    {
+        let height = usize::from(app.info_size().1.saturating_sub(2));
+        let max = app.info_lines().len().saturating_sub(height);
+        let current = app.info_scroll.min(max);
+        app.info_scroll = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            current
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(max)
+        };
+        return Some(Outcome::Redraw);
+    }
+    None
 }
 
 fn lightbox_update(app: &mut App, action: Action) -> Outcome {
@@ -2447,6 +2535,7 @@ fn menu_update(app: &mut App, action: Action) -> Outcome {
         Action::MenuMove(n) => {
             if let Some(m) = app.menu.as_mut() {
                 m.step(n);
+                m.top = m.first(app.cols, app.rows);
             }
             Outcome::Redraw
         }
@@ -2457,6 +2546,7 @@ fn menu_update(app: &mut App, action: Action) -> Outcome {
             let Some(m) = app.menu.as_mut() else {
                 return Outcome::Idle;
             };
+            m.top = m.first(app.cols, app.rows);
             let before = m.selected;
             m.hover(i as usize);
             if m.selected == before {

@@ -185,7 +185,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 |---|---|
 | **The path row** | The folder you are in, under the banner, spelled as its own segments — `~ / Work / carrel / docs`. Click any one of them to go there; the `↑` at its head goes up one folder, and `Backspace` does the same from the keyboard. |
 | **The `⌂`** | At the left of the reader's status row: back to the file list, rooted at the document's own folder when there is no list behind it to return to. |
-| **Right-click** | A menu for whatever is under the pointer — collapse this section, copy this code block, open or copy this link, cards or columns for this table. Right-click anywhere else, or click the **`≡`** at the end of the status row, and you get the global menu instead. Every row shows the key that does the same thing. |
+| **Right-click** | A menu for whatever is under the pointer — collapse this section, copy this code block, open or copy this link, cards or columns for this table. Right-click anywhere else, or click the **`≡`** at the end of the status row, and you get the global menu instead. Rows show their shortcut when space permits; short menus scroll with the wheel or their arrow buttons. |
 | **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. |
 | **A heading, or a `▸` / `▾` in the margin** | Collapses or expands that section, or that `<details>` block. |
 | **The hint row along the bottom** | Every hint is a button and looks like one — `↑/↓ scroll`, `/ search`, `o outline`, `h help`, each a chip on the status bar's surface. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
@@ -199,6 +199,20 @@ The trade is that your terminal's own text selection stops working while carrel 
 pointer. Most terminals let you **hold Shift** to bypass that and select as usual; if
 yours doesn't, or you would rather not, `--no-mouse` (or `mouse = false` in the config)
 gives the pointer back for good. Nothing becomes unreachable — every action has a key.
+
+### Small terminals
+
+Carrel adapts automatically to split panes. Below 60 columns the side margins
+shrink; below 20 they disappear. Below 12 rows the heading bar and vertical
+padding give way to text, and below 8 rows the hint row does too. Your saved
+preferences return when the window grows. The **`≡`** menu remains visible.
+
+Compact panes use the whole window. Help wraps its descriptions; settings and
+menus keep the selected row visible. The document information card (`I`) wraps
+long values and scrolls with the wheel, arrows, or its arrow buttons. Close a
+pane with its **×** button. Very small windows show a close control when a pane
+cannot fit. On home, short windows prioritize files over the banner and
+continue-reading rows; the numbered resume shortcuts still work.
 
 ### Images, highlights, and notes
 

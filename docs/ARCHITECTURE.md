@@ -143,9 +143,15 @@ Key facts:
   segments, links, fold markers, pane rows), the paint pass pushes its rectangle into `Targets`
   and the event loop reads it back. `every_registered_target_covers_the_thing_it_acts_on`
   guards the registry.
-- **`PAD_LEFT` is the minimum margin, not the left edge.** Prose is centered at `max_width`;
+- **Margins adapt to the terminal; `PAD_LEFT` is the roomy default.** Prose is centered at `max_width`;
   `App::text_x(cols, max_width)` is the real left edge and `App::text_y()` the top edge. Paint
   and hit-testing both go through them.
+- **Compact geometry is derived, never persisted.** `App::side_pad`, `show_hints`,
+  `band`, and `text_y` adapt reader chrome; `home::header_rows` and `visible_resume`
+  govern both home painting and hit-testing. `layout::panel_size` and `wrap_ui_text`
+  serve compact panes without UI dependencies. Menu scroll windows preserve their
+  top row through hover; targets retain original item indices. Information-card
+  scroll is separate from the document anchor.
 - **Two width budgets.** `text_size` returns `(prose, bleed, height)`; `text_w()` is the prose
   measure, `bleed_w()` the full area. `table_overflows` must get the bleed width.
   `paint_rows` takes the full area and shadows a per-block rect inside the loop.
