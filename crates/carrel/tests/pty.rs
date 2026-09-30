@@ -541,6 +541,107 @@ fn the_tutorial_wears_the_readers_settings() {
     );
 }
 
+/// `carrel FILE:LINE` is the form a tool prints and an agent pastes. The
+/// split is unit-tested; what only a real run covers is that the binary
+/// hands the place to the reader, after the saved position and before the
+/// first frame.
+#[test]
+fn a_line_on_the_command_line_opens_the_document_there() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let mut body = String::new();
+    for i in 1..=120 {
+        body.push_str(&format!("para-{i:03} is here\n\n"));
+    }
+    std::fs::write(d.path().join("doc.md"), body).unwrap();
+    // The control first — a run remembers where it stopped, and the next
+    // bare open of this file would resume there.
+    let raw = pty_run("doc.md", "q", d.path());
+    assert!(raw.contains("para-001"), "a bare path opens at the top");
+    assert!(!raw.contains("para-060"));
+    // Paragraph 60 starts on source line 119.
+    let raw = pty_run("doc.md:119", "q", d.path());
+    assert!(raw.contains("para-060"), "opened at the line named");
+    assert!(
+        !raw.contains("para-001"),
+        "and never painted the top of the document on the way"
+    );
+    // A place asked for outranks a place remembered: the run above left
+    // its position saved at line 119.
+    let raw = pty_run("doc.md:1", "q", d.path());
+    assert!(raw.contains("para-001") && !raw.contains("para-060"));
+}
+
+/// The non-interactive half of the command line: what it says when it cannot
+/// do what was typed, and what `--latest` picks.
+#[test]
+fn the_command_line_corrects_a_slip_and_finds_the_newest_document() {
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let d = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(bin)
+            .args(args)
+            .current_dir(d.path())
+            .env("XDG_CONFIG_HOME", d.path().join("cfg"))
+            .env("XDG_STATE_HOME", d.path().join("state"))
+            .env("XDG_CACHE_HOME", d.path().join("cache"))
+            .env("HOME", d.path())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("the binary runs");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (ok, _, err) = run(&["--latest"]);
+    assert!(!ok && err.contains("no markdown documents"), "{err}");
+
+    let old = d.path().join("PLAN.md");
+    let new = d.path().join("notes.md");
+    std::fs::write(&old, "the older plan\n").unwrap();
+    std::fs::write(&new, "the newer notes\n").unwrap();
+    let day = std::time::Duration::from_secs(86_400);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - day)
+        .unwrap();
+
+    // Not a terminal, so the document prints as plain text.
+    let (ok, out, err) = run(&["--latest"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("the newer notes"), "{out}");
+    let (_, out, _) = run(&["--latest", "."]);
+    assert!(out.contains("the newer notes"), "an explicit folder: {out}");
+    let (ok, _, err) = run(&["--latest", "PLAN.md"]);
+    assert!(!ok && err.contains("is not a folder"), "{err}");
+
+    let (ok, _, err) = run(&["--plian", "PLAN.md"]);
+    assert!(!ok);
+    assert!(err.contains("did you mean --plain?"), "{err}");
+    let (ok, _, err) = run(&["--verbose"]);
+    assert!(
+        !ok && !err.contains("did you mean"),
+        "nothing is near: {err}"
+    );
+
+    let (ok, _, err) = run(&["PLAM.md"]);
+    assert!(!ok);
+    assert!(err.contains("did you mean PLAN.md?"), "{err}");
+    let (ok, out, _) = run(&["PLAN.md:1"]);
+    assert!(
+        ok && out.contains("the older plan"),
+        "a place still opens the file"
+    );
+}
+
 /// The home screen's list must pick up a file written while it is up.
 ///
 /// The unit tests cover the reconciliation ([`carrel::home::Home::begin_rescan`]

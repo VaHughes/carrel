@@ -302,3 +302,72 @@ fn a_line_without_whitespace_parses_in_linear_time() {
         b / a
     );
 }
+
+// --- source lines ---
+
+/// `notes.md:42` means the forty-second line of the FILE. Display rows are
+/// not source lines: a paragraph wraps, markup is not displayed, and a table
+/// is padded — so the way there is through the provenance table.
+#[test]
+fn a_source_line_maps_to_the_text_that_line_displays() {
+    let src = "# Title\n\nfirst paragraph\nstill the first\n\n- item one\n- item **two**\n\n> quoted &amp; decoded\n";
+    let doc = Document::parse(src);
+    let at = |line: u32| {
+        let d = doc.line_start(line).0 as usize;
+        doc.text[d..].chars().take(9).collect::<String>()
+    };
+    assert_eq!(&at(1)[..5], "Title", "markup before the text is skipped");
+    assert_eq!(&at(3)[..5], "first");
+    assert_eq!(
+        &at(4)[..5],
+        "still",
+        "a soft-wrapped source line is still its own line"
+    );
+    assert_eq!(&at(6)[..8], "item one");
+    assert_eq!(&at(7)[..4], "item");
+    assert_eq!(&at(9)[..6], "quoted");
+    // A blank line lands on what follows it; past the end is the end.
+    assert_eq!(&at(2)[..5], "first");
+    assert_eq!(doc.line_start(999).0 as usize, doc.text.len());
+    assert_eq!(doc.line_start(0), doc.line_start(1));
+}
+
+#[test]
+fn a_display_offset_knows_its_source_line() {
+    let src = "# Title\n\nfirst paragraph\nstill the first\n\n- item one\n- item two\n";
+    let doc = Document::parse(src);
+    for line in [1u32, 3, 4, 6, 7] {
+        assert_eq!(
+            doc.line_of(doc.line_start(line)),
+            line,
+            "line {line} round-trips"
+        );
+    }
+    let last = carrel_core::DocByte(doc.text.len() as u32);
+    assert!(
+        doc.line_of(last) >= 7,
+        "the end is on or after the last line"
+    );
+}
+
+#[test]
+fn a_heading_knows_the_fragment_that_names_it() {
+    let doc = Document::parse("# Same\n\n## Same\n\n## Step 3: Do it!\n");
+    let headings: Vec<_> = doc
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }))
+        .collect();
+    let frags: Vec<_> = headings
+        .iter()
+        .map(|n| doc.fragment_for(n.id).unwrap())
+        .collect();
+    assert_eq!(frags, ["same", "same-1", "step-3-do-it"]);
+    for (n, f) in headings.iter().zip(&frags) {
+        assert_eq!(
+            doc.fragment_target(f),
+            Some(n.doc.start),
+            "{f} resolves back"
+        );
+    }
+}

@@ -17,6 +17,7 @@ pub mod annotation_state;
 pub mod ansi;
 pub mod app;
 pub mod breadcrumb;
+pub mod cli;
 pub mod config;
 pub mod diagrams;
 pub mod footer;

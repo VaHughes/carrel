@@ -34,6 +34,11 @@ USAGE:
     carrel                       the home screen: what is around you to read
     carrel <DIR>                 the home screen, rooted at DIR
     carrel <FILE>                read a document
+    carrel <FILE>:<LINE>         read it from that line of the file; FILE#section
+                                 opens at a heading — the way a tool or an
+                                 agent tells you where to look
+    carrel --latest [DIR]        read the document written most recently, here
+                                 or under DIR — what the agent just finished
     carrel <FILE> <PATTERN>      print search results and exit
     cmd | carrel                 read the pipe, streaming as it arrives
     cmd | carrel - <PATTERN>     print search results for the pipe and exit
@@ -261,8 +266,10 @@ fn main() -> ExitCode {
             Ok(w) => print_plain(Path::new(file), w),
             Err(code) => code,
         },
-        [file] => open(Path::new(file), None),
-        [file, pattern] => open(Path::new(file), Some(pattern)),
+        [a] if a == "--latest" => open_latest(None),
+        [a, dir] if a == "--latest" => open_latest(Some(Path::new(dir))),
+        [file] => open(file, None),
+        [file, pattern] => open(file, Some(pattern)),
         _ => {
             eprint!("{USAGE}");
             ExitCode::FAILURE
@@ -296,6 +303,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--diff",
     "--no-diff",
     "--no-mouse",
+    "--latest",
 ];
 
 /// Why `args` cannot be dispatched, if it cannot.
@@ -314,7 +322,11 @@ fn flag_complaint(args: &[String]) -> Option<String> {
         .iter()
         .find(|a| a.len() > 1 && a.starts_with('-') && !KNOWN_FLAGS.contains(&a.as_str()))
     {
-        return Some(format!("unknown option {bad}"));
+        // One suggestion, when one option is near: `--plian` is `--plain`.
+        return Some(match carrel::cli::suggest_flag(bad, KNOWN_FLAGS) {
+            Some(near) => format!("unknown option {bad} — did you mean {near}?"),
+            None => format!("unknown option {bad}"),
+        });
     }
     args.iter()
         .skip(1)
@@ -577,10 +589,13 @@ fn print_plain_stdin(width: u16) -> ExitCode {
 /// root must beat the working directory, or choosing `~/Documents` would
 /// silently stop applying the moment you `cd`. `carrel .` is the escape hatch,
 /// and the active root is always on screen.
-fn open_home(explicit: Option<&Path>) -> ExitCode {
-    use std::fmt::Write as _;
+/// The folder a bare `carrel` lists, and a note if the saved one is gone.
+///
+/// One rule for the home screen and for `--latest`, so "the newest document"
+/// is the newest of exactly the documents the home screen would show.
+fn home_root(explicit: Option<&Path>) -> (PathBuf, Option<String>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let (root, note) = match explicit {
+    match explicit {
         // Made absolute here and nowhere else, so `Home::root` is absolute
         // for the rest of the program. The path row shows it as segments you
         // can click and `↑` walks up it, and neither means anything for
@@ -596,7 +611,31 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
             ),
             None => (cwd.clone(), None),
         },
+    }
+}
+
+/// `--latest`: the document written most recently. An agent that has just
+/// finished a plan has made it the newest file in the folder, and this is
+/// the way to read it without knowing what it was called.
+fn open_latest(explicit: Option<&Path>) -> ExitCode {
+    if let Some(dir) = explicit
+        && !dir.is_dir()
+    {
+        eprintln!("carrel: {} is not a folder", dir.display());
+        return ExitCode::FAILURE;
+    }
+    let (root, _) = home_root(explicit);
+    let (entries, _) = scan::walk_blocking(&root);
+    let Some(newest) = carrel::cli::latest(&entries) else {
+        eprintln!("carrel: no markdown documents under {}", root.display());
+        return ExitCode::FAILURE;
     };
+    open(&newest.to_string_lossy(), None)
+}
+
+fn open_home(explicit: Option<&Path>) -> ExitCode {
+    use std::fmt::Write as _;
+    let (root, note) = home_root(explicit);
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         let (entries, _) = scan::walk_blocking(&root);
@@ -620,11 +659,23 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
     }
 }
 
-fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
+fn open(arg: &str, pattern: Option<&str>) -> ExitCode {
+    // `PLAN.md:42` and `README.md#install` name a place in a file; a path
+    // that exists as written is never split.
+    let (path, start) = carrel::cli::split_target(arg);
+    let path = path.as_path();
     let src = match carrel::app::read_document(path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{}", carrel::app::explain_open_error(path, &e));
+            // A name one slip away from a file that is there. Said, never
+            // acted on: opening a different file than the one named would
+            // be carrel deciding what you meant.
+            if e.kind() == std::io::ErrorKind::NotFound
+                && let Some(near) = carrel::cli::suggest_file(path)
+            {
+                eprintln!("carrel: did you mean {}?", near.display());
+            }
             return ExitCode::FAILURE;
         }
     };
@@ -649,7 +700,7 @@ fn open(path: &Path, pattern: Option<&str>) -> ExitCode {
         return emit(&carrel::plain::render(&doc, 80));
     }
 
-    match run(path, &src) {
+    match run(path, &src, start.as_ref()) {
         Ok(None) => ExitCode::SUCCESS,
         // The `⌂`: the reader is closed and the terminal restored, so the
         // home screen starts exactly as `carrel <DIR>` would. It is an
@@ -1276,7 +1327,11 @@ fn run_welcome() -> std::io::Result<Option<PathBuf>> {
     run_loop(terminal, app, images, None)
 }
 
-fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
+fn run(
+    path: &Path,
+    src: &str,
+    start: Option<&carrel::cli::Start>,
+) -> std::io::Result<Option<PathBuf>> {
     let theme_note = startup_theme();
     // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
     let diff_ok = diff_forced().unwrap_or_else(|| {
@@ -1331,6 +1386,11 @@ fn run(path: &Path, src: &str) -> std::io::Result<Option<PathBuf>> {
     // saved reading position needs restoring explicitly. Its note outranks
     // the theme note — the theme is only news when it failed to load.
     app.restore_position();
+    // A place asked for outranks a place remembered.
+    if let Some(start) = start {
+        app.note = None;
+        app.start_at(start);
+    }
     run_loop(terminal, app, images, None)
 }
 

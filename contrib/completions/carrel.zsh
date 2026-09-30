@@ -7,6 +7,7 @@ _arguments \
   '--plain[render the document as plain text]:file:_files -g "*.(md|markdown|diff|patch)"' \
   '--render[styled ANSI text: attributes and links, never colours]' \
   '--tutorial[open the built-in first document]' \
+  '--latest[read the document written most recently]:folder:_files -/' \
   '--tasks[print the task list as checkbox lines and exit]' \
   '--diff[read the input as a unified diff]' \
   '--no-diff[never adapt a diff, even on a pipe]' \

@@ -542,6 +542,64 @@ impl Document {
         }
     }
 
+    /// The first doc offset whose source is at or after `src`. O(P).
+    ///
+    /// The inverse of [`Self::to_src`], for "take me to this place in the
+    /// file": a source offset inside markup (the `# ` of a heading, a list
+    /// marker, a fence line) has no display byte of its own, so it lands on
+    /// the first displayed text after it. Synthetic text has no source and is
+    /// never an answer. Past the end of everything, the end of the text.
+    ///
+    /// Linear on purpose. `prov` is sorted by DOC offset, and source order is
+    /// only mostly the same order — a footnote definition is displayed where
+    /// it is defined but a table's padding is interleaved — so a bisection on
+    /// source offsets would be wrong in exactly the cases nobody tests.
+    #[must_use]
+    pub fn to_doc(&self, src: SrcByte) -> DocByte {
+        let mut best: Option<(u32, u32)> = None;
+        for p in &self.prov {
+            if p.kind == ProvKind::Synthetic {
+                continue;
+            }
+            if p.src.start <= src.0 && src.0 < p.src.end {
+                return DocByte(match p.kind {
+                    ProvKind::Verbatim => p.doc.start + (src.0 - p.src.start),
+                    ProvKind::Substituted | ProvKind::Synthetic => p.doc.start,
+                });
+            }
+            if p.src.start >= src.0 && best.is_none_or(|(s, _)| p.src.start < s) {
+                best = Some((p.src.start, p.doc.start));
+            }
+        }
+        DocByte(best.map_or(self.text.len() as u32, |(_, d)| d))
+    }
+
+    /// The doc offset where 1-based source line `line` begins — what
+    /// `notes.md:42` and a `#L42` fragment mean. A line past the end is the
+    /// end; line 0 is line 1.
+    #[must_use]
+    pub fn line_start(&self, line: u32) -> DocByte {
+        let mut at = 0usize;
+        for _ in 1..line {
+            match self.source[at..].find('\n') {
+                Some(i) => at += i + 1,
+                None => return DocByte(self.text.len() as u32),
+            }
+        }
+        self.to_doc(SrcByte(at as u32))
+    }
+
+    /// The 1-based source line a doc offset came from.
+    #[must_use]
+    pub fn line_of(&self, d: DocByte) -> u32 {
+        let src = (self.to_src(d).0 as usize).min(self.source.len());
+        self.source.as_bytes()[..src]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count() as u32
+            + 1
+    }
+
     /// Whether this link came from `[[wikilink]]` syntax. Wikilink targets
     /// are note names, not URIs — the frontends resolve them against the
     /// tree; the core only records what kind of thing the destination is.
@@ -557,7 +615,28 @@ impl Document {
     /// resolve fragments through this one function.
     #[must_use]
     pub fn fragment_target(&self, fragment: &str) -> Option<u32> {
+        self.heading_slugs()
+            .into_iter()
+            .find(|(_, slug)| slug == fragment)
+            .map(|(id, _)| self.nodes[id.0 as usize].doc.start)
+    }
+
+    /// The `#fragment` that names `heading` — the inverse of
+    /// [`Self::fragment_target`], by the same rules, so a link written from
+    /// this lands where that resolves it.
+    #[must_use]
+    pub fn fragment_for(&self, heading: NodeId) -> Option<String> {
+        self.heading_slugs()
+            .into_iter()
+            .find(|(id, _)| *id == heading)
+            .map(|(_, slug)| slug)
+    }
+
+    /// Every heading with its slug, duplicates numbered in document order.
+    /// The one place the numbering happens.
+    fn heading_slugs(&self) -> Vec<(NodeId, String)> {
         let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut out = Vec::new();
         for node in &self.nodes {
             if !matches!(node.kind, NodeKind::Heading { .. }) {
                 continue;
@@ -567,11 +646,9 @@ impl Document {
             let n = seen.entry(base.clone()).or_insert(0);
             let slug = if *n == 0 { base } else { format!("{base}-{n}") };
             *n += 1;
-            if slug == fragment {
-                return Some(node.doc.start);
-            }
+            out.push((node.id, slug));
         }
-        None
+        out
     }
 
     /// The headings enclosing doc byte `at`, outermost first — the derived

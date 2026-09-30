@@ -11,6 +11,15 @@ carrel \- a quiet place to read your markdown
 .I FILE
 .RI [ PATTERN ]
 .br
+.B carrel
+.IR FILE : LINE
+.br
+.B carrel
+.IR FILE # SECTION
+.br
+.B carrel \-\-latest
+.RI [ DIR ]
+.br
 .B cmd | carrel
 .RB [ \- " [" PATTERN ]]
 .br
@@ -59,6 +68,22 @@ immediately and your position and search matches hold while content lands.
 .B carrel \-
 forces stdin mode; with stdout also piped the document renders as plain
 text instead, so pipelines pass through.
+.SH OPENING AT A PLACE
+.IB FILE : LINE
+opens
+.I FILE
+with that line of the file at the top of the window, and
+.IB FILE # SECTION
+opens it at a heading, named the way a link names one
+.RB ( README.md#install ).
+A column after the line
+.RB ( notes.md:42:7 )
+is accepted and ignored. This is how a compiler, a search tool or an agent
+says where to look, so it can be pasted as it was printed. A file really
+called
+.B notes:42
+still opens as itself: a name that exists is never split. A place named
+this way takes precedence over the position carrel remembered.
 .SH OPTIONS
 .TP
 .B \-\-plain
@@ -98,6 +123,14 @@ is exactly
 .B \-\-tutorial
 Open the built-in first document: what carrel does, written on a page you can
 try all of it on. Piped, it prints as plain text.
+.TP
+.BR \-\-latest " [" \fIDIR\fR ]
+Read the document written most recently \(em in the folder a bare
+.B carrel
+would list, or under
+.IR DIR .
+An agent that has just finished a plan has made it the newest file there, and
+this opens it without needing its name.
 .TP
 .B \-\-tasks
 Print every GFM task in the file as checkbox lines and exit. The file is

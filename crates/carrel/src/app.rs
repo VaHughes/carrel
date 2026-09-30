@@ -2004,6 +2004,18 @@ impl App {
         }
     }
 
+    /// Open at a place the command line named: `PLAN.md:42`, `README.md#install`.
+    /// Called after the saved position is restored, because a place asked for
+    /// outranks a place remembered.
+    pub fn start_at(&mut self, start: &crate::cli::Start) {
+        match start {
+            crate::cli::Start::Line(n) => jump_to_line(self, *n),
+            crate::cli::Start::Fragment(f) => {
+                jump_to_fragment(self, f);
+            }
+        }
+    }
+
     /// The layout for a document that has just replaced the last one.
     ///
     /// **Every opener ends here, after the per-document facts are in place**
@@ -4654,13 +4666,19 @@ fn line_fragment(frag: &str) -> Option<u32> {
         .filter(|&n| n >= 1)
 }
 
-/// Go to a 1-based row the way `42G` does — the same landing a reader gets
-/// typing the number themselves. An out-of-range row clamps, exactly as `G`
-/// past the end does.
-fn jump_to_line(app: &mut App, row: u32) {
+/// Go to a 1-based line OF THE FILE — what `notes.md:42`, a `#L42` link and
+/// a search hit's line number all mean.
+///
+/// This used to scroll to visual ROW 42, the way `42G` does, which is the
+/// same place only while nothing wraps and nothing is hidden: a hit on line
+/// 120 of a document with long paragraphs landed screens away from it. The
+/// line is mapped through the provenance table to the text it displays, and
+/// goes through the reveal gate like every other byte-targeted jump, so a
+/// collapsed section opens for it.
+fn jump_to_line(app: &mut App, line: u32) {
     let h = app.text_h();
-    app.view
-        .scroll_to(&app.doc, &app.layout, row.saturating_sub(1), h);
+    let at = app.doc.line_start(line).0;
+    app.reveal_byte(at, h, Where::Top);
 }
 
 fn jump_to_fragment(app: &mut App, frag: &str) -> bool {
@@ -7621,7 +7639,19 @@ diff --git a/x.rs b/x.rs
             Action::LinkOpen(u32::try_from(id).unwrap_or(u32::MAX)),
         );
         assert_eq!(a.file.as_deref(), Some(f.as_path()));
-        assert_eq!(a.view.scroll_row, 4, "landed on source line 5, not the top");
+        // Line 5 OF THE FILE. The five short lines are one paragraph and
+        // wrap two or three to a row, so the needle is on the second visual
+        // row — this used to assert row 4, the fifth ROW, which is where the
+        // old row-counting jump went and is twenty words past the match.
+        let mut rows = Vec::new();
+        let block = a.layout.block_at_row(a.view.scroll_row);
+        a.layout.rows_for(&a.doc, block, &mut rows);
+        let top = &rows[(a.view.scroll_row - a.layout.row_start(block)) as usize];
+        assert!(
+            a.doc.text[top.doc.start as usize..top.doc.end as usize].contains("needle"),
+            "the top row is the one holding source line 5: {:?}",
+            &a.doc.text[top.doc.start as usize..top.doc.end as usize]
+        );
         assert!(a.history.is_empty(), "a desk leaves no trail");
     }
 
