@@ -85,7 +85,8 @@ PURE="crates/carrel/src/action.rs crates/carrel/src/app.rs crates/carrel/src/pla
       crates/carrel/src/footer.rs crates/carrel/src/breadcrumb.rs \
       crates/carrel/src/menu.rs crates/carrel/src/marginalia.rs \
       crates/carrel/src/annotation_state.rs crates/carrel/src/tags.rs \
-      crates/carrel/src/cli.rs crates/carrel/src/status.rs"
+      crates/carrel/src/cli.rs crates/carrel/src/status.rs \
+      crates/carrel/src/peek.rs"
 hits=$(grep -nE '^\s*use\s+ratatui' $PURE 2>/dev/null)
 if [ -n "$hits" ]; then
   note "carrel's state layer imports ratatui"; echo "$hits"

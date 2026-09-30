@@ -2053,6 +2053,11 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
     {
         return Some(carrel::action::Action::SelectRelease);
     }
+    // A peek offers exactly one thing of its own; every other key closes it
+    // and then does what it always does.
+    if app.peek.is_some() && k.code == KeyCode::Enter {
+        return Some(carrel::action::Action::PeekGo);
+    }
     // A menu is the last thing opened, so it is the first thing that answers
     // — above every pane, and above the home screen's typing modes.
     if app.menu.is_some() {

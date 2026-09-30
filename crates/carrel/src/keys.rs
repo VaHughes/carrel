@@ -669,6 +669,8 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::HomeOpenTags
         | A::Forward
         | A::BackTo(_)
+        | A::FootnotePeek { .. }
+        | A::PeekGo
         | A::TaskOpen
         | A::YankBlockAt(_)
         | A::CopyRef(_)

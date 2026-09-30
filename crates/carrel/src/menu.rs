@@ -780,8 +780,10 @@ mod tests {
             // --- the document itself ---
             A::LinkOpen(_) => Doc,
             A::FoldAt(_) => Doc,
-            A::OutlineJumpTo(_) => Doc, // the margin outline
-            A::ScrollTo(_) => Doc,      // the scrollbar
+            A::FootnotePeek { .. } => Doc, // a click on a `[^mark]`
+            A::PeekGo => Pane,             // the peek's own button
+            A::OutlineJumpTo(_) => Doc,    // the margin outline
+            A::ScrollTo(_) => Doc,         // the scrollbar
             A::SelectAnchor(_) | A::SelectDrag(_) | A::SelectRelease => Doc,
             A::SelectWord(_) | A::SelectBlock(_) => Doc,
 

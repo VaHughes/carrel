@@ -183,6 +183,14 @@ pub enum Action {
     /// from inside a definition, back to its first reference. Pushes a
     /// history entry either way, so `Ctrl-O` returns.
     FootnoteJump,
+    /// A click on a footnote mark: show its text where the mark is. `at` is
+    /// the cell, `byte` a doc byte inside the `[^name]`.
+    FootnotePeek {
+        at: (u16, u16),
+        byte: u32,
+    },
+    /// From an open peek, go to the footnote itself — `Enter`, or its button.
+    PeekGo,
     /// Open or close the backlinks pane.
     BacklinksToggle,
     /// Move the backlinks cursor.

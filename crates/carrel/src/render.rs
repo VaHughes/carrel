@@ -248,6 +248,7 @@ pub fn draw_full(
     }
     paint_reader_panels(frame, app, &mut painted.targets);
     // Last, and therefore on top of everything it was opened over.
+    paint_peek(frame, app, &mut painted.targets);
     paint_menu(frame, app, &mut painted.targets);
     paint_hover(frame, app, &painted.targets);
     settle_links(frame, painted);
@@ -2073,6 +2074,35 @@ fn paint_row(
         }
     }
 
+    // 3c. Footnote marks on this row are buttons: a click shows the
+    //     footnote's text in place. Found once per document, so this is a
+    //     bisection and not a scan.
+    {
+        let from = app
+            .footnote_marks
+            .partition_point(|(at, len)| at.saturating_add(*len) <= row.doc.start);
+        let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+        for &(at, len) in app.footnote_marks[from..]
+            .iter()
+            .take_while(|(at, _)| *at < row.doc.end)
+        {
+            let clamped = at.max(row.doc.start)..at.saturating_add(len).min(row.doc.end);
+            let (c0, c1) = cols_for_doc_range(row_text, row.doc.start, row.indent, &clamped);
+            let x0 = area.x + c0;
+            let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x0));
+            if w > 0 {
+                targets.push(
+                    Action::FootnotePeek {
+                        at: (x0, y),
+                        byte: clamped.start,
+                    },
+                    Zone::new(x0, y, w, 1),
+                    Z_DOC,
+                );
+            }
+        }
+    }
+
     // Saved highlights sit below selection and search styles, in doc space.
     for (index, entry) in app.notes.entries.iter().enumerate() {
         if let Some(range) = &entry.range {
@@ -2221,17 +2251,66 @@ fn paint_scrollbar(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    let notch = heading_notches(app, area.height);
+
     let buf = frame.buffer_mut();
     for dy in 0..area.height {
         let (sym, style) = if dy >= top && dy < top.saturating_add(len) {
             ("█", theme::marker())
         } else if tick[dy as usize] {
             ("·", theme::lamp())
+        } else if notch[dy as usize] {
+            // A section starts here. A notch in the track rather than a
+            // mark beside it: the bar is one column and stays one column.
+            ("┤", theme::dim())
         } else {
             ("│", theme::dim())
         };
         buf.set_stringn(area.x, area.y + dy, sym, 1, style);
     }
+}
+
+/// Which cells of a scrollbar `height` tall hold the start of a section.
+///
+/// The bar already shows where the matches are; this shows where the
+/// document's parts are, so "about two thirds down, just past the third
+/// section" is something a reader can see before they drag.
+///
+/// Sparse on purpose. A track where every cell is a notch says nothing, so
+/// only the top levels are marked, and the level is lowered until the
+/// notches take at most a third of the track — H1 and H2, else H1 alone,
+/// else none. And none at all for a document that fits the window: there is
+/// nowhere to scroll to.
+fn heading_notches(app: &App, height: u16) -> Vec<bool> {
+    let mut out = vec![false; usize::from(height)];
+    let total = app.layout.total_rows();
+    if height < 3 || total <= u32::from(height) {
+        return out;
+    }
+    let headings: Vec<(u8, u32)> = app
+        .headings()
+        .into_iter()
+        // A heading inside a collapsed section has no row of its own.
+        .filter(|b| app.layout.height(*b) > 0)
+        .filter_map(|b| match app.doc.node_for_block(b).kind {
+            NodeKind::Heading { level } => Some((level, app.layout.row_start(b))),
+            _ => None,
+        })
+        .collect();
+    let budget = usize::from(height) / 3;
+    let Some(level) = [2u8, 1]
+        .into_iter()
+        .find(|l| (1..=budget).contains(&headings.iter().filter(|(h, _)| h <= l).count()))
+    else {
+        return out;
+    };
+    for (_, row) in headings.iter().filter(|(h, _)| *h <= level) {
+        let cell = u64::from(*row) * u64::from(height - 1) / u64::from(total - 1);
+        if let Some(n) = out.get_mut(usize::try_from(cell).unwrap_or(usize::MAX)) {
+            *n = true;
+        }
+    }
+    out
 }
 
 /// Search feedback owns its columns before the query or filename is fitted.
@@ -2424,6 +2503,69 @@ fn paint_launcher(
     );
     // One cell of air, so the launcher never touches the text beside it.
     x.saturating_sub(1)
+}
+
+/// An open footnote peek: the footnote's text in a box by its mark.
+///
+/// The menu's border vocabulary and the menu's layer — it is drawn over the
+/// document and owns its rectangle, so a click on the text inside it does
+/// not reach the text behind it.
+fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
+    let Some(peek) = &app.peek else { return };
+    let area = frame.area();
+    let z = peek.zone(area.width, area.height);
+    if z.w < 8 || z.h < 4 {
+        return; // no room to say anything; the next action closes it
+    }
+    targets.push(Action::Absorb, z, Z_MENU);
+    let buf = frame.buffer_mut();
+    let inner = usize::from(z.w - 2);
+    let bar = "\u{2500}".repeat(inner);
+    buf.set_stringn(
+        z.x,
+        z.y,
+        format!("\u{256d}{bar}\u{256e}"),
+        usize::from(z.w),
+        theme::status(),
+    );
+    buf.set_stringn(
+        z.x + 2,
+        z.y,
+        format!(" {} ", peek.label),
+        inner - 1,
+        theme::dim(),
+    );
+    let last = z.y + z.h - 1;
+    buf.set_stringn(
+        z.x,
+        last,
+        format!("\u{2570}{bar}\u{256f}"),
+        usize::from(z.w),
+        theme::status(),
+    );
+    let rows = usize::from(z.h - 3);
+    let lines = peek.lines(z.w);
+    for dy in 0..z.h - 2 {
+        let y = z.y + 1 + dy;
+        buf.set_stringn(z.x, y, "\u{2502}", 1, theme::status());
+        buf.set_stringn(z.x + z.w - 1, y, "\u{2502}", 1, theme::status());
+        buf.set_stringn(z.x + 1, y, " ".repeat(inner), inner, theme::status());
+        if let Some(line) = lines
+            .get(usize::from(dy))
+            .filter(|_| usize::from(dy) < rows)
+        {
+            buf.set_stringn(z.x + 2, y, line, inner.saturating_sub(2), theme::status());
+        }
+    }
+    // The long way round, on the box's last inner row.
+    let label = "[ go to it ]";
+    let w = u16::try_from(label.len()).unwrap_or(u16::MAX);
+    if w + 4 <= z.w {
+        let x = z.x + z.w - 2 - w;
+        let y = last - 1;
+        buf.set_stringn(x, y, label, usize::from(w), theme::button());
+        targets.push(Action::PeekGo, Zone::new(x, y, w, 1), Z_MENU);
+    }
 }
 
 /// An open menu: a box anchored where the pointer was.

@@ -297,6 +297,13 @@ pub struct App {
     /// they resolve against the searched root, not the working directory a
     /// pipe uses. Set by opening results, cleared by opening anything else.
     pub results_root: Option<std::path::PathBuf>,
+    /// An open footnote peek. Not a pane: see [`crate::peek`].
+    pub peek: Option<crate::peek::Peek>,
+    /// Every `[^name]` reference as `(start, len)` doc bytes, in order.
+    /// Found when the document arrives, because the painter registers each
+    /// one on screen as a button every frame and finding them is a scan of
+    /// the whole text.
+    pub footnote_marks: Vec<(u32, u32)>,
     /// Links that lead nowhere; see [`Self::find_dead_links`]. Painted
     /// struck through.
     pub dead_links: std::collections::HashSet<LinkId>,
@@ -729,6 +736,8 @@ impl App {
             config_dir: None,
             launch_dir: None,
             results_root: None,
+            peek: None,
+            footnote_marks: Vec::new(),
             dead_links: std::collections::HashSet::new(),
             task_counts: (0, 0),
             desks: Vec::new(),
@@ -1014,6 +1023,7 @@ impl App {
     #[must_use]
     pub fn covered(&self) -> bool {
         self.lightbox.is_some()
+            || self.peek.is_some()
             || self.notes.draft.is_some()
             || self.notes.pane.is_some()
             || self.menu.is_some()
@@ -2261,6 +2271,13 @@ impl App {
     /// file named on the command line. One function cannot disagree with
     /// itself.
     fn lay_out_new_document(&mut self) {
+        self.peek = None;
+        self.footnote_marks = self
+            .doc
+            .footnote_refs()
+            .into_iter()
+            .map(|(name, at)| (at, u32::try_from(name.len() + 3).unwrap_or(u32::MAX)))
+            .collect();
         let tasks = self.doc.tasks();
         self.task_counts = (
             u32::try_from(tasks.iter().filter(|t| t.done).count()).unwrap_or(u32::MAX),
@@ -2689,6 +2706,37 @@ fn step_measure(app: &mut App, d: i32) {
     app.relayout();
 }
 
+/// Show the footnote a `[^mark]` refers to, where the mark is.
+fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
+    if app.is_home() {
+        return Outcome::Idle;
+    }
+    let Some((name, _)) = app.doc.footnote_refs().into_iter().find(|(name, start)| {
+        let end = start.saturating_add(u32::try_from(name.len() + 3).unwrap_or(u32::MAX));
+        (*start..end).contains(&byte)
+    }) else {
+        return Outcome::Idle; // a mark from a frame the document outlived
+    };
+    let Some(def) = app
+        .doc
+        .footnote_defs()
+        .into_iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, at)| at)
+    else {
+        app.note = Some(format!("[^{name}] has no footnote text in this document"));
+        return Outcome::Redraw;
+    };
+    let block = app.doc.block_at_doc(DocByte(def));
+    app.peek = Some(crate::peek::Peek {
+        at,
+        def,
+        label: format!("[^{name}]"),
+        text: app.doc.block_text(block).trim().to_string(),
+    });
+    Outcome::Redraw
+}
+
 /// A pending tags request is withdrawn by whatever the reader does next.
 ///
 /// The scan may take a moment on a large folder, and a document that opened
@@ -2735,6 +2783,29 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         return Outcome::Redraw;
     }
     withdraw_tags_request(app, action);
+    // A peek is a parenthesis, not a pane: whatever the reader does next
+    // closes it, and then happens. Only its own "go there" and a plain
+    // dismissal end with it.
+    if let Some(peek) = app.peek.take() {
+        match action {
+            Action::PeekGo => {
+                let h = app.text_h();
+                if let Some((from, anchor)) = app.location() {
+                    app.push_history(from, anchor);
+                }
+                app.reveal_byte(peek.def, h, Where::Top);
+                return Outcome::Redraw;
+            }
+            Action::Dismiss | Action::MenuHover(_) => return Outcome::Redraw,
+            Action::AutoTick => {
+                app.peek = Some(peek); // a clock is not the reader doing something
+            }
+            _ => {}
+        }
+    }
+    if let Action::FootnotePeek { at, byte } = action {
+        return open_peek(app, at, byte);
+    }
     if app.lightbox.is_some() {
         return lightbox_update(app, action);
     }

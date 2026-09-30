@@ -32,6 +32,7 @@ pub mod marginalia;
 pub mod math_art;
 pub mod menu;
 pub mod omarchy;
+pub mod peek;
 pub mod plain;
 pub mod render;
 pub mod scan;

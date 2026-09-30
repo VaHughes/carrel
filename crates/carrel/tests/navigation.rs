@@ -375,3 +375,75 @@ fn pointing_at_a_link_shows_its_destination_on_the_status_row() {
     update(&mut app, Action::HelpToggle);
     assert_eq!(app.hovered_link(), None, "the help sheet is in the way");
 }
+
+// --- the scrollbar ---
+
+fn scrollbar(app: &App, cols: u16, rows: u16) -> Vec<String> {
+    let (buf, _) = painted(app, cols, rows);
+    let top = app.text_y();
+    (top..top + app.text_h())
+        .map(|y| buf[(cols - 1, y)].symbol().to_string())
+        .collect()
+}
+
+fn sections(n: usize, level: &str, body_lines: usize) -> String {
+    let mut s = String::new();
+    for i in 1..=n {
+        s.push_str(&format!("{level} Section {i}\n\n"));
+        for j in 0..body_lines {
+            s.push_str(&format!("paragraph {j} of section {i}\n\n"));
+        }
+    }
+    s
+}
+
+#[test]
+fn the_scrollbar_is_notched_where_sections_begin() {
+    let (cols, rows) = (60u16, 30u16);
+    // Four sections of equal length: the notches are evenly spaced.
+    let mut app = App::new(
+        "d.md".into(),
+        Document::parse(&sections(4, "#", 20)),
+        cols,
+        rows,
+    );
+    app.on_resize(cols, rows);
+    let bar = scrollbar(&app, cols, rows);
+    let notches: Vec<usize> = bar
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.as_str() == "┤")
+        .map(|(i, _)| i)
+        .collect();
+    // The first section starts at the top, under the thumb, which wins.
+    assert_eq!(notches.len(), 3, "{bar:?}");
+    let gaps: Vec<usize> = notches.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps[0].abs_diff(gaps[1]) <= 1, "evenly spaced: {notches:?}");
+    // Each notch sits where dragging the thumb would put that heading.
+    let total = app.layout.total_rows();
+    let third = app.headings()[2];
+    let want =
+        u64::from(app.layout.row_start(third)) * u64::from(app.text_h() - 1) / u64::from(total - 1);
+    assert_eq!(notches[1] as u64, want);
+}
+
+#[test]
+fn a_document_that_fits_or_has_too_many_sections_has_no_notches() {
+    let (cols, rows) = (60u16, 30u16);
+    let has = |src: &str| {
+        let mut app = App::new("d.md".into(), Document::parse(src), cols, rows);
+        app.on_resize(cols, rows);
+        scrollbar(&app, cols, rows).iter().any(|c| c == "┤")
+    };
+    assert!(
+        !has("# One\n\nshort\n\n# Two\n\nshort\n"),
+        "nowhere to scroll"
+    );
+    assert!(
+        !has(&sections(60, "#", 2)),
+        "sixty sections on a 26-row bar would be a solid line"
+    );
+    // Deep headings do not count: only the top two levels are marked.
+    assert!(!has(&sections(6, "####", 12)));
+    assert!(has(&sections(6, "##", 12)));
+}
