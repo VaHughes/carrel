@@ -25,6 +25,19 @@ Last updated: 2026-09-29
 
 ## Recently completed
 
+- Unreleased follow-up (2026-09-29) — **search tails, navigation, and resize safety**.
+  Reader and home searches reserve room for counts and keep the query tail visible.
+  Selected outline/bookmark/link entries wrap; clipped paths retain their suffix,
+  with grapheme-safe elision. A shared feasibility guard prevents hidden choices,
+  note edits, and paste while a pane cannot fit. Both event loops check dimensions
+  before input, discard stale pointer geometry, and invalidate the retained screen
+  after resize activity. The live PTY test caught and now guards immediate Enter
+  saving an invisible note and shrink/grow bursts leaving a partly blank menu.
+  Verification: **864 tests**, all five gates, all-target checks, and debug build
+  passed. Actual 24-column search/note/menu screens inspected; real SIGWINCH bursts,
+  selection copying, note persistence, and terminal restoration tested through both
+  direct-open and home-screen event loops. Python 3 is required for the resize driver.
+
 - Unreleased follow-up (2026-09-29) — **complete settings entries and pane wheels**.
   Long labels and values wrap instead of colliding; the selected entry fits as a
   whole, with navigation buttons and a compact footer. In short panes the config

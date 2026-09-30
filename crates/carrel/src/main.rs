@@ -1344,8 +1344,7 @@ fn run_loop(
 ) -> std::io::Result<Option<PathBuf>> {
     let mut keys = Keys::new();
 
-    let mut pending: Option<(u16, u16)> = None;
-    let mut deadline: Option<Instant> = None;
+    let mut resize = Resize::default();
     let mut painted = Painted::default();
     let mut repaint = true;
     let mut ptr = Pointer::default();
@@ -1364,7 +1363,8 @@ fn run_loop(
         images.drain(&mut app);
         diagrams.sync(&app);
         diagrams.drain(&mut app);
-        if repaint {
+        if repaint && resize.pending.is_none() {
+            resize.clear_if_needed(&mut terminal)?;
             paint(&mut terminal, &app, &mut painted, &mut images.protocols)?;
         }
         repaint = true; // only a motion burst turns this off, and only briefly
@@ -1380,7 +1380,8 @@ fn run_loop(
             d.saturating_duration_since(Instant::now())
         });
         // Wake in time to apply a debounced resize even with no input arriving.
-        let timeout = deadline
+        let timeout = resize
+            .deadline
             .map_or(Duration::from_millis(100), |d| {
                 d.saturating_duration_since(Instant::now())
             })
@@ -1390,6 +1391,9 @@ fn run_loop(
             // A read error means the input stream is gone. Exit rather than
             // spin: `poll` keeps reporting ready once stdin is at EOF.
             let Ok(ev) = event::read() else { break };
+            if resize.prepare_input(&ev, &mut app, &mut painted.targets, &mut ptr)? {
+                continue;
+            }
             match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if let Some(action) = key_action(&mut keys, &app, k)
@@ -1409,10 +1413,7 @@ fn run_loop(
                     }
                     None => repaint = !coalescing_motion(m),
                 },
-                Event::Resize(w, h) => {
-                    pending = Some((w, h));
-                    deadline = Some(Instant::now() + DEBOUNCE);
-                }
+                Event::Resize(..) => resize.schedule()?,
                 _ => {}
             }
         }
@@ -1446,7 +1447,10 @@ fn run_loop(
             }
         }
 
-        apply_debounced_resize(&mut app, &mut pending, &mut deadline);
+        if resize.apply(&mut app) {
+            painted.targets.clear();
+            ptr = Pointer::default();
+        }
     }
     Ok(app.goto_home.take())
 }
@@ -1693,8 +1697,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     // Content search (wave E): see `Grep`.
     let mut grep = Grep::new();
 
-    let mut pending: Option<(u16, u16)> = None;
-    let mut deadline: Option<Instant> = None;
+    let mut resize = Resize::default();
     let mut painted = Painted::default();
     let mut repaint = true;
 
@@ -1707,7 +1710,8 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         diagrams.sync(&app);
         diagrams.drain(&mut app);
         fill_titles(&mut app);
-        if repaint {
+        if repaint && resize.pending.is_none() {
+            resize.clear_if_needed(&mut terminal)?;
             paint(&mut terminal, &app, &mut painted, &mut images.protocols)?;
         }
         repaint = true; // only a motion burst turns this off, and only briefly
@@ -1721,12 +1725,15 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         // While a scan or search is live, wake often enough to stream.
         let busy = scan.busy() || grep.busy();
         let idle = if busy { 16 } else { 100 };
-        let timeout = deadline.map_or(Duration::from_millis(idle), |d| {
+        let timeout = resize.deadline.map_or(Duration::from_millis(idle), |d| {
             d.saturating_duration_since(Instant::now())
         });
 
         if event::poll(timeout)? {
             let Ok(ev) = event::read() else { break };
+            if resize.prepare_input(&ev, &mut app, &mut painted.targets, &mut ptr)? {
+                continue;
+            }
             match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if let Some(a) = key_action(&mut keys, &app, k)
@@ -1746,10 +1753,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
                     }
                     None => repaint = !coalescing_motion(m),
                 },
-                Event::Resize(w, h) => {
-                    pending = Some((w, h));
-                    deadline = Some(Instant::now() + DEBOUNCE);
-                }
+                Event::Resize(..) => resize.schedule()?,
                 _ => {}
             }
         }
@@ -1761,7 +1765,10 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
         desktop.poll();
 
-        apply_debounced_resize(&mut app, &mut pending, &mut deadline);
+        if resize.apply(&mut app) {
+            painted.targets.clear();
+            ptr = Pointer::default();
+        }
 
         // The picker changed root: restart the walk against the new one.
         if let Some(h) = app.home()
@@ -1774,21 +1781,72 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Apply a resize once its debounce has elapsed.
-///
-/// Both loops debounce the same way — one SIGWINCH per drag frame would
-/// otherwise rebuild the layout on every cell of a window drag — so they share
-/// the code rather than each keeping a copy of the condition.
-fn apply_debounced_resize(
-    app: &mut App,
-    pending: &mut Option<(u16, u16)>,
-    deadline: &mut Option<Instant>,
-) {
-    if deadline.is_some_and(|d| Instant::now() >= d)
-        && let Some((w, h)) = pending.take()
-    {
-        *deadline = None;
-        app.on_resize(w, h);
+/// Shared resize debounce and input barrier for both event loops.
+#[derive(Default)]
+struct Resize {
+    pending: Option<(u16, u16)>,
+    deadline: Option<Instant>,
+    dirty: bool,
+}
+
+impl Resize {
+    fn schedule(&mut self) -> std::io::Result<()> {
+        self.dirty = true;
+        self.pending = Some(ratatui::crossterm::terminal::size()?);
+        self.deadline = Some(Instant::now() + DEBOUNCE);
+        Ok(())
+    }
+
+    /// A shrink/grow burst can lose terminal cells even when its final size
+    /// equals the last drawn size. Invalidate ratatui's retained buffer too.
+    fn clear_if_needed(&mut self, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
+        if self.dirty {
+            // Fullscreen resize clears without Terminal::clear's cursor query.
+            terminal.resize(terminal.size()?.into())?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+
+    /// Avoid rebuilding layout for every cell of a continuous window drag.
+    fn apply(&mut self, app: &mut App) -> bool {
+        if self.deadline.is_some_and(|d| Instant::now() >= d)
+            && let Some((w, h)) = self.pending.take()
+        {
+            self.deadline = None;
+            app.on_resize(w, h);
+            return true;
+        }
+        false
+    }
+
+    /// Input cannot use old modal visibility or hit geometry during debounce.
+    /// Read the PTY size: input can arrive before its queued SIGWINCH event.
+    fn prepare_input(
+        &mut self,
+        event: &Event,
+        app: &mut App,
+        targets: &mut Targets,
+        pointer: &mut Pointer,
+    ) -> std::io::Result<bool> {
+        if matches!(event, Event::Resize(..)) {
+            return Ok(false);
+        }
+        let size = ratatui::crossterm::terminal::size()?;
+        self.pending = None;
+        self.deadline = None;
+        let changed = size != (app.cols, app.rows);
+        if !changed && !self.dirty {
+            return Ok(false);
+        }
+        self.dirty = true;
+        if changed {
+            app.on_resize(size.0, size.1);
+        }
+        targets.clear();
+        *pointer = Pointer::default();
+        // Queued mouse coordinates refer to a frame that no longer exists.
+        Ok(matches!(event, Event::Mouse(_)))
     }
 }
 

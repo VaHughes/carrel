@@ -76,6 +76,11 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   and check the output both enters (`ESC[?1049h`) and leaves (`ESC[?1049l`) the alternate
   screen. A detached pty reports 0x0 unless you set `stty` size. `TestBackend` will never
   tell you the loop spins at EOF; `carrel` refuses the TUI unless stdin and stdout are terminals.
+- **Live resize regression:** `tests/pty.rs` launches the stdlib-only Python 3
+  driver `tests/support/resize_pty.py` under `timeout`. It sends real `SIGWINCH`
+  events and checks reconstructed screens, OSC 52 copying, saved note contents,
+  immediate input during shrink, and terminal restoration. Python 3 and `timeout`
+  are required for this test (available on the Ubuntu CI runner).
 - **Installer smokes** additionally override `HOME`. The dist shell installer writes four
   dotfiles (`~/.bashrc`, `~/.profile`, `~/.zshrc`, `~/.config/fish/conf.d/carrel.env.fish`);
   grep all four for the scratch path before and after.

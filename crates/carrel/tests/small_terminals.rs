@@ -375,3 +375,136 @@ fn compact_settings_show_the_whole_label_and_value() {
         }
     }
 }
+
+#[test]
+fn long_search_keeps_its_tail_and_feedback_visible() {
+    use carrel::action::{Direction, SearchKey};
+    let mut app = app(24, 6);
+    update(&mut app, Action::SearchOpen(Direction::Forward));
+    for c in "a-long-query-with-日本語-END".chars() {
+        update(&mut app, Action::SearchKey(SearchKey::Char(c)));
+    }
+    let (buf, _) = frame(&app);
+    let status: String = (0..24).map(|x| buf[(x, 5)].symbol()).collect();
+    assert!(
+        status.contains("END") && status.contains("no matches"),
+        "{status}"
+    );
+    let mut app = app_for_search_count();
+    update(&mut app, Action::SearchOpen(Direction::Forward));
+    update(&mut app, Action::SearchKey(SearchKey::Char('a')));
+    update(&mut app, Action::SearchKey(SearchKey::Accept));
+    let (buf, _) = frame(&app);
+    let status: String = (0..24).map(|x| buf[(x, 5)].symbol()).collect();
+    assert!(status.contains("1/2"), "{status}");
+}
+fn app_for_search_count() -> App {
+    App::new(
+        "a-very-long-filename-hiding-the-count.md".into(),
+        Document::parse("a a"),
+        24,
+        6,
+    )
+}
+
+#[test]
+fn shrinking_a_pane_blocks_hidden_choices_and_note_edits() {
+    use carrel::action::NoteKey;
+    let mut app = app(80, 24);
+    update(&mut app, Action::SettingsToggle);
+    app.settings = Some(2);
+    let hints = app.hints;
+    app.on_resize(8, 2);
+    update(&mut app, Action::SettingsAdjust(1));
+    assert_eq!(app.hints, hints);
+    update(&mut app, Action::SettingsToggle);
+    assert!(app.settings.is_none());
+    app.on_resize(80, 24);
+    update(
+        &mut app,
+        Action::MenuOpen {
+            at: (0, 0),
+            byte: None,
+        },
+    );
+    let index = app
+        .menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .position(|i| i.action == Some(Action::ThemeCycle))
+        .unwrap();
+    app.menu.as_mut().unwrap().selected = Some(index);
+    app.on_resize(8, 2);
+    update(&mut app, Action::MenuChoose);
+    assert!(!app.theme_cycle && app.menu.is_some());
+    update(&mut app, Action::MenuClose);
+    app.on_resize(80, 24);
+    update(&mut app, Action::NoteEdit);
+    update(&mut app, Action::NoteInput(NoteKey::Char('a')));
+    let before = app.notes.draft.as_ref().unwrap().text.clone();
+    app.on_resize(8, 2);
+    update(&mut app, Action::NoteInput(NoteKey::Char('b')));
+    carrel::annotation_state::paste(&mut app, "hidden paste");
+    update(&mut app, Action::NoteInput(NoteKey::Save));
+    assert_eq!(app.notes.draft.as_ref().unwrap().text, before);
+    assert!(app.notes.entries.is_empty());
+}
+
+#[test]
+fn selected_outline_and_link_show_the_distinguishing_suffix() {
+    let heading = "shared heading prefix repeated repeated unique-ending";
+    let mut app = App::new(
+        "t.md".into(),
+        Document::parse(&format!(
+            "###### {heading}\n\n[link](https://example.com/shared/shared/unique-destination)"
+        )),
+        24,
+        8,
+    );
+    update(&mut app, Action::OutlineToggle);
+    let (buf, _) = frame(&app);
+    let joined = text(&buf).split_whitespace().collect::<String>();
+    assert!(joined.contains("unique-ending"), "{}", text(&buf));
+    update(&mut app, Action::OutlineToggle);
+    update(&mut app, Action::ForwardToggle);
+    let (buf, _) = frame(&app);
+    let joined = text(&buf).split_whitespace().collect::<String>();
+    assert!(joined.contains("unique-destination"), "{}", text(&buf));
+}
+
+#[test]
+fn home_search_and_filter_keep_the_query_tail_and_count() {
+    use carrel::home::HomeMode;
+    let mut app = App::new_home("/empty".into(), Vec::new(), 24, 6);
+    for mode in [HomeMode::Filter, HomeMode::Search] {
+        let home = app.home_mut().unwrap();
+        home.mode = mode;
+        home.filter = "shared-prefix-long-query-END".into();
+        home.query.clone_from(&home.filter);
+        home.grep_done = true;
+        let (buf, _) = frame(&app);
+        let status: String = (0..24).map(|x| buf[(x, 5)].symbol()).collect();
+        assert!(status.contains("END") && status.contains('0'), "{status}");
+    }
+}
+
+#[test]
+fn tail_elision_preserves_graphemes_and_stays_within_its_columns() {
+    use carrel::layout::tail_text;
+    let text = "a-long-prefix-日本語-e\u{301}👩‍💻";
+    for width in 0..40 {
+        let shown = tail_text(text, width);
+        assert!(
+            carrel_core::display_width(&shown) <= width,
+            "{width}: {shown}"
+        );
+        if let Some(tail) = shown.strip_prefix('…') {
+            assert!(text.ends_with(tail));
+            assert!(!tail.starts_with('\u{301}') && !tail.starts_with('\u{200d}'));
+        }
+    }
+    assert_eq!(tail_text("prefix-e\u{301}", 2), "…e\u{301}");
+    assert_eq!(tail_text("prefix-👩‍💻", 3), "…👩‍💻");
+}

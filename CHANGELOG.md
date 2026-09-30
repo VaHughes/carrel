@@ -4,6 +4,16 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Readable searches and navigation.** Long queries keep their active end visible
+  alongside result counts, including home search and filtering. Selected headings,
+  bookmarks, and links wrap; elided paths preserve their distinguishing suffix.
+- **Safe input during resize.** Panes too small to show their choices block hidden
+  actions and note edits, including paste. Input checks the current terminal size
+  before acting, fixing an immediate Enter saving an invisible note during resize.
+  Obsolete mouse targets and drag geometry are discarded; shrink/grow bursts
+  returning to the original size repaint cells lost during the shrink. A real PTY regression
+  exercises search, selection copying, notes, menus, and terminal restoration.
+
 - **Compact pane controls.** Long settings labels and values wrap into complete
   entries with clickable navigation arrows. The wheel follows the open pane's
   arrow-key routing, including help on home, instead of scrolling the document

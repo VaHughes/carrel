@@ -154,6 +154,13 @@ Key facts:
   scroll is separate from the document anchor. Settings windows count wrapped
   entry rows and keep the selected entry whole. Pane wheel events reuse
   `key_action` with an arrow event so keyboard and pointer routing cannot drift.
+  `App::blocked_pane` shares modal feasibility between painting, action dispatch,
+  and note paste; a hidden pane accepts only close/quit. Selected navigation rows
+  wrap and register their complete rectangle. `layout::tail_text` elides by grapheme.
+  Both event loops debounce idle resizing, but check the PTY size before input:
+  a resize invalidates mouse targets and pointer gestures before dispatch. Resize
+  activity also invalidates the retained terminal buffer, including shrink/grow
+  bursts that end at the original dimensions.
 - **Two width budgets.** `text_size` returns `(prose, bleed, height)`; `text_w()` is the prose
   measure, `bleed_w()` the full area. `table_overflows` must get the bleed width.
   `paint_rows` takes the full area and shadows a per-block rect inside the loop.

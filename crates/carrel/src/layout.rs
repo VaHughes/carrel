@@ -627,6 +627,49 @@ pub fn wrap_ui_text(text: &str, width: u16) -> Vec<String> {
     rows
 }
 
+/// Keep the active end of a query or the distinguishing end of a path.
+/// Width is measured per grapheme, so clipping never separates an emoji or accent.
+#[must_use]
+pub fn tail_text(text: &str, width: u16) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    if carrel_core::display_width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut used = 1u16;
+    let mut start = text.len();
+    for (at, grapheme) in text.grapheme_indices(true).rev() {
+        let size = carrel_core::display_width(grapheme);
+        if used.saturating_add(size) > width {
+            break;
+        }
+        used += size;
+        start = at;
+    }
+    format!("…{}", &text[start..])
+}
+
+/// Use two or more lines when a label and value would otherwise collide.
+#[must_use]
+pub fn setting_lines(row: &crate::app::SettingsRow, width: u16) -> Vec<String> {
+    let label_w = carrel_core::display_width(row.label);
+    let value_w = carrel_core::display_width(&row.value);
+    if label_w + value_w + 2 <= width {
+        let gap = " ".repeat(usize::from(width - label_w - value_w));
+        vec![format!("{}{gap}{}", row.label, row.value)]
+    } else {
+        let mut lines = crate::layout::wrap_ui_text(row.label, width);
+        lines.extend(
+            crate::layout::wrap_ui_text(&row.value, width.saturating_sub(2))
+                .into_iter()
+                .map(|value| format!("  {value}")),
+        );
+        lines
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

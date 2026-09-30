@@ -149,6 +149,9 @@ pub fn draw_full(
     // Cleared with the links, and for the same reason: what this frame does
     // not paint, this frame cannot be asked to click.
     painted.targets.clear();
+    if paint_tiny_modal(frame, app, &mut painted.targets) {
+        return;
+    }
     if app.lightbox.is_some() {
         paint_lightbox(frame, app, &mut painted.targets, images);
         return;
@@ -157,9 +160,6 @@ pub fn draw_full(
         && (frame.area().width < 12 || frame.area().height < 5)
     {
         crate::annotation_render::paint(frame, app, &mut painted.targets);
-        return;
-    }
-    if paint_tiny_modal(frame, app, &mut painted.targets) {
         return;
     }
     if let Screen::Home(h) = &app.screen {
@@ -426,30 +426,9 @@ fn settle_links(frame: &mut Frame, painted: &mut Painted) {
 }
 
 fn paint_tiny_modal(frame: &mut Frame, app: &App, targets: &mut Targets) -> bool {
-    if frame.area().width < 12 || frame.area().height < 3 {
-        let pane = if app.menu.is_some() {
-            Some(("menu", Action::MenuClose))
-        } else if app.help.is_some() {
-            Some(("help", Action::Dismiss))
-        } else if app.settings.is_some() {
-            Some(("settings", Action::SettingsToggle))
-        } else if app.outline.is_some() {
-            Some(("outline", Action::OutlineToggle))
-        } else if app.mark_list.is_some() {
-            Some(("bookmarks", Action::MarkListToggle))
-        } else if app.backlinks.is_some() {
-            Some(("links here", Action::BacklinksToggle))
-        } else if app.forward.is_some() {
-            Some(("links", Action::ForwardToggle))
-        } else if app.info {
-            Some(("document", Action::InfoToggle))
-        } else {
-            None
-        };
-        if let Some((name, close)) = pane {
-            small_panel(frame, targets, name, close);
-            return true;
-        }
+    if let Some((name, close)) = app.blocked_pane() {
+        small_panel(frame, targets, name, close);
+        return true;
     }
     false
 }
@@ -543,7 +522,10 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
     let save_row = usize::from(h >= 10);
     let inner = usize::from(h.saturating_sub(2)).saturating_sub(save_row);
-    let entries: Vec<_> = rows.iter().map(|row| setting_lines(row, w - 2)).collect();
+    let entries: Vec<_> = rows
+        .iter()
+        .map(|row| crate::layout::setting_lines(row, w - 2))
+        .collect();
     if entries[selected].len() > inner {
         small_panel(frame, targets, "settings", Action::SettingsToggle);
         return;
@@ -614,24 +596,6 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
     }
 }
 
-/// Use two or more lines when a label and value would otherwise collide.
-fn setting_lines(row: &crate::app::SettingsRow, width: u16) -> Vec<String> {
-    let label_w = display_width(row.label);
-    let value_w = display_width(&row.value);
-    if label_w + value_w + 2 <= width {
-        let gap = " ".repeat(usize::from(width - label_w - value_w));
-        vec![format!("{}{gap}{}", row.label, row.value)]
-    } else {
-        let mut lines = crate::layout::wrap_ui_text(row.label, width);
-        lines.extend(
-            crate::layout::wrap_ui_text(&row.value, width.saturating_sub(2))
-                .into_iter()
-                .map(|value| format!("  {value}")),
-        );
-        lines
-    }
-}
-
 fn paint_setting_entries(
     buf: &mut ratatui::buffer::Buffer,
     targets: &mut Targets,
@@ -669,6 +633,74 @@ fn paint_setting_entries(
         }
         targets.push(
             Action::SettingsPickAt(index as u32),
+            Zone::new(area.x, y - height, area.width, height),
+            Z_OVERLAY,
+        );
+    }
+}
+
+/// Selected navigation entries borrow rows from their neighbors. Other entries
+/// retain their distinguishing tail; an oversized selection ends with an ellipsis
+/// and its tail rather than silently hiding the destination.
+fn paint_navigation_entries(
+    buf: &mut ratatui::buffer::Buffer,
+    targets: &mut Targets,
+    area: Rect,
+    entries: &[(String, Action)],
+    selected: usize,
+) {
+    if entries.is_empty() || area.height == 0 {
+        return;
+    }
+    let selected = selected.min(entries.len() - 1);
+    let width = area.width.saturating_sub(2).max(1);
+    let mut lines: Vec<String> = entries[selected]
+        .0
+        .lines()
+        .flat_map(|line| crate::layout::wrap_ui_text(line, width))
+        .collect();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    if lines.len() > usize::from(area.height) {
+        lines.truncate(usize::from(area.height));
+        *lines.last_mut().expect("nonempty viewport") =
+            crate::layout::tail_text(&entries[selected].0.replace('\n', " "), width);
+    }
+    let first = selected.saturating_sub(usize::from(area.height).saturating_sub(lines.len()));
+    let mut y = area.y;
+    for (index, (text, action)) in entries.iter().enumerate().skip(first) {
+        let shown = if index == selected {
+            lines.clone()
+        } else {
+            vec![crate::layout::tail_text(&text.replace('\n', " · "), width)]
+        };
+        let height = u16::try_from(shown.len()).unwrap_or(u16::MAX);
+        if height > area.bottom().saturating_sub(y) {
+            break;
+        }
+        let style = if index == selected {
+            theme::selected()
+        } else {
+            theme::status()
+        };
+        for (offset, line) in shown.iter().enumerate() {
+            let marker = if index == selected && offset == 0 {
+                "▸ "
+            } else {
+                "  "
+            };
+            buf.set_stringn(
+                area.x,
+                y,
+                format!("{marker}{line}"),
+                usize::from(area.width),
+                style,
+            );
+            y += 1;
+        }
+        targets.push(
+            *action,
             Zone::new(area.x, y - height, area.width, height),
             Z_OVERLAY,
         );
@@ -725,44 +757,25 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         theme::status(),
     );
 
-    let inner = usize::from(h.saturating_sub(2));
-    let first = selected.saturating_sub(inner.saturating_sub(1));
-    for (i, &at) in app.marks.iter().enumerate().skip(first).take(inner) {
-        let py = y + 1 + u16::try_from(i - first).unwrap_or(u16::MAX);
-        if py >= y + h - 1 {
-            break;
-        }
-        targets.push(
-            Action::MarkListJumpAt(u32::try_from(i).unwrap_or(u32::MAX)),
-            Zone::new(x + 1, py, w.saturating_sub(1), 1),
-            Z_OVERLAY,
-        );
-        let sel = i == selected;
-        let style = if sel {
-            theme::selected()
-        } else {
-            theme::status()
-        };
-        // The marked block's first line, trimmed — the same context shape
-        // the link panes show.
-        let block = app.doc.block_at_doc(carrel_core::DocByte(at));
-        let text = app.doc.block_text(block);
-        let line: String = text
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(56)
-            .collect();
-        buf.set_stringn(
-            x + 1,
-            py,
-            format!("{} {line}", if sel { "▸" } else { " " }),
-            w as usize - 1,
-            style,
-        );
-    }
+    let entries: Vec<_> = app
+        .marks
+        .iter()
+        .enumerate()
+        .map(|(i, &at)| {
+            let block = app.doc.block_at_doc(carrel_core::DocByte(at));
+            (
+                app.doc.block_text(block).trim().to_string(),
+                Action::MarkListJumpAt(i as u32),
+            )
+        })
+        .collect();
+    paint_navigation_entries(
+        buf,
+        targets,
+        Rect::new(x + 1, y + 1, w - 2, h - 2),
+        &entries,
+        selected,
+    );
 }
 
 /// The outline picker: headings indented by level, the selection styled,
@@ -827,46 +840,24 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         return;
     }
 
-    let inner = usize::from(h.saturating_sub(2));
-    let per = 2usize;
-    let visible = (inner / per).max(1);
-    let first = bl.selected.saturating_sub(visible.saturating_sub(1));
-    for (i, row) in bl.rows.iter().skip(first).take(visible).enumerate() {
-        let py = y + 1 + u16::try_from(i * per).unwrap_or(u16::MAX);
-        if py >= y + h - 1 {
-            break;
-        }
-        targets.push(
-            Action::BacklinksOpenAt(u32::try_from(first + i).unwrap_or(u32::MAX)),
-            Zone::new(
-                x + 1,
-                py,
-                w.saturating_sub(1),
-                (y + h - 1).saturating_sub(py).min(2),
-            ),
-            Z_OVERLAY,
-        );
-        let sel = first + i == bl.selected;
-        let style = if sel {
-            theme::selected()
-        } else {
-            theme::status()
-        };
-        let name = row.path.file_name().map_or_else(
-            || row.path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        buf.set_stringn(
-            x + 1,
-            py,
-            format!("{} {name}", if sel { "▸" } else { " " }),
-            w as usize - 1,
-            style,
-        );
-        if py + 1 < y + h - 1 {
-            buf.set_stringn(x + 4, py + 1, &row.line, w as usize - 5, theme::dim());
-        }
-    }
+    let entries: Vec<_> = bl
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            (
+                format!("{}\n{}", row.path.display(), row.line),
+                Action::BacklinksOpenAt(i as u32),
+            )
+        })
+        .collect();
+    paint_navigation_entries(
+        buf,
+        targets,
+        Rect::new(x + 1, y + 1, w - 2, h - 2),
+        &entries,
+        bl.selected,
+    );
 }
 
 /// The forward-links pane: what this document points at. The backlinks
@@ -923,63 +914,29 @@ fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
         return;
     }
 
-    let inner = usize::from(h.saturating_sub(2));
-    let per = 2usize;
-    let visible = (inner / per).max(1);
-    let first = pane.selected.saturating_sub(visible.saturating_sub(1));
-    for (i, row) in pane.rows.iter().skip(first).take(visible).enumerate() {
-        let py = y + 1 + u16::try_from(i * per).unwrap_or(u16::MAX);
-        if py >= y + h - 1 {
-            break;
-        }
-        targets.push(
-            Action::ForwardOpenAt(u32::try_from(first + i).unwrap_or(u32::MAX)),
-            Zone::new(
-                x + 1,
-                py,
-                w.saturating_sub(1),
-                (y + h - 1).saturating_sub(py).min(2),
-            ),
-            Z_OVERLAY,
-        );
-        let sel = first + i == pane.selected;
-        let style = if sel {
-            theme::selected()
-        } else {
-            theme::status()
-        };
-        // Local destinations wear their file name; external ones show they
-        // will not be fetched.
-        let head = match (&row.target, row.label.as_deref()) {
-            (Some(_), Some(label)) => label.to_string(),
-            _ => row.dest.clone(),
-        };
-        let marker = if row.target.is_some() {
-            "▸"
-        } else {
-            "⌾ never opened"
-        };
-        buf.set_stringn(
-            x + 1,
-            py,
-            format!("{} {head}", if sel { "▸" } else { " " }),
-            w as usize - 1,
-            style,
-        );
-        if py + 1 < y + h - 1 {
-            let detail = if row.target.is_some() {
-                marker.to_string()
+    let entries: Vec<_> = pane
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let prefix = if row.target.is_some() {
+                row.label.as_deref().unwrap_or("")
             } else {
-                format!("{marker} {}", short_dest(&row.dest))
+                "⌾ never opened"
             };
-            buf.set_stringn(x + 4, py + 1, &detail, w as usize - 5, theme::dim());
-        }
-    }
-}
-
-/// The destination for the dim row: a URL trimmed to something that fits.
-fn short_dest(dest: &str) -> String {
-    dest.chars().take(48).collect()
+            (
+                format!("{prefix}\n{}", row.dest),
+                Action::ForwardOpenAt(i as u32),
+            )
+        })
+        .collect();
+    paint_navigation_entries(
+        buf,
+        targets,
+        Rect::new(x + 1, y + 1, w - 2, h - 2),
+        &entries,
+        pane.selected,
+    );
 }
 
 /// The document-info card (`I`): what kind of document this is, derived
@@ -1079,8 +1036,13 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let bar = "─".repeat(w as usize);
     let title = if picker.filter.is_empty() {
         format!("┌ outline {bar}")
-    } else {
+    } else if display_width(&picker.filter) + 15 <= w {
         format!("┌ outline /{} {bar}", picker.filter)
+    } else {
+        format!(
+            "/{}",
+            crate::layout::tail_text(&picker.filter, w.saturating_sub(5))
+        )
     };
     buf.set_stringn(x, y, title, w as usize, theme::status());
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::OutlineToggle);
@@ -1093,34 +1055,34 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
         theme::status(),
     );
 
-    let inner_h = usize::from(h - 2);
-    // Keep the selection inside the window.
-    let first = picker.selected.saturating_sub(inner_h.saturating_sub(1));
-    let first = first.min(matches.len().saturating_sub(inner_h));
-    for (i, block) in matches.iter().skip(first).take(inner_h).enumerate() {
-        let py = y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
-        targets.push(
-            Action::OutlineJumpAt(u32::try_from(first + i).unwrap_or(u32::MAX)),
-            Zone::new(x + 1, py, w.saturating_sub(1), 1),
-            Z_OVERLAY,
-        );
-        let node = app.doc.node_for_block(*block);
-        let level = match node.kind {
-            NodeKind::Heading { level } => level,
-            _ => 1,
-        };
-        let label = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
-        let indent = "  ".repeat(usize::from(level.saturating_sub(1)));
-        let selected = first + i == picker.selected;
-        let marker = if selected { "▸" } else { " " };
-        let style = if selected {
-            theme::selected()
-        } else {
-            theme::status()
-        };
-        let line = format!(" {marker} {indent}{label}");
-        buf.set_stringn(x, py, line, w as usize, style);
-    }
+    let entries: Vec<_> = matches
+        .iter()
+        .enumerate()
+        .map(|(i, block)| {
+            let node = app.doc.node_for_block(*block);
+            let level = match node.kind {
+                NodeKind::Heading { level } => level,
+                _ => 1,
+            };
+            let label = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
+            let indent = if w < 32 {
+                0
+            } else {
+                usize::from(level.saturating_sub(1)) * 2
+            };
+            (
+                format!("{}{label}", " ".repeat(indent)),
+                Action::OutlineJumpAt(i as u32),
+            )
+        })
+        .collect();
+    paint_navigation_entries(
+        buf,
+        targets,
+        Rect::new(x + 1, y + 1, w - 2, h - 2),
+        &entries,
+        picker.selected,
+    );
 }
 
 /// The key-binding sheet: a centred panel over the page. Content comes from
@@ -1165,7 +1127,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let title = if filter.is_empty() {
         "┌ carrel — help".to_string()
     } else {
-        format!("┌ carrel — keys /{filter}")
+        format!("/{}", crate::layout::tail_text(filter, w.saturating_sub(5)))
     };
     buf.set_stringn(x, y, format!("{title} {bar}"), w as usize, theme::status());
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::Dismiss);
@@ -2225,6 +2187,50 @@ fn paint_scrollbar(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Search feedback owns its columns before the query or filename is fitted.
+fn paint_query_status(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    targets: &mut Targets,
+    input: &str,
+    feedback: &str,
+    compact: &str,
+) {
+    let buf = frame.buffer_mut();
+    buf.set_style(area, theme::status());
+    let left = fold_lamp(buf, app.hints, area, targets);
+    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
+    let room = stop.saturating_sub(left);
+    let feedback = if display_width(input)
+        .saturating_add(display_width(feedback))
+        .saturating_add(1)
+        <= room
+        || (feedback == "no matches" && room >= 16)
+    {
+        feedback
+    } else {
+        compact
+    };
+    let feedback = crate::layout::tail_text(feedback, room);
+    let right = stop.saturating_sub(display_width(&feedback));
+    let query = crate::layout::tail_text(input, right.saturating_sub(left + 1));
+    buf.set_stringn(
+        left,
+        area.y,
+        query,
+        usize::from(right.saturating_sub(left)),
+        theme::status(),
+    );
+    buf.set_stringn(
+        right,
+        area.y,
+        feedback,
+        usize::from(stop.saturating_sub(right)),
+        theme::status(),
+    );
+}
+
 fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets) {
     let left = match &app.mode {
         Mode::Search { input, .. } => format!("/{input}"),
@@ -2232,6 +2238,27 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
         // filename until the next action clears it.
         Mode::Normal => app.note.clone().unwrap_or_else(|| app.path.clone()),
     };
+    if app.searching() || (app.matches.is_some() && app.selected_link.is_none()) {
+        let count = app.matches.as_ref().map_or(0, carrel_core::Matches::len);
+        let (feedback, compact) = if let Some((i, n)) = app
+            .matches
+            .as_ref()
+            .and_then(carrel_core::Matches::position)
+        {
+            (format!("{i} of {n}"), format!("{i}/{n}"))
+        } else {
+            (
+                match count {
+                    0 => "no matches".to_string(),
+                    1 => "1 match".to_string(),
+                    n => format!("{n} matches"),
+                },
+                count.to_string(),
+            )
+        };
+        paint_query_status(frame, app, area, targets, &left, &feedback, &compact);
+        return;
+    }
     // `chrome` marks the ONE branch that writes `T theme` and the exit key as
     // literal text. Only there may those substrings become buttons — a
     // selected link's URL could contain anything.
@@ -2239,23 +2266,6 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     let right = if let Some(id) = app.selected_link {
         // The selected link's destination, always visible for copying.
         app.doc.links[id.0 as usize].to_string()
-    } else if let Some((i, n)) = app
-        .matches
-        .as_ref()
-        .and_then(carrel_core::Matches::position)
-    {
-        format!("{i} of {n}")
-    } else if matches!(app.mode, Mode::Search { .. }) {
-        // Typing. The search has already run and the hits are already
-        // highlighted, but `current` stays None until Enter accepts one — so
-        // without this the count only appears after you have committed to a
-        // needle. The question while typing is "is this finding anything",
-        // and it deserves an answer on the keystroke that decides it.
-        match app.matches.as_ref().map_or(0, carrel_core::Matches::len) {
-            0 => "no matches".to_string(),
-            1 => "1 match".to_string(),
-            n => format!("{n} matches"),
-        }
     } else {
         // Percent of the SCROLLABLE range: the bottom of the document must
         // read 100%, or the reader concludes scrolling is broken. scroll/total
@@ -3004,7 +3014,7 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
     for (row, &idx) in home.filtered.iter().skip(first).take(h).enumerate() {
         let y = area.y + row as u16;
         let e = &home.entries[idx];
-        let shown = home.label_for(e);
+        let shown = crate::layout::tail_text(&home.label_for(e), area.width.saturating_sub(2));
         let is_sel = first + row == home.selected;
         let style = if is_sel {
             theme::selected()
@@ -3066,7 +3076,13 @@ fn paint_hits(frame: &mut Frame, home: &Home, area: Rect) {
         let count = format!(" {:>4}", hit.count);
         let cw = u16::try_from(count.chars().count()).unwrap_or(0);
         let name_w = area.width.saturating_sub(2 + cw);
-        buf.set_stringn(area.x + 2, y, &shown, name_w as usize, style);
+        buf.set_stringn(
+            area.x + 2,
+            y,
+            crate::layout::tail_text(&shown, name_w),
+            name_w as usize,
+            style,
+        );
         buf.set_stringn(
             area.right().saturating_sub(cw),
             y,
@@ -3093,16 +3109,23 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
         HomeMode::Picker => "choose a folder".into(),
         HomeMode::Search => format!("search: {}", home.query),
     };
-    let mut right = if home.mode == HomeMode::Search {
-        let state = if home.grep_done {
-            "found"
+    if matches!(home.mode, HomeMode::Search | HomeMode::Filter) {
+        let count = if home.mode == HomeMode::Search {
+            home.hits.len()
         } else {
-            "searching…"
+            home.filtered.len()
         };
-        format!("{} file(s) {state}", home.hits.len())
-    } else {
-        format!("{} of {}", home.filtered.len(), home.entries.len())
-    };
+        let busy = home.mode == HomeMode::Search && !home.grep_done;
+        let feedback = if busy {
+            format!("{count} searching…")
+        } else {
+            format!("{count} files")
+        };
+        let compact = format!("{count}{}", if busy { "…" } else { "" });
+        paint_query_status(frame, app, area, targets, &left, &feedback, &compact);
+        return;
+    }
+    let mut right = format!("{} of {}", home.filtered.len(), home.entries.len());
     if home.scanning {
         right.push_str("   ⟳ scanning…");
     }
@@ -3351,13 +3374,8 @@ fn paint_picker_row(
         put(buf, &mut x, yy, right, "..", style);
     } else {
         let full = root.display().to_string();
-        match full.rfind('/') {
-            Some(idx) => {
-                put(buf, &mut x, yy, right, &full[..=idx], theme::dim());
-                put(buf, &mut x, yy, right, &full[idx + 1..], style);
-            }
-            None => put(buf, &mut x, yy, right, &full, style),
-        }
+        let shown = crate::layout::tail_text(&full, right.saturating_sub(x));
+        put(buf, &mut x, yy, right, &shown, style);
         if is_here {
             put(buf, &mut x, yy, right, "  · here", theme::dim());
         }

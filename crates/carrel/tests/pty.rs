@@ -1016,3 +1016,25 @@ fn the_home_icon_leaves_the_reader_for_the_file_list() {
         "q still quits rather than opening the home screen"
     );
 }
+
+#[test]
+fn live_resize_preserves_search_selection_notes_and_menu_input() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/resize_pty.py");
+    for mode in ["--reader", "--home"] {
+        let scratch = tempfile::tempdir().unwrap();
+        let output = Command::new("timeout")
+            .args(["40", "python3"])
+            .arg(&script)
+            .arg(env!("CARGO_BIN_EXE_carrel"))
+            .arg(scratch.path())
+            .arg(mode)
+            .output()
+            .expect("the PTY resize test requires timeout and python3");
+        assert!(
+            output.status.success(),
+            "{mode}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

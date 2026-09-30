@@ -428,6 +428,56 @@ const fn measure_of(bleed: u16, max_width: u16) -> u16 {
 }
 
 impl App {
+    /// A pane that cannot expose its choices may only be closed or resized.
+    /// Painting and input use this same predicate, including wrapped settings.
+    #[must_use]
+    pub fn blocked_pane(&self) -> Option<(&'static str, Action)> {
+        let small = self.cols < 12 || self.rows < 3;
+        let pane = if self.lightbox.is_some() {
+            (self.cols < 12 || self.rows < 5, "image", Action::Dismiss)
+        } else if self.notes.draft.is_some() || self.notes.pane.is_some() {
+            (self.cols < 12 || self.rows < 5, "notes", Action::Dismiss)
+        } else if self.menu.is_some() {
+            (small, "menu", Action::MenuClose)
+        } else if self.help.is_some() {
+            (small, "help", Action::Dismiss)
+        } else if let Some(selected) = self.settings {
+            let rows = settings_rows(self);
+            let (w, h) = crate::layout::panel_size(self.cols, self.rows, 60, rows.len() as u16 + 3);
+            let inner = usize::from(h.saturating_sub(2)).saturating_sub(usize::from(h >= 10));
+            let fits = rows.get(selected).is_some_and(|row| {
+                crate::layout::setting_lines(row, w.saturating_sub(2)).len() <= inner
+            });
+            (
+                small || self.rows < 4 || !fits,
+                "settings",
+                Action::SettingsToggle,
+            )
+        } else if self.outline.is_some() {
+            (small, "outline", Action::OutlineToggle)
+        } else if self.mark_list.is_some() {
+            (small, "bookmarks", Action::MarkListToggle)
+        } else if self.backlinks.is_some() {
+            (small, "links here", Action::BacklinksToggle)
+        } else if self.forward.is_some() {
+            (small, "links", Action::ForwardToggle)
+        } else if self.info {
+            (small, "document", Action::InfoToggle)
+        } else if self
+            .home()
+            .is_some_and(|h| h.mode == crate::home::HomeMode::Picker)
+        {
+            (
+                self.cols < 12 || self.rows < 4,
+                "folder",
+                Action::PickerCancel,
+            )
+        } else {
+            return None;
+        };
+        pane.0.then_some((pane.1, pane.2))
+    }
+
     /// Keep decoration out of scarce reading columns. A one-cell margin still
     /// carries bookmarks and the code cursor in ordinary split panes.
     #[must_use]
@@ -2258,6 +2308,9 @@ fn step_measure(app: &mut App, d: i32) {
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
+    if let Some(outcome) = blocked_action(app, action) {
+        return outcome;
+    }
     // The first-run invitation goes as soon as the reader does anything at
     // all — it exists to be acted on, and a line that stays after you have
     // acted is noise. Moving the pointer is not acting, and neither is a
@@ -2385,6 +2438,30 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         return home_update(app, action);
     }
     reader_update(app, action)
+}
+
+fn blocked_action(app: &mut App, action: Action) -> Option<Outcome> {
+    if let Some((_, close)) = app.blocked_pane() {
+        if action == Action::Quit {
+            return Some(Outcome::Quit);
+        }
+        if action != close {
+            if matches!(
+                action,
+                Action::Dismiss
+                    | Action::CloseFile
+                    | Action::Back
+                    | Action::NoteInput(crate::action::NoteKey::Cancel)
+                    | Action::OutlineKey(SearchKey::Cancel)
+                    | Action::HelpKey(SearchKey::Cancel)
+                    | Action::HomeKey(SearchKey::Cancel)
+            ) {
+                return Some(update(app, close));
+            }
+            return Some(Outcome::Idle);
+        }
+    }
+    None
 }
 
 fn scroll_info(app: &mut App, action: Action) -> Option<Outcome> {

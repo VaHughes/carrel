@@ -212,7 +212,10 @@ and menus keep the selected entry visible. The wheel navigates the open pane;
 settings also offer arrow buttons. The document information card (`I`) wraps
 long values and scrolls with the wheel, arrows, or its arrow buttons. Close a
 pane with its **×** button. Very small windows show a close control when a pane
-cannot fit. On home, short windows prioritize files over the banner and
+cannot fit; hidden choices and note edits wait until the window grows. Search
+keeps the end of your query and the result count visible. Selected headings,
+bookmarks, and links wrap; shortened paths retain their distinguishing end.
+On home, short windows prioritize files over the banner and
 continue-reading rows; the numbered resume shortcuts still work.
 
 ### Images, highlights, and notes

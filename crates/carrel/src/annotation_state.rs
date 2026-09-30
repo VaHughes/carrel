@@ -178,6 +178,9 @@ fn edit(draft: &mut Draft, key: NoteKey) {
 
 /// Insert a bracketed paste as text, never as reader commands.
 pub fn paste(app: &mut App, text: &str) {
+    if app.blocked_pane().is_some() {
+        return;
+    }
     let Some(draft) = app.notes.draft.as_mut() else {
         return;
     };
