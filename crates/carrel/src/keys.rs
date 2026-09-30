@@ -154,6 +154,9 @@ impl Keys {
             // Vim's "go to match", applied to footnotes: reference ↔
             // definition, with Ctrl-O as the way back.
             KeyCode::Char('%') => Some(Action::FootnoteJump),
+            // The same key the file list uses, so the tags page is one key
+            // away from wherever the reader is.
+            KeyCode::Char('#') => Some(Action::HomeTags),
             KeyCode::Char('F') => Some(Action::FollowToggle),
             KeyCode::Char('A') => Some(Action::AutoToggle),
             KeyCode::Char('L') => Some(Action::BacklinksToggle),
@@ -667,6 +670,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::SelectWord(_)
         | A::SelectBlock(_)
         | A::HomeOpenTags
+        | A::TagOpen(_)
         | A::Forward
         | A::BackTo(_)
         | A::FootnotePeek { .. }
@@ -735,6 +739,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("m '", "bookmark here / go to next"),
     ("\"", "list bookmarks — enter jumps"),
     ("%", "footnote ↔ its text"),
+    ("#", "tags, and their documents"),
     ("L", "what links here"),
     ("l", "what this points at"),
     ("] [", "next / previous code block"),

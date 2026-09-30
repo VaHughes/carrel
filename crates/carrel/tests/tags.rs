@@ -58,8 +58,7 @@ fn home(dir: &Path, entries: Vec<Entry>, cols: u16, rows: u16) -> App {
 
 /// Hand the state layer a finished scan, the way the event loop does.
 fn deliver(app: &mut App, index: Index) -> Outcome {
-    let h = app.home_mut().expect("still on the home screen");
-    h.tags = Request::Ready(index);
+    app.tags = Request::Ready(index);
     update(app, Action::HomeOpenTags)
 }
 
@@ -80,7 +79,7 @@ fn asking_for_tags_only_asks() {
 
     update(&mut app, Action::HomeTags);
     let h = app.home().unwrap();
-    assert_eq!(h.tags, Request::Wanted, "recorded for the event loop");
+    assert_eq!(app.tags, Request::Wanted, "recorded for the event loop");
     assert_eq!(h.note.as_deref(), Some("reading tags…"));
     assert!(app.is_home(), "and nothing has opened");
 }
@@ -99,7 +98,7 @@ fn whatever_the_reader_does_next_withdraws_the_request() {
         update(&mut app, Action::HomeTags);
         update(&mut app, next);
         assert_eq!(
-            app.home().unwrap().tags,
+            app.tags,
             Request::Idle,
             "{next:?} must withdraw a pending tags request"
         );
@@ -108,7 +107,7 @@ fn whatever_the_reader_does_next_withdraws_the_request() {
     let mut app = home(d.path(), entries, 60, 20);
     update(&mut app, Action::HomeTags);
     update(&mut app, Action::Hover((3, 3)));
-    assert_eq!(app.home().unwrap().tags, Request::Wanted);
+    assert_eq!(app.tags, Request::Wanted);
 }
 
 #[test]
@@ -117,7 +116,7 @@ fn an_empty_folder_says_so_instead_of_waiting() {
     let mut app = home(d.path(), Vec::new(), 60, 20);
     update(&mut app, Action::HomeTags);
     let h = app.home().unwrap();
-    assert_eq!(h.tags, Request::Idle, "there is nothing to read");
+    assert_eq!(app.tags, Request::Idle, "there is nothing to read");
     assert!(h.note.as_deref().unwrap().contains("no documents"));
 }
 
@@ -278,7 +277,7 @@ fn the_real_scan_feeds_the_real_document() {
     // pieces the tests above hand-build are known to fit together.
     let d = tempfile::tempdir().unwrap();
     let (entries, expected) = vault(d.path(), 5);
-    let rx = carrel::tags::spawn(entries.clone(), false, 1);
+    let rx = carrel::tags::spawn(carrel::tags::Source::Entries(entries.clone()), false, 1);
     let mut index = Index::default();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -473,4 +472,131 @@ fn the_reading_note_does_not_outlive_the_request() {
     update(&mut app, Action::CloseFile);
     assert!(app.is_home());
     assert_eq!(app.home().unwrap().note, None);
+}
+
+// --- from inside a document ---
+
+use carrel_core::Document;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+
+const TAGGED: &str = "---\ntitle: A note about rust\ntags: [rust, topic1]\n---\n\n# Note\n\nbody\n";
+
+/// A document opened by name: no file list in front of it or behind it.
+fn reader_in(dir: &Path) -> App {
+    let path = dir.join("note0.md");
+    std::fs::write(&path, TAGGED).unwrap();
+    let mut app = App::new("note0.md".into(), Document::parse(TAGGED), 70, 40);
+    app.file = Some(path);
+    app.library_root = Some(dir.to_path_buf());
+    app.on_resize(70, 40);
+    app
+}
+
+#[test]
+fn every_tag_on_the_card_is_a_button_on_its_own_word() {
+    let d = tempfile::tempdir().unwrap();
+    let app = reader_in(d.path());
+    let mut term = Terminal::new(TestBackend::new(70, 40)).unwrap();
+    let mut painted = carrel::render::Painted::default();
+    term.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut Default::default()))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    let words: Vec<String> = painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| matches!(t.action, Action::TagOpen(_)))
+        .map(|t| {
+            (t.zone.x..t.zone.x + t.zone.w)
+                .map(|x| buf[(x, t.zone.y)].symbol())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        words,
+        ["rust", "topic1"],
+        "the tags, and not the `rust` in the title above them"
+    );
+    // Same word, different row: the `rust` that is a button is the one on
+    // the tags line.
+    for t in painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| matches!(t.action, Action::TagOpen(_)))
+    {
+        let row: String = (0..70).map(|x| buf[(x, t.zone.y)].symbol()).collect();
+        assert!(
+            row.contains("tags"),
+            "a tag button on the wrong row: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn clicking_a_tag_asks_for_the_page_at_that_tag_and_back_returns() {
+    let d = tempfile::tempdir().unwrap();
+    let (_, index) = vault(d.path(), 30);
+    let mut app = reader_in(d.path());
+    app.on_resize(70, 16);
+    let at = u32::try_from(app.doc.text.find("topic1").unwrap()).unwrap();
+
+    assert_eq!(update(&mut app, Action::TagOpen(at + 2)), Outcome::Redraw);
+    assert_eq!(app.tags, Request::Wanted);
+    assert_eq!(app.tags_focus.as_deref(), Some("topic1"));
+    assert_eq!(app.note.as_deref(), Some("reading tags…"));
+    assert!(
+        app.file.is_some(),
+        "still reading the document while it scans"
+    );
+
+    deliver(&mut app, index);
+    assert_eq!(app.path, "tags");
+    // Collapsed into a tag list — except the tag that was clicked, which is
+    // open and at the top of the view.
+    let top = app.layout.block_at_row(app.view.scroll_row);
+    assert_eq!(app.doc.block_text(top), "topic1 (10)");
+    let node = app.doc.node_for_block(top);
+    assert!(!app.folded.contains(&node.id), "its section is expanded");
+    assert!(!app.folded.is_empty(), "and the others are not");
+
+    update(&mut app, Action::Back);
+    assert_eq!(
+        app.file.as_deref(),
+        Some(d.path().join("note0.md").as_path()),
+        "Back is the document the tag was clicked in"
+    );
+}
+
+#[test]
+fn a_click_that_is_not_on_a_tag_asks_for_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = reader_in(d.path());
+    // In the title, which mentions `rust` but is not a tag; and in the body.
+    let title = u32::try_from(app.doc.text.find("about rust").unwrap()).unwrap() + 7;
+    let body = u32::try_from(app.doc.text.find("body").unwrap()).unwrap();
+    for byte in [title, body, 9_999_999] {
+        assert_eq!(update(&mut app, Action::TagOpen(byte)), Outcome::Idle);
+        assert_eq!(app.tags, Request::Idle);
+    }
+}
+
+#[test]
+fn the_reader_can_ask_for_tags_with_no_file_list_behind_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = reader_in(d.path());
+    assert_eq!(update(&mut app, Action::HomeTags), Outcome::Redraw);
+    assert_eq!(app.tags, Request::Wanted);
+    assert_eq!(app.tags_root().as_deref(), Some(d.path()));
+    // Anything else withdraws it, here as on the file list.
+    update(&mut app, Action::Scroll(carrel::action::Span::Line, 1));
+    assert_eq!(app.tags, Request::Idle);
+    assert_eq!(app.note, None);
+
+    // A pipe has no folder: it says so rather than waiting forever.
+    let mut piped = App::new("(stdin)".into(), Document::parse(TAGGED), 70, 20);
+    update(&mut piped, Action::HomeTags);
+    assert_eq!(piped.tags, Request::Idle);
+    assert!(piped.note.as_deref().unwrap().contains("no folder"));
 }

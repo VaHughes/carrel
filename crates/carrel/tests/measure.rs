@@ -1206,12 +1206,14 @@ fn a_link_under_an_overlay_is_not_re_emitted_as_a_hyperlink() {
         painted.links
     );
 
-    // And a link the menu does NOT cover stays live.
+    // And a link the menu does NOT cover stays live. Off to the right: the
+    // global menu is tall enough now that, anchored under the link in a
+    // 40-row window, it flips above its anchor and lands back on it.
     carrel::app::update(&mut app, Action::MenuClose);
     carrel::app::update(
         &mut app,
         Action::MenuOpen {
-            at: (2, 20),
+            at: (60, 20),
             byte: None,
         },
     );

@@ -313,6 +313,7 @@ pub fn global(app: &App) -> Vec<Item> {
         Item::new("Notes and highlights…", Action::NotesToggle),
         Item::new("Document info", Action::InfoToggle),
         Item::new("Images…", Action::ImageOpen(None)),
+        Item::new("Tags", Action::HomeTags),
         Item::new("Focus on one paragraph", Action::FocusToggle),
         Item::new("Auto-read", Action::AutoToggle),
         // Following pins the view to the end of a document that is still
@@ -798,6 +799,7 @@ mod tests {
 
             // --- only a menu offers these ---
             A::HomeTags => Menu("Tags"),
+            A::TagOpen(_) => Doc, // a tag on the metadata card
             A::Back => Menu("Back"),
             A::InfoToggle => Menu("Document info"),
             A::ImageOpen(_) => Menu("Images…"),

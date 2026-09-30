@@ -492,6 +492,49 @@ fn tags_are_read_in_the_background_and_open_as_a_document() {
     assert!(raw.contains("notes (1)"));
 }
 
+/// The same key from inside a document opened by name. There is no file list
+/// behind it, so the driver has to walk the folder itself — in the OTHER
+/// event loop, which is the half that tends to get forgotten.
+#[test]
+fn tags_open_from_inside_a_document_too() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    for (name, tags) in [("a.md", "[rust, notes]"), ("b.md", "[rust]")] {
+        std::fs::write(
+            d.path().join(name),
+            format!("---\ntags: {tags}\n---\n\n# Doc\n"),
+        )
+        .unwrap();
+    }
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    let cmd = format!(
+        "( sleep 2; printf '#'; sleep 2; printf 'Q' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {bin} a.md' '{}' >/dev/null 2>&1",
+        d.path().join("cfg").display(),
+        d.path().join("state").display(),
+        d.path().join("cache").display(),
+        d.path().display(),
+        out.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(
+        raw.contains("2 tags in 2 documents of the 2 read"),
+        "the tags page opened from the reader"
+    );
+}
+
 /// `--tutorial` built its page with the constructor's defaults and then read
 /// the config without laying out again, so the reader's text width, heading
 /// bar and hyphenation did not apply to the one document meant to show them

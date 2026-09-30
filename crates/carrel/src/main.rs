@@ -1423,9 +1423,12 @@ fn run_loop(
     let mut backlinks: Option<Receiver<carrel::links::Msg>> = None;
     let mut backlinks_for: Option<PathBuf> = None;
     let mut next_auto: Option<Instant> = None;
+    // The tags page, asked for from inside a document: see `TagScan`.
+    let mut tag_scan = TagScan::new();
 
     loop {
         drive_backlinks(&mut app, &mut backlinks, &mut backlinks_for);
+        tag_scan.tick(&mut app);
         images.sync(&mut app);
         images.drain(&mut app);
         diagrams.sync(&app);
@@ -1745,10 +1748,7 @@ impl TagScan {
     }
 
     fn tick(&mut self, app: &mut App) {
-        let wanted = app
-            .home()
-            .is_some_and(|h| h.tags == carrel::tags::Request::Wanted);
-        if !wanted {
+        if app.tags != carrel::tags::Request::Wanted {
             // Withdrawn. Dropping the receiver stops the thread at its next
             // send; bumping the generation discards anything already queued.
             if self.rx.take().is_some() {
@@ -1758,19 +1758,33 @@ impl TagScan {
             return;
         }
         if self.rx.is_none() {
-            let Some(h) = app.home() else { return };
-            // The walk is still finding files: wait for the list to be whole
-            // rather than report tags for half a folder as if it were all.
-            if h.scanning {
+            // The file list in front, the one behind the reader, or — for a
+            // document opened by name, which never had one — a walk of the
+            // folder it lives in.
+            let (source, titles) = if let Some(h) = app.home() {
+                // The walk is still finding files: wait for the list to be
+                // whole rather than report tags for half a folder as all.
+                if h.scanning {
+                    return;
+                }
+                (
+                    carrel::tags::Source::Entries(h.entries.clone()),
+                    h.show_titles,
+                )
+            } else if let Some(h) = app.home_stash.as_deref() {
+                (
+                    carrel::tags::Source::Entries(h.entries.clone()),
+                    h.show_titles,
+                )
+            } else if let Some(root) = app.tags_root() {
+                (carrel::tags::Source::Walk(root), app.titles)
+            } else {
+                app.tags = carrel::tags::Request::Idle;
                 return;
-            }
+            };
             self.generation += 1;
             self.found.clear();
-            self.rx = Some(carrel::tags::spawn(
-                h.entries.clone(),
-                h.show_titles,
-                self.generation,
-            ));
+            self.rx = Some(carrel::tags::spawn(source, titles, self.generation));
         }
         let Some(rx) = self.rx.as_ref() else { return };
         let mut done = None;
@@ -1801,20 +1815,15 @@ impl TagScan {
         let Some((read, capped)) = done else {
             // Not "no tags": carrel does not know, and says that instead.
             self.found.clear();
-            if let Some(h) = app.home_mut() {
-                h.tags = carrel::tags::Request::Idle;
-                h.note = Some("could not finish reading tags — press # to try again".into());
-            }
+            app.tags = carrel::tags::Request::Idle;
+            app.set_note("could not finish reading tags — press # to try again".into());
             return;
         };
-        let index = carrel::tags::Index {
+        app.tags = carrel::tags::Request::Ready(carrel::tags::Index {
             tagged: std::mem::take(&mut self.found),
             read,
             capped,
-        };
-        if let Some(h) = app.home_mut() {
-            h.tags = carrel::tags::Request::Ready(index);
-        }
+        });
         update(app, carrel::action::Action::HomeOpenTags);
     }
 }

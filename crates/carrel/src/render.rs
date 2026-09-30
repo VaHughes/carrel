@@ -1234,6 +1234,7 @@ fn paint_math(
 /// the table `│` separators have. It sits in the two-cell gutter the node's
 /// `indent` already reserved at parse, so values wrap inside the card rather
 /// than under the rule.
+#[allow(clippy::too_many_arguments)]
 fn paint_metadata_card(
     frame: &mut Frame,
     app: &App,
@@ -1242,10 +1243,14 @@ fn paint_metadata_card(
     key_col: u16,
     skip: u32,
     mut y: u16,
+    targets: &mut Targets,
 ) -> u16 {
     let node = app.doc.node_for_block(block);
     let body = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
     let text_lines: Vec<&str> = body.lines().collect();
+    // Each tag is a button: the tags page, open at that tag. Where a tag is
+    // depends on how this line was painted, so its zone is recorded here.
+    let tag_spans = crate::tags::spans(body);
     let last = text_lines.len().saturating_sub(1);
     let avail = usize::from(area.width.saturating_sub(node.indent));
     let text_x = area.x + node.indent;
@@ -1267,6 +1272,42 @@ fn paint_metadata_card(
         };
         let buf = frame.buffer_mut();
         buf.set_stringn(area.x, y, rule.to_string(), 1, crate::theme::dim());
+        // `lines()` borrows from `body`, so this is the line's own offset.
+        let line_at = line.as_ptr() as usize - body.as_ptr() as usize;
+        // Where byte `o` of this line was painted, by the same two layouts
+        // the match below uses.
+        let key_line = (!line.starts_with([' ', '\t', '#', '-']))
+            .then(|| line.find(':').or_else(|| line.find('=')))
+            .flatten();
+        let cell_of = |o: usize| -> Option<u16> {
+            match key_line {
+                Some(sep) => {
+                    let key_w = display_width(line[..sep].trim_end());
+                    let val_x = text_x
+                        .saturating_add(key_w)
+                        .saturating_add(key_col.saturating_sub(key_w) + 1);
+                    let raw = &line[sep + 1..];
+                    let lead = sep + 1 + (raw.len() - raw.trim_start().len());
+                    (o >= lead).then(|| val_x.saturating_add(display_width(&line[lead..o])))
+                }
+                None => Some(text_x.saturating_add(display_width(&line[..o]))),
+            }
+        };
+        for (range, _) in tag_spans
+            .iter()
+            .filter(|(r, _)| r.start >= line_at && r.end <= line_at + line.len())
+        {
+            let (from, to) = (range.start - line_at, range.end - line_at);
+            let Some(x) = cell_of(from) else { continue };
+            let w = display_width(&line[from..to]).min(area.right().saturating_sub(x));
+            if x < area.right() && w > 0 {
+                targets.push(
+                    Action::TagOpen(node.doc.start + u32::try_from(range.start).unwrap_or(0)),
+                    Zone::new(x, y, w, 1),
+                    Z_DOC,
+                );
+            }
+        }
         match line.split_once(':').or_else(|| line.split_once('=')) {
             // Only a flush line is a key line; an indented one is a nested
             // value, a list item, or a block scalar, and prints raw.
@@ -1560,7 +1601,16 @@ fn paint_rows(
         // value. The `╭ │ ╰` glyphs are DECORATION and are not in the text —
         // the same standing the table `│` separators have.
         if let NodeKind::Metadata { key_col } = app.doc.node_for_block(block).kind {
-            y = paint_metadata_card(frame, app, area, block, key_col, skip, y);
+            y = paint_metadata_card(
+                frame,
+                app,
+                area,
+                block,
+                key_col,
+                skip,
+                y,
+                &mut painted.targets,
+            );
             skip = 0;
             block = BlockIdx(block.0 + 1);
             continue;

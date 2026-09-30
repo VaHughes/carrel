@@ -297,6 +297,11 @@ pub struct App {
     /// they resolve against the searched root, not the working directory a
     /// pipe uses. Set by opening results, cleared by opening anything else.
     pub results_root: Option<std::path::PathBuf>,
+    /// The tags page's request: asked for, ready, or neither. On `App`
+    /// rather than on the file list, because the reader asks too.
+    pub tags: crate::tags::Request,
+    /// The tag to open the page at, when a tag was what was clicked.
+    pub tags_focus: Option<String>,
     /// An open footnote peek. Not a pane: see [`crate::peek`].
     pub peek: Option<crate::peek::Peek>,
     /// Every `[^name]` reference as `(start, len)` doc bytes, in order.
@@ -736,6 +741,8 @@ impl App {
             config_dir: None,
             launch_dir: None,
             results_root: None,
+            tags: crate::tags::Request::Idle,
+            tags_focus: None,
             peek: None,
             footnote_marks: Vec::new(),
             dead_links: std::collections::HashSet::new(),
@@ -996,6 +1003,44 @@ impl App {
             self.desks.push(desk);
             self.desks.len() - 1
         }));
+    }
+
+    /// The folder a tags page is about: the file list's, when there is one
+    /// in front or behind, else the folder this reading session is rooted at.
+    #[must_use]
+    pub fn tags_root(&self) -> Option<PathBuf> {
+        self.home()
+            .or(self.home_stash.as_deref())
+            .map(|h| h.root.clone())
+            .or_else(|| self.library_root.clone())
+    }
+
+    /// Open the tags page AT a tag: its section expanded and at the top.
+    /// The page's sections are in [`crate::tags::groups`]' order, so the
+    /// n-th group is the n-th second-level heading.
+    fn focus_tag(&mut self, index: &crate::tags::Index, tag: &str) {
+        let wanted = tag.to_lowercase();
+        let Some(n) = crate::tags::groups(index)
+            .iter()
+            .position(|g| g.name.to_lowercase() == wanted)
+        else {
+            return;
+        };
+        let Some((id, at)) = self
+            .doc
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Heading { level: 2 }))
+            .nth(n)
+            .map(|n| (n.id, n.doc.start))
+        else {
+            return;
+        };
+        if self.folded.remove(&id) {
+            self.relayout();
+        }
+        let h = self.text_h();
+        self.reveal_byte(at, h, Where::Top);
     }
 
     /// The name a history entry has when it is a generated page.
@@ -2746,14 +2791,94 @@ fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
 fn withdraw_tags_request(app: &mut App, action: Action) {
     if !matches!(
         action,
-        Action::HomeTags | Action::HomeOpenTags | Action::MenuHover(_) | Action::AutoTick
-    ) && let Some(h) = app.home_mut()
-        && h.tags == crate::tags::Request::Wanted
+        Action::HomeTags
+            | Action::TagOpen(_)
+            | Action::HomeOpenTags
+            | Action::MenuHover(_)
+            | Action::AutoTick
+    ) && app.tags == crate::tags::Request::Wanted
     {
-        h.tags = crate::tags::Request::Idle;
+        app.tags = crate::tags::Request::Idle;
+        app.tags_focus = None;
         // The note said it was reading. It is not any more.
+        app.note = None;
+        if let Some(h) = app.home_mut() {
+            h.note = None;
+        }
+    }
+}
+
+/// Ask for the folder's tags. No I/O here — the event loop reads the files
+/// on a thread and answers with [`Action::HomeOpenTags`].
+fn request_tags(app: &mut App, focus: Option<String>) -> Outcome {
+    if let Some(h) = app.home()
+        && h.entries.is_empty()
+        && !h.scanning
+    {
+        app.set_note("no documents here to read tags from".into());
+        return Outcome::Redraw;
+    }
+    if app.tags_root().is_none() {
+        app.set_note("there is no folder here to read tags from".into());
+        return Outcome::Redraw;
+    }
+    app.tags = crate::tags::Request::Wanted;
+    app.tags_focus = focus;
+    app.set_note("reading tags…".into());
+    Outcome::Redraw
+}
+
+/// The tag written at `byte` of the open document's metadata card.
+fn tag_at(app: &App, byte: u32) -> Option<String> {
+    let block = app.doc.block_at_doc(DocByte(byte));
+    let node = app.doc.node_for_block(block);
+    if !matches!(node.kind, NodeKind::Metadata { .. }) {
+        return None;
+    }
+    let at = (byte.checked_sub(node.doc.start)?) as usize;
+    crate::tags::spans(app.doc.block_text(block))
+        .into_iter()
+        .find(|(r, _)| r.contains(&at))
+        .map(|(_, tag)| tag)
+}
+
+/// The scan finished: open what it found, or say why there is nothing to.
+fn open_ready_tags(app: &mut App) -> Outcome {
+    let crate::tags::Request::Ready(index) = std::mem::take(&mut app.tags) else {
+        return Outcome::Idle;
+    };
+    let focus = app.tags_focus.take();
+    // Whatever comes next — a page or a reason there is none — the
+    // "reading tags…" note has been answered.
+    app.note = None;
+    if let Some(h) = app.home_mut() {
         h.note = None;
     }
+    let Some(root) = app.tags_root() else {
+        return Outcome::Idle;
+    };
+    if index.tagged.is_empty() {
+        // A dead end says why, and what would change it.
+        app.set_note(format!(
+            "no tags — none of the {} here has `tags:` in its frontmatter",
+            if index.read == 1 {
+                "1 document".to_string()
+            } else {
+                format!("{} documents", index.read)
+            }
+        ));
+        return Outcome::Redraw;
+    }
+    // From the reader this is a departure like any other: Back returns.
+    let from = if app.is_home() { None } else { app.location() };
+    app.open_tags(&root, &index);
+    if let Some((from, anchor)) = from {
+        app.push_history(from, anchor);
+    }
+    if let Some(tag) = focus {
+        app.focus_tag(&index, &tag);
+    }
+    Outcome::Redraw
 }
 
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
@@ -2805,6 +2930,17 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     }
     if let Action::FootnotePeek { at, byte } = action {
         return open_peek(app, at, byte);
+    }
+    match action {
+        Action::HomeTags => return request_tags(app, None),
+        Action::TagOpen(byte) => {
+            return match tag_at(app, byte) {
+                Some(tag) => request_tags(app, Some(tag)),
+                None => Outcome::Idle, // a tag from a frame the card outlived
+            };
+        }
+        Action::HomeOpenTags => return open_ready_tags(app),
+        _ => {}
     }
     if app.lightbox.is_some() {
         return lightbox_update(app, action);
@@ -3316,49 +3452,6 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Redraw;
             }
             app.open_results(&root, &query, &hits);
-            return Outcome::Redraw;
-        }
-
-        // `#`: ask for the folder's tags. No I/O here — the event loop reads
-        // the files on a thread and answers with `HomeOpenTags`.
-        Action::HomeTags => {
-            let Some(h) = app.home_mut() else {
-                return Outcome::Idle;
-            };
-            if h.entries.is_empty() && !h.scanning {
-                h.note = Some("no documents here to read tags from".into());
-                return Outcome::Redraw;
-            }
-            h.tags = crate::tags::Request::Wanted;
-            h.note = Some("reading tags…".into());
-            return Outcome::Redraw;
-        }
-        Action::HomeOpenTags => {
-            let Some(h) = app.home_mut() else {
-                return Outcome::Idle;
-            };
-            let crate::tags::Request::Ready(index) = std::mem::take(&mut h.tags) else {
-                return Outcome::Idle;
-            };
-            // Whatever comes next — a page or a reason there is none — the
-            // "reading tags…" note has been answered.
-            h.note = None;
-            let root = h.root.clone();
-            if index.tagged.is_empty() {
-                // A dead end says why, and what would change it.
-                if let Some(h) = app.home_mut() {
-                    h.note = Some(format!(
-                        "no tags — none of the {} here has `tags:` in its frontmatter",
-                        if index.read == 1 {
-                            "1 document".to_string()
-                        } else {
-                            format!("{} documents", index.read)
-                        }
-                    ));
-                }
-                return Outcome::Redraw;
-            }
-            app.open_tags(&root, &index);
             return Outcome::Redraw;
         }
 

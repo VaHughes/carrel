@@ -88,6 +88,15 @@ pub enum Request {
     Ready(Index),
 }
 
+/// Which documents to read.
+#[derive(Debug)]
+pub enum Source {
+    /// The file list the home screen already has.
+    Entries(Vec<Entry>),
+    /// A folder to walk first — for a reader with no file list behind it.
+    Walk(PathBuf),
+}
+
 #[derive(Debug)]
 pub enum Msg {
     Found(Tagged, u64),
@@ -106,9 +115,15 @@ pub enum Msg {
 /// `titles` also reads each tagged document's title (`scan::title_of`), for
 /// the reader who asked the file list to show titles.
 #[must_use]
-pub fn spawn(entries: Vec<Entry>, titles: bool, generation: u64) -> Receiver<Msg> {
+pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        let entries = match source {
+            Source::Entries(entries) => entries,
+            // No file list to borrow from: the reader was opened on a file.
+            // The walk is the home screen's own, on this thread.
+            Source::Walk(root) => crate::scan::walk_blocking(&root).0,
+        };
         let (mut read, mut found, mut capped) = (0usize, 0usize, false);
         for e in entries {
             if found >= MAX_TAGGED {
@@ -262,6 +277,78 @@ pub fn parse_tags(body: &str, toml: bool) -> Vec<String> {
             }
         }
     }
+    out
+}
+
+/// The tags of a frontmatter body of either kind. A metadata card holds the
+/// body without its fences, so which kind it is has to be found by trying.
+#[must_use]
+pub fn parse_any(body: &str) -> Vec<String> {
+    let yaml = parse_tags(body, false);
+    if yaml.is_empty() {
+        parse_tags(body, true)
+    } else {
+        yaml
+    }
+}
+
+/// Where each tag is written in a frontmatter body: `(byte range, tag)`, in
+/// order. For making the tags on a metadata card clickable.
+///
+/// The tags come from [`parse_any`], so this can never disagree with the
+/// tags page about what a tag is; their positions are then found by looking
+/// for each one's text in the lines that belong to the `tags` key. Longest
+/// first, so `rust` does not claim the middle of `rustlang`, and only at a
+/// word edge, so it does not claim the start of it either.
+#[must_use]
+pub fn spans(body: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let tags = parse_any(body);
+    if tags.is_empty() {
+        return Vec::new();
+    }
+    // The region: from just after the key's separator to the next top-level
+    // key, or the end.
+    let mut region: Option<std::ops::Range<usize>> = None;
+    let mut at = 0usize;
+    for line in body.split_inclusive('\n') {
+        let top_level = !line.starts_with([' ', '\t', '-', ']', '#']) && !line.trim().is_empty();
+        let key = line
+            .split_once([':', '='])
+            .map(|(k, _)| k.trim())
+            .filter(|_| top_level);
+        match (&mut region, key) {
+            (None, Some(k)) if k.eq_ignore_ascii_case("tags") || k.eq_ignore_ascii_case("tag") => {
+                let sep = line.find([':', '=']).unwrap_or(0) + 1;
+                region = Some(at + sep..body.len());
+            }
+            (Some(r), Some(_)) => {
+                r.end = at;
+                break;
+            }
+            _ => {}
+        }
+        at += line.len();
+    }
+    let Some(region) = region else {
+        return Vec::new();
+    };
+    let text = &body[region.clone()];
+    let mut order: Vec<&String> = tags.iter().collect();
+    order.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    let mut out: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    for tag in order {
+        let edge = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let found = text.match_indices(tag.as_str()).find(|(i, m)| {
+            let (s, e) = (region.start + i, region.start + i + m.len());
+            edge(body[..s].chars().next_back())
+                && edge(body[e..].chars().next())
+                && !out.iter().any(|(r, _)| s < r.end && r.start < e)
+        });
+        if let Some((i, m)) = found {
+            out.push((region.start + i..region.start + i + m.len(), tag.clone()));
+        }
+    }
+    out.sort_by_key(|(r, _)| r.start);
     out
 }
 
@@ -719,12 +806,12 @@ mod tests {
             write(d.path(), "b.md", "no frontmatter\n"),
             write(d.path(), "c.md", "---\ntags: [rust, notes]\n---\n# Gamma\n"),
         ];
-        let index = collect(&spawn(entries.clone(), false, 1));
+        let index = collect(&spawn(Source::Entries(entries.clone()), false, 1));
         assert_eq!(index.read, 3);
         assert_eq!(index.tagged.len(), 2);
         assert!(index.tagged.iter().all(|t| t.title.is_none()));
 
-        let titled = collect(&spawn(entries, true, 2));
+        let titled = collect(&spawn(Source::Entries(entries), true, 2));
         let names: Vec<_> = titled.tagged.iter().map(|t| t.title.as_deref()).collect();
         assert_eq!(names, [Some("Alpha"), Some("Gamma")]);
     }
@@ -848,6 +935,45 @@ mod tests {
                 "{literal:?} must read as its own characters: {headings:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_folder_can_be_walked_when_there_is_no_file_list() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "a.md", "---\ntags: [rust]\n---\n");
+        write(d.path(), "b.md", "plain\n");
+        let index = collect(&spawn(Source::Walk(d.path().to_path_buf()), false, 1));
+        assert_eq!(index.read, 2);
+        assert_eq!(index.tagged.len(), 1);
+    }
+
+    #[test]
+    fn each_tag_is_found_where_it_is_written() {
+        let at = |body: &str| -> Vec<(String, String)> {
+            spans(body)
+                .into_iter()
+                .map(|(r, tag)| (body[r].to_string(), tag))
+                .collect()
+        };
+        let pair = |a: &str| (a.to_string(), a.to_string());
+        assert_eq!(
+            at("title: About tags\ntags: [rust, web dev]\ndate: rust\n"),
+            [pair("rust"), pair("web dev")],
+            "only inside the tags key — not the title, not a later key"
+        );
+        assert_eq!(
+            at("tags:\n  - rustlang\n  - rust\n"),
+            [pair("rustlang"), pair("rust")],
+            "the short one does not claim part of the long one"
+        );
+        assert_eq!(
+            at("tags = [\"notes\", \"#inbox\"]\n"),
+            [pair("notes"), pair("inbox")],
+            "TOML, and a tag written with its hash is the name after it"
+        );
+        assert_eq!(at("tags: [rust, rust]\n").len(), 1, "one tag, one place");
+        assert!(at("title: no tags\n").is_empty());
+        assert!(at("tags: []\n").is_empty());
     }
 
     #[test]
