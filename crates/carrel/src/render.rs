@@ -1349,6 +1349,34 @@ fn paint_block_cursor(
             .set_stringn(area.x - 1, y, "▪", 1, crate::theme::lamp());
     }
     if app.code_focus != Some(block) {
+        // Every code block says it can be copied, not only the one the
+        // block cursor is on: `y` is a key, and a reader who does not know
+        // it had no way to find this. A dim word on the block's own gap row
+        // — which the layout guarantees and nothing else paints — so it
+        // covers no text and costs no rows; hovering lights it.
+        if matches!(
+            app.doc.node_for_block(block).kind,
+            NodeKind::CodeBlock { .. }
+        ) {
+            let rows_here = app
+                .layout
+                .content_height(&app.doc, block)
+                .saturating_sub(skip);
+            let gap_y = y.saturating_add(u16::try_from(rows_here).unwrap_or(u16::MAX));
+            let label = "copy";
+            let chip_w = u16::try_from(label.len()).unwrap_or(u16::MAX);
+            let from = area.right().saturating_sub(chip_w);
+            if gap_y >= area.y && gap_y < area.bottom() && from > area.x {
+                frame
+                    .buffer_mut()
+                    .set_stringn(from, gap_y, label, label.len(), theme::dim());
+                targets.push(
+                    Action::YankBlockAt(block),
+                    Zone::new(from, gap_y, chip_w, 1),
+                    Z_CHROME,
+                );
+            }
+        }
         return;
     }
     // `content_height`, not `height`: the trailing gap belongs to the block

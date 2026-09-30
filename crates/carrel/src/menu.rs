@@ -478,6 +478,9 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
             // is worse than no row, because it looks like it worked.
             if app.selection.is_some() {
                 v.push(Item::plain("Copy selection", Action::SelectRelease));
+                // The same text, framed for pasting into a conversation:
+                // quoted, with the file and line it came from.
+                v.push(Item::plain("Copy as a quote", Action::CopyQuote));
             }
             v.push(Item::plain("Select word", Action::SelectWord(byte)));
             v.push(Item::plain("Select paragraph", Action::SelectBlock(byte)));
@@ -486,6 +489,18 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
     };
     items.push(Item::gap());
     items.push(Item::new("Bookmark here", Action::MarkToggle));
+    // Where this is, the way a tool says it — for telling an agent which
+    // line or which section. Greyed when there is no file to name, or no
+    // heading above the pointer, so the rows still say the feature exists.
+    let named = app.file.is_some();
+    let copy_ref = Item::plain("Copy path and line", Action::CopyRef(byte));
+    items.push(if named { copy_ref } else { copy_ref.greyed() });
+    let copy_section = Item::plain("Copy link to this section", Action::CopySection(byte));
+    items.push(if named && !app.doc.section_path(byte).is_empty() {
+        copy_section
+    } else {
+        copy_section.greyed()
+    });
     items.push(Item::gap());
     // `…` means "opens something that asks for more" — CUA again, and the
     // reason the three overlays carry it and the toggles above do not.
@@ -789,6 +804,11 @@ mod tests {
             A::FoldAll => Menu("Collapse all"),
             A::UnfoldAll => Menu("Expand all"),
             A::LinkCopy => Menu("Copy link"),
+            A::CopyRef(_) => Menu("Copy path and line"),
+            A::CopySection(_) => Menu("Copy link to this section"),
+            A::CopyQuote => Menu("Copy as a quote"),
+            A::YankBlockAt(_) => Doc, // the `copy` chip under a code block
+            A::NotesCopy => Pane,     // `[copy]` in the notes list
             A::BacklinksToggle => Menu("What links here"),
             A::ForwardToggle => Menu("What this points at"),
             A::CodeStep(_) => Menu("Next code block"),
@@ -879,8 +899,11 @@ mod tests {
             menus.push(context(&a, byte));
         }
         // With something selected, `Copy selection` joins the plain-text head.
+        // (On PROSE: byte 0 is the heading, whose head has no copy rows — so
+        // this pushed a menu that never contained the row it was there for.)
         a.selection = Some(0..4);
-        menus.push(context(&a, 0));
+        let prose = u32::try_from(a.doc.text.find("plain prose").unwrap()).unwrap();
+        menus.push(context(&a, prose));
         let home = App::new_home(std::path::PathBuf::from("."), vec![], 80, 24);
         menus.push(global(&home));
 
@@ -918,6 +941,10 @@ mod tests {
             "Go to the footnote text",
             "Next task",
             "Bookmarks…",
+            "Copy path and line",
+            "Copy link to this section",
+            "Copy as a quote",
+            "Copy selection",
         ] {
             assert!(seen.contains(label), "the corpus never produced {label:?}");
         }

@@ -247,6 +247,19 @@ pub enum Action {
     TaskStep(i32),
     /// Copy the focused code block to the clipboard.
     YankBlock,
+    /// Copy THIS code block — the chip under it, which already said which
+    /// block it meant. Focuses it too, so `y` afterward means the same one.
+    YankBlockAt(carrel_core::BlockIdx),
+    /// Copy where a doc byte is, the way a tool says it: `PLAN.md:42`. For
+    /// pasting into a prompt, so an agent is told exactly which line.
+    CopyRef(u32),
+    /// Copy a link to the section a doc byte is in: `PLAN.md#step-3`.
+    CopySection(u32),
+    /// Copy the selection as a markdown quote with where it came from.
+    CopyQuote,
+    /// Copy every note and highlight to the clipboard as markdown — the
+    /// export, without a file in between.
+    NotesCopy,
     /// `o`: open the outline picker (or close it, when open).
     OutlineToggle,
     /// Move the outline selection through the FILTERED list. Saturates.

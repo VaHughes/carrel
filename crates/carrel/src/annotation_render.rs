@@ -282,6 +282,15 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
             &mut bx,
             foot,
             area.right(),
+            "[copy all]",
+            Action::NotesCopy,
+        );
+        button(
+            frame,
+            targets,
+            &mut bx,
+            foot,
+            area.right(),
             "[close]",
             Action::NotesToggle,
         );

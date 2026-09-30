@@ -67,6 +67,7 @@ impl Keys {
             KeyCode::Char('a' | 'e') => Some(Action::NoteEdit),
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::NoteDelete),
             KeyCode::Char('E') => Some(Action::NotesExport),
+            KeyCode::Char('C') => Some(Action::NotesCopy),
             KeyCode::Char('Q') => Some(Action::Quit),
             _ => None,
         }
@@ -583,7 +584,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::NoteEdit | A::NoteAt(_) => "a",
         A::NotesToggle => "V",
         A::NoteNext => "M",
-        A::NotesExport => return None,
+        A::NotesExport | A::NotesCopy => return None,
         A::NoteMove(_) | A::NoteSelect(_) | A::NoteJump | A::NoteDelete | A::NoteInput(_) => {
             return None;
         }
@@ -666,6 +667,10 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::SelectWord(_)
         | A::SelectBlock(_)
         | A::HomeOpenTags
+        | A::YankBlockAt(_)
+        | A::CopyRef(_)
+        | A::CopySection(_)
+        | A::CopyQuote
         | A::HomeNormalMode
         | A::PickerChoose
         | A::PickerDescend

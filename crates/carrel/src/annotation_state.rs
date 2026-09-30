@@ -225,6 +225,29 @@ fn export(app: &mut App) {
     }
 }
 
+/// Every note and highlight, as markdown, on the clipboard. The export
+/// without a file in between — notes taken while reading are most often
+/// feedback, and feedback gets pasted.
+fn copy_all(app: &mut App) {
+    if app.notes.entries.is_empty() {
+        app.note = Some("There are no notes or highlights to copy.".into());
+        return;
+    }
+    let text = marginalia::export_markdown(std::path::Path::new(&app.path), &app.notes.entries);
+    if text.len() > crate::app::CLIPBOARD_MAX {
+        app.note =
+            Some("Notes are too large for the terminal clipboard — export them instead.".into());
+        return;
+    }
+    let n = app.notes.entries.len();
+    app.clipboard = Some(text);
+    // Sent, not "copied": OSC 52 has no reply, so carrel cannot know.
+    app.note = Some(format!(
+        "{n} note{} sent to the terminal clipboard",
+        if n == 1 { "" } else { "s" }
+    ));
+}
+
 /// Called before reader actions; while the pane or editor is up nothing leaks through.
 #[allow(clippy::too_many_lines)]
 pub fn update(app: &mut App, action: Action) -> Option<Outcome> {
@@ -384,6 +407,7 @@ pub fn update(app: &mut App, action: Action) -> Option<Outcome> {
             }
         }
         Action::NotesExport => export(app),
+        Action::NotesCopy => copy_all(app),
         Action::Dismiss | Action::CloseFile if app.notes.pane.is_some() => app.notes.pane = None,
         Action::Quit if app.notes.pane.is_some() => return Some(Outcome::Quit),
         _ if app.notes.pane.is_some() => return Some(Outcome::Idle),

@@ -3895,6 +3895,18 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        Action::YankBlockAt(b) => {
+            if b.get() >= app.doc.block_count()
+                || !matches!(app.doc.node_for_block(b).kind, NodeKind::CodeBlock { .. })
+            {
+                return Outcome::Idle; // a chip from a frame the document outlived
+            }
+            app.code_focus = Some(b);
+            update(app, Action::YankBlock)
+        }
+        Action::CopyRef(byte) => copy_reference(app, byte),
+        Action::CopySection(byte) => copy_section_link(app, byte),
+        Action::CopyQuote => copy_quote(app),
         Action::YankBlock => {
             let Some(b) = app.code_focus.or_else(|| app.next_code_block(0)) else {
                 app.note = Some("no code block here to copy".into());
@@ -4563,6 +4575,133 @@ fn copy_selection(app: &mut App) {
     };
     app.note = Some(format!("copied {} characters", text.chars().count()));
     app.clipboard = Some(text.to_string());
+}
+
+impl App {
+    /// The open file's path the way someone in this session would name it:
+    /// relative to where `carrel` was run when it is inside that folder —
+    /// which is where the agent being told about it is sitting too — and
+    /// absolute otherwise. `None` for a document with no file behind it.
+    #[must_use]
+    pub fn reference_path(&self) -> Option<String> {
+        let file = self.file.as_deref()?;
+        let abs = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
+        let shown = self
+            .launch_dir
+            .as_deref()
+            .and_then(|here| abs.strip_prefix(here).ok())
+            .filter(|rel| !rel.as_os_str().is_empty())
+            .map_or(abs.as_path(), |rel| rel);
+        Some(shown.display().to_string())
+    }
+
+    /// `PLAN.md:42` for a doc byte. The line is left off for a document
+    /// carrel adapted from a diff: its lines are not the file's lines, and a
+    /// number that points at the wrong line is worse than none.
+    fn reference_at(&self, byte: u32) -> Option<String> {
+        let path = self.reference_path()?;
+        if self.diff_ok {
+            return Some(path);
+        }
+        Some(format!("{path}:{}", self.doc.line_of(DocByte(byte))))
+    }
+
+    /// The headings above a doc byte, outermost first, as text.
+    fn section_names(&self, byte: u32) -> Vec<&str> {
+        self.doc
+            .section_path(byte)
+            .into_iter()
+            .map(|id| {
+                let n = &self.doc.nodes[id.0 as usize];
+                self.doc.text[n.doc.start as usize..n.doc.end as usize].trim()
+            })
+            .collect()
+    }
+}
+
+/// Put `text` on the clipboard and say what was sent. One line, no control
+/// characters: this is pasted into a prompt or a shell.
+fn copy_line(app: &mut App, text: String) -> Outcome {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    app.note = Some(format!("copied {text}"));
+    app.clipboard = Some(text);
+    Outcome::Redraw
+}
+
+fn copy_reference(app: &mut App, byte: u32) -> Outcome {
+    match app.reference_at(byte) {
+        Some(reference) => copy_line(app, reference),
+        None => {
+            app.note = Some("this document has no file to point at".into());
+            Outcome::Redraw
+        }
+    }
+}
+
+fn copy_section_link(app: &mut App, byte: u32) -> Outcome {
+    let Some(path) = app.reference_path() else {
+        app.note = Some("this document has no file to point at".into());
+        return Outcome::Redraw;
+    };
+    let fragment = app
+        .doc
+        .section_path(byte)
+        .last()
+        .and_then(|&id| app.doc.fragment_for(id))
+        .filter(|f| !f.is_empty());
+    match fragment {
+        Some(f) => copy_line(app, format!("{path}#{f}")),
+        None => {
+            app.note = Some("there is no heading above this to link to".into());
+            Outcome::Redraw
+        }
+    }
+}
+
+/// The selection as a markdown quote, signed with where it came from:
+///
+/// ```text
+/// > the selected text,
+/// > line for line
+///
+/// — PLAN.md:42 (Rollout › Step 3)
+/// ```
+fn copy_quote(app: &mut App) -> Outcome {
+    let Some(sel) = app.selection.clone().filter(|s| !s.is_empty()) else {
+        app.note = Some("select some text first".into());
+        return Outcome::Redraw;
+    };
+    let Some(text) = app.doc.text.get(sel.start as usize..sel.end as usize) else {
+        return Outcome::Idle;
+    };
+    let mut out = String::new();
+    for line in text.trim_end().lines() {
+        out.push('>');
+        if !line.trim().is_empty() {
+            out.push(' ');
+            out.push_str(line.trim_end());
+        }
+        out.push('\n');
+    }
+    let source = app
+        .reference_at(sel.start)
+        .unwrap_or_else(|| app.path.clone());
+    let sections = app.section_names(sel.start).join(" \u{203a} ");
+    out.push_str("\n\u{2014} ");
+    out.push_str(&source);
+    if !sections.is_empty() {
+        out.push_str(" (");
+        out.push_str(&sections);
+        out.push(')');
+    }
+    out.push('\n');
+    if out.len() > CLIPBOARD_MAX {
+        app.note = Some("selection too large to copy".into());
+        return Outcome::Redraw;
+    }
+    app.note = Some(format!("copied a quote from {source}"));
+    app.clipboard = Some(out);
+    Outcome::Redraw
 }
 
 /// The alphanumeric/`_`/`-` run around `byte`, or `None` on a non-word cell.
