@@ -76,6 +76,57 @@ fn line_suffix(arg: &str) -> Option<(&str, u32)> {
     Some((head, last))
 }
 
+/// A path as it arrives when it is pasted or dropped onto the window.
+///
+/// Terminals and file managers each have their own idea of how to hand over
+/// a file: bare, in quotes, with its spaces backslashed, or as a `file://`
+/// URL with them percent-encoded. This undoes each of those and nothing
+/// else. The first line only — a paste with several is not a path — and
+/// `None` for anything that is not plausibly one, so a paragraph pasted by
+/// accident does not become a "no such file" about its own first sentence.
+#[must_use]
+pub fn pasted_path(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    if line.len() > 4096 || line.chars().any(char::is_control) {
+        return None;
+    }
+    let quoted = line.len() >= 2
+        && ((line.starts_with('"') && line.ends_with('"'))
+            || (line.starts_with('\'') && line.ends_with('\'')));
+    let mut path = if quoted {
+        line[1..line.len() - 1].to_string()
+    } else if let Some(rest) = line.strip_prefix("file://") {
+        // `file:///home/x` and `file://localhost/home/x` both mean `/home/x`.
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        crate::links::percent_decoded(rest).unwrap_or_else(|| rest.to_string())
+    } else {
+        // A shell-escaped drop: `/my\ notes/a.md`.
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => out.extend(chars.next()),
+                c => out.push(c),
+            }
+        }
+        out
+    };
+    if path.is_empty() {
+        return None;
+    }
+    if path == "~" || path.starts_with("~/") {
+        path = crate::home::expand_typed(&path)
+            .to_string_lossy()
+            .into_owned();
+    }
+    // Prose has spaces and no separators; a path has a separator, or is a
+    // single name with an extension.
+    let looks_like_a_path = path.contains('/')
+        || (!path.contains(' ') && path.contains('.'))
+        || Path::new(&path).exists();
+    looks_like_a_path.then_some(path)
+}
+
 /// How many single-character edits separate two strings, counting a swap of
 /// neighbors as one — the typo people actually make (`--plian`).
 ///
@@ -243,6 +294,47 @@ mod tests {
         ] {
             assert_eq!(split_target(&arg), (PathBuf::from(&arg), None), "{arg}");
         }
+    }
+
+    #[test]
+    fn a_pasted_path_is_read_however_it_was_handed_over() {
+        let p = |s: &str| pasted_path(s);
+        assert_eq!(p("/w/notes/PLAN.md").as_deref(), Some("/w/notes/PLAN.md"));
+        assert_eq!(p("  /w/PLAN.md \n").as_deref(), Some("/w/PLAN.md"));
+        assert_eq!(p("'/w/my notes/a.md'").as_deref(), Some("/w/my notes/a.md"));
+        assert_eq!(
+            p("\"/w/my notes/a.md\"").as_deref(),
+            Some("/w/my notes/a.md")
+        );
+        assert_eq!(p("/w/my\\ notes/a.md").as_deref(), Some("/w/my notes/a.md"));
+        assert_eq!(
+            p("file:///w/my%20notes/a.md").as_deref(),
+            Some("/w/my notes/a.md")
+        );
+        assert_eq!(p("file://localhost/w/a.md").as_deref(), Some("/w/a.md"));
+        assert_eq!(
+            p("PLAN.md:42").as_deref(),
+            Some("PLAN.md:42"),
+            "a place survives"
+        );
+        assert_eq!(
+            p("docs/PLAN.md\nsecond line").as_deref(),
+            Some("docs/PLAN.md")
+        );
+    }
+
+    #[test]
+    fn a_paste_that_is_not_a_path_is_not_treated_as_one() {
+        for not in [
+            "",
+            "   \n  ",
+            "This is a sentence someone copied by mistake.",
+            "hello",
+            "a\u{7}b.md",
+        ] {
+            assert_eq!(pasted_path(not), None, "{not:?}");
+        }
+        assert_eq!(pasted_path(&"x/".repeat(5000)), None, "absurdly long");
     }
 
     #[test]

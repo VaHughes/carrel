@@ -3020,6 +3020,24 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
     let list = Rect::new(area.x, list_top, area.width, list_h);
     if home.mode == HomeMode::Search {
         paint_hits(frame, home, list);
+    } else if let Some((list_w, px, pw)) = crate::home::preview_split(area.width, home.show_preview)
+        .filter(|_| !home.filtered.is_empty())
+    {
+        // A wide window shares itself: the list, and beside it the head of
+        // whichever document the highlight is on. The split is
+        // `home::preview_split`, the one derivation.
+        paint_entries(
+            frame,
+            home,
+            Rect::new(area.x, list_top, list_w, list_h),
+            targets,
+        );
+        paint_preview(
+            frame,
+            home,
+            Rect::new(area.x + px, list_top, pw, list_h),
+            targets,
+        );
     } else {
         paint_entries(frame, home, list, targets);
     }
@@ -3237,10 +3255,38 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
     // so a click never drags the list out from under the pointer.
     let h = area.height as usize;
     let first = crate::home::window_first(home.top, home.selected, home.filtered.len(), h);
+    // Two dim columns at the right of each row, when there is room for
+    // them: how far through the document you are, and when it was written.
+    // The second is what makes "the one the agent just wrote" findable
+    // without reading a single name.
+    let meta = area.width >= crate::home::META_MIN_COLS;
+    let name_w =
+        area.width
+            .saturating_sub(2)
+            .saturating_sub(if meta { crate::home::META_W + 2 } else { 0 });
+    let now = std::time::SystemTime::now();
     for (row, &idx) in home.filtered.iter().skip(first).take(h).enumerate() {
         let y = area.y + row as u16;
         let e = &home.entries[idx];
-        let shown = crate::layout::tail_text(&home.label_for(e), area.width.saturating_sub(2));
+        if meta {
+            let right = area.x + area.width;
+            let when = crate::home::ago(now, e.mtime);
+            let when_w = display_width(&when).min(10);
+            buf.set_stringn(right - when_w, y, &when, usize::from(when_w), theme::dim());
+            let read = home
+                .reading
+                .get(&e.path)
+                .map_or("", |r| crate::home::progress_label(r.permille));
+            let read_w = display_width(read);
+            buf.set_stringn(
+                right.saturating_sub(12 + read_w),
+                y,
+                read,
+                usize::from(read_w),
+                theme::dim(),
+            );
+        }
+        let shown = crate::layout::tail_text(&home.label_for(e), name_w);
         let is_sel = first + row == home.selected;
         let style = if is_sel {
             theme::selected()
@@ -3250,13 +3296,62 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
         if is_sel {
             buf.set_stringn(area.x, y, "▸ ", 2, theme::selected());
         }
-        buf.set_stringn(
-            area.x + 2,
-            y,
-            &shown,
-            area.width.saturating_sub(2) as usize,
-            style,
-        );
+        buf.set_stringn(area.x + 2, y, &shown, usize::from(name_w), style);
+    }
+}
+
+/// The head of the selected document, beside the list.
+///
+/// Plain text, dim: it is a glance at what the file is, not a reading of it
+/// — Enter is one key away. The rectangle is registered as absorbing, so a
+/// click on the preview is not a click on the list row that happens to share
+/// its screen row.
+fn paint_preview(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targets) {
+    if area.width < 8 || area.height == 0 {
+        return;
+    }
+    targets.push(
+        Action::Absorb,
+        Zone::new(
+            area.x.saturating_sub(1),
+            area.y,
+            area.width + 1,
+            area.height,
+        ),
+        Z_CHROME,
+    );
+    let buf = frame.buffer_mut();
+    for dy in 0..area.height {
+        buf.set_stringn(area.x - 1, area.y + dy, "│", 1, theme::dim());
+    }
+    let x = area.x + 1;
+    let w = usize::from(area.width.saturating_sub(2));
+    let selected = home
+        .filtered
+        .get(home.selected)
+        .and_then(|&i| home.entries.get(i));
+    // Only the preview OF the highlighted document: while the next one is
+    // being read, the pane is blank rather than showing the last one under
+    // a different name.
+    let Some(preview) = home
+        .preview
+        .as_ref()
+        .filter(|p| selected.is_some_and(|e| e.path == p.path && e.mtime == p.mtime))
+    else {
+        return;
+    };
+    if preview.text.is_none() {
+        buf.set_stringn(x, area.y, "this file cannot be previewed", w, theme::dim());
+        return;
+    }
+    for (dy, line) in preview
+        .lines
+        .iter()
+        .take(usize::from(area.height))
+        .enumerate()
+    {
+        let y = area.y + u16::try_from(dy).unwrap_or(u16::MAX);
+        buf.set_stringn(x, y, line, w, theme::dim());
     }
 }
 
@@ -4152,8 +4247,10 @@ mod tests {
         app.help = Some(crate::app::Help::default());
         let buf = buffer_of(&app, 60, 20);
         let text: String = (0..20).map(|y| line(&buf, y) + "\n").collect();
+        // A row only the home sheet has, and one near enough the top to be
+        // on a 20-row screen however many rows the sheet grows by.
         assert!(
-            text.contains("choose another folder"),
+            text.contains("continue reading"),
             "home rows painted:\n{text}"
         );
     }

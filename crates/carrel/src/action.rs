@@ -412,6 +412,9 @@ pub enum Action {
     /// The tag scan finished; open what it found. Sent by the event loop,
     /// never bound to a key or a button.
     HomeOpenTags,
+    /// `s` on the file list: step to the next order — newest, by name,
+    /// recently read. Persisted.
+    HomeSort,
     PickerOpen,
     /// Put the picker's highlight on an absolute entry — a mouse click.
     /// An index into the picker's match list. Clamped by the receiver.

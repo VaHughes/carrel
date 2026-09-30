@@ -169,6 +169,10 @@ pub struct App {
     pub notes: crate::annotation_state::Notes,
     /// The settings pane's highlighted row, and whether it is open at all.
     pub settings: Option<usize>,
+    /// Whether a wide file list shows the selected document beside it. The
+    /// copy paint reads is `Home::show_preview`; this is the one the settings
+    /// pane writes — the `titles` arrangement exactly.
+    pub preview: bool,
     /// Whether the file list labels rows from frontmatter. The live copy
     /// that paint reads is `Home::show_titles`; this is the one the
     /// settings pane writes, and the two are kept in step by `update`.
@@ -779,6 +783,7 @@ impl App {
             image_kind: None,
             settings: None,
             titles: false,
+            preview: true,
             theme_name: "terminal",
         };
         // Math art is pure computation over the document -- no config, no
@@ -2453,6 +2458,7 @@ pub enum Setting {
     HeadingBar,
     OutlineMargin,
     Titles,
+    Preview,
 }
 
 /// Every persisted preference, in the order the pane shows them.
@@ -2498,6 +2504,11 @@ pub fn settings_rows(app: &App) -> Vec<SettingsRow> {
             label: "Titles in the file list",
             value: on(app.titles),
             key: Setting::Titles,
+        },
+        SettingsRow {
+            label: "Preview beside the file list",
+            value: on(app.preview),
+            key: Setting::Preview,
         },
     ]
 }
@@ -2663,6 +2674,16 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
             }
             app.relayout(); // the gutter's columns come from / return to the text
         }
+        Setting::Preview => {
+            app.preview = !app.preview;
+            let preview = app.preview;
+            if let Some(h) = app.home_mut() {
+                h.show_preview = preview;
+            }
+            if let Some(dir) = app.config_dir.as_deref() {
+                let _ = crate::config::save_preview_in(dir, app.preview);
+            }
+        }
         Setting::Titles => {
             app.titles = !app.titles;
             let titles = app.titles;
@@ -2779,6 +2800,66 @@ fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
         label: format!("[^{name}]"),
         text: app.doc.block_text(block).trim().to_string(),
     });
+    Outcome::Redraw
+}
+
+/// Text pasted, or a file dropped, onto the file list.
+///
+/// Where the list is taking typing — the filter, the search, the folder
+/// browser — a paste is typing. Otherwise it is a path: a document opens, a
+/// folder becomes the folder being listed, and anything else is said to be
+/// nothing rather than guessed at. `PLAN.md:42` opens at the line, as it
+/// does on the command line.
+pub fn paste_on_home(app: &mut App, text: &str) -> Outcome {
+    if app.menu.is_some() || app.settings.is_some() || app.blocked_pane().is_some() {
+        return Outcome::Idle;
+    }
+    if app.help.is_some() {
+        for c in text.chars().filter(|c| !c.is_control()) {
+            update(app, Action::HelpKey(SearchKey::Char(c)));
+        }
+        return Outcome::Redraw;
+    }
+    let Some(home) = app.home() else {
+        return Outcome::Idle;
+    };
+    if home.mode != HomeMode::Normal {
+        for c in text.chars().filter(|c| !c.is_control()) {
+            update(app, Action::HomeKey(SearchKey::Char(c)));
+        }
+        return Outcome::Redraw;
+    }
+    let root = home.root.clone();
+    let Some(pasted) = crate::cli::pasted_path(text) else {
+        app.set_note("that does not look like a file or a folder".into());
+        return Outcome::Redraw;
+    };
+    // A bare name is a name in the folder being listed.
+    let pasted = if Path::new(&pasted).is_absolute() {
+        pasted
+    } else {
+        root.join(&pasted).to_string_lossy().into_owned()
+    };
+    let (path, start) = crate::cli::split_target(&pasted);
+    if path.is_dir() {
+        let cached = crate::scan::load_cache(&path);
+        if let Some(h) = app.home_mut() {
+            h.set_root(path, cached);
+        }
+        return Outcome::Redraw;
+    }
+    match app.open_path(&path) {
+        Ok(()) => {
+            if let Some(start) = start {
+                app.start_at(&start);
+            }
+        }
+        Err(e) => app.set_note(format!(
+            "cannot open {}: {}",
+            path.display(),
+            open_failure_reason(&e)
+        )),
+    }
     Outcome::Redraw
 }
 
@@ -3612,6 +3693,15 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
     };
 
     match action {
+        Action::HomeSort => {
+            h.cycle_sort();
+            h.note = Some(format!("sorted {}", h.sort.label()));
+            let sort = h.sort;
+            if let Some(dir) = app.config_dir.as_deref() {
+                let _ = crate::config::save_sort_in(dir, sort.name());
+            }
+            Outcome::Redraw
+        }
         Action::HomeSearchMode => {
             h.mode = HomeMode::Search;
             h.query.clear();

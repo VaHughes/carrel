@@ -322,6 +322,36 @@ pub fn title_of(path: &Path) -> Option<String> {
     None
 }
 
+/// The first [`HEAD_BYTES`] of a file as text, for the home screen's preview.
+///
+/// A whole number of lines: when the file is longer than the read, the last,
+/// partial line is dropped rather than shown cut in half. `None` for anything
+/// that is not a regular file — a FIFO named `notes.md` would block whoever
+/// opened it — or cannot be read.
+#[must_use]
+pub fn head_of(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(HEAD_BYTES);
+    std::fs::File::open(path)
+        .ok()?
+        .take(HEAD_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    let truncated = buf.len() > HEAD_BYTES;
+    buf.truncate(HEAD_BYTES);
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if truncated && let Some(cut) = text.rfind('\n') {
+        text.truncate(cut + 1);
+    }
+    Some(text)
+}
+
+/// How much of a file the preview reads. A screenful, several times over.
+pub const HEAD_BYTES: usize = 8 * 1024;
+
 /// How much of a file to read looking for its title. A frontmatter block and
 /// a first heading live well inside this.
 const TITLE_BYTES: usize = 2048;

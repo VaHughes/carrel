@@ -59,6 +59,12 @@ pub struct Config {
     pub titles: Option<bool>,
     /// Divide long words to fill narrow rows. Absent means on.
     pub hyphenate: Option<bool>,
+    /// The file list's order: `newest`, `name` or `read`. Kept as the word,
+    /// so a value this version does not know is ignored rather than guessed.
+    pub sort: Option<String>,
+    /// Show the selected document beside the file list on a wide window.
+    /// Absent means on.
+    pub preview: Option<bool>,
     /// Mouse capture. `false` hands the pointer back to the terminal, so its
     /// own selection and context menu work as they always did — the escape
     /// hatch a mouse-first reader owes anyone whose terminal disagrees with
@@ -113,6 +119,8 @@ fn parse_all(text: &str) -> Config {
             }
             "titles" if c.titles.is_none() => c.titles = Some(flag(v, false)),
             "hyphenate" if c.hyphenate.is_none() => c.hyphenate = Some(flag(v, true)),
+            "sort" if c.sort.is_none() => c.sort = Some(v.to_ascii_lowercase()),
+            "preview" if c.preview.is_none() => c.preview = Some(flag(v, true)),
             "mouse" if c.mouse.is_none() => c.mouse = Some(flag(v, true)),
             "max_width" if c.max_width.is_none() => {
                 // Unparseable stays absent rather than becoming zero: zero is
@@ -337,6 +345,14 @@ pub fn load_hyphenate_in(dir: &Path) -> Option<bool> {
 
 pub fn save_hyphenate_in(dir: &Path, on: bool) -> std::io::Result<()> {
     upsert_key_in(dir, "hyphenate", if on { "true" } else { "false" })
+}
+
+pub fn save_sort_in(dir: &Path, sort: &str) -> std::io::Result<()> {
+    upsert_key_in(dir, "sort", sort)
+}
+
+pub fn save_preview_in(dir: &Path, on: bool) -> std::io::Result<()> {
+    upsert_key_in(dir, "preview", if on { "true" } else { "false" })
 }
 
 /// The saved margin-outline setting. Absent means **off**: it changes the

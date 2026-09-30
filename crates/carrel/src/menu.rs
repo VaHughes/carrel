@@ -286,6 +286,7 @@ pub fn global(app: &App) -> Vec<Item> {
             Item::new("Filter names", Action::HomeFilterMode),
             Item::new("Search in files", Action::HomeSearchMode),
             Item::new("Tags", Action::HomeTags),
+            Item::new("Change the order", Action::HomeSort),
             Item::new("Choose a folder…", Action::PickerOpen),
             Item::gap(),
             Item::new("Themes", Action::ThemeCycle),
@@ -799,6 +800,7 @@ mod tests {
 
             // --- only a menu offers these ---
             A::HomeTags => Menu("Tags"),
+            A::HomeSort => Menu("Change the order"),
             A::TagOpen(_) => Doc, // a tag on the metadata card
             A::Back => Menu("Back"),
             A::InfoToggle => Menu("Document info"),

@@ -213,6 +213,161 @@ pub fn resume_from(path: PathBuf, permille: Option<u16>, words: Option<u32>) -> 
     })
 }
 
+/// How the file list is ordered when nothing is typed.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// Most recently written first. What an agent just wrote is on top.
+    #[default]
+    Newest,
+    /// By path, so a folder's documents sit together, in order.
+    Name,
+    /// What you were reading most recently first; the unread after, newest
+    /// first.
+    Read,
+}
+
+impl Sort {
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Newest => Self::Name,
+            Self::Name => Self::Read,
+            Self::Read => Self::Newest,
+        }
+    }
+
+    /// The word in the config file, and in the note that names the order.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Newest => "newest",
+            Self::Name => "name",
+            Self::Read => "read",
+        }
+    }
+
+    /// How a reader would say it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Newest => "newest first",
+            Self::Name => "by name",
+            Self::Read => "recently read first",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "newest" => Some(Self::Newest),
+            "name" => Some(Self::Name),
+            "read" => Some(Self::Read),
+            _ => None,
+        }
+    }
+}
+
+/// What the state file remembers about one document, as the list shows it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Reading {
+    /// How far in, in permille.
+    pub permille: u16,
+    /// 0 for the document read most recently, counting up from there.
+    pub rank: u32,
+}
+
+/// How long ago `then` was, the way a person says it.
+///
+/// Coarse on purpose: "3 h ago" is the question answered, and a clock that
+/// ticked every second would repaint a list nobody is reading. A time in the
+/// future — a clock that was wrong, a file copied from another machine — is
+/// "just now" rather than a negative number.
+#[must_use]
+pub fn ago(now: std::time::SystemTime, then: std::time::SystemTime) -> String {
+    let secs = now.duration_since(then).map_or(0, |d| d.as_secs());
+    let (n, unit) = match secs {
+        0..=59 => return "just now".to_string(),
+        60..=3_599 => (secs / 60, "min"),
+        3_600..=86_399 => (secs / 3_600, "h"),
+        86_400..=604_799 => (secs / 86_400, "d"),
+        604_800..=2_629_799 => (secs / 604_800, "wk"),
+        2_629_800..=31_557_599 => (secs / 2_629_800, "mo"),
+        _ => (secs / 31_557_600, "y"),
+    };
+    format!("{n} {unit} ago")
+}
+
+/// How far through a document the reader is, for a list row: `42%`, `read`
+/// for one finished, nothing for one not started.
+#[must_use]
+pub fn progress_label(permille: u16) -> &'static str {
+    // Static strings, so a list of thousands of rows allocates nothing here.
+    const PCT: [&str; 99] = [
+        "1%", "2%", "3%", "4%", "5%", "6%", "7%", "8%", "9%", "10%", "11%", "12%", "13%", "14%",
+        "15%", "16%", "17%", "18%", "19%", "20%", "21%", "22%", "23%", "24%", "25%", "26%", "27%",
+        "28%", "29%", "30%", "31%", "32%", "33%", "34%", "35%", "36%", "37%", "38%", "39%", "40%",
+        "41%", "42%", "43%", "44%", "45%", "46%", "47%", "48%", "49%", "50%", "51%", "52%", "53%",
+        "54%", "55%", "56%", "57%", "58%", "59%", "60%", "61%", "62%", "63%", "64%", "65%", "66%",
+        "67%", "68%", "69%", "70%", "71%", "72%", "73%", "74%", "75%", "76%", "77%", "78%", "79%",
+        "80%", "81%", "82%", "83%", "84%", "85%", "86%", "87%", "88%", "89%", "90%", "91%", "92%",
+        "93%", "94%", "95%", "96%", "97%", "98%", "99%",
+    ];
+    match permille {
+        0..=9 => "",
+        990.. => "read",
+        p => PCT[usize::from(p / 10) - 1],
+    }
+}
+
+/// The least width at which a list row also says when and how far.
+pub const META_MIN_COLS: u16 = 50;
+/// The cells the two right-hand columns take: progress, a gap, the time.
+pub const META_W: u16 = 4 + 2 + 10;
+
+/// The least width at which the list shares the screen with a preview.
+pub const PREVIEW_MIN_COLS: u16 = 100;
+
+/// Where the file list ends and the preview begins: `(list width, preview
+/// x, preview width)`, or `None` when the window is too narrow for both.
+///
+/// **One derivation**, like [`list_geometry`]: the painter draws both halves
+/// from it and the pointer asks it which half a column is in.
+#[must_use]
+pub const fn preview_split(cols: u16, wanted: bool) -> Option<(u16, u16, u16)> {
+    if !wanted || cols < PREVIEW_MIN_COLS {
+        return None;
+    }
+    // Two fifths for the list, and never less than a name with its two
+    // columns beside it (`META_MIN_COLS`, and room to spare).
+    let list = if cols * 2 / 5 < 56 { 56 } else { cols * 2 / 5 };
+    Some((list, list + 2, cols - list - 3))
+}
+
+/// A preview's text as rows `width` cells wide: the document's own plain
+/// rendering — headings, lists and paragraphs laid out, no markup — so it
+/// reads like the page it is the top of.
+#[must_use]
+pub fn preview_lines(text: &str, width: u16) -> Vec<String> {
+    let doc = carrel_core::Document::parse(text);
+    crate::plain::render(&doc, width.max(8))
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The head of the selected document, read off the UI thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preview {
+    pub path: PathBuf,
+    pub mtime: std::time::SystemTime,
+    /// The first few kilobytes, as text. `None` when it could not be read.
+    pub text: Option<String>,
+    /// Rendered for [`Self::width`] cells; rebuilt when the pane's width
+    /// changes.
+    pub lines: Vec<String>,
+    pub width: u16,
+}
+
 /// The library browser overlay: where you are, where you can go, and a
 /// filter that narrows it.
 ///
@@ -294,6 +449,16 @@ pub struct Home {
     pub hit_top: usize,
     /// The background grep finished (footer honesty: "searching…" vs count).
     pub grep_done: bool,
+    /// The order of the list when nothing is typed (config `sort`).
+    pub sort: Sort,
+    /// What the state file remembers, by path as the walk spells it.
+    /// Injected by `main.rs`, as [`Self::resume`] is, and for its reason.
+    pub reading: HashMap<PathBuf, Reading>,
+    /// Show the selected document's head beside the list on a wide window
+    /// (config `preview`).
+    pub show_preview: bool,
+    /// The preview that has arrived, if one has.
+    pub preview: Option<Preview>,
     /// Paths the live walk has reported. Lets `finish_scan` drop cache entries
     /// the walk did not rediscover.
     seen: HashSet<PathBuf>,
@@ -328,6 +493,10 @@ impl Home {
             hit_selected: 0,
             hit_top: 0,
             grep_done: false,
+            sort: Sort::Newest,
+            reading: HashMap::new(),
+            show_preview: true,
+            preview: None,
             seen: HashSet::new(),
         };
         h.refilter();
@@ -476,15 +645,15 @@ impl Home {
     /// that same mtime order, because a stable sort never reorders equals.
     pub fn refilter(&mut self) {
         let needle = self.filter.trim().to_lowercase();
+        let base = self.ordered();
         if needle.is_empty() {
-            self.filtered = (0..self.entries.len()).collect();
+            self.filtered = base;
         } else {
-            let mut scored: Vec<(i32, usize)> = self
-                .entries
-                .iter()
-                .enumerate()
-                .filter_map(|(i, e)| {
-                    crate::fuzzy::score(&e.path.to_string_lossy(), &needle).map(|s| (s, i))
+            let mut scored: Vec<(i32, usize)> = base
+                .into_iter()
+                .filter_map(|i| {
+                    crate::fuzzy::score(&self.entries[i].path.to_string_lossy(), &needle)
+                        .map(|s| (s, i))
                 })
                 .collect();
             scored.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
@@ -492,6 +661,55 @@ impl Home {
         }
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
         self.top = self.top.min(self.filtered.len().saturating_sub(1));
+    }
+
+    /// Every entry's index, in the order [`Self::sort`] asks for.
+    ///
+    /// `entries` itself stays newest-first always — the walk's reconciliation
+    /// depends on it — so an order is a permutation over it, never a re-sort
+    /// of it. Each sort is stable over that base, which is what "the unread
+    /// after, newest first" means without saying it twice.
+    fn ordered(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.entries.len()).collect();
+        match self.sort {
+            Sort::Newest => {}
+            Sort::Name => {
+                order.sort_by_cached_key(|&i| self.entries[i].path.to_string_lossy().to_lowercase())
+            }
+            Sort::Read => order.sort_by_key(|&i| {
+                self.reading
+                    .get(&self.entries[i].path)
+                    .map_or(u32::MAX, |r| r.rank)
+            }),
+        }
+        order
+    }
+
+    /// Step to the next order, keeping the selection on the same file.
+    pub fn cycle_sort(&mut self) {
+        let anchor = self.selected_path().map(Path::to_path_buf);
+        self.sort = self.sort.next();
+        self.refilter();
+        if let Some(path) = anchor
+            && let Some(at) = self
+                .filtered
+                .iter()
+                .position(|&i| self.entries[i].path == path)
+        {
+            self.selected = at;
+        }
+    }
+
+    /// The entry the preview should be showing, if the preview is showing:
+    /// `(path, mtime)`.
+    #[must_use]
+    pub fn preview_wanted(&self, cols: u16) -> Option<(PathBuf, std::time::SystemTime)> {
+        preview_split(cols, self.show_preview)?;
+        if !matches!(self.mode, HomeMode::Normal | HomeMode::Filter) {
+            return None;
+        }
+        let e = self.entries.get(*self.filtered.get(self.selected)?)?;
+        Some((e.path.clone(), e.mtime))
     }
 
     /// Nudge the scroll offsets so the selection is on screen, and no further.

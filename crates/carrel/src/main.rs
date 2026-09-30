@@ -503,10 +503,145 @@ fn drive_backlinks(
 fn set_home_prefs(app: &mut App) {
     let c = config::load_all();
     app.titles = c.titles.unwrap_or(false);
-    let titles = app.titles;
+    app.preview = c.preview.unwrap_or(true);
+    let (titles, preview) = (app.titles, app.preview);
+    // A word this version does not know is the default, not an error.
+    let sort = c
+        .sort
+        .as_deref()
+        .and_then(home::Sort::from_name)
+        .unwrap_or_default();
     if let Some(h) = app.home_mut() {
         h.show_titles = titles;
+        h.show_preview = preview;
         h.places = c.places;
+        h.sort = sort;
+        h.refilter();
+    }
+}
+
+/// What the state file remembers about the documents under the root: how
+/// far through each the reader is, and how recently they were in it.
+///
+/// Injected, as the continue band is, so the state layer is never reached
+/// from library code. The state file keys documents by canonical path and
+/// the walk spells them from the root as given, so each remembered path is
+/// re-spelled the walk's way — one `canonicalize` of the root, none per file.
+fn load_reading(app: &mut App) {
+    let Some(dir) = app.state_dir.clone() else {
+        return;
+    };
+    let Some(root) = app.home().map(|h| h.root.clone()) else {
+        return;
+    };
+    let canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let reading: HashMap<PathBuf, home::Reading> = carrel::state::recent_in(&dir)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(rank, e)| {
+            let path = PathBuf::from(&e.path);
+            let spelled = path
+                .strip_prefix(&canon)
+                .map_or_else(|_| path.clone(), |rel| root.join(rel));
+            Some((
+                spelled,
+                home::Reading {
+                    permille: e.permille?,
+                    rank: u32::try_from(rank).unwrap_or(u32::MAX),
+                },
+            ))
+        })
+        .collect();
+    if let Some(h) = app.home_mut() {
+        h.reading = reading;
+        h.refilter();
+    }
+}
+
+/// The preview beside the file list: the head of the highlighted document,
+/// read on a thread so a slow disk never holds a frame.
+///
+/// One read in flight at a time. While it is out the highlight may move on;
+/// an answer for a document that is no longer highlighted is dropped and the
+/// next tick asks again for the one that is. That is the whole debounce:
+/// holding `j` down costs one read at a time, not one per row passed.
+struct PreviewLoad {
+    rx: Option<Receiver<home::Preview>>,
+}
+
+impl PreviewLoad {
+    fn busy(&self) -> bool {
+        self.rx.is_some()
+    }
+
+    fn tick(&mut self, app: &mut App) {
+        let cols = app.cols;
+        let Some(h) = app.home() else {
+            self.rx = None;
+            return;
+        };
+        let Some(wanted) = h.preview_wanted(cols) else {
+            return;
+        };
+        let Some((_, _, pane_w)) = home::preview_split(cols, h.show_preview) else {
+            return;
+        };
+        let width = pane_w.saturating_sub(2);
+        if let Some(rx) = self.rx.as_ref() {
+            match rx.try_recv() {
+                Ok(mut p) => {
+                    self.rx = None;
+                    if (p.path.clone(), p.mtime) == wanted {
+                        p.lines = p
+                            .text
+                            .as_deref()
+                            .map(|t| home::preview_lines(t, width))
+                            .unwrap_or_default();
+                        p.width = width;
+                        if let Some(h) = app.home_mut() {
+                            h.preview = Some(p);
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.rx = None,
+            }
+            return;
+        }
+        let have = h
+            .preview
+            .as_ref()
+            .filter(|p| (p.path.clone(), p.mtime) == wanted);
+        match have {
+            // The window changed width: the same text, laid out again.
+            Some(p) if p.width != width => {
+                let lines = p
+                    .text
+                    .as_deref()
+                    .map(|t| home::preview_lines(t, width))
+                    .unwrap_or_default();
+                if let Some(p) = app.home_mut().and_then(|h| h.preview.as_mut()) {
+                    p.lines = lines;
+                    p.width = width;
+                }
+            }
+            Some(_) => {}
+            None => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (path, mtime) = wanted;
+                std::thread::spawn(move || {
+                    let text = scan::head_of(&path);
+                    let _ = tx.send(home::Preview {
+                        path,
+                        mtime,
+                        text,
+                        lines: Vec::new(),
+                        width: 0,
+                    });
+                });
+                self.rx = Some(rx);
+            }
+        }
     }
 }
 
@@ -1855,6 +1990,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     apply_config(&mut app);
     load_resume(&mut app);
     set_home_prefs(&mut app);
+    load_reading(&mut app);
     app.on_resize(app.cols, app.rows);
     if let Some(n) = note
         && let Some(h) = app.home_mut()
@@ -1873,6 +2009,10 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     let mut grep = Grep::new();
     // The tags document: see `TagScan`.
     let mut tag_scan = TagScan::new();
+    let mut preview = PreviewLoad { rx: None };
+    // Coming back from a document, the list's reading columns are a
+    // document out of date.
+    let mut was_home = true;
 
     let mut resize = Resize::default();
     let mut painted = Painted::default();
@@ -1897,11 +2037,16 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
 
         grep.tick(&mut app);
         tag_scan.tick(&mut app);
+        if app.is_home() && !was_home {
+            load_reading(&mut app);
+        }
+        was_home = app.is_home();
+        preview.tick(&mut app);
 
         maybe_rescan(&mut app, &mut scan, &scan_root, &grep);
 
         // While a scan or search is live, wake often enough to stream.
-        let busy = scan.busy() || grep.busy() || tag_scan.busy();
+        let busy = scan.busy() || grep.busy() || tag_scan.busy() || preview.busy();
         let idle = if busy { 16 } else { 100 };
         let timeout = resize.deadline.map_or(Duration::from_millis(idle), |d| {
             d.saturating_duration_since(Instant::now())
@@ -1922,6 +2067,10 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
                 }
                 Event::Paste(text) if app.notes.draft.is_some() => {
                     carrel::annotation_state::paste(&mut app, &text);
+                }
+                // A path pasted or dropped onto the file list opens it.
+                Event::Paste(text) if app.is_home() => {
+                    carrel::app::paste_on_home(&mut app, &text);
                 }
                 Event::Mouse(m) => match home_mouse_action(m, &app, &painted.targets, &mut ptr) {
                     Some(a) => {
@@ -1954,6 +2103,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         {
             scan_root.clone_from(&h.root);
             scan.restart(&scan_root);
+            load_reading(&mut app);
         }
     }
     Ok(())
@@ -2626,9 +2776,11 @@ fn paint(
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) -> std::io::Result<()> {
     synchronized(|| {
-        // Bracketed paste belongs to the note editor. Pasted newlines must
-        // become text, never the Enter command that saves a note.
-        if app.notes.draft.is_some() {
+        // Bracketed paste belongs to the note editor — pasted newlines must
+        // become text, never the Enter command that saves a note — and to
+        // the file list, where a pasted or dropped path opens that file
+        // instead of being typed at the list as forty commands.
+        if app.notes.draft.is_some() || app.is_home() {
             ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste)?;
         } else {
             ratatui::crossterm::execute!(std::io::stdout(), DisableBracketedPaste)?;

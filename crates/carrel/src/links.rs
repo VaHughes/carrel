@@ -59,7 +59,7 @@ pub fn encode_target(rel: &str) -> String {
 
 /// `%XX` escapes decoded, or `None` when there are none or the result is
 /// not text.
-fn percent_decoded(s: &str) -> Option<String> {
+pub(crate) fn percent_decoded(s: &str) -> Option<String> {
     if !s.contains('%') {
         return None;
     }
