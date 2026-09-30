@@ -64,7 +64,7 @@ reopens one.
 | Architecture | **One core crate + independent frontends**, seam **below** layout |
 | GUI toolkit | **GTK4 shell + WebKitGTK 6 content view** (`gtk4-rs` + `webkit6`), floor WebKitGTK 2.44 |
 | Sequencing | **Terminal first**, GUI designed for from day one; not started, no date |
-| Scrollbar vs O(1) resize | **Keep the scrollbar.** Eager O(N) height pass behind a 40 ms debounce — confirmed by measurement (11 ms/MB ASCII, 31 ms/MB CJK; resize 15.4 ms per `App::on_resize` on a 1 MB corpus). The estimate-then-refine fallback stays unwritten |
+| Scrollbar vs O(1) resize | **Keep the scrollbar.** Eager O(N) height pass behind a 40 ms debounce — confirmed by measurement (11 ms/MB ASCII, 31 ms/MB CJK; resize 15.4 ms per `App::on_resize` on a 1 MB corpus). Input bypasses the debounce to refresh dimensions before dispatch. The estimate-then-refine fallback stays unwritten |
 | Highlighting | **syntect**, not tree-sitter (0.8 ms load vs 37.9 ms per language). `regex-fancy` engine, because `regex` is already linked and onig's C toolchain breaks on GCC 15 / Fedora 42 / musl / wasm |
 | Text storage | **`String` + line-start index. No rope** — the document is read-only |
 | Windows | **Declined** (nobody here can field-test a Windows terminal). Six unix targets are the full set |

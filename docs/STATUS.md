@@ -13,13 +13,18 @@ Last updated: 2026-09-29
 - A fresh **unlocked `cargo install carrel --version 2026.9.23` succeeds**, confirming
   the exact `merman` sibling pins fix registry installs. The rendered crate README's
   links and images all resolve.
-- All five local gates passed on 2026-09-23: **843 tests**, zero-warning clippy,
+- All five local gates passed on 2026-09-29: **864 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging. All-target checks and the debug
   build passed too; local `carrel` reports 2026.9.23. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
 - Release verification: all public artifact checksums match; the shell installer
   succeeds under a scratch home without changing real shell files; the musl archive
   passes packaging checks and runs; the refreshed Arch binary recipe builds.
+- **Small-terminal improvements are complete and unreleased** (`06327b3`,
+  `1baa4c7`, `89e8847`): adaptive layouts, compact settings and pane wheels, visible
+  search feedback, distinguishable navigation entries, hidden-action guards, and
+  live resize coverage for both event loops. All four follow-up items are complete;
+  hyphenation remains separate work on the roadmap.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list.
 
@@ -136,6 +141,13 @@ notes' `research.md`): Q29 (dual-frontend prior-art study, P0) and Q33 (P1), to 
 before that phase rather than during it.
 
 ## Recent decisions
+
+- 2026-09-29: **Input cannot wait for resize debounce.** Keep the 40 ms debounce
+  for idle resizing, but refresh dimensions before input so invisible actions
+  cannot execute. Discard obsolete mouse events and redraw the retained terminal
+  buffer even when a shrink/grow burst returns to its starting size. Fullscreen
+  `Terminal::resize` performs that invalidation without `Terminal::clear`'s cursor
+  position query. Regression coverage uses actual PTYs through both entry routes.
 
 - 2026-09-29: **Small terminals prioritize reading space and reachable controls.**
   The brainstorm considered automatic hyphenation, a minimum-size warning, manual
