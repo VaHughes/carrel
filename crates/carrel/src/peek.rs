@@ -34,15 +34,22 @@ pub struct Peek {
 }
 
 impl Peek {
-    /// The rows of text for a box `w` cells wide, the last one an ellipsis
-    /// when the footnote is longer than a peek should be.
+    /// The rows of text for a box `w` cells wide in a window `rows` tall,
+    /// the last one an ellipsis when the footnote is longer than the box
+    /// can be. The window is part of the question: a short one holds fewer
+    /// rows than a peek otherwise would, and the text used to stop there
+    /// mid-sentence with nothing to say it had.
     #[must_use]
-    pub fn lines(&self, w: u16) -> Vec<String> {
+    pub fn lines(&self, w: u16, rows: u16) -> Vec<String> {
         let inner = w.saturating_sub(4).max(1);
+        // Two borders and the button's row are not text.
+        let max = MAX_LINES.min(usize::from(rows.saturating_sub(3))).max(1);
         let mut lines = crate::layout::wrap_ui_text(&self.text, inner);
-        if lines.len() > MAX_LINES {
-            lines.truncate(MAX_LINES - 1);
-            lines.push("…".to_string());
+        if lines.len() > max {
+            lines.truncate(max);
+            if let Some(last) = lines.last_mut() {
+                *last = "…".to_string();
+            }
         }
         if lines.is_empty() {
             lines.push(String::new());
@@ -57,7 +64,7 @@ impl Peek {
     pub fn zone(&self, cols: u16, rows: u16) -> Zone {
         let w = MAX_W.min(cols.saturating_sub(2)).max(1);
         // Borders, the text, and the row the button sits on.
-        let h = u16::try_from(self.lines(w).len())
+        let h = u16::try_from(self.lines(w, rows).len())
             .unwrap_or(u16::MAX)
             .saturating_add(3)
             .min(rows.max(1));
@@ -118,13 +125,34 @@ mod tests {
     #[test]
     fn a_long_footnote_is_cut_short_and_says_so() {
         let p = peek(&"word ".repeat(400), (0, 0));
-        let lines = p.lines(40);
+        let lines = p.lines(40, 40);
         assert_eq!(lines.len(), MAX_LINES);
         assert_eq!(lines.last().map(String::as_str), Some("…"));
         assert_eq!(
-            peek("", (0, 0)).lines(40).len(),
+            peek("", (0, 0)).lines(40, 40).len(),
             1,
             "never a box with no rows"
         );
+    }
+
+    /// A short window holds fewer rows than a peek otherwise shows, and the
+    /// painter simply dropped the ones that did not fit.
+    #[test]
+    fn a_footnote_cut_short_by_the_window_says_so_too() {
+        let p = peek(&"word ".repeat(60), (0, 0));
+        assert!(
+            p.lines(40, 40).len() > 5,
+            "the fixture needs more rows than fit"
+        );
+        for rows in [10u16, 8, 6, 5] {
+            let lines = p.lines(40, rows);
+            let z = p.zone(40, rows);
+            assert_eq!(
+                lines.len(),
+                usize::from(z.h - 3),
+                "{rows}: every row is shown"
+            );
+            assert_eq!(lines.last().map(String::as_str), Some("…"), "{rows}");
+        }
     }
 }

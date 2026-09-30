@@ -157,7 +157,7 @@ an answer to give. Several things exist for exactly that:
 
 | | |
 |---|---|
-| **`carrel --latest`** | Opens the document written most recently in the folder — the one the agent just finished, without needing its name. |
+| **`carrel --latest`** | Opens the document written most recently under the current directory — the one the agent just finished, without needing its name. |
 | **`carrel PLAN.md:42`** | Opens at that line of the file; `PLAN.md#rollout` opens at a heading. The form a tool prints, so it can be pasted as printed. |
 | **What a reload changed** | When the file is rewritten under you, the blocks that changed or were added get a bar in the margin and the status row says how many. `c` steps through them; `Esc` puts them away. Collapsed sections stay collapsed. |
 | **Another document appeared** | While you read, a document written beside this one is offered on the status row — `● CHANGELOG.md changed` — and a click opens it. |

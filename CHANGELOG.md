@@ -33,7 +33,20 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   the same place only while nothing wraps; they mean line 42 of the file now. A
   document named on the command line never had its `[[wikilinks]]` resolved, so
   they could not be followed from `carrel notes.md`. Four help-sheet descriptions
-  lost their last letter.
+  lost their last letter. The note a click produced ("copied …", "cannot open …")
+  was wiped by the same click's mouse-up, so it was visible only while the button
+  was held.
+- **Also fixed, found by reviewing the above before release.** `%` and a margin
+  outline click inside a piped document could not be gone `Back` from. `Back`
+  could return to a place hidden in a collapsed section. A heading that reads
+  like a numbered duplicate (`Setup`, `Setup`, `Setup 1`) shared its `#fragment`
+  with another. `X` could not step through tasks in the last screenful. A
+  `#fragment` written percent-encoded, or naming an `<a id="…">` anchor, now
+  resolves; `<me@example.com>` is a `mailto:` rather than a file name; and
+  `guide.md?plain=1` opens `guide.md`.
+  Moving the pointer over an open pane lit the buttons underneath it. A file
+  rewritten in the first second after it was opened was never reloaded. A long
+  link destination blanked the status row instead of being shortened.
 
 - **Hyphenation in narrow windows.** Where the text column is under 70 cells, a
   long word that misses the end of a row is divided to fill it, by TeX's American

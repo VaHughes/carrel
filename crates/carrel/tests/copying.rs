@@ -214,3 +214,25 @@ fn every_code_block_on_screen_offers_to_be_copied() {
         );
     }
 }
+
+/// Under twenty columns the side margin goes, and the painter returned as
+/// soon as it saw there was no margin to put a mark in — before it reached
+/// the chip, which needs none.
+#[test]
+fn a_window_too_narrow_for_a_margin_still_offers_the_chip() {
+    let (cols, rows) = (16u16, 60u16);
+    let app = reader(cols, rows);
+    let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+    let mut painted = carrel::render::Painted::default();
+    term.draw(|f| {
+        carrel::render::draw_full(f, &app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
+    let chips = painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| matches!(t.action, Action::YankBlockAt(_)))
+        .count();
+    assert_eq!(chips, code_blocks(&app).len());
+}

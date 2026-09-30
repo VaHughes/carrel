@@ -153,9 +153,42 @@ pub fn fit(mut chips: Vec<Chip>, room: u16) -> Vec<Chip> {
             .enumerate()
             .min_by_key(|(_, c)| c.rank)
             .map_or(0, |(i, _)| i);
+        // The last one standing is shortened rather than dropped. It is
+        // the most important thing the row has to say, and for a link's
+        // destination it is the ONLY thing: any URL longer than the room
+        // left the right end blank, which in a narrow window is most URLs.
+        if chips.len() == 1 {
+            if let Some(short) = shortened(&chips[0].text, room) {
+                chips[0].text = short;
+            } else {
+                chips.clear();
+            }
+            break;
+        }
         chips.remove(weakest);
     }
     chips
+}
+
+/// `text` cut to `room` cells with an ellipsis, or `None` where there is
+/// not room for enough of it to mean anything. The head is what is kept:
+/// of a destination, the scheme and the host are the part worth reading.
+fn shortened(text: &str, room: u16) -> Option<String> {
+    const LEAST: u16 = 6;
+    if room < LEAST {
+        return None;
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        let mut probe = out.clone();
+        probe.push(c);
+        if display_width(&probe).saturating_add(1) > room {
+            break;
+        }
+        out = probe;
+    }
+    out.push_str(ELLIPSIS);
+    Some(out)
 }
 
 /// What a history entry is called on the trail.
@@ -247,6 +280,23 @@ mod tests {
     fn the_right_end_says_how_far_and_how_to_leave() {
         let a = app("short");
         assert_eq!(texts(&right(&a)), ["100%", "T theme", "q quit"]);
+    }
+
+    #[test]
+    fn a_destination_longer_than_the_room_is_shortened_not_dropped() {
+        let url = "https://example.com/a/very/long/path/that/goes/on/and/on/index.html";
+        let chips = fit(vec![Chip::says(url, 9)], 30);
+        assert_eq!(chips.len(), 1);
+        assert_eq!(display_width(&chips[0].text), 30);
+        assert!(chips[0].text.starts_with("https://example.com/"));
+        assert!(chips[0].text.ends_with(ELLIPSIS));
+        assert!(
+            fit(vec![Chip::says(url, 9)], 3).is_empty(),
+            "no room to mean anything"
+        );
+        // Several chips still thin by dropping, never by cutting words.
+        let a = app("short");
+        assert_eq!(texts(&fit(right(&a), 12)), ["q quit"]);
     }
 
     #[test]

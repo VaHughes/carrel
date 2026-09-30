@@ -832,6 +832,9 @@ fn open(arg: &str, pattern: Option<&str>) -> ExitCode {
 }
 
 fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str>) -> ExitCode {
+    // Before the read, so a write that lands during it is seen as a change
+    // rather than missed.
+    let loaded = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     let src = match carrel::app::read_document(path) {
         Ok(s) => s,
         Err(e) => {
@@ -868,7 +871,7 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
         return emit(&carrel::plain::render(&doc, 80));
     }
 
-    match run(path, &src, start) {
+    match run(path, &src, start, loaded) {
         Ok(None) => ExitCode::SUCCESS,
         // The `⌂`: the reader is closed and the terminal restored, so the
         // home screen starts exactly as `carrel <DIR>` would. It is an
@@ -1261,7 +1264,16 @@ impl Reloader {
         }
     }
 
-    fn poll(&mut self, file: Option<&Path>) -> Option<Reload> {
+    /// `loaded` is the file's mtime when the document on screen was read.
+    /// It is the baseline for a file this has not looked at before: taking
+    /// the first LOOK as the baseline instead meant a file rewritten in the
+    /// second after it was opened — an agent still writing it — was never
+    /// noticed, and the reader sat on the old text with nothing to say so.
+    fn poll(
+        &mut self,
+        file: Option<&Path>,
+        loaded: Option<std::time::SystemTime>,
+    ) -> Option<Reload> {
         if self.last_check.elapsed() < RELOAD_POLL {
             return None;
         }
@@ -1282,10 +1294,11 @@ impl Reloader {
         };
         let came_back = std::mem::take(&mut self.missing);
         let changed = match &self.seen {
-            // A different PATH is a navigation, not an edit: rebaseline.
-            Some((p, ..)) if p != &snap.0 => false,
-            Some(prev) => *prev != snap || came_back,
-            None => false,
+            Some(prev) if prev.0 == snap.0 => *prev != snap || came_back,
+            // A path not seen before — the first look, or a navigation. Not
+            // an edit in itself; one only if the file has been written since
+            // it was read.
+            _ => loaded.is_some_and(|at| at != snap.1),
         };
         self.seen = Some(snap);
         changed.then_some(Reload::Changed)
@@ -1517,6 +1530,7 @@ fn run(
     path: &Path,
     src: &str,
     start: Option<&carrel::cli::Start>,
+    loaded: Option<std::time::SystemTime>,
 ) -> std::io::Result<Option<PathBuf>> {
     let theme_note = startup_theme();
     // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
@@ -1542,6 +1556,7 @@ fn run(
         .to_string_lossy()
         .into_owned();
     let mut app = App::new(name, doc, size.width, size.height);
+    app.mtime = loaded;
     // What images will actually look like here, for the info card.
     app.image_kind = Some(images.kind());
     app.diff_ok = diff_ok;
@@ -1813,7 +1828,7 @@ fn poll_reload(
     images: &mut Images,
     diagrams: &mut Diagrams,
 ) {
-    match reloader.poll(app.file.as_deref()) {
+    match reloader.poll(app.file.as_deref(), app.mtime) {
         Some(Reload::Changed) => match app.reload() {
             Ok(()) => {
                 images.for_file = None;
@@ -1943,6 +1958,8 @@ struct Siblings {
     /// writes are measured against.
     watching: Option<(PathBuf, PathBuf, std::time::SystemTime)>,
     reported: bool,
+    /// The document last offered on the status row.
+    offered: Option<PathBuf>,
 }
 
 impl Siblings {
@@ -1953,6 +1970,7 @@ impl Siblings {
             every: SIBLINGS_EVERY,
             watching: None,
             reported: false,
+            offered: None,
         }
     }
 
@@ -1967,9 +1985,16 @@ impl Siblings {
         };
         let now = std::time::SystemTime::now();
         if self.watching.as_ref().map(|w| &w.0) != Some(&file) {
-            // A different document: what is new is new from here.
+            // A different document: what is new is new from here — unless
+            // it is the one that was just announced. Then the reader took
+            // the offer, and the `(+1)` beside it named another document
+            // that is still news; starting the clock again forgot it.
+            let since = match (&self.watching, &self.offered) {
+                (Some(w), Some(offered)) if *offered == file => w.2,
+                _ => now,
+            };
             let canon = file.canonicalize().unwrap_or_else(|_| file.clone());
-            self.watching = Some((file, canon, now));
+            self.watching = Some((file, canon, since));
             self.rx = None;
             self.reported = false;
             app.sibling = None;
@@ -1992,6 +2017,7 @@ impl Siblings {
                     self.last = Instant::now();
                     if let Some(sibling) = carrel::app::newest_sibling(&entries, &canon, since, now)
                     {
+                        self.offered = Some(sibling.path.clone());
                         app.sibling = Some(sibling);
                         self.reported = true;
                     }
@@ -3536,7 +3562,7 @@ mod tests {
         let mut r = Reloader::new();
         let poll = |r: &mut Reloader, p: Option<&Path>| {
             r.last_check = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
-            r.poll(p)
+            r.poll(p, None)
         };
         assert_eq!(poll(&mut r, Some(&f)), None, "first sighting is baseline");
         std::fs::write(&f, "one two three").unwrap();
@@ -3559,10 +3585,34 @@ mod tests {
         std::fs::write(&b, "bbbbbb").unwrap();
         let mut r = Reloader::new();
         r.last_check = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
-        assert_eq!(r.poll(Some(&a)), None);
+        assert_eq!(r.poll(Some(&a), None), None);
         // Following a link to another file must NOT read as "changed".
         r.last_check = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
-        assert_eq!(r.poll(Some(&b)), None, "new file, new baseline");
+        assert_eq!(r.poll(Some(&b), None), None, "new file, new baseline");
+    }
+
+    /// The baseline is the file as it was READ. Taking the first look as the
+    /// baseline lost any write that landed between the read and the look.
+    #[test]
+    fn a_write_between_opening_and_the_first_look_is_a_change() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("live.md");
+        std::fs::write(&f, "old").unwrap();
+        let loaded = std::fs::metadata(&f).unwrap().modified().unwrap();
+        let later = loaded + Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let mut r = Reloader::new();
+        r.last_check = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        assert_eq!(r.poll(Some(&f), Some(loaded)), Some(Reload::Changed));
+        // The control: untouched since it was read, the first look is quiet.
+        let mut r = Reloader::new();
+        r.last_check = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        assert_eq!(r.poll(Some(&f), Some(later)), None);
     }
 
     #[test]

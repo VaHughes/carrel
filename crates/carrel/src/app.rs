@@ -934,6 +934,9 @@ impl App {
     /// fragment jumps) run later and simply win.
     pub fn open_path(&mut self, path: &Path) -> std::io::Result<()> {
         self.save_position();
+        // Before the read, so a write that lands during it shows up as a
+        // change on the reloader's first look rather than being missed.
+        let loaded = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let src = read_document(path)?;
         self.stash_piped_notes();
         // A `.md` file is never sniffed; `.diff`/`.patch` always are. Set
@@ -944,7 +947,7 @@ impl App {
                 Some("diff" | "patch")
             )
         });
-        self.mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        self.mtime = loaded;
         self.table_offsets.clear();
         self.doc = self.parse_adapting(&src);
         self.load_marks();
@@ -2351,6 +2354,9 @@ impl App {
 
     /// §3.5: rebuild the derived layer, then restore position from the anchor.
     pub fn on_resize(&mut self, cols: u16, rows: u16) {
+        // A peek is drawn at the cell its mark was clicked at, and after a
+        // reflow the mark is somewhere else.
+        self.peek = None;
         // Preserve a visible search destination when a narrower viewport
         // would otherwise clip it. A manually hidden match stays hidden.
         let visible_match = self
@@ -2678,6 +2684,7 @@ pub fn newest_sibling(
 enum StepKind {
     Change,
     Task,
+    OpenTask,
 }
 
 /// One block's identity for change detection: everything about it a reader
@@ -3114,7 +3121,15 @@ fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
                 return Some(Outcome::Redraw);
             }
             Action::Dismiss => return Some(Outcome::Redraw),
-            Action::AutoTick | Action::MenuHover(_) => app.peek = Some(peek),
+            // Auto-read waits. The box is drawn where its mark was, and a
+            // page that scrolled on under it left the box describing a mark
+            // that was no longer on screen — besides which, the reader is
+            // reading the footnote.
+            Action::AutoTick => {
+                app.peek = Some(peek);
+                return Some(Outcome::Idle);
+            }
+            Action::MenuHover(_) => app.peek = Some(peek),
             _ => {}
         }
     }
@@ -3618,8 +3633,13 @@ fn help_update(app: &mut App, action: Action) -> Outcome {
             if run == Action::HelpToggle {
                 return Outcome::Redraw;
             }
-            update(app, run);
-            Outcome::Redraw
+            // What the key would have done, outcome included: `q` and `Q`
+            // were the two rows that lit up and did nothing, because the
+            // answer "quit" was thrown away here.
+            match update(app, run) {
+                Outcome::Quit => Outcome::Quit,
+                _ => Outcome::Redraw,
+            }
         }
         Action::HelpToggle | Action::Dismiss | Action::CloseFile => {
             app.help = None;
@@ -4793,9 +4813,13 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 .doc
                 .start;
             // The first open task strictly after the top of the view, or
-            // round to the first one.
-            let i = open.partition_point(|&at| at <= here) % open.len();
+            // round to the first one — counted from the last one visited
+            // while the view has not moved, as `c` and `X` count.
+            let after = open.partition_point(|&at| at <= here);
+            let before = open.partition_point(|&at| at < here);
+            let i = app.step_index(StepKind::OpenTask, 1, open.len(), after, before);
             app.reveal_byte(open[i], h, crate::action::Where::Top);
+            app.step_cursor = Some((StepKind::OpenTask, i, app.view.scroll_row));
             app.note = Some(format!("open task {} of {}", i + 1, open.len()));
             Outcome::Redraw
         }

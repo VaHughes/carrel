@@ -388,9 +388,16 @@ fn paint_hover(frame: &mut Frame, app: &App, targets: &Targets) {
     let Some(z) = targets.hoverable(col, row) else {
         return;
     };
-    frame
-        .buffer_mut()
-        .set_style(Rect::new(z.x, z.y, z.w, z.h), theme::hover());
+    // Cell by cell, and only the cells where the button is what shows: a
+    // link running under the edge of a pane lit the pane's own text.
+    let buf = frame.buffer_mut();
+    for y in z.y..z.y.saturating_add(z.h) {
+        for x in z.x..z.x.saturating_add(z.w) {
+            if targets.shows(z, x, y) {
+                buf.set_style(Rect::new(x, y, 1, 1), theme::hover());
+            }
+        }
+    }
 }
 
 /// Reconcile the OSC 8 list with what is actually on screen.
@@ -1399,10 +1406,12 @@ fn paint_block_cursor(
     // not by a frame test).
     // A bookmarked block gets a dot on its first row; the focused code block
     // gets a bar down its side. Both live in the margin `PAD_LEFT` leaves.
-    if area.x == 0 {
-        return;
-    }
-    if skip == 0
+    // No margin, no margin marks — but the copy chip sits on the block's own
+    // gap row and needs no margin at all. Returning here took the chip with
+    // it in any window too narrow to keep a side margin.
+    let margin = area.x > 0;
+    if margin
+        && skip == 0
         && y < area.bottom()
         && app.marks.contains(&app.doc.node_for_block(block).doc.start)
     {
@@ -1413,7 +1422,7 @@ fn paint_block_cursor(
     // A block the last reload changed or added gets a thin bar down its
     // side, so "what did the agent just do to this file" is answered by
     // looking. The bookmark dot, painted above, keeps the first row's cell.
-    if app.changed.binary_search(&block).is_ok() && app.code_focus != Some(block) {
+    if margin && app.changed.binary_search(&block).is_ok() && app.code_focus != Some(block) {
         let rows_here = app
             .layout
             .content_height(&app.doc, block)
@@ -1469,7 +1478,7 @@ fn paint_block_cursor(
         .saturating_sub(skip);
     for r in 0..u16::try_from(rows_here).unwrap_or(u16::MAX) {
         let yy = y.saturating_add(r);
-        if yy >= area.bottom() {
+        if yy >= area.bottom() || !margin {
             break;
         }
         frame
@@ -2649,13 +2658,26 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
         usize::from(z.w),
         theme::status(),
     );
-    buf.set_stringn(
-        z.x + 2,
-        z.y,
-        format!(" {} ", peek.label),
-        inner - 1,
-        theme::dim(),
-    );
+    // A label longer than the box keeps its closing bracket: cut in the
+    // middle of the name, it ran into the corner and read as broken.
+    let room = inner.saturating_sub(3);
+    let label = if carrel_core::display_width(&peek.label) as usize > room {
+        let mut kept = String::new();
+        for c in peek.label.chars() {
+            if carrel_core::display_width(&kept) as usize
+                + carrel_core::display_width(c.encode_utf8(&mut [0; 4])) as usize
+                + 2
+                > room
+            {
+                break;
+            }
+            kept.push(c);
+        }
+        format!("{kept}\u{2026}]")
+    } else {
+        peek.label.clone()
+    };
+    buf.set_stringn(z.x + 2, z.y, format!(" {label} "), inner - 1, theme::dim());
     let last = z.y + z.h - 1;
     buf.set_stringn(
         z.x,
@@ -2665,7 +2687,7 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
         theme::status(),
     );
     let rows = usize::from(z.h - 3);
-    let lines = peek.lines(z.w);
+    let lines = peek.lines(z.w, area.height);
     for dy in 0..z.h - 2 {
         let y = z.y + 1 + dy;
         buf.set_stringn(z.x, y, "\u{2502}", 1, theme::status());

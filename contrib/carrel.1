@@ -125,12 +125,12 @@ Open the built-in first document: what carrel does, written on a page you can
 try all of it on. Piped, it prints as plain text.
 .TP
 .BR \-\-latest " [" \fIDIR\fR ]
-Read the document written most recently \(em in the folder a bare
-.B carrel
-would list, or under
+Read the document written most recently \(em in the current directory and
+below it, or under
 .IR DIR .
 An agent that has just finished a plan has made it the newest file there, and
-this opens it without needing its name.
+this opens it without needing its name. It is always about where you are
+standing: a folder saved for the file list is not consulted.
 .TP
 .B \-\-tasks
 Print every GFM task in the file as checkbox lines and exit. The file is

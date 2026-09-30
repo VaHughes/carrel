@@ -13,9 +13,9 @@ Last updated: 2026-09-30
 - A fresh **unlocked `cargo install carrel --version 2026.9.23` succeeds**, confirming
   the exact `merman` sibling pins fix registry installs. The rendered crate README's
   links and images all resolve.
-- All five local gates passed on 2026-09-29: **864 tests**, zero-warning clippy,
-  formatting, architectural discipline and packaging. All-target checks and the debug
-  build passed too; local `carrel` reports 2026.9.23. Color-sensitive PTY tests need
+- All five local gates passed on 2026-09-30: **1,102 tests**, zero-warning clippy,
+  formatting, architectural discipline and packaging. All-target, MSRV checks and the
+  debug build passed too; local `carrel` reports 2026.9.23. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
 - Release verification: all public artifact checksums match; the shell installer
   succeeds under a scratch home without changing real shell files; the musl archive
@@ -28,11 +28,57 @@ Last updated: 2026-09-30
 - **Hyphenation and tags are complete and unreleased** (2026-09-30) — the last two open
   feature lines on the README roadmap. With the small-terminal work they are the whole
   of what the next release carries.
+- **The reader-beside-an-agent slate is complete and unreleased** (2026-09-30):
+  twenty-five additions for someone reading what an agent writes — see the first
+  entry under *Recently completed*. It rides in the same release.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list. What remains on it is packaging (AUR, nixpkgs, `.deb`)
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-09-30) — **for the reader beside an agent: 25 additions**.
+  *Arriving:* `carrel --latest`, `FILE:42` / `FILE#heading`, "did you mean" for a
+  mistyped option or file. *Seeing what changed:* a reload marks changed blocks
+  (`c` steps through them), a status chip when another document is written, a
+  `7/12 tasks` chip. *Taking something away:* copy `path:line`, a section link, a
+  quote signed with its source, every note at once, and a `copy` chip under every
+  code block. *Knowing where you are:* `Forward`, a trail of the documents behind
+  you on the status row, `Back` from search results, a link's destination on hover,
+  dead links struck through, a footnote shown where its mark is, scrollbar notches
+  at sections. *The file list:* how far through and how long ago on every row,
+  three orders on `s`, a preview pane at 100 columns, a pasted or dropped path
+  opens. *Also:* tags on the frontmatter card are buttons and `#` works inside a
+  document, help rows run what they describe, collapsed sections are remembered
+  per document. New pure modules `cli.rs`, `status.rs`, `peek.rs` (rule-6 listed).
+- Unreleased (2026-09-30) — **defects that slate turned up**. Four older ones found
+  while building it: `#L42` and a search hit's line meant visual row 42, not line
+  42 of the file; `[[wikilinks]]` never resolved for a document named on the
+  command line; four help descriptions lost their last letter; and a click's
+  mouse-up wiped the note its own press produced. Then three independent reviewers
+  read the finished diff cold and found more, all fixed with a reproduction each
+  (`tests/review_nav.rs` and neighbors): a panic when a pipe's next chunk landed
+  behind the tags page; a multi-second freeze reloading a document with hundreds of
+  collapsed sections; a button's release copying a stale selection over what the
+  button copied; reload marks blind to a ticked task; `c` stuck in the last
+  screenful; wrong lines for table cells; links wrongly called dead (and paths
+  outside the folder being `stat`ed to decide); the highlight moving to another
+  file under "recently read"; a pasted paragraph freezing the filter; a
+  future-dated file announced forever; help rows for `q`/`Q` that lit and did
+  nothing; and hover lighting buttons through an open pane. Two were older and
+  only exposed now: the reloader took its baseline at its first look rather than
+  at load, so a file rewritten within a second of opening was never noticed; and
+  a jump inside a piped document pushed an empty path onto the history.
+  **Known defect, older, not fixed here:** the frontmatter card paints each
+  source line clipped while the layout counts it wrapped, so in a narrow window a
+  long `tags:` line runs off the edge (its far tags cannot be clicked) and blank
+  rows follow the card. The card's value column is padding that is not in the
+  text, which is why this is not a one-line change.
+  **Known limits:** the footnote box shows a footnote's first paragraph only; a
+  link to `other.md#heading` is judged by the file, not the heading; reload marks
+  compare rendered blocks, so a change that renders identically is not marked;
+  the sibling watch walks the document's folder tree (it rests 25× as long as a
+  walk takes, so a large tree is checked rarely rather than expensively).
 
 - Unreleased (2026-09-30) — **hyphenation at narrow measures**. Below 70 cells of
   text, a long word that misses a row end is divided by TeX's American English

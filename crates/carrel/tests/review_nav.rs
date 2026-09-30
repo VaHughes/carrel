@@ -398,3 +398,79 @@ fn back_to_a_document_that_was_rewritten_shorter_stays_inside_it() {
     update(&mut app, Action::Back);
     assert!((app.view.anchor as usize) < app.doc.text.len());
 }
+
+#[test]
+fn the_task_chip_reaches_every_open_task_in_the_last_screenful() {
+    let d = tempfile::tempdir().unwrap();
+    let src = format!(
+        "{}\n- [ ] first open\n- [x] done\n- [ ] second open\n- [ ] third open\n",
+        long_doc(40)
+    );
+    let mut app = file_app(d.path(), "PLAN.md", &src);
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        update(&mut app, Action::TaskOpen);
+        seen.push(app.note.clone().unwrap());
+    }
+    assert_eq!(
+        seen,
+        [
+            "open task 1 of 3",
+            "open task 2 of 3",
+            "open task 3 of 3",
+            "open task 1 of 3"
+        ]
+    );
+}
+
+/// Every row of the help sheet that names a key is a button that presses it.
+/// `q` and `Q` lit up like the rest and did nothing: the sheet closed and the
+/// reader stayed, because "quit" was the one outcome that was thrown away.
+#[test]
+fn the_help_rows_for_quit_quit() {
+    use carrel::app::Outcome;
+    let d = tempfile::tempdir().unwrap();
+    let mut app = file_app(d.path(), "a.md", "# A\n\ntext\n");
+    let row = carrel::keys::READER_HELP
+        .iter()
+        .position(|(key, _)| key.split_whitespace().next() == Some("Q"))
+        .expect("a row for Q");
+    update(&mut app, Action::HelpToggle);
+    assert_eq!(
+        update(&mut app, Action::HelpRun(u32::try_from(row).unwrap())),
+        Outcome::Quit
+    );
+}
+
+#[test]
+fn a_peek_does_not_outlive_the_frame_it_was_placed_in() {
+    let d = tempfile::tempdir().unwrap();
+    let src = format!(
+        "Claim[^n] here.\n\n{}\n[^n]: the footnote text\n",
+        long_doc(40)
+    );
+    let mut app = file_app(d.path(), "a.md", &src);
+    let (at, _) = app.footnote_marks[0];
+    let open = |app: &mut App| {
+        update(
+            app,
+            Action::FootnotePeek {
+                at: (8, 2),
+                byte: at + 1,
+            },
+        );
+        assert!(app.peek.is_some());
+    };
+    // Auto-read waits for the footnote to be read.
+    open(&mut app);
+    let row = app.view.scroll_row;
+    update(&mut app, Action::AutoTick);
+    assert!(app.peek.is_some());
+    assert_eq!(
+        app.view.scroll_row, row,
+        "the page did not move under the box"
+    );
+    // A resize moves the mark; the box goes.
+    app.on_resize(100, 30);
+    assert!(app.peek.is_none());
+}

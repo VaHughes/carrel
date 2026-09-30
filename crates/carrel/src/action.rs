@@ -560,21 +560,27 @@ impl Targets {
             })
     }
 
-    /// The zone a hover should light: the topmost target under the pointer
-    /// that actually does something.
+    /// The zone a hover should light: the topmost target under the pointer,
+    /// if it actually does something.
     ///
-    /// [`Action::Absorb`] is excluded, and that exclusion is the whole
-    /// reason this is not just [`Targets::hit`]: a pane registers its entire
-    /// rectangle as `Absorb`, so lighting what `hit` returns would fill the
-    /// whole pane the moment the pointer crossed a blank part of it.
+    /// A pane registers its entire rectangle as [`Action::Absorb`], so that
+    /// is what is topmost over a blank part of it — and the answer there is
+    /// *nothing*. This used to skip `Absorb` and take the next target down,
+    /// which was whatever button lay UNDER the pane: moving the pointer over
+    /// an open pane lit links and chips through it, as if they were live.
     #[must_use]
     pub fn hoverable(&self, col: u16, row: u16) -> Option<Zone> {
-        self.0
-            .iter()
-            .filter(|t| t.action != Action::Absorb && t.zone.contains(col, row))
-            .enumerate()
-            .max_by_key(|(i, t)| (t.z, *i))
-            .map(|(_, t)| t.zone)
+        self.hit(col, row)
+            .filter(|hit| hit.action != Action::Absorb)
+            .map(|hit| hit.zone)
+    }
+
+    /// Is this cell's topmost target the one occupying `zone`? A button
+    /// partly under a pane is lit only where it shows.
+    #[must_use]
+    pub fn shows(&self, zone: Zone, col: u16, row: u16) -> bool {
+        self.hit(col, row)
+            .is_some_and(|hit| hit.zone == zone && hit.action != Action::Absorb)
     }
 
     /// Is any target at or above `z` under the pointer?
@@ -657,6 +663,22 @@ mod pointer_tests {
             "a blank part of the pane lights nothing — `hit` would return the              pane's whole rectangle here"
         );
         assert_eq!(t.hit(5, 4).map(|h| h.action), Some(Action::Absorb));
+    }
+
+    /// The other half: a button UNDER the pane. Skipping `Absorb` found it,
+    /// and moving the pointer across an open pane lit the links and chips
+    /// behind it.
+    #[test]
+    fn a_hover_never_lights_what_is_under_a_pane() {
+        let mut t = Targets::new();
+        t.push(Action::LinkOpen(0), Zone::new(2, 3, 10, 1), 0);
+        t.push(Action::Absorb, Zone::new(6, 0, 14, 6), 2);
+        assert_eq!(t.hoverable(8, 3), None, "the pane is what is there");
+        assert_eq!(t.hoverable(3, 3), Some(Zone::new(2, 3, 10, 1)));
+        // And the link is lit only where it shows.
+        let link = Zone::new(2, 3, 10, 1);
+        assert!(t.shows(link, 5, 3));
+        assert!(!t.shows(link, 6, 3), "this cell is the pane's");
     }
 
     #[test]
