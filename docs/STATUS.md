@@ -23,14 +23,19 @@ Last updated: 2026-09-30
 - **Small-terminal improvements are complete and unreleased** (`06327b3`,
   `1baa4c7`, `89e8847`): adaptive layouts, compact settings and pane wheels, visible
   search feedback, distinguishable navigation entries, hidden-action guards, and
-  live resize coverage for both event loops. All four follow-up items are complete;
-  hyphenation remains separate work on the roadmap.
+  live resize coverage for both event loops. All four follow-up items are complete.
 - **Hyphenation and tags are complete and unreleased** (2026-09-30) — the last two open
-  feature lines on the README roadmap. With the small-terminal work they are the whole
-  of what the next release carries.
+  feature lines on the README roadmap.
 - **The reader-beside-an-agent slate is complete and unreleased** (2026-09-30):
   twenty-five additions for someone reading what an agent writes — see the first
-  entry under *Recently completed*. It rides in the same release.
+  entry under *Recently completed*. Reviewed by three independent agents before
+  pushing; `main` is at `4a5b33e`, CI green. Together with the two items above, this is
+  what the next release carries.
+- **Decisions made this session:** `carrel --latest` means the current directory (or the
+  folder named), never the folder saved for the file list; a `[^mark]` with no footnote
+  is plain text, not a button; search results keep `Back`, like the tags page; duplicate
+  heading fragments are numbered GitHub's way (until free). Design record:
+  `2026-09-30-reader-beside-an-agent-design.md` in the notes repo.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
   authoritative done/open list. What remains on it is packaging (AUR, nixpkgs, `.deb`)
   and the GUI.
@@ -203,12 +208,24 @@ decision — do not propose them):
 5. Optional: set `HOMEBREW_TAP_TOKEN` and restore `publish-jobs = ["homebrew"]` to
    re-automate the formula push (currently hand-pushed each release).
 
-Every feature line on the README roadmap is now checked. Known limits of the two newest,
-recorded rather than planned: hyphenation is English only, and a word longer than the
-whole row still takes the unmarked emergency break; tags are frontmatter only (no inline
-`#tags`), nested tags are plain strings, and there is no way into the tags page from
-inside the reader. Search results still push no history when a hit is followed — the tags
-page does, and the same change would give results `Back` if it is wanted.
+Every feature line on the README roadmap is now checked. Known limits, recorded rather
+than planned: hyphenation is English only, and a word longer than the whole row still takes
+the unmarked emergency break; tags are frontmatter only (no inline `#tags`) and nested tags
+are plain strings; the footnote box shows a footnote's first paragraph only.
+
+Defects known and not yet fixed, all older than the 2026-09-30 slate or cosmetic:
+
+- The frontmatter card paints each source line clipped while the layout counts it
+  wrapped, so in a narrow window a long `tags:` line runs off the edge (far tags cannot
+  be clicked) and blank rows follow the card. The value column is padding not in the
+  text, so this wants a redesign of the card rather than a patch.
+- The reload note (`reloaded — 7 changes · c goes to the next`) is cut mid-word below
+  about 45 columns; the change bar gives way to a collapse marker at a one-cell margin
+  and to the bookmark dot on a one-row block; the trail's `…` appears and disappears as
+  the status row narrows.
+- Seen once by the screen reviewer, outside the slate: `--plain` drops a line of text
+  that follows a fence inside a tight list item; `I` then `h` draws the info pane over
+  the help sheet.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) lands.
 
@@ -217,6 +234,15 @@ notes' `research.md`): Q29 (dual-frontend prior-art study, P0) and Q33 (P1), to 
 before that phase rather than during it.
 
 ## Recent decisions
+
+- 2026-09-30: **`carrel --latest` is about where you are standing** — the current
+  directory or the folder named, never the folder saved for the file list, which is a
+  library chosen once. **A footnote mark with no footnote is not a button.** **Search
+  results keep `Back`**, like the tags page (reversing the earlier "no history" call).
+  **A mouse-up belongs to the press that began it** (see `ARCHITECTURE.md`).
+- 2026-09-30: **Review the finished diff cold before pushing.** Three agents with no
+  reasoning attached — two reading code, one only driving the binary in a pty — confirmed
+  about thirty defects past 1,068 green tests, including a panic and a 27-second freeze.
 
 - 2026-09-30: **A hyphen is decoration, so it is a flag on a row and never a byte.**
   The inline-math rule (content must be in the text) does not apply to it; the bullet's

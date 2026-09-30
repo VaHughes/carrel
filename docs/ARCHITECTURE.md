@@ -141,7 +141,7 @@ Key facts that are easy to get wrong:
 | `home.rs`, `scan.rs`, `grep.rs`, `fuzzy.rs` | The home screen: streamed `.gitignore`-aware scan (`ignore` crate, `require_git(false)`), cached index, 2 s rescan while listed, directory picker with path completion and remembered places, fuzzy filter, multi-file content search, frontmatter titles. |
 | `tags.rs` | Frontmatter tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads the head of every scanned entry — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and `render` writes a section per tag with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. No UI dependencies. |
 | `menu.rs`, `footer.rs`, `breadcrumb.rs`, `status.rs` | Pure selectors for the right-click/`≡` menus, the lamplight hint row, the sticky heading band, and the reader's status row (the trail at its left, the chips at its right, and what each drops when the row is short). |
-| `peek.rs` | The footnote peek: its text and its box geometry. Not a pane — it owns no keyboard, and whatever the reader does next closes it and then happens. |
+| `peek.rs` | The footnote peek: its text and its box geometry. Not a pane — it owns no keyboard, and whatever the reader does next closes it and then happens. A resize closes it (it is drawn at the cell its mark was clicked at); auto-read waits while it is open. |
 | `cli.rs` | What the command line meant where that takes judgment: `FILE:LINE` / `FILE#section` (a path that exists is never split), the nearest option or file to a mistyped one, the newest document, and a pasted or dropped path in whatever form the terminal handed it over. |
 | `marginalia.rs`, `annotation_state.rs`, `annotation_render.rs` | Quote/context-anchored notes and highlights, atomic sidecars and Markdown export, modal list/editor state, and the terminal notes pane. The first two modules have no UI dependencies. |
 | `state.rs`, `config.rs` | XDG state (reading positions, bookmarks) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. |
@@ -199,7 +199,8 @@ Key facts:
 - **A link destination is a URL on the way in, so generated pages encode their targets.**
   `links::encode_target` percent-encodes what the follower acts on (`#`, `?`, `:`, `&`, `%`,
   angle brackets, backslash, control characters); `links::resolve_local` tries the name as
-  written and then percent-decoded, before the out-of-folder check. Search results and the
+  written, then percent-decoded, then without a `?query` (`links::candidates`), before the
+  out-of-folder check. Search results and the
   tags page both come through it, because both are built from file names carrel did not choose.
 - **One model for every place a reader can have come from.** `App::location()` is what every
   departure asks before it leaves: a file is its path, a generated page (`Desk`: search
@@ -207,13 +208,23 @@ Key facts:
   pipe is `(stdin)`. `history` and `future` hold those; `go_to` returns to any of them.
   `push_history` empties `future` (a new departure forgets the branch not taken);
   `go_forward` pushes raw, so it does not. The status row's trail is `status::trail`.
+  Several things are pathless (a pipe, a generated page, the welcome page), so "no file" does
+  not mean "the pipe is on screen": ask `App::showing_pipe`, which the stream drain does
+  before parsing a chunk.
 - **A line number means a line of the file.** `Document::line_start` maps a 1-based source
   line through the provenance table to the text it displays, and `line_of` is its inverse.
   `notes.md:42`, a `#L42` link and a search hit's line all go through `jump_to_line`, which
   goes through `reveal_byte`. (They used to scroll to visual ROW 42.)
+  A byte with no source (table padding, the gap after a block) takes the line of the text
+  beside it on its display row, not the next run's.
+- **A `#fragment` names one place.** `Document::heading_slugs` is the one numbering, GitHub's:
+  a duplicate is numbered until the result is free, so every slug is unique.
+  `fragment_target` tries headings, then `<a id>`/`name` anchors written by hand (recorded
+  at parse; the tags themselves are stripped); the reader also tries it percent-decoded.
 - **What a reload changed is decided by content, not position** (`App::mark_changes`): a
-  block is unchanged if the document as the reader last acknowledged it had one with the
-  same kind and text, counted — so an insertion at the top marks one block, not every block
+  block is unchanged if the document as the reader last acknowledged it had one that looks
+  the same — kind, heading level, fence language, list marker (a ticked task), link
+  destinations and text, but no offsets — counted — so an insertion at the top marks one block, not every block
   after it, and saves in a row accumulate until `Esc`. A reload also carries collapse state
   across by name (`fold_keys` / `apply_fold_keys`: a heading's `#fragment`, a `<details>`
   by place and summary), which is also what `state.rs` persists in `folds`.
@@ -225,11 +236,18 @@ Key facts:
   command line.
 - **The event loops own three more threads, one in flight each**: `TagScan` (the tags page),
   `PreviewLoad` (the head of the file list's highlighted document) and `Siblings` (a walk of
-  the folder every few seconds while a document is open). Each only ever hands `App` a
+  the folder every four seconds while a document is open, resting 25× as long as a walk
+  took, so a large tree is checked rarely rather than expensively). Each only ever hands `App` a
   finished answer; `update` still does no I/O.
 - **`App::reveal_byte` is the one gate** for every byte-targeted jump — a fold must never make
   a destination unreachable. Hidden blocks are zero rows and zero gap; `paint_rows` must skip
   them explicitly.
+- **A mouse-up belongs to the press it ends.** It reaches `update` as `SelectRelease` (copy
+  the selection) only when the press began a selection — `Pointer::selecting`, kept across
+  a resize. The release of a click on a button is nothing, however many words are still
+  selected; treated as a selection's end, it overwrote what the button had just copied.
+- **Hover lights the topmost target, and only where it shows** (`Targets::hoverable`,
+  `Targets::shows`). A pane's `Absorb` is an answer — nothing — not something to look past.
 - **Notes go to the screen that paints them** — `App::set_note` routes between `App::note`
   and `Home::note`.
 - **OSC 8 is a post-draw pass** (ratatui/crossterm have no hyperlink support); it reads the
