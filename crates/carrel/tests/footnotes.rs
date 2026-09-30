@@ -5,12 +5,13 @@ use carrel::app::{App, Outcome, update};
 use carrel_core::Document;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use std::fmt::Write as _;
 
 fn src() -> String {
     let mut s =
         String::from("# Notes\n\nA claim that needs support[^why], and another[^missing].\n\n");
     for i in 0..40 {
-        s.push_str(&format!("filler paragraph {i}\n\n"));
+        let _ = write!(s, "filler paragraph {i}\n\n");
     }
     s.push_str("[^why]: Because the measurement said so, twice, on two machines.\n");
     s
@@ -26,8 +27,10 @@ fn reader(cols: u16, rows: u16) -> App {
 fn painted(app: &App, cols: u16, rows: u16) -> (ratatui::buffer::Buffer, Vec<(Action, Zone, u8)>) {
     let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     let mut p = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, app, &mut p, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, app, &mut p, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     let targets = p
         .targets
         .as_slice()

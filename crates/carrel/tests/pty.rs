@@ -12,6 +12,7 @@
 //! host lacks it, the test skips loudly rather than failing falsely.
 #![cfg(unix)]
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
@@ -689,7 +690,7 @@ fn a_line_on_the_command_line_opens_the_document_there() {
     let d = tempfile::tempdir().unwrap();
     let mut body = String::new();
     for i in 1..=120 {
-        body.push_str(&format!("para-{i:03} is here\n\n"));
+        let _ = write!(body, "para-{i:03} is here\n\n");
     }
     std::fs::write(d.path().join("doc.md"), body).unwrap();
     // The control first — a run remembers where it stopped, and the next
@@ -741,7 +742,7 @@ fn the_command_line_corrects_a_slip_and_finds_the_newest_document() {
     let new = d.path().join("notes.md");
     std::fs::write(&old, "the older plan\n").unwrap();
     std::fs::write(&new, "the newer notes\n").unwrap();
-    let day = std::time::Duration::from_secs(86_400);
+    let day = std::time::Duration::from_hours(24);
     std::fs::File::options()
         .write(true)
         .open(&old)
@@ -1171,10 +1172,22 @@ fn a_right_click_opens_a_menu_and_a_click_on_a_row_acts() {
     // own: the SAME click with no menu under it must fold nothing. (It does
     // land on prose, so it starts a selection — which is the right answer
     // for a click on the document.)
-    let cap = pty_run("doc.md", r"\033[<0;12;5M\033[<0;12;5mq", d.path());
+    //
+    // In a folder of its own: a document reopens with the sections it was
+    // left with, so in `d` the heading is collapsed before anything is
+    // clicked — which is the run above, remembered.
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::copy(d.path().join("doc.md"), fresh.path().join("doc.md")).unwrap();
+    let cap = pty_run("doc.md", r"\033[<0;12;5M\033[<0;12;5mq", fresh.path());
     assert!(
         !cap.contains('\u{25b8}'),
         "without the menu that click folds nothing"
+    );
+    // And the remembering itself, end to end: nothing pressed but `q`.
+    let cap = pty_run("doc.md", "q", d.path());
+    assert!(
+        cap.contains('\u{25b8}'),
+        "the section collapsed two runs ago is still collapsed"
     );
 }
 

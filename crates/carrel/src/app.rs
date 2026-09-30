@@ -864,6 +864,9 @@ impl App {
     /// Quietly does nothing without a state dir (tests) or a file (home).
     fn save_position(&self) {
         if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
+            // Which sections were left collapsed goes with the position:
+            // both are "how this document was when it was put down".
+            let _ = crate::state::save_folds_in(dir, file, &self.fold_keys());
             // The progress numbers are the status bar's own, saved alongside
             // so the home screen can show them without opening the file.
             let _ = crate::state::save_position_in(
@@ -1359,7 +1362,15 @@ impl App {
             .change_base
             .take()
             .unwrap_or_else(|| block_census(&self.doc));
+        // A reload used to expand everything: collapse state is node ids,
+        // and the ids belong to the parse being replaced. So an agent
+        // appending a line to a long plan threw open every section the
+        // reader had closed. Carried across by name instead.
+        let folds = self.fold_keys();
         self.reload_from(&src);
+        if self.apply_fold_keys(&folds) {
+            self.relayout();
+        }
         self.mark_changes(base.clone());
         self.change_base = Some(base);
         self.note = Some(match self.changed.len() {
@@ -1664,6 +1675,14 @@ impl App {
     /// note. Called by `open_path` — and by the binary for a direct
     /// `carrel FILE` open, which builds its `App` without `open_path`.
     pub fn restore_position(&mut self) {
+        // Collapsed sections first: the saved position is a row of the
+        // document as it was left, and that document had them collapsed.
+        if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
+            let keys = crate::state::load_folds_in(dir, file);
+            if self.apply_fold_keys(&keys) {
+                self.relayout();
+            }
+        }
         if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref())
             && let Some(saved) = crate::state::load_position_in(dir, file)
             && saved > 0
@@ -2379,6 +2398,60 @@ impl App {
         }
     }
 
+    /// What is collapsed, in words that outlive this parse.
+    ///
+    /// `folded` holds node ids, which index one parse and mean nothing to
+    /// the next. A heading is named by its `#fragment` — the slug a link to
+    /// it would use, duplicates numbered — and a `<details>` by its place
+    /// and its summary. Both survive an edit elsewhere in the file; a
+    /// section that was renamed or removed is simply not found again, and
+    /// comes back expanded.
+    #[must_use]
+    pub fn fold_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .doc
+            .nodes
+            .iter()
+            .filter(|n| self.folded.contains(&n.id))
+            .filter_map(|n| self.doc.fragment_for(n.id))
+            .map(|slug| format!("h:{slug}"))
+            .collect();
+        for &i in &self.folded_details {
+            if let Some(region) = self.doc.details.get(i as usize) {
+                let summary =
+                    &self.doc.text[region.summary.start as usize..region.summary.end as usize];
+                keys.push(format!("d:{i}:{}", summary.trim()));
+            }
+        }
+        keys
+    }
+
+    /// Collapse what `keys` name, where this parse still has it. Says
+    /// whether anything changed; the caller lays out.
+    fn apply_fold_keys(&mut self, keys: &[String]) -> bool {
+        let mut changed = false;
+        for key in keys {
+            if let Some(slug) = key.strip_prefix("h:") {
+                let id = self.doc.nodes.iter().find(|n| {
+                    matches!(n.kind, NodeKind::Heading { .. })
+                        && self.doc.fragment_for(n.id).as_deref() == Some(slug)
+                });
+                if let Some(n) = id {
+                    changed |= self.folded.insert(n.id);
+                }
+            } else if let Some(rest) = key.strip_prefix("d:")
+                && let Some((i, summary)) = rest.split_once(':')
+                && let Ok(i) = i.parse::<u32>()
+                && let Some(region) = self.doc.details.get(i as usize)
+                && self.doc.text[region.summary.start as usize..region.summary.end as usize].trim()
+                    == summary
+            {
+                changed |= self.folded_details.insert(i);
+            }
+        }
+        changed
+    }
+
     /// The layout for a document that has just replaced the last one.
     ///
     /// **Every opener ends here, after the per-document facts are in place**
@@ -2886,6 +2959,41 @@ fn step_measure(app: &mut App, d: i32) {
     app.relayout();
 }
 
+/// The two things that are answered before any pane gets a say: a footnote
+/// peek, which is open across every state, and the tags page's request,
+/// which both screens make. `None` hands the action on.
+fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
+    withdraw_tags_request(app, action);
+    // A peek is a parenthesis, not a pane: whatever the reader does next
+    // closes it, and then happens. Only its own "go there" and a plain
+    // dismissal end with it; a clock is not the reader doing something.
+    if let Some(peek) = app.peek.take() {
+        match action {
+            Action::PeekGo => {
+                let h = app.text_h();
+                if let Some((from, anchor)) = app.location() {
+                    app.push_history(from, anchor);
+                }
+                app.reveal_byte(peek.def, h, Where::Top);
+                return Some(Outcome::Redraw);
+            }
+            Action::Dismiss => return Some(Outcome::Redraw),
+            Action::AutoTick | Action::MenuHover(_) => app.peek = Some(peek),
+            _ => {}
+        }
+    }
+    match action {
+        Action::FootnotePeek { at, byte } => Some(open_peek(app, at, byte)),
+        Action::HomeTags => Some(request_tags(app, None)),
+        Action::TagOpen(byte) => Some(match tag_at(app, byte) {
+            Some(tag) => request_tags(app, Some(tag)),
+            None => Outcome::Idle, // a tag from a frame the card outlived
+        }),
+        Action::HomeOpenTags => Some(open_ready_tags(app)),
+        _ => None,
+    }
+}
+
 /// Show the footnote a `[^mark]` refers to, where the mark is.
 fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
     if app.is_home() {
@@ -3087,14 +3195,10 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     // acted is noise. Moving the pointer is not acting, and neither is a
     // clock; everything else is. First, so that even an action that returns
     // early below still counts as having been done.
-    if app.first_run
-        && !matches!(
-            action,
-            Action::Hover(_) | Action::MenuHover(_) | Action::AutoTick
-        )
-    {
-        app.first_run = false;
-    }
+    app.first_run &= matches!(
+        action,
+        Action::Hover(_) | Action::MenuHover(_) | Action::AutoTick
+    );
     // The pointer's cell is pure decoration, so it is answered before any
     // modal state gets a say: hover must never be able to change what a
     // menu or a pane would do.
@@ -3102,40 +3206,8 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.hover = Some(at);
         return Outcome::Redraw;
     }
-    withdraw_tags_request(app, action);
-    // A peek is a parenthesis, not a pane: whatever the reader does next
-    // closes it, and then happens. Only its own "go there" and a plain
-    // dismissal end with it.
-    if let Some(peek) = app.peek.take() {
-        match action {
-            Action::PeekGo => {
-                let h = app.text_h();
-                if let Some((from, anchor)) = app.location() {
-                    app.push_history(from, anchor);
-                }
-                app.reveal_byte(peek.def, h, Where::Top);
-                return Outcome::Redraw;
-            }
-            Action::Dismiss | Action::MenuHover(_) => return Outcome::Redraw,
-            Action::AutoTick => {
-                app.peek = Some(peek); // a clock is not the reader doing something
-            }
-            _ => {}
-        }
-    }
-    if let Action::FootnotePeek { at, byte } = action {
-        return open_peek(app, at, byte);
-    }
-    match action {
-        Action::HomeTags => return request_tags(app, None),
-        Action::TagOpen(byte) => {
-            return match tag_at(app, byte) {
-                Some(tag) => request_tags(app, Some(tag)),
-                None => Outcome::Idle, // a tag from a frame the card outlived
-            };
-        }
-        Action::HomeOpenTags => return open_ready_tags(app),
-        _ => {}
+    if let Some(outcome) = peek_and_tags(app, action) {
+        return outcome;
     }
     if app.lightbox.is_some() {
         return lightbox_update(app, action);
@@ -3353,6 +3425,29 @@ fn open_image(app: &mut App, requested: Option<BlockIdx>) -> Outcome {
 /// cannot see is worse than one doing nothing.
 fn help_update(app: &mut App, action: Action) -> Outcome {
     match action {
+        // A click on a row: the sheet closes and the row's key is pressed.
+        // The action comes from the real dispatcher, so what runs is what
+        // the key beside the description would have run.
+        Action::HelpRun(i) => {
+            let table = if app.is_home() {
+                crate::keys::HOME_HELP
+            } else {
+                crate::keys::READER_HELP
+            };
+            let Some(run) = table
+                .get(i as usize)
+                .and_then(|(key, _)| crate::keys::help_row_action(key, app.is_home()))
+            else {
+                return Outcome::Idle; // a sentence, not a key
+            };
+            app.help = None;
+            // The sheet's own key would only reopen it.
+            if run == Action::HelpToggle {
+                return Outcome::Redraw;
+            }
+            update(app, run);
+            Outcome::Redraw
+        }
         Action::HelpToggle | Action::Dismiss | Action::CloseFile => {
             app.help = None;
             Outcome::Redraw
@@ -5342,7 +5437,7 @@ impl App {
 
 /// Put `text` on the clipboard and say what was sent. One line, no control
 /// characters: this is pasted into a prompt or a shell.
-fn copy_line(app: &mut App, text: String) -> Outcome {
+fn copy_line(app: &mut App, text: &str) -> Outcome {
     let text: String = text.chars().filter(|c| !c.is_control()).collect();
     app.note = Some(format!("copied {text}"));
     app.clipboard = Some(text);
@@ -5350,13 +5445,11 @@ fn copy_line(app: &mut App, text: String) -> Outcome {
 }
 
 fn copy_reference(app: &mut App, byte: u32) -> Outcome {
-    match app.reference_at(byte) {
-        Some(reference) => copy_line(app, reference),
-        None => {
-            app.note = Some("this document has no file to point at".into());
-            Outcome::Redraw
-        }
+    if let Some(reference) = app.reference_at(byte) {
+        return copy_line(app, &reference);
     }
+    app.note = Some("this document has no file to point at".into());
+    Outcome::Redraw
 }
 
 fn copy_section_link(app: &mut App, byte: u32) -> Outcome {
@@ -5370,13 +5463,11 @@ fn copy_section_link(app: &mut App, byte: u32) -> Outcome {
         .last()
         .and_then(|&id| app.doc.fragment_for(id))
         .filter(|f| !f.is_empty());
-    match fragment {
-        Some(f) => copy_line(app, format!("{path}#{f}")),
-        None => {
-            app.note = Some("there is no heading above this to link to".into());
-            Outcome::Redraw
-        }
+    if let Some(f) = fragment {
+        return copy_line(app, &format!("{path}#{f}"));
     }
+    app.note = Some("there is no heading above this to link to".into());
+    Outcome::Redraw
 }
 
 /// The selection as a markdown quote, signed with where it came from:
@@ -7026,7 +7117,11 @@ mod tests {
         a.reload().unwrap();
         assert_eq!(a.view.anchor, anchor, "an append moves nothing");
         assert!(a.layout.total_rows() > rows, "the document grew");
-        assert_eq!(a.note.as_deref(), Some("reloaded"));
+        // The note says what the append was, and where to find it.
+        assert_eq!(
+            a.note.as_deref(),
+            Some("reloaded — 1 change · c goes to it")
+        );
     }
 
     const FOLD_SRC: &str = "\

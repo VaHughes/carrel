@@ -104,6 +104,12 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
 - **A new clickable thing registers itself; it is never re-derived** (`Targets` in `action.rs`).
 - **A new key goes in the help tables, the man page (`contrib/carrel.1`), the completions,
   and the menus** — the guards above will tell you which one you forgot.
+- **A help row is either a key or a sentence, and the list of sentences is written down**
+  (`every_help_row_runs_its_key_or_is_known_to_be_a_sentence`): a row that names a key is a
+  button that presses it, so a new row has to be classified.
+- **A test that reopens a document reuses its state.** Positions and collapsed sections
+  persist, so the second `pty_run` in one scratch folder resumes where the first stopped
+  with the sections it collapsed. Run the control first, or give it a folder of its own.
 - **One word per idea in anything the reader sees.** The 2026-09-21 pass settled the
   vocabulary: *collapse*/*expand* (never fold), *folder* (never directory, library, root,
   place or level), *heading bar* (never breadcrumb), *hint row* (never key hints or hint
@@ -132,12 +138,14 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
 
 - Config: `$XDG_CONFIG_HOME/carrel/config`, `key = value` lines. Keys: `max_width` (90),
   `hyphenate` (true), `theme`, `hints` (true), `titles` (false), `outline_margin` (false), `breadcrumb` (true),
+  `sort` (`newest` | `name` | `read`), `preview` (true),
   `mouse` (true), `root`, `place` (repeats, newest first, capped at eight). Unknown keys ignored.
   The settings pane (`,`) shows all but `mouse`, `root` and `place` with their live values and
   prints the file's path; each row writes through the one existing writer for that setting, so
   the pane never becomes a second place persistence happens.
 - State: `$XDG_STATE_HOME/carrel` — reading positions (`permille`, `words`; the old 3-field
-  form still parses) and bookmarks, per document. `marginalia/<path-hash>.notes` stores
+  form still parses), bookmarks, and `folds` (which sections were left collapsed, by
+  heading fragment), per document. `marginalia/<path-hash>.notes` stores
   notes/highlights with a canonical path guard; `.md` beside it is an explicit export.
   Tests inject scratch state directories. Piped notes stay in memory and export via
   the terminal clipboard; notes never write the document itself.

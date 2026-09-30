@@ -369,6 +369,67 @@ pub fn save_marks_in(dir: &Path, file: &Path, marks: &[u32]) -> std::io::Result<
     write_atomic(&path, &out)
 }
 
+/// The same cap again, for collapsed sections.
+const FOLD_CAP: usize = 500;
+
+/// The sections of `file` that were left collapsed, as the keys
+/// `App::fold_keys` wrote. Never an error.
+///
+/// A file of its own, like `bookmarks` and for its reason: a list that is
+/// edited, beside a position that is only ever overwritten. One document
+/// per line, the path first, then one escaped key per TAB-separated field.
+#[must_use]
+pub fn load_folds_in(dir: &Path, file: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("folds")) else {
+        return Vec::new();
+    };
+    let k = escape_field(&key(file));
+    text.lines()
+        .find_map(|line| {
+            let mut fields = line.split('\t');
+            (fields.next()? == k).then(|| fields.map(unescape_field).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// Replace `file`'s collapsed sections. An empty list removes the entry, so
+/// a document left fully expanded costs the file nothing.
+pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("folds");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let k = escape_field(&key(file));
+    let mut kept: Vec<&str> = existing
+        .lines()
+        .filter(|l| l.split('\t').next() != Some(k.as_str()) && !l.trim().is_empty())
+        .collect();
+    if keys.is_empty() && kept.len() == existing.lines().count() {
+        return Ok(()); // nothing to remove and nothing to add
+    }
+    let room = if keys.is_empty() {
+        FOLD_CAP
+    } else {
+        FOLD_CAP - 1
+    };
+    if kept.len() > room {
+        kept.drain(..kept.len() - room);
+    }
+    let mut out = String::new();
+    for line in kept {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !keys.is_empty() {
+        out.push_str(&k);
+        for key in keys {
+            out.push('\t');
+            out.push_str(&escape_field(key));
+        }
+        out.push('\n');
+    }
+    write_atomic(&path, &out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +520,39 @@ mod tests {
         std::fs::write(dir.path().join("positions"), "garbage\n12\tnotanum\t/x\n").unwrap();
         let f = dir.path().join("doc.md");
         assert_eq!(load_position_in(dir.path(), &f), None);
+    }
+
+    #[test]
+    fn collapsed_sections_round_trip_and_an_empty_list_removes_the_entry() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        let b = d.path().join("b\tweird\nname.md");
+        let keys = vec!["h:setup".to_string(), "d:0:A tab\there".to_string()];
+        save_folds_in(d.path(), &a, &keys).unwrap();
+        save_folds_in(d.path(), &b, &["h:x".to_string()]).unwrap();
+        assert_eq!(load_folds_in(d.path(), &a), keys);
+        assert_eq!(
+            load_folds_in(d.path(), &b),
+            ["h:x"],
+            "a hostile path is one field"
+        );
+
+        save_folds_in(d.path(), &a, &[]).unwrap();
+        assert!(load_folds_in(d.path(), &a).is_empty());
+        assert_eq!(
+            load_folds_in(d.path(), &b),
+            ["h:x"],
+            "the other document stays"
+        );
+        assert!(load_folds_in(d.path(), &d.path().join("never.md")).is_empty());
+        assert!(load_folds_in(&d.path().join("no-such-dir"), &a).is_empty());
+    }
+
+    #[test]
+    fn a_document_with_nothing_collapsed_writes_no_file() {
+        let d = tempfile::tempdir().unwrap();
+        save_folds_in(d.path(), &d.path().join("a.md"), &[]).unwrap();
+        assert!(!d.path().join("folds").exists());
     }
 
     #[test]

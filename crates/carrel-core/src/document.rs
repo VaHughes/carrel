@@ -593,11 +593,10 @@ impl Document {
     #[must_use]
     pub fn line_of(&self, d: DocByte) -> u32 {
         let src = (self.to_src(d).0 as usize).min(self.source.len());
-        self.source.as_bytes()[..src]
-            .iter()
-            .filter(|&&b| b == b'\n')
-            .count() as u32
-            + 1
+        // Bytes, not `str`: a provenance offset inside a substituted run is
+        // not promised to sit on a character boundary. Pieces between
+        // newlines number one more than the newlines, which is the line.
+        self.source.as_bytes()[..src].split(|&b| b == b'\n').count() as u32
     }
 
     /// Whether this link came from `[[wikilink]]` syntax. Wikilink targets

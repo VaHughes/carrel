@@ -43,7 +43,7 @@ records exactly this). Hence:
 5. **Never let the TUI dictate a core type.**
 6. **The TUI's state layer is ratatui-free.** `action`, `app`, `layout`, `view`, `plain`,
    `config`, `scan`, `home`, `images`, `state`, `wiki`, `grep`, `diagrams`, `footer`,
-   `breadcrumb`, `menu`, `marginalia`, `annotation_state`, `tags` never import ratatui, so behavior is tested with no terminal and a
+   `breadcrumb`, `menu`, `marginalia`, `annotation_state`, `tags`, `cli`, `status`, `peek` never import ratatui, so behavior is tested with no terminal and a
    GTK frontend can reuse them verbatim.
 
 `./scripts/check-discipline.sh` enforces 1–4 and 6 mechanically (UI crates, ANSI escapes,
@@ -140,7 +140,9 @@ Key facts that are easy to get wrong:
 | `theme.rs` | The only file with a color. 17 palettes plus `omarchy` (derived from the desktop's `colors.toml`, `omarchy.rs`). |
 | `home.rs`, `scan.rs`, `grep.rs`, `fuzzy.rs` | The home screen: streamed `.gitignore`-aware scan (`ignore` crate, `require_git(false)`), cached index, 2 s rescan while listed, directory picker with path completion and remembered places, fuzzy filter, multi-file content search, frontmatter titles. |
 | `tags.rs` | Frontmatter tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads the head of every scanned entry — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and `render` writes a section per tag with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. No UI dependencies. |
-| `menu.rs`, `footer.rs`, `breadcrumb.rs` | Pure selectors for the right-click/`≡` menus, the lamplight hint row, and the sticky heading band. |
+| `menu.rs`, `footer.rs`, `breadcrumb.rs`, `status.rs` | Pure selectors for the right-click/`≡` menus, the lamplight hint row, the sticky heading band, and the reader's status row (the trail at its left, the chips at its right, and what each drops when the row is short). |
+| `peek.rs` | The footnote peek: its text and its box geometry. Not a pane — it owns no keyboard, and whatever the reader does next closes it and then happens. |
+| `cli.rs` | What the command line meant where that takes judgment: `FILE:LINE` / `FILE#section` (a path that exists is never split), the nearest option or file to a mistyped one, the newest document, and a pasted or dropped path in whatever form the terminal handed it over. |
 | `marginalia.rs`, `annotation_state.rs`, `annotation_render.rs` | Quote/context-anchored notes and highlights, atomic sidecars and Markdown export, modal list/editor state, and the terminal notes pane. The first two modules have no UI dependencies. |
 | `state.rs`, `config.rs` | XDG state (reading positions, bookmarks) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. |
 | `stream.rs` | stdin on a thread with UTF-8 carry across chunks; keys arrive via `/dev/tty` (crossterm's native fallback). |
@@ -199,6 +201,32 @@ Key facts:
   angle brackets, backslash, control characters); `links::resolve_local` tries the name as
   written and then percent-decoded, before the out-of-folder check. Search results and the
   tags page both come through it, because both are built from file names carrel did not choose.
+- **One model for every place a reader can have come from.** `App::location()` is what every
+  departure asks before it leaves: a file is its path, a generated page (`Desk`: search
+  results, the tags page) is a `\0desk/<n>` sentinel with its collapse state remembered, a
+  pipe is `(stdin)`. `history` and `future` hold those; `go_to` returns to any of them.
+  `push_history` empties `future` (a new departure forgets the branch not taken);
+  `go_forward` pushes raw, so it does not. The status row's trail is `status::trail`.
+- **A line number means a line of the file.** `Document::line_start` maps a 1-based source
+  line through the provenance table to the text it displays, and `line_of` is its inverse.
+  `notes.md:42`, a `#L42` link and a search hit's line all go through `jump_to_line`, which
+  goes through `reveal_byte`. (They used to scroll to visual ROW 42.)
+- **What a reload changed is decided by content, not position** (`App::mark_changes`): a
+  block is unchanged if the document as the reader last acknowledged it had one with the
+  same kind and text, counted — so an insertion at the top marks one block, not every block
+  after it, and saves in a row accumulate until `Esc`. A reload also carries collapse state
+  across by name (`fold_keys` / `apply_fold_keys`: a heading's `#fragment`, a `<details>`
+  by place and summary), which is also what `state.rs` persists in `folds`.
+- **Per-document facts are found once, when the document arrives** (`lay_out_new_document`
+  and `find_dead_links`, which every opener reaches): task counts, footnote marks, and
+  which links lead nowhere. Dead links are only ever judged inside the library — a path
+  that leaves it is never probed — and never while a pipe is still arriving.
+  `App::index_links` exists for the one document no opener sees: the file named on the
+  command line.
+- **The event loops own three more threads, one in flight each**: `TagScan` (the tags page),
+  `PreviewLoad` (the head of the file list's highlighted document) and `Siblings` (a walk of
+  the folder every few seconds while a document is open). Each only ever hands `App` a
+  finished answer; `update` still does no I/O.
 - **`App::reveal_byte` is the one gate** for every byte-targeted jump — a fold must never make
   a destination unreachable. Hidden blocks are zero rows and zero gap; `paint_rows` must skip
   them explicitly.

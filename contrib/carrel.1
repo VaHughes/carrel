@@ -214,10 +214,10 @@ Jump to the next task-list item, wrapping. A count jumps that many.
 .TP
 .B y
 Copy the focused code block, without its fence. With nothing focused, the
-nearest code block at or after the top of the screen. The focused block also
-carries a clickable
-.B [copy]
-chip on its trailing blank row.
+nearest code block at or after the top of the screen. Every code block on
+screen also carries a clickable
+.B copy
+chip on the blank row under it, which copies that block.
 .TP
 .B F
 Keep up with the end of a document that is still arriving on a pipe: the view
@@ -308,8 +308,25 @@ Jump to the footnote text of the reference nearest above the view; inside
 the footnote text, back to its first reference.
 Ctrl\-O returns.
 .TP
+.B #
+Tags: the page the home screen's
+.B #
+opens, from inside a document. Ctrl\-O returns.
+.TP
+.B c
+After the file has been rewritten under you: jump to the next block the
+reload changed or added, wrapping. Changed blocks carry a bar in the left
+margin and the status row counts them. They add up across saves, so an
+agent that writes three times has made one set of changes; they are put
+away by
+.BR Esc ,
+or by opening another document. A reload also keeps collapsed sections
+collapsed.
+.TP
 .B Esc
-Clear the selection, the selected link, and any search highlights.
+Clear the selection, the selected link, and any search highlights \(em and
+put away what the status row was announcing: the change marks, and a
+document written beside this one.
 .TP
 .B q
 Close the file, returning to the home screen if it was opened from there;
@@ -354,6 +371,45 @@ heading bar jumps there too, with Ctrl\-O to come back.
 .B link
 Click a link, wherever it is painted \(em no need to select it first. A local
 markdown file opens in the reader; a URL is copied to the clipboard.
+A link whose target is not there \(em a missing file, heading or note \(em
+is dim and struck through. Only links carrel could open are judged: never a
+URL, and never a path that leaves the folder. While the pointer is on a
+link the status row shows where it goes.
+.TP
+.B footnote mark
+Click a
+.B [^mark]
+to read its footnote in a small box where the mark is, without leaving
+the sentence.
+.B Enter
+or the box's button goes to the footnote itself; anything else closes it.
+.TP
+.B tag
+A tag on a document's frontmatter card opens the tags page at that tag.
+.TP
+.B copy
+Under every code block: copy that block.
+.TP
+.B status row
+In the reader it is a row of buttons. At its head,
+.B \[u2039]
+and
+.B \[u203A]
+go back and forward along the documents you have been through, shown only
+when there is somewhere to go. After them the trail itself:
+.B README.md \[u203A] PLAN.md \[u203A] notes.md
+\(em each earlier name goes back to that document, to where you left it. At
+the other end,
+.B 7/12 tasks
+jumps to the next task still open,
+.B 3 changed
+to the next change a reload made, and
+.B \[u25CF] PLAN.md changed
+opens a document that was written in this folder while you were reading.
+A short row drops the least important of these first and the way out last.
+.TP
+.B help row
+A row of the help sheet that names a key does what it says when clicked.
 .TP
 .B collapse marker
 The
@@ -403,6 +459,18 @@ A greyed row says what carrel could do here and declines \(em
 on a document that is not growing, or
 .B Back
 with nothing behind you.
+The menu for what is under the pointer also copies where that is:
+.B Copy path and line
+gives
+.B PLAN.md:42
+and
+.B Copy link to this section
+gives
+.BR PLAN.md#rollout ,
+the path relative to the folder carrel was run from; with text selected,
+.B Copy as a quote
+gives the selection as a quoted block signed with its file, line and
+section. All three are shaped to be pasted into a conversation.
 .TP
 .B path row
 The line under the banner on the home screen is the folder you are
@@ -445,6 +513,8 @@ direction, drops straight back to three, so a correction stays precise.
 Dragging the thumb tracks the pointer and keeps hold of the point on the thumb
 you took it by, so the view does not jump when the hand lands. Clicking the
 empty track pages one screen toward the click rather than teleporting there.
+The track is notched where the document's top\-level sections begin, and
+dotted where a search matched.
 .TP
 .B lamp
 The lamp on the bottom row is a switch: click it to hide the hint row, or to
@@ -507,7 +577,14 @@ Search inside every file; enter opens at the match.
 .B Tab
 reads the hits as a document instead — a section per file with a link per
 match, on the same machinery that reads a diff — so the outline, collapsing and
-a second search all work on the results, and every match jumps to its line.
+a second search all work on the results, and every match jumps to its line
+of the file.
+.B Backspace
+from a hit returns to the results.
+.TP
+.B s
+Change the order of the list: newest first, by name (which keeps a folder's
+documents together), or most recently read first. Remembered.
 .TP
 .B #
 Tags. Reads the frontmatter of every document in the folder and opens what
@@ -567,6 +644,14 @@ are part of the filter.
 .B Mouse
 Click a file to select it, double\-click to open it. The same works in the
 folder browser, and on the results of a file search.
+.PP
+Each row of the list says, where there is room, how far through the document
+you are and how long ago it was written. On a window of 100 columns or more
+the head of the highlighted document is shown beside the list. A path pasted
+or dropped onto the list opens that file \(em
+.B PLAN.md:42
+at the line \(em and a folder becomes the folder listed; while the filter,
+the search or the folder browser is taking typing, a paste is typing.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -686,6 +771,16 @@ Show each document's own title on the home screen \(em
 from its frontmatter, else its first heading \(em instead of its file name.
 Default false; a file with neither keeps its name.
 .TP
+.B sort
+The order of the file list:
+.BR newest " (the default), " name " or " read .
+.B s
+steps through them.
+.TP
+.B preview
+Show the head of the highlighted document beside the file list when the
+window is at least 100 columns wide. Default true.
+.TP
 .B breadcrumb
 The heading bar: the section path pinned atop the page while you scroll,
 with a rule under it.
@@ -730,15 +825,18 @@ restyles an open reader without a restart; carrel does not read the file at
 all while you are on a fixed palette.
 .TP
 .I $XDG_STATE_HOME/carrel
-Two tab\-separated files, written atomically so a crash cannot truncate them.
+Three tab\-separated files, written atomically so a crash cannot truncate them.
 .B positions
 holds reading positions, so a document reopens where you left it;
 .B bookmarks
 holds the bookmarks
 .B m
-sets. Both keep the 500 most recent documents and drop the oldest beyond that
-\(em they are a convenience, not a database. A tab or a newline in a path is
-escaped, so no filename can corrupt either file.
+sets; and
+.B folds
+holds which sections were left collapsed, by heading, so they are collapsed
+when the document is opened again. Each keeps the 500 most recent documents
+and drops the oldest beyond that \(em they are a convenience, not a database.
+A tab or a newline in a path is escaped, so no filename can corrupt a file.
 .TP
 .I $XDG_CACHE_HOME/carrel
 The file index: paths and modification times, nothing else. One

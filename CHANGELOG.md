@@ -4,6 +4,37 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **For the reader beside an agent.** `carrel --latest` opens the document written
+  most recently; `carrel PLAN.md:42` and `PLAN.md#section` open at the place a tool
+  or an agent names. When the file is rewritten under you, the blocks that changed
+  get a bar in the margin, the status row counts them and `c` steps through them;
+  collapsed sections stay collapsed across the reload. A document written beside
+  the one you are reading is offered on the status row. Right-click copies
+  `PLAN.md:42`, a link to the section, or the selection as a quote signed with its
+  source; the notes list copies every note at once. A checklist shows `7/12 tasks`.
+- **A trail.** `Back` gained `Forward`. The status row shows `‹` `›` and the
+  documents you came through, each a button back to itself, and thins by priority
+  on a narrow window instead of going blank. Search results are kept like the tags
+  page, so `Backspace` from a hit returns to them.
+- **More that is clickable.** A footnote mark shows its footnote in place. A tag on
+  the frontmatter card opens the tags page at that tag, and `#` opens the page from
+  inside a document. Every code block has a `copy` chip. A row of the help sheet
+  runs what it describes. Pointing at a link shows where it goes; a link whose
+  file, heading or note is missing is dim and struck through. The scrollbar is
+  notched where sections begin.
+- **The file list.** Each row says how far through the document you are and how
+  long ago it was written. `s` changes the order: newest, by name, recently read.
+  A window of 100 columns or more previews the highlighted document beside the
+  list. A path pasted or dropped onto the list opens it.
+- **Collapsed sections are remembered** per document, by heading.
+- **A mistyped option or file name suggests the one it is near**: `--plian` asks
+  whether you meant `--plain`.
+- **Fixed.** A `#L42` link and a search hit's line meant visual row 42, which is
+  the same place only while nothing wraps; they mean line 42 of the file now. A
+  document named on the command line never had its `[[wikilinks]]` resolved, so
+  they could not be followed from `carrel notes.md`. Four help-sheet descriptions
+  lost their last letter.
+
 - **Hyphenation in narrow windows.** Where the text column is under 70 cells, a
   long word that misses the end of a row is divided to fill it, by TeX's American
   English patterns (`docu-` / `mentation`). Deliberately reluctant: only running

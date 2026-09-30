@@ -180,8 +180,10 @@ fn every_code_block_on_screen_offers_to_be_copied() {
     let app = reader(cols, rows);
     let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     let mut painted = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, &app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     let buf = term.backend().buffer().clone();
 
     let chips: Vec<(BlockIdx, Zone)> = painted

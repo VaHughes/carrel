@@ -70,6 +70,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 | **Everything worth doing is clickable** | Links, headings, collapse markers, the outline, the panes, the hint row along the bottom — click them. Right-click for a menu of what is under the pointer, or press `≡` on the status row for everything else. Carrel is built for people whose way into the terminal was an AI coding agent and who now have a `PLAN.md` to read; they should not have to learn `zR` first. Every key still works, and `--no-mouse` hands the pointer back. |
 | **A comfortable line length** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, collapsible, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
+| **Made for the pane beside an agent** | `carrel --latest` opens what was just written; a reload marks what changed; a right-click copies `PLAN.md:42` or a signed quote to paste back. See [Reading what an agent just wrote](#reading-what-an-agent-just-wrote). |
 | **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename — and walk the tree from the path row above the list, a segment at a time. `#` answers what the folder is *about*: every frontmatter tag, with its documents under it. |
 | **Clickable links** | Click a link, wherever it is painted: a markdown file beside it opens in the reader, and a URL is copied to your clipboard to paste where you want it. In a terminal that supports it, a link is a real hyperlink too; elsewhere it is plain text. Carrel never fetches a URL and never launches a program to open one. |
 | **Correct emoji and wide characters** | Width is measured per visible character, not per code point, so emoji and CJK text line up instead of drifting. |
@@ -149,6 +150,21 @@ content arrives, because positions never depend on the screen. Press `F` to keep
 the end while it grows, and `y` to copy the code block you are looking at
 (`]` and `[` step between them).
 
+## Reading what an agent just wrote
+
+Carrel is built for the person in the next pane from an agent, with a `PLAN.md` to read and
+an answer to give. Several things exist for exactly that:
+
+| | |
+|---|---|
+| **`carrel --latest`** | Opens the document written most recently in the folder — the one the agent just finished, without needing its name. |
+| **`carrel PLAN.md:42`** | Opens at that line of the file; `PLAN.md#rollout` opens at a heading. The form a tool prints, so it can be pasted as printed. |
+| **What a reload changed** | When the file is rewritten under you, the blocks that changed or were added get a bar in the margin and the status row says how many. `c` steps through them; `Esc` puts them away. Collapsed sections stay collapsed. |
+| **Another document appeared** | While you read, a document written beside this one is offered on the status row — `● CHANGELOG.md changed` — and a click opens it. |
+| **Copy a reference** | Right-click → *Copy path and line* gives `docs/PLAN.md:42`; *Copy link to this section* gives `docs/PLAN.md#rollout`. With text selected, *Copy as a quote* gives it as a quoted block signed with its file, line and section. Each is shaped to paste into a prompt. |
+| **Notes as feedback** | Highlight and annotate while you read, then **copy all** from the notes list: every note with the passage it is about, on the clipboard. |
+| **Task progress** | A document with checkboxes shows `7/12 tasks` on the status row; click it for the next one still open. |
+
 ### Diffs, and git's pager
 
 A pipe — or a `.diff` / `.patch` file — is read as a diff when it looks like one: a heading
@@ -186,13 +202,18 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 | **The path row** | The folder you are in, under the banner, spelled as its own segments — `~ / Work / carrel / docs`. Click any one of them to go there; the `↑` at its head goes up one folder, and `Backspace` does the same from the keyboard. |
 | **The `⌂`** | At the left of the reader's status row: back to the file list, rooted at the document's own folder when there is no list behind it to return to. |
 | **Right-click** | A menu for whatever is under the pointer — collapse this section, copy this code block, open or copy this link, cards or columns for this table. Right-click anywhere else, or click the **`≡`** at the end of the status row, and you get the global menu instead. Rows show their shortcut when space permits; short menus scroll with the wheel or their arrow buttons. |
-| **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. |
+| **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. Point at it and the status row says where it goes. A link whose file, heading or note is not there is dim and struck through. |
+| **The status row** | `‹` and `›` go back and forward along the documents you have been through, and the trail names them — `README.md › PLAN.md › notes.md` — each one a button back to itself. |
+| **A footnote mark** | Click a `[^mark]` to read its footnote in place, without leaving the sentence. |
+| **A tag** | On a document's frontmatter card: the tags page, open at that tag. |
+| **A code block** | `copy`, on the row under it. |
+| **A row of the help sheet** | `h` lists what carrel does beside the key that does it. Click a row and it does it. |
 | **A heading, or a `▸` / `▾` in the margin** | Collapses or expands that section, or that `<details>` block. |
 | **The hint row along the bottom** | Every hint is a button and looks like one — `↑/↓ scroll`, `/ search`, `o outline`, `h help`, each a chip on the status bar's surface. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
 | **A row in a pane** | The outline, the bookmark list and both link panes open the row under the pointer. |
 | **The margin outline** | Click a section to jump to it. |
 | **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
-| **The scrollbar** | Drag the thumb, or click the track to jump to that position. The wheel scrolls, and gathers speed if you keep spinning it. |
+| **The scrollbar** | Drag the thumb, or click the track to jump to that position. It is notched where the document's sections begin. The wheel scrolls, and gathers speed if you keep spinning it. |
 | **Hovering** | Whatever the pointer is over lights up, if clicking it would do something. Decoration only — a click always resolves from where it landed. |
 
 The trade is that your terminal's own text selection stops working while carrel has the
@@ -264,6 +285,8 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 |---|---|---|
 | `max_width` | `90` | The line length: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
 | `hyphenate` | `true` | Divide a long word to fill a row where the text column is under 70 cells — English prose only, and the hyphen is never in the text you search or copy. See [Small terminals](#small-terminals). |
+| `sort` | `newest` | The order of the file list: `newest`, `name` (which keeps a folder's documents together) or `read` (what you were reading most recently). `s` steps through them. |
+| `preview` | `true` | Show the head of the highlighted document beside the file list on a window at least 100 columns wide. |
 | `theme` | `terminal`, or `omarchy` where there is one | Palette name — one of the seventeen listed under the example. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` steps to the next one in the app and saves your choice. |
 | `hints` | `true` | The hint row along the bottom. `H` toggles it. |
 | `titles` | `false` | Show each document's own title — `title:` from frontmatter, else its first heading — instead of its file name. Falls back to the name for a file that has neither. |
@@ -464,6 +487,16 @@ The module map, the decisions already made, and the pinned dependencies are in
       only; the hyphen is paint and never enters the text, so search and copy are unchanged
 - [x] Auto-read mode (`A`) — the view scrolls slowly on its own, a line every 300 ms; any deliberate
       motion takes the wheel back, and the end of the document stops it gently
+- [x] For the reader beside an agent — `--latest`, `FILE:LINE`, what a reload changed,
+      a notice when another document is written, and references, quotes and notes copied
+      in the shape a prompt wants
+- [x] A trail: Back gained Forward, the status row names where you have been, and search
+      results are somewhere to come back to
+- [x] Footnotes read in place, dead links struck through, link destinations on hover,
+      section notches on the scrollbar, tags from inside a document
+- [x] A file list that says when and how far, sorts three ways, previews the highlighted
+      document on a wide window, and opens a pasted path
+- [x] A help sheet whose rows are buttons; collapsed sections remembered per document
 - [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 

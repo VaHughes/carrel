@@ -677,6 +677,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::HomeOpenTags
         | A::TagOpen(_)
         | A::Forward
+        | A::HelpRun(_)
         | A::SiblingOpen
         | A::BackTo(_)
         | A::FootnotePeek { .. }
@@ -752,7 +753,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("] [", "next / previous code block"),
     ("X", "jump to the next task"),
     ("y", "copy the code block"),
-    ("click [copy]", "copy the focused block"),
+    ("click copy", "under a code block: copy it"),
     ("F", "keep up as it arrives"),
     ("A", "scroll slowly on its own"),
     ("§", "mouse"),
@@ -763,6 +764,10 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("menu button", "the ≡ on the status row"),
     ("hover", "the thing under it lights"),
     ("click a section", "of the heading bar: go there"),
+    ("click a name", "on the status row: go back"),
+    ("click a [^mark]", "its footnote, in place"),
+    ("click a tag", "on the card: the tags page"),
+    ("click a row", "of this sheet: do it"),
     // Carrel copies through OSC 52, which it writes blind: there is no
     // reply to read, so it CANNOT know whether the terminal took it. It
     // said "copied" either way, and a reader whose terminal drops the
@@ -805,6 +810,105 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("H", "hide / show the hint row"),
     ("q Ctrl-C", "quit"),
 ];
+
+/// The key presses a help row's FIRST key is, or `None` for a row that
+/// describes a gesture or states a fact rather than naming a key.
+///
+/// The help sheet is a list of things carrel does with the key that does
+/// each. A reader who does not know the keys is looking at exactly the list
+/// of things they wanted — so a click on a row does the thing. This is the
+/// translation from what the row prints to what the keyboard would send.
+#[must_use]
+pub fn help_row_keys(key: &str) -> Option<Vec<KeyEvent>> {
+    let press = |code: KeyCode, mods: KeyModifiers| KeyEvent::new(code, mods);
+    let plain = |code: KeyCode| vec![press(code, KeyModifiers::NONE)];
+    let token = key.split_whitespace().next()?;
+    // A row of several words that are not keys is a sentence: "how it
+    // works", "click a tag". Its first word decides.
+    let named = match token {
+        "Space" => Some(KeyCode::Char(' ')),
+        "Enter" => Some(KeyCode::Enter),
+        "Esc" => Some(KeyCode::Esc),
+        "Tab" => Some(KeyCode::Tab),
+        "Backspace" => Some(KeyCode::Backspace),
+        "Home" => Some(KeyCode::Home),
+        "End" => Some(KeyCode::End),
+        "PgDn" => Some(KeyCode::PageDown),
+        "PgUp" => Some(KeyCode::PageUp),
+        "↓" => Some(KeyCode::Down),
+        "↑" => Some(KeyCode::Up),
+        "←" => Some(KeyCode::Left),
+        "→" => Some(KeyCode::Right),
+        "F1" => Some(KeyCode::F(1)),
+        "F3" => Some(KeyCode::F(3)),
+        _ => None,
+    };
+    if let Some(code) = named {
+        return Some(plain(code));
+    }
+    if let Some(rest) = token.strip_prefix("Ctrl-") {
+        // `Ctrl-N/P` names two; the first is the row's key.
+        let c = rest.chars().next()?.to_ascii_lowercase();
+        return Some(vec![press(KeyCode::Char(c), KeyModifiers::CONTROL)]);
+    }
+    if let Some(rest) = token.strip_prefix("Shift-") {
+        let code = match rest {
+            "Tab" => KeyCode::BackTab,
+            "←" => KeyCode::Left,
+            "→" => KeyCode::Right,
+            _ => return None,
+        };
+        return Some(vec![press(code, KeyModifiers::SHIFT)]);
+    }
+    let chars: Vec<char> = token.chars().collect();
+    match chars.as_slice() {
+        // One character is a key.
+        [c] => Some(plain(KeyCode::Char(*c))),
+        // Two are a key only after a prefix: `gg`, `zz`, `za`, `zM`.
+        [p @ ('g' | 'z'), c] => Some(vec![
+            press(KeyCode::Char(*p), KeyModifiers::NONE),
+            press(KeyCode::Char(*c), KeyModifiers::NONE),
+        ]),
+        // Anything longer is a word — `drag`, `click`, `42G` (an example
+        // of a count, not a key to press).
+        _ => None,
+    }
+}
+
+/// What clicking a help row does: the action its first key maps to, through
+/// the same dispatcher a real key press goes through — so a row can never
+/// run something its key does not.
+#[must_use]
+pub fn help_row_action(key: &str, home: bool) -> Option<Action> {
+    // A row whose first word is not a key is a sentence, all of it:
+    // `click a tag` must not be read as the key `a`.
+    help_row_keys(key)?;
+    // Otherwise, the first key of the row that does something HERE. Usually
+    // the first one written; `← Backspace` on the file list is the
+    // exception that makes this a search — `←` belongs to the folder
+    // browser, and `Backspace` is the one that goes up a folder.
+    for (at, _) in key
+        .match_indices(|c: char| !c.is_whitespace())
+        .filter(|(i, _)| *i == 0 || key[..*i].ends_with(char::is_whitespace))
+    {
+        let Some(presses) = help_row_keys(&key[at..]) else {
+            continue;
+        };
+        let mut keys = Keys::new();
+        let mut action = None;
+        for press in presses {
+            action = if home {
+                keys.map_home(press, HomeMode::Normal)
+            } else {
+                keys.map(press, false)
+            };
+        }
+        if action.is_some() {
+            return action;
+        }
+    }
+    None
+}
 
 /// Indices into a help table surviving `filter`: fuzzy over "key
 /// description", best first — the home filter's rule, so the two pickers
@@ -1601,13 +1705,85 @@ mod tests {
         );
     }
 
+    /// Every row of the sheet is either a button or a sentence, and which
+    /// is which is written down. A new row that names a key the parser
+    /// cannot read would otherwise be a row that looks like the others and
+    /// does nothing when clicked.
+    #[test]
+    fn every_help_row_runs_its_key_or_is_known_to_be_a_sentence() {
+        let inert = |table: &[(&'static str, &'static str)], home: bool| -> Vec<&'static str> {
+            table
+                .iter()
+                .filter(|(key, _)| *key != "§")
+                .filter(|(key, _)| help_row_action(key, home).is_none())
+                .map(|(key, _)| *key)
+                .collect()
+        };
+        assert_eq!(
+            inert(READER_HELP, false),
+            [
+                "42G", // an example of a count, not a key
+                "click copy",
+                "drag",
+                "2× click",
+                "wheel",
+                "right-click",
+                "menu button",
+                "hover",
+                "click a section",
+                "click a name",
+                "click a [^mark]",
+                "click a tag",
+                "click a row",
+                "how it works",
+                "if nothing pastes",
+            ]
+        );
+        assert_eq!(
+            inert(HOME_HELP, true),
+            [
+                "click",
+                "double-click",
+                "Tab",   // search results: only while searching
+                "Esc",   // only while typing
+                "Tab →", // the folder browser's
+                "click a segment",
+                "right-click",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_help_row_runs_exactly_what_its_key_runs() {
+        let reader = |key: &str| help_row_action(key, false);
+        assert_eq!(reader("o"), Some(Action::OutlineToggle));
+        assert_eq!(reader("zM zR"), Some(Action::FoldAll), "a two-key sequence");
+        assert_eq!(reader("gg G Home End"), Some(Action::GoToStart));
+        assert_eq!(reader("Ctrl-O"), Some(Action::Back));
+        assert_eq!(
+            reader("Space PgDn PgUp b"),
+            Some(Action::Scroll(Span::Page, 1))
+        );
+        assert_eq!(reader("Tab Shift-Tab"), Some(Action::LinkStep(1)));
+        assert_eq!(reader("\""), Some(Action::MarkListToggle));
+        // The file list: `←` is the folder browser's, so the row's second
+        // key is the one that acts here.
+        assert_eq!(help_row_action("← Backspace", true), Some(Action::HomeUp));
+        assert_eq!(help_row_action("#", true), Some(Action::HomeTags));
+        assert_eq!(help_row_action("1 2 3", true), Some(Action::HomeResume(0)));
+    }
+
     #[test]
     fn every_help_row_fits_the_panel_without_truncating() {
-        // The painter gives rows `4 + 18 + 1` columns of prefix inside a
-        // 52-wide panel: keys get 18 cells, descriptions 29. A row that
-        // doesn't fit silently truncates on screen — this makes it red
-        // instead (it happened: "scroll; drag the bar to jump" once lost
-        // its tail).
+        // The painter gives rows `2 + 18 + 1` cells of prefix inside the 50
+        // inner cells of a 52-wide panel: keys get 18, descriptions 29. A
+        // row that doesn't fit silently truncates on screen — this makes it
+        // red instead. (It happened twice: "scroll; drag the bar to jump"
+        // once lost its tail, and then this comment's own arithmetic was
+        // off by one — the prefix was 22 — so every description written to
+        // the limit of 29 lost its last letter while this test passed.
+        // `tests/help_sheet.rs` checks the painted cells, which is the
+        // check that cannot be wrong about what was painted.)
         for (key, desc) in READER_HELP.iter().chain(HOME_HELP) {
             if *key == "§" {
                 continue;

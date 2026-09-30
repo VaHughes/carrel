@@ -5,6 +5,7 @@
 //! before it leaves (`App::location`). The tests here are about the model
 //! holding when those kinds are mixed.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use carrel::action::Action;
@@ -205,8 +206,10 @@ use ratatui::backend::TestBackend;
 fn painted(app: &App, cols: u16, rows: u16) -> (ratatui::buffer::Buffer, Vec<(Action, Zone)>) {
     let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     let mut p = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, app, &mut p, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, app, &mut p, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     let targets = p
         .targets
         .as_slice()
@@ -389,9 +392,9 @@ fn scrollbar(app: &App, cols: u16, rows: u16) -> Vec<String> {
 fn sections(n: usize, level: &str, body_lines: usize) -> String {
     let mut s = String::new();
     for i in 1..=n {
-        s.push_str(&format!("{level} Section {i}\n\n"));
+        let _ = write!(s, "{level} Section {i}\n\n");
         for j in 0..body_lines {
-            s.push_str(&format!("paragraph {j} of section {i}\n\n"));
+            let _ = write!(s, "paragraph {j} of section {i}\n\n");
         }
     }
     s

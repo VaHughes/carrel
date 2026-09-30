@@ -499,8 +499,10 @@ fn every_tag_on_the_card_is_a_button_on_its_own_word() {
     let app = reader_in(d.path());
     let mut term = Terminal::new(TestBackend::new(70, 40)).unwrap();
     let mut painted = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, &app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     let buf = term.backend().buffer().clone();
     let words: Vec<String> = painted
         .targets

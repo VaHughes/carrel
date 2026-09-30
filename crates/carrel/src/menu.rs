@@ -300,7 +300,7 @@ pub fn global(app: &App) -> Vec<Item> {
             Item::spelled("Quit", "q", Action::Quit),
         ];
     }
-    vec![
+    let mut items = vec![
         // The click-first reader's way back out of a link they followed.
         // `Ctrl-O` is the only route there from the keyboard, and it is not
         // a chord anyone guesses; greyed with nothing to go back to, so the
@@ -309,13 +309,6 @@ pub fn global(app: &App) -> Vec<Item> {
             Item::new("Back", Action::Back).greyed()
         } else {
             Item::new("Back", Action::Back)
-        },
-        // After the file is rewritten under the reader: where. Greyed until
-        // there is a change to go to, so the row still says the way exists.
-        if app.changed.is_empty() {
-            Item::new("Next change", Action::ChangeStep(1)).greyed()
-        } else {
-            Item::new("Next change", Action::ChangeStep(1))
         },
         Item::gap(),
         Item::new("Notes and highlights…", Action::NotesToggle),
@@ -348,7 +341,14 @@ pub fn global(app: &App) -> Vec<Item> {
             Action::CloseFile,
         ),
         Item::new("Quit", Action::Quit),
-    ]
+    ];
+    // After the file is rewritten under the reader: where. Only while there
+    // is a change to go to — this menu is a screenful, and a row that is
+    // greyed nearly always is a row the others pay for.
+    if !app.changed.is_empty() {
+        items.insert(1, Item::new("Next change", Action::ChangeStep(1)));
+    }
+    items
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +496,12 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
             v
         }
     };
+    push_tail(app, byte, &mut items);
+    items
+}
+
+/// The tail every context menu ends with, whatever its head was about.
+fn push_tail(app: &App, byte: u32, items: &mut Vec<Item>) {
     items.push(Item::gap());
     items.push(Item::new("Bookmark here", Action::MarkToggle));
     // Where this is, the way a tool says it — for telling an agent which
@@ -527,7 +533,6 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
     items.push(Item::new("Search…", Action::SearchOpen(Direction::Forward)));
     items.push(Item::new("Outline…", Action::OutlineToggle));
     items.push(Item::new("Bookmarks…", Action::MarkListToggle));
-    items
 }
 
 #[cfg(test)]
@@ -793,6 +798,7 @@ mod tests {
             A::FoldAt(_) => Doc,
             A::FootnotePeek { .. } => Doc, // a click on a `[^mark]`
             A::PeekGo => Pane,             // the peek's own button
+            A::HelpRun(_) => Pane,         // a row of the help sheet
             A::OutlineJumpTo(_) => Doc,    // the margin outline
             A::ScrollTo(_) => Doc,         // the scrollbar
             A::SelectAnchor(_) | A::SelectDrag(_) | A::SelectRelease => Doc,

@@ -391,6 +391,10 @@ pub struct Picker {
     pub browsing: PathBuf,
 }
 
+// Independent on/off facts about one screen — a scan running, a search
+// finished, two display preferences. An enum would invent states that
+// cannot occur, which is `App`'s reasoning for the same allowance.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct Home {
     /// Favourite roots (`place = …` config lines), newest first. Offered
@@ -674,7 +678,8 @@ impl Home {
         match self.sort {
             Sort::Newest => {}
             Sort::Name => {
-                order.sort_by_cached_key(|&i| self.entries[i].path.to_string_lossy().to_lowercase())
+                order
+                    .sort_by_cached_key(|&i| self.entries[i].path.to_string_lossy().to_lowercase());
             }
             Sort::Read => order.sort_by_key(|&i| {
                 self.reading

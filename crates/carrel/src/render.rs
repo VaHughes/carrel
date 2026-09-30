@@ -1142,30 +1142,50 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
 
     let inner_h = usize::from(h - 2);
-    let mut lines = Vec::new();
+    // Each painted line with the table row it belongs to, when that row
+    // names a key that can be pressed for it.
+    let mut lines: Vec<(String, bool, Option<u32>)> = Vec::new();
     for &r in &rows {
         let (key, desc) = table[r];
         let heading = key == "§";
         let label = if heading {
             desc.to_string()
         } else if w >= 52 {
-            format!("   {key:<18} {desc}")
+            // Two cells of indent, eighteen of key, one of gap: 21, leaving
+            // 29 of the panel's 50 inner cells for the description. It was
+            // three cells of indent, which left 28 — and the four rows
+            // written to the documented limit of 29 each lost their last
+            // letter ("back to the previous documen").
+            format!("  {key:<18} {desc}")
         } else {
             format!("{key}  {desc}")
         };
+        let run = (!heading && crate::keys::help_row_action(key, app.is_home()).is_some())
+            .then(|| u32::try_from(r).unwrap_or(u32::MAX));
         if w >= 52 {
-            lines.push((label, heading));
+            lines.push((label, heading, run));
         } else {
             lines.extend(
                 crate::layout::wrap_ui_text(&label, w - 2)
                     .into_iter()
-                    .map(|line| (line, heading)),
+                    .map(|line| (line, heading, run)),
             );
         }
     }
     let scroll = usize::from(app.help.as_ref().map_or(0, |h| h.scroll))
         .min(lines.len().saturating_sub(inner_h));
-    for (i, (line, heading)) in lines.iter().skip(scroll).take(inner_h).enumerate() {
+    for (i, (_, _, run)) in lines.iter().skip(scroll).take(inner_h).enumerate() {
+        // The sheet is a list of things carrel does; a row that names a key
+        // is a button for it. Registered over the row's own painted cells.
+        if let Some(row) = run {
+            targets.push(
+                Action::HelpRun(*row),
+                Zone::new(x + 1, y + 1 + u16::try_from(i).unwrap_or(0), w - 2, 1),
+                Z_OVERLAY,
+            );
+        }
+    }
+    for (i, (line, heading, _)) in lines.iter().skip(scroll).take(inner_h).enumerate() {
         buf.set_stringn(
             x + 1,
             y + 1 + u16::try_from(i).unwrap_or(0),
@@ -3197,75 +3217,7 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
     let buf = frame.buffer_mut();
 
     if home.filtered.is_empty() {
-        // Dead ends say what opens them: an empty library offers the picker,
-        // a starved filter offers to clear itself. Both ride actions the
-        // footer already teaches, so the buttons cannot lie.
-        if home.scanning {
-            buf.set_stringn(
-                area.x + 2,
-                area.y,
-                "Looking…",
-                area.width as usize,
-                theme::dim(),
-            );
-        } else if home.entries.is_empty() {
-            let mut x = area.x + 2;
-            let right = area.x + area.width;
-            put(
-                buf,
-                &mut x,
-                area.y,
-                right,
-                "Nothing to read here. ",
-                theme::dim(),
-            );
-            push_button(
-                buf,
-                targets,
-                &mut x,
-                area.y,
-                right,
-                "[ choose a folder ]",
-                Action::PickerOpen,
-                Z_CHROME,
-            );
-            put(buf, &mut x, area.y, right, "  or  ", theme::dim());
-            // An empty folder is the likeliest place a first run lands —
-            // someone who ran `carrel` to see what it was, somewhere with
-            // no markdown in it. The one thing carrel can always offer
-            // there is something to read.
-            push_button(
-                buf,
-                targets,
-                &mut x,
-                area.y,
-                right,
-                "[ show me how carrel works ]",
-                Action::WelcomeOpen,
-                Z_CHROME,
-            );
-        } else {
-            let mut x = area.x + 2;
-            let right = area.x + area.width;
-            put(
-                buf,
-                &mut x,
-                area.y,
-                right,
-                "No file matches that filter. ",
-                theme::dim(),
-            );
-            push_button(
-                buf,
-                targets,
-                &mut x,
-                area.y,
-                right,
-                "[ clear ]",
-                Action::HomeKey(crate::action::SearchKey::Cancel),
-                Z_CHROME,
-            );
-        }
+        paint_empty_list(buf, home, area, targets);
         return;
     }
 
@@ -3316,6 +3268,84 @@ fn paint_entries(frame: &mut Frame, home: &Home, area: Rect, targets: &mut Targe
             buf.set_stringn(area.x, y, "▸ ", 2, theme::selected());
         }
         buf.set_stringn(area.x + 2, y, &shown, usize::from(name_w), style);
+    }
+}
+
+/// A file list with nothing in it, saying why and what would change that.
+fn paint_empty_list(
+    buf: &mut ratatui::buffer::Buffer,
+    home: &Home,
+    area: Rect,
+    targets: &mut Targets,
+) {
+    // Dead ends say what opens them: an empty library offers the picker,
+    // a starved filter offers to clear itself. Both ride actions the
+    // footer already teaches, so the buttons cannot lie.
+    if home.scanning {
+        buf.set_stringn(
+            area.x + 2,
+            area.y,
+            "Looking…",
+            area.width as usize,
+            theme::dim(),
+        );
+    } else if home.entries.is_empty() {
+        let mut x = area.x + 2;
+        let right = area.x + area.width;
+        put(
+            buf,
+            &mut x,
+            area.y,
+            right,
+            "Nothing to read here. ",
+            theme::dim(),
+        );
+        push_button(
+            buf,
+            targets,
+            &mut x,
+            area.y,
+            right,
+            "[ choose a folder ]",
+            Action::PickerOpen,
+            Z_CHROME,
+        );
+        put(buf, &mut x, area.y, right, "  or  ", theme::dim());
+        // An empty folder is the likeliest place a first run lands —
+        // someone who ran `carrel` to see what it was, somewhere with
+        // no markdown in it. The one thing carrel can always offer
+        // there is something to read.
+        push_button(
+            buf,
+            targets,
+            &mut x,
+            area.y,
+            right,
+            "[ show me how carrel works ]",
+            Action::WelcomeOpen,
+            Z_CHROME,
+        );
+    } else {
+        let mut x = area.x + 2;
+        let right = area.x + area.width;
+        put(
+            buf,
+            &mut x,
+            area.y,
+            right,
+            "No file matches that filter. ",
+            theme::dim(),
+        );
+        push_button(
+            buf,
+            targets,
+            &mut x,
+            area.y,
+            right,
+            "[ clear ]",
+            Action::HomeKey(crate::action::SearchKey::Cancel),
+            Z_CHROME,
+        );
     }
 }
 

@@ -114,8 +114,10 @@ fn a_dead_link_is_struck_through_and_a_live_one_is_not() {
     let (cols, rows) = (100u16, 30u16);
     let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     let mut painted = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, &app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     let buf = term.backend().buffer().clone();
 
     let struck = |label: &str| {
@@ -132,8 +134,7 @@ fn a_dead_link_is_struck_through_and_a_live_one_is_not() {
             .as_slice()
             .iter()
             .find(|t| t.action == Action::LinkOpen(id.0))
-            .map(|t| t.zone)
-            .unwrap_or_else(|| panic!("{label} is not painted"));
+            .map_or_else(|| panic!("{label} is not painted"), |t| t.zone);
         (zone.x..zone.x + zone.w).all(|x| {
             buf[(x, zone.y)]
                 .style()

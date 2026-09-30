@@ -1,6 +1,7 @@
 //! The file list's columns, its order, the preview beside it, and paths
 //! pasted onto it.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -57,8 +58,10 @@ fn names(app: &App) -> Vec<String> {
 fn frame(app: &App, cols: u16, rows: u16) -> (Buffer, carrel::render::Painted) {
     let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     let mut painted = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, app, &mut painted, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     (term.backend().buffer().clone(), painted)
 }
 
@@ -389,7 +392,7 @@ fn a_bare_name_is_a_name_in_the_folder_and_a_line_is_honored() {
     let d = tempfile::tempdir().unwrap();
     let mut body = String::new();
     for i in 1..=80 {
-        body.push_str(&format!("paragraph {i}\n\n"));
+        let _ = write!(body, "paragraph {i}\n\n");
     }
     std::fs::write(d.path().join("long.md"), body).unwrap();
     let mut app = listed(d.path(), 80, 20);

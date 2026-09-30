@@ -295,6 +295,9 @@ pub enum Action {
     /// [`Action::OutlineKey`]: printable keys narrow the sheet, `Cancel`
     /// clears the filter first and closes only when it is already empty.
     HelpKey(SearchKey),
+    /// A click on a row of the help sheet: close the sheet and do what the
+    /// row says, by the key it names. The payload indexes the help table.
+    HelpRun(u32),
     /// Enter: jump to the selected heading and push a history entry, so
     /// `Ctrl-O` returns — an outline jump is a link follow in spirit.
     OutlineJump,

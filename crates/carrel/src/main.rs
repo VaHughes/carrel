@@ -72,6 +72,7 @@ KEYS (home screen):
     i                            filter names: type to narrow, esc to leave
     /                            search inside files, enter opens at a match
     #                            tags: a page of them, each with its documents
+    s                            order: newest, by name, recently read
     gg G                         ends           d     choose a directory
     T                            cycle themes   q     quit
     h F1                         help
@@ -101,13 +102,17 @@ KEYS (while reading):
     H B                          hide the key hints / the breadcrumb
     ] [                          next / previous code block
     X                            jump to the next task
+    c                            after a reload: the next thing it changed
+    #                            tags: a page of them, each with its documents
     y                            copy the code block
     v a                          highlight text / add a note
     V M                          notes list / next note
     Click image or Enter at it   full-screen image; [ ] browse, Esc closes
     F                            follow a document that is still arriving
-    Mouse: click a link, a heading, a fold marker, a row of any list, or
-    any hint along the bottom row. Right-click for a menu of whatever is
+    Mouse: click a link, a heading, a fold marker, a footnote mark, a tag,
+    a row of any list or of the help sheet, or any hint along the bottom
+    row. The status row names the documents behind you; click one to go
+    back to it. Right-click for a menu of whatever is
     under the pointer; the ≡ at the end of the status row opens the global
     one. Drag selects and copies; double-click takes the word, triple-click
     the block. --no-mouse hands the pointer back to your terminal.
@@ -2055,18 +2060,12 @@ impl TagScan {
     }
 }
 
-fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
-    let theme_note = startup_theme();
-    let note = note.or(theme_note);
-    let mut images = Images::detect();
-
-    let mut terminal = ratatui::init();
-    let _guard = TerminalGuard::engage_mouse();
-
-    let size = terminal.size()?;
+/// The file list's `App`, with everything the binary injects into it: where
+/// state lives, the reader's preferences, and what the state file remembers.
+fn home_app(root: &Path, note: Option<String>, size: (u16, u16), images: &Images) -> App {
     // The cache paints before any syscall; the walk refines it.
-    let cached = scan::load_cache(&root);
-    let mut app = App::new_home(root.clone(), cached, size.width, size.height);
+    let cached = scan::load_cache(root);
+    let mut app = App::new_home(root.to_path_buf(), cached, size.0, size.1);
     // What images will actually look like here, for the info card.
     app.image_kind = Some(images.kind());
     app.state_dir = carrel::state::state_dir();
@@ -2078,7 +2077,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         .state_dir
         .as_deref()
         .is_some_and(carrel::state::is_first_run_in);
-    app.library_root = Some(root.clone());
+    app.library_root = Some(root.to_path_buf());
     apply_config(&mut app);
     load_resume(&mut app);
     set_home_prefs(&mut app);
@@ -2089,6 +2088,19 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     {
         h.note = Some(n);
     }
+    app
+}
+
+fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
+    let theme_note = startup_theme();
+    let note = note.or(theme_note);
+    let mut images = Images::detect();
+
+    let mut terminal = ratatui::init();
+    let _guard = TerminalGuard::engage_mouse();
+
+    let size = terminal.size()?;
+    let mut app = home_app(&root, note, (size.width, size.height), &images);
     let mut keys = Keys::new();
     let mut ptr = Pointer::default();
     let mut reloader = Reloader::new();

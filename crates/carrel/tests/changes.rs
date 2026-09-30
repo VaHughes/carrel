@@ -4,6 +4,7 @@
 //! at. "reloaded" tells them something happened; these are about telling
 //! them what, and taking them to it.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use carrel::action::Action;
@@ -138,7 +139,7 @@ fn the_key_walks_the_changes_and_opens_a_collapsed_section_to_reach_one() {
     let (mut app, path) = opened(d.path(), 80, 8);
     let mut src = String::from(BASE);
     for i in 0..30 {
-        src.push_str(&format!("\nfiller {i}\n"));
+        let _ = write!(src, "\nfiller {i}\n");
     }
     rewrite(&mut app, &path, &src);
     app.changed.clear();
@@ -196,8 +197,10 @@ fn a_changed_block_is_barred_in_the_margin_and_counted_on_the_status_row() {
 
     let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     let mut painted = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, &app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     let buf = term.backend().buffer().clone();
     let row = |y: u16| -> String { (0..cols).map(|x| buf[(x, y)].symbol()).collect() };
     let barred: Vec<String> = (0..rows).map(row).filter(|r| r.contains('▎')).collect();
@@ -277,8 +280,10 @@ fn the_chip_opens_the_document_and_back_returns() {
 
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
     let mut painted = carrel::render::Painted::default();
-    term.draw(|f| carrel::render::draw_full(f, &app, &mut painted, &mut Default::default()))
-        .unwrap();
+    term.draw(|f| {
+        carrel::render::draw_full(f, &app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
     let buf = term.backend().buffer().clone();
     let chip = painted
         .targets
