@@ -1119,6 +1119,9 @@ fn the_hyperlink_pass_repaints_links_in_the_themes_own_colour() {
     }
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("doc.md"), "# Head\n\na [link](other.md)\n").unwrap();
+    // The target has to exist: a link that leads nowhere is painted as one,
+    // dim and struck through, and is not handed to the terminal at all.
+    std::fs::write(d.path().join("other.md"), "# Other\n").unwrap();
     std::fs::create_dir_all(d.path().join("cfg/carrel")).unwrap();
     std::fs::write(d.path().join("cfg/carrel/config"), "theme = gruvbox-dark\n").unwrap();
 

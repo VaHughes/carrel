@@ -1916,7 +1916,13 @@ fn paint_row(
                 run_at(tokens, at, row.doc.end, code_base, |t| theme::token(t.kind))
             } else {
                 run_at(&node.inlines, at, row.doc.end, base, |i| {
-                    base.patch(theme::inline(i.style))
+                    let style = base.patch(theme::inline(i.style));
+                    // A link that leads nowhere says so before it is clicked.
+                    if i.link.is_some_and(|id| app.dead_links.contains(&id)) {
+                        style.patch(theme::dead_link())
+                    } else {
+                        style
+                    }
                 })
             };
             let s = &app.doc.text[at as usize..end as usize];
@@ -2023,7 +2029,10 @@ fn paint_row(
                 frame
                     .buffer_mut()
                     .set_style(Rect::new(x0, y, w, 1), theme::link_selected());
-            } else if let Some(id) = inline.link {
+            } else if let Some(id) = inline.link.filter(|id| !app.dead_links.contains(id)) {
+                // (A dead link gets no hyperlink wrapper: handing the
+                // terminal a `file://` that is not there is the same dead
+                // end, moved somewhere carrel cannot explain it.)
                 // A wikilink's stored target is a note name, not a URI: OSC 8
                 // gets a file:// URI when the open-time resolution found the
                 // note, and nothing at all when it didn't — a terminal cannot

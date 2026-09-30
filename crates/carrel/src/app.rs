@@ -297,6 +297,9 @@ pub struct App {
     /// they resolve against the searched root, not the working directory a
     /// pipe uses. Set by opening results, cleared by opening anything else.
     pub results_root: Option<std::path::PathBuf>,
+    /// Links that lead nowhere; see [`Self::find_dead_links`]. Painted
+    /// struck through.
+    pub dead_links: std::collections::HashSet<LinkId>,
     /// `(done, total)` task items; see [`Self::task_counts`].
     task_counts: (u32, u32),
     /// Every generated document opened since the file list, in the order
@@ -726,6 +729,7 @@ impl App {
             config_dir: None,
             launch_dir: None,
             results_root: None,
+            dead_links: std::collections::HashSet::new(),
             task_counts: (0, 0),
             desks: Vec::new(),
             on_desk: None,
@@ -920,6 +924,7 @@ impl App {
             self.home_stash = Some(h);
         }
         self.resolve_wikilinks();
+        self.find_dead_links();
         self.restore_position();
         crate::annotation_state::load(self);
         Ok(())
@@ -1125,6 +1130,7 @@ impl App {
             self.home_stash = Some(h);
         }
         self.resolve_wikilinks();
+        self.find_dead_links();
     }
 
     /// Open the built-in first document.
@@ -1309,6 +1315,7 @@ impl App {
             o.selected = 0; // re-clamped against the new headings on use
         }
         self.resolve_wikilinks();
+        self.find_dead_links();
     }
 
     /// The directory links resolve against: the document's own, the searched
@@ -1539,6 +1546,19 @@ impl App {
         }
     }
 
+    /// Resolve this document's links against the folder it is in.
+    ///
+    /// Every opener does this itself. This is for the ONE document that does
+    /// not come through an opener: the file named on the command line, which
+    /// the binary builds by hand and only then tells where it lives. Without
+    /// it a `[[note]]` in that document answered "no document named 'note'"
+    /// with the note sitting beside it — wikilinks worked from the file list
+    /// and not from `carrel notes.md`.
+    pub fn index_links(&mut self) {
+        self.resolve_wikilinks();
+        self.find_dead_links();
+    }
+
     /// Resolve every `[[wikilink]]` target once per document. One directory
     /// listing plus an in-memory index scan per unique target — cheap, and it
     /// gives the painter a synchronous answer for `file://` hyperlinks.
@@ -1564,6 +1584,113 @@ impl App {
                 self.wiki.insert(id, p);
             }
         }
+    }
+
+    /// Which links lead nowhere, so the painter can say so before a click
+    /// does. Asked once per document, like the wikilinks above — never per
+    /// frame, because the answer is a `stat`.
+    ///
+    /// Only what carrel could open is judged: a relative path inside the
+    /// folder, a `#fragment` in this document, a `[[note]]`. A URL is never
+    /// checked (carrel fetches nothing), and neither is a path that leaves
+    /// the folder — a document is untrusted, and probing wherever it points
+    /// is a thing a reader should not do on its behalf. A pipe that is still
+    /// arriving is not judged either: its links change with every chunk.
+    fn find_dead_links(&mut self) {
+        /// Links judged per document. Past this the rest are left unmarked:
+        /// unknown, not dead.
+        const MAX: usize = 2000;
+        self.dead_links.clear();
+        if self.streaming {
+            return;
+        }
+        let dir = self.doc_dir();
+        for i in 0..self.doc.links.len().min(MAX) {
+            let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
+            let dest = self.doc.links[i].as_ref();
+            let (bare, frag) = match dest.split_once('#') {
+                Some((b, f)) => (b, Some(f)),
+                None => (dest, None),
+            };
+            let dead = if self.doc.is_wikilink(id) {
+                if bare.is_empty() {
+                    // `[[#Heading]]` carries heading text or a slug.
+                    frag.is_some_and(|f| {
+                        self.doc.fragment_target(f).is_none()
+                            && !self.headings().iter().any(|b| {
+                                self.doc
+                                    .block_text(*b)
+                                    .trim()
+                                    .eq_ignore_ascii_case(f.trim())
+                            })
+                    })
+                } else {
+                    !self.wiki.contains_key(&id)
+                }
+            } else if has_scheme(dest) {
+                false
+            } else if bare.is_empty() {
+                frag.is_some_and(|f| {
+                    !f.is_empty()
+                        && line_fragment(f).is_none()
+                        && self.doc.fragment_target(f).is_none()
+                })
+            } else {
+                let target = crate::links::resolve_local(&dir, bare);
+                // `escapes_library` canonicalizes, which needs the target to
+                // exist — so a path that is absent is only called dead when
+                // its lexical form stays inside the folder.
+                !target.exists() && !self.names_outside_library(&target)
+            };
+            if dead {
+                self.dead_links.insert(id);
+            }
+        }
+    }
+
+    /// Does this path, as written, point outside the library? The lexical
+    /// twin of [`Self::escapes_library`], for a target that does not exist
+    /// and so cannot be canonicalized: `..` components are folded by hand.
+    fn names_outside_library(&self, target: &Path) -> bool {
+        let Some(root) = self
+            .library_root
+            .as_deref()
+            .and_then(|r| r.canonicalize().ok())
+        else {
+            return false;
+        };
+        let abs = std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
+        let mut folded = PathBuf::new();
+        for part in abs.components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    folded.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => folded.push(other),
+            }
+        }
+        // The root is canonical; fold the target's existing prefix the same
+        // way so a symlinked folder compares equal to itself.
+        let mut probe = folded.clone();
+        let mut tail = Vec::new();
+        while !probe.exists() {
+            match (
+                probe.file_name().map(std::ffi::OsStr::to_os_string),
+                probe.parent(),
+            ) {
+                (Some(name), Some(parent)) => {
+                    tail.push(name);
+                    probe = parent.to_path_buf();
+                }
+                _ => break,
+            }
+        }
+        let mut real = probe.canonicalize().unwrap_or(probe);
+        for name in tail.into_iter().rev() {
+            real.push(name);
+        }
+        !real.starts_with(&root)
     }
 
     /// Every heading, in reading order, as layout blocks. Derived, never

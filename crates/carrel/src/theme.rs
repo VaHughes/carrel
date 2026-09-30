@@ -1067,6 +1067,15 @@ pub fn link_selected() -> Style {
     tinted(Style::default().fg(p.lsel_fg).bg(p.lsel_bg))
 }
 
+/// A link whose target is not there.
+///
+/// Struck through, which no palette can hide and `NO_COLOR` keeps, and dim
+/// where there is a dim to be: "this goes nowhere" should not need a hue.
+#[must_use]
+pub fn dead_link() -> Style {
+    tinted(Style::default().fg(active().dim)).add_modifier(Modifier::CROSSED_OUT)
+}
+
 /// The thing under the pointer.
 ///
 /// **Modifiers only, never a colour.** A palette-derived background looked

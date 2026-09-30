@@ -1380,6 +1380,9 @@ fn run(
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
     });
+    // The file and its folder are known now, which is what resolving a
+    // `[[note]]` and finding a dead link both needed.
+    app.index_links();
     apply_config(&mut app);
     app.on_resize(app.cols, app.rows);
     // A direct open builds the App by hand rather than via open_path, so the
