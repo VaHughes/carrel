@@ -250,8 +250,9 @@ fn the_newest_other_document_is_the_one_offered() {
         entry(d.path(), "CHANGELOG.md", 250),
     ];
     let reading = d.path().join("PLAN.md").canonicalize().unwrap();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
     assert_eq!(
-        newest_sibling(&entries, &reading, since),
+        newest_sibling(&entries, &reading, since, now),
         Some(Sibling {
             path: d.path().join("CHANGELOG.md"),
             more: 1,
@@ -260,11 +261,33 @@ fn the_newest_other_document_is_the_one_offered() {
     );
     let later = SystemTime::UNIX_EPOCH + Duration::from_secs(400);
     assert_eq!(
-        newest_sibling(&entries, &reading, later),
+        newest_sibling(&entries, &reading, later, now),
         None,
         "nothing new"
     );
-    assert_eq!(newest_sibling(&[], &reading, since), None);
+    assert_eq!(newest_sibling(&[], &reading, since, now), None);
+}
+
+/// A file dated tomorrow is newer than every moment it could be dismissed
+/// at: it was announced as just changed, again, after every `Esc`.
+#[test]
+fn a_document_dated_in_the_future_is_not_news() {
+    let d = tempfile::tempdir().unwrap();
+    let since = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+    let entries = vec![
+        entry(d.path(), "PLAN.md", 50),
+        entry(d.path(), "tomorrow.md", 90_000),
+        entry(d.path(), "fresh.md", 150),
+    ];
+    let reading = d.path().join("PLAN.md").canonicalize().unwrap();
+    assert_eq!(
+        newest_sibling(&entries, &reading, since, now),
+        Some(Sibling {
+            path: d.path().join("fresh.md"),
+            more: 0,
+        })
+    );
 }
 
 #[test]

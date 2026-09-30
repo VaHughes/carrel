@@ -306,9 +306,11 @@ pub fn spans(body: &str) -> Vec<(std::ops::Range<usize>, String)> {
     if tags.is_empty() {
         return Vec::new();
     }
-    // The region: from just after the key's separator to the next top-level
-    // key, or the end.
-    let mut region: Option<std::ops::Range<usize>> = None;
+    // The regions: for each `tags` / `tag` key, from just after its
+    // separator to the next top-level key or the end — minus comments.
+    // Kept as the pieces of text a tag may be found in.
+    let mut pieces: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut inside = false;
     let mut at = 0usize;
     for line in body.split_inclusive('\n') {
         let top_level = !line.starts_with([' ', '\t', '-', ']', '#']) && !line.trim().is_empty();
@@ -316,40 +318,81 @@ pub fn spans(body: &str) -> Vec<(std::ops::Range<usize>, String)> {
             .split_once([':', '='])
             .map(|(k, _)| k.trim())
             .filter(|_| top_level);
-        match (&mut region, key) {
-            (None, Some(k)) if k.eq_ignore_ascii_case("tags") || k.eq_ignore_ascii_case("tag") => {
-                let sep = line.find([':', '=']).unwrap_or(0) + 1;
-                region = Some(at + sep..body.len());
+        let from = match key {
+            Some(k) if k.eq_ignore_ascii_case("tags") || k.eq_ignore_ascii_case("tag") => {
+                inside = true;
+                line.find([':', '=']).unwrap_or(0) + 1
             }
-            (Some(r), Some(_)) => {
-                r.end = at;
-                break;
+            Some(_) => {
+                inside = false;
+                0
             }
-            _ => {}
+            None => 0,
+        };
+        if inside {
+            let kept = uncomment(line).len().max(from);
+            pieces.push(at + from..at + kept);
         }
         at += line.len();
     }
-    let Some(region) = region else {
-        return Vec::new();
-    };
-    let text = &body[region.clone()];
     let mut order: Vec<&String> = tags.iter().collect();
     order.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    let edge = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
     let mut out: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     for tag in order {
-        let edge = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-        let found = text.match_indices(tag.as_str()).find(|(i, m)| {
-            let (s, e) = (region.start + i, region.start + i + m.len());
-            edge(body[..s].chars().next_back())
-                && edge(body[e..].chars().next())
-                && !out.iter().any(|(r, _)| s < r.end && r.start < e)
+        let found = pieces.iter().find_map(|piece| {
+            let text = &body[piece.clone()];
+            let mut from = 0;
+            while let Some((s, e)) = find_spaced(text, tag, from) {
+                let (s, e) = (piece.start + s, piece.start + e);
+                if edge(body[..s].chars().next_back())
+                    && edge(body[e..].chars().next())
+                    && !out.iter().any(|(r, _)| s < r.end && r.start < e)
+                {
+                    return Some(s..e);
+                }
+                from = s - piece.start + 1;
+                while !text.is_char_boundary(from) {
+                    from += 1;
+                }
+            }
+            None
         });
-        if let Some((i, m)) = found {
-            out.push((region.start + i..region.start + i + m.len(), tag.clone()));
+        if let Some(range) = found {
+            out.push((range, tag.clone()));
         }
     }
     out.sort_by_key(|(r, _)| r.start);
     out
+}
+
+/// Find `tag` in `text` at or after `from`, where each space in the tag
+/// stands for any run of whitespace. A tag is stored with its whitespace
+/// collapsed, so `"web  dev"` as written is the tag `web dev` — and unless
+/// it is found as itself, the shorter tag `dev` claims the end of it.
+fn find_spaced(text: &str, tag: &str, from: usize) -> Option<(usize, usize)> {
+    let mut words = tag.split(' ').filter(|w| !w.is_empty());
+    let first = words.next()?;
+    let rest: Vec<&str> = words.collect();
+    let mut search = from;
+    while let Some(i) = text.get(search..)?.find(first) {
+        let start = search + i;
+        let mut end = start + first.len();
+        let whole = rest.iter().all(|word| {
+            let gap = text[end..].len() - text[end..].trim_start().len();
+            if gap > 0 && text[end + gap..].starts_with(word) {
+                end += gap + word.len();
+                true
+            } else {
+                false
+            }
+        });
+        if whole {
+            return Some((start, end));
+        }
+        search = start + first.chars().next().map_or(1, char::len_utf8);
+    }
+    None
 }
 
 /// `line` without a trailing comment. `#` opens one only after whitespace (or
@@ -970,6 +1013,31 @@ mod tests {
             at("tags = [\"notes\", \"#inbox\"]\n"),
             [pair("notes"), pair("inbox")],
             "TOML, and a tag written with its hash is the name after it"
+        );
+        assert_eq!(
+            at("tags: [\"web  dev\", dev, Rust]\n"),
+            [
+                ("web  dev".to_string(), "web dev".to_string()),
+                pair("dev"),
+                pair("Rust")
+            ],
+            "a tag's spaces are its own: `dev` is the second one, not the end of the first"
+        );
+        assert_eq!(
+            at("tags: # about rust\n  - rust\n"),
+            [pair("rust")],
+            "the item"
+        );
+        let body = "tags: # about rust\n  - rust\n";
+        assert_eq!(
+            spans(body)[0].0.start,
+            body.rfind("rust").unwrap(),
+            "not the comment"
+        );
+        assert_eq!(
+            at("tag: rust\ntitle: x\ntags: [web, rust]\n"),
+            [pair("rust"), pair("web")],
+            "both keys are tags"
         );
         assert_eq!(at("tags: [rust, rust]\n").len(), 1, "one tag, one place");
         assert!(at("title: no tags\n").is_empty());

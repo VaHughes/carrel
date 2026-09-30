@@ -759,6 +759,50 @@ fn the_command_line_corrects_a_slip_and_finds_the_newest_document() {
     let (ok, _, err) = run(&["--latest", "PLAN.md"]);
     assert!(!ok && err.contains("is not a folder"), "{err}");
 
+    // A folder saved for the file list is a library chosen once; `--latest`
+    // is about where you are standing. With one saved it answered from
+    // there, and handed back that tree's newest instead of this one's.
+    let elsewhere = d.path().join("library");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("ancient.md"), "from the saved folder\n").unwrap();
+    std::fs::create_dir_all(d.path().join("cfg/carrel")).unwrap();
+    std::fs::write(
+        d.path().join("cfg/carrel/config"),
+        format!("root = {}\n", elsewhere.display()),
+    )
+    .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(elsewhere.join("ancient.md"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - day * 2)
+        .unwrap();
+    let here = d.path().join("proj");
+    std::fs::create_dir_all(&here).unwrap();
+    std::fs::write(here.join("fresh.md"), "written where I stand\n").unwrap();
+    let out = std::process::Command::new(bin)
+        .arg("--latest")
+        .current_dir(&here)
+        .env("XDG_CONFIG_HOME", d.path().join("cfg"))
+        .env("XDG_STATE_HOME", d.path().join("state"))
+        .env("XDG_CACHE_HOME", d.path().join("cache"))
+        .env("HOME", d.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.contains("written where I stand"), "{out}");
+    std::fs::remove_file(d.path().join("cfg/carrel/config")).unwrap();
+
+    // A place is for a reader; a printer takes the file and ignores it.
+    let (ok, out, err) = run(&["--plain", "PLAN.md:1"]);
+    assert!(ok && out.contains("the older plan"), "{err}");
+    // After `--`, everything is a name.
+    std::fs::write(d.path().join("--latest"), "a file with a silly name\n").unwrap();
+    let (ok, out, err) = run(&["--", "--latest"]);
+    assert!(ok && out.contains("a silly name"), "{out}{err}");
+    std::fs::remove_file(d.path().join("--latest")).unwrap();
+
     let (ok, _, err) = run(&["--plian", "PLAN.md"]);
     assert!(!ok);
     assert!(err.contains("did you mean --plain?"), "{err}");

@@ -209,6 +209,7 @@ fn main() -> ExitCode {
     // `--` ends the options, so `carrel -- ./-weird.md` opens a file whose
     // name begins with a dash. Without it such a file was unopenable. Only
     // what precedes it is checked for flags.
+    let had_separator = args.iter().any(|a| a == "--");
     let operands_from = match args.iter().position(|a| a == "--") {
         Some(i) => {
             args.remove(i);
@@ -221,6 +222,22 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     }
+    // Everything after a leading `--` is a name, whatever it looks like:
+    // `carrel -- --latest` opens the file called `--latest`.
+    if had_separator && operands_from == 0 {
+        return match args.as_slice() {
+            [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
+            [file] => open(file, None),
+            [file, pattern] => open(file, Some(pattern)),
+            _ => {
+                eprint!("{USAGE}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    // `--plain PLAN.md:42` prints PLAN.md: the place is for a reader, and
+    // refusing the name an agent printed because of it helps nobody.
+    let file_of = |arg: &str| carrel::cli::split_target(arg).0;
     match args.as_slice() {
         [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
@@ -255,20 +272,20 @@ fn main() -> ExitCode {
             Ok(w) => print_plain_stdin(w),
             Err(code) => code,
         },
-        [flag, file] if flag == "--tasks" => print_tasks(Path::new(file)),
+        [flag, file] if flag == "--tasks" => print_tasks(&file_of(file)),
         [flag, a] if flag == "--render" && a == "-" => print_ansi(None, 80),
         [flag, a, w] if flag == "--render" && a == "-" => match width_arg(w) {
             Ok(w) => print_ansi(None, w),
             Err(code) => code,
         },
-        [flag, file] if flag == "--render" => print_ansi(Some(Path::new(file)), 80),
+        [flag, file] if flag == "--render" => print_ansi(Some(&file_of(file)), 80),
         [flag, file, w] if flag == "--render" => match width_arg(w) {
-            Ok(w) => print_ansi(Some(Path::new(file)), w),
+            Ok(w) => print_ansi(Some(&file_of(file)), w),
             Err(code) => code,
         },
-        [flag, file] if flag == "--plain" => print_plain(Path::new(file), 80),
+        [flag, file] if flag == "--plain" => print_plain(&file_of(file), 80),
         [flag, file, w] if flag == "--plain" => match width_arg(w) {
-            Ok(w) => print_plain(Path::new(file), w),
+            Ok(w) => print_plain(&file_of(file), w),
             Err(code) => code,
         },
         [a] if a == "--latest" => open_latest(None),
@@ -558,8 +575,7 @@ fn load_reading(app: &mut App) {
         })
         .collect();
     if let Some(h) = app.home_mut() {
-        h.reading = reading;
-        h.refilter();
+        h.set_reading(reading);
     }
 }
 
@@ -586,6 +602,10 @@ impl PreviewLoad {
             return;
         };
         let Some(wanted) = h.preview_wanted(cols) else {
+            // Nothing is wanted, so nothing is outstanding: a read left in
+            // flight here kept this "busy", and the loop awake, until a
+            // preview was wanted again.
+            self.rx = None;
             return;
         };
         let Some((_, _, pane_w)) = home::preview_split(cols, h.show_preview) else {
@@ -731,8 +751,6 @@ fn print_plain_stdin(width: u16) -> ExitCode {
 /// and the active root is always on screen.
 /// The folder a bare `carrel` lists, and a note if the saved one is gone.
 ///
-/// One rule for the home screen and for `--latest`, so "the newest document"
-/// is the newest of exactly the documents the home screen would show.
 fn home_root(explicit: Option<&Path>) -> (PathBuf, Option<String>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     match explicit {
@@ -764,13 +782,20 @@ fn open_latest(explicit: Option<&Path>) -> ExitCode {
         eprintln!("carrel: {} is not a folder", dir.display());
         return ExitCode::FAILURE;
     }
-    let (root, _) = home_root(explicit);
+    // Here, or the folder named — never the folder saved for the file
+    // list. That one is "my library", chosen once and possibly long ago;
+    // this is "what was just written where I am standing", and answering it
+    // from another tree handed back a document from 2020.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = explicit.map_or_else(|| cwd.clone(), |p| cwd.join(p));
     let (entries, _) = scan::walk_blocking(&root);
     let Some(newest) = carrel::cli::latest(&entries) else {
         eprintln!("carrel: no markdown documents under {}", root.display());
         return ExitCode::FAILURE;
     };
-    open(&newest.to_string_lossy(), None)
+    // As a path, never through a string: a name that is not UTF-8 is still
+    // a file, and respelling it lossily named one that is not there.
+    open_at(newest, None, None)
 }
 
 fn open_home(explicit: Option<&Path>) -> ExitCode {
@@ -803,7 +828,10 @@ fn open(arg: &str, pattern: Option<&str>) -> ExitCode {
     // `PLAN.md:42` and `README.md#install` name a place in a file; a path
     // that exists as written is never split.
     let (path, start) = carrel::cli::split_target(arg);
-    let path = path.as_path();
+    open_at(&path, start.as_ref(), pattern)
+}
+
+fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str>) -> ExitCode {
     let src = match carrel::app::read_document(path) {
         Ok(s) => s,
         Err(e) => {
@@ -840,7 +868,7 @@ fn open(arg: &str, pattern: Option<&str>) -> ExitCode {
         return emit(&carrel::plain::render(&doc, 80));
     }
 
-    match run(path, &src, start.as_ref()) {
+    match run(path, &src, start) {
         Ok(None) => ExitCode::SUCCESS,
         // The `⌂`: the reader is closed and the terminal restored, so the
         // home screen starts exactly as `carrel <DIR>` would. It is an
@@ -1359,8 +1387,26 @@ struct Pointer {
     /// Where on the scrollbar thumb the hand took hold, while a drag is in
     /// flight. `None` when nothing is being dragged.
     dragging: Option<u16>,
+    /// The button went down in the text and began a selection, so its
+    /// release is that selection's. A release is otherwise the tail of a
+    /// click that already acted — on a link, a chip, a footnote mark — and
+    /// means nothing, however many words are still selected from earlier.
+    selecting: bool,
     clicks: Clicks,
     wheel: Wheel,
+}
+
+impl Pointer {
+    /// The window changed size: every coordinate remembered here belongs to
+    /// a frame that no longer exists. Whether a selection is in flight is
+    /// not a coordinate — the button is still down, and its release in the
+    /// new frame still ends that selection.
+    fn forget_geometry(&mut self) {
+        *self = Self {
+            selecting: self.selecting,
+            ..Self::default()
+        };
+    }
 }
 
 /// Press streak tracking for double/triple click. Presentation state, so it
@@ -1661,7 +1707,7 @@ fn run_loop(
 
         if resize.apply(&mut app) {
             painted.targets.clear();
-            ptr = Pointer::default();
+            ptr.forget_geometry();
         }
     }
     Ok(app.goto_home.take())
@@ -1700,7 +1746,10 @@ fn poll_stream(
             }
         }
     }
-    if grew && app.file.is_none() {
+    // Only while the pipe is what is on screen. A chunk that lands behind a
+    // file, the tags page or search results waits in `piped`; coming back
+    // parses all of it.
+    if grew && app.showing_pipe() {
         app.reload_from(&buf);
         images.for_file = None;
         images.initialized = false;
@@ -1717,7 +1766,7 @@ fn poll_stream(
         app.streaming = false;
         // Nothing left to follow; the lamp says `reading` again.
         app.following = false;
-        if app.file.is_none() {
+        if app.showing_pipe() {
             app.path = "(stdin)".into();
         }
         *stream = None;
@@ -1882,8 +1931,14 @@ const SIBLINGS_EVERY: Duration = Duration::from_secs(4);
 /// or acts on it (the chip); either empties it, and what counts as new is
 /// then measured from that moment.
 struct Siblings {
-    rx: Option<Receiver<Vec<scan::Entry>>>,
+    rx: Option<Receiver<(Vec<scan::Entry>, Duration)>>,
     last: Instant,
+    /// How long to leave between walks: [`SIBLINGS_EVERY`], or longer where
+    /// a walk is slow. The folder is whatever the document happens to live
+    /// in — `carrel ~/notes.md` makes it the whole home directory — and a
+    /// reader sitting on one page must not cost a steady slice of a core.
+    /// Each walk buys a rest twenty-five times its own length.
+    every: Duration,
     /// The document being watched from, canonical, and the time newer
     /// writes are measured against.
     watching: Option<(PathBuf, PathBuf, std::time::SystemTime)>,
@@ -1895,6 +1950,7 @@ impl Siblings {
         Self {
             rx: None,
             last: Instant::now(),
+            every: SIBLINGS_EVERY,
             watching: None,
             reported: false,
         }
@@ -1930,9 +1986,12 @@ impl Siblings {
         };
         if let Some(rx) = self.rx.as_ref() {
             match rx.try_recv() {
-                Ok(entries) => {
+                Ok((entries, took)) => {
                     self.rx = None;
-                    if let Some(sibling) = carrel::app::newest_sibling(&entries, &canon, since) {
+                    self.every = SIBLINGS_EVERY.max(took * 25);
+                    self.last = Instant::now();
+                    if let Some(sibling) = carrel::app::newest_sibling(&entries, &canon, since, now)
+                    {
                         app.sibling = Some(sibling);
                         self.reported = true;
                     }
@@ -1942,14 +2001,16 @@ impl Siblings {
             }
             return;
         }
-        if self.last.elapsed() < SIBLINGS_EVERY {
+        if self.last.elapsed() < self.every {
             return;
         }
         let Some(root) = app.tags_root() else { return };
         self.last = Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(scan::walk_blocking(&root).0);
+            let began = Instant::now();
+            let entries = scan::walk_blocking(&root).0;
+            let _ = tx.send((entries, began.elapsed()));
         });
         self.rx = Some(rx);
     }
@@ -2200,7 +2261,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
 
         if resize.apply(&mut app) {
             painted.targets.clear();
-            ptr = Pointer::default();
+            ptr.forget_geometry();
         }
 
         // The picker changed root: restart the walk against the new one.
@@ -2278,7 +2339,7 @@ impl Resize {
             app.on_resize(size.0, size.1);
         }
         targets.clear();
-        *pointer = Pointer::default();
+        pointer.forget_geometry();
         // Queued mouse coordinates refer to a frame that no longer exists.
         Ok(matches!(event, Event::Mouse(_)))
     }
@@ -2533,6 +2594,9 @@ fn mouse_action(
     use carrel::action::{Action, Span};
     use carrel::keys::{drag_target, thumb_geometry};
 
+    if matches!(m.kind, MouseEventKind::Down(_)) {
+        ptr.selecting = false;
+    }
     if app.lightbox.is_some() {
         return if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
             targets.hit(m.column, m.row).map(|hit| hit.action)
@@ -2623,6 +2687,7 @@ fn mouse_action(
                 return Some(Action::OutlineJumpTo(b));
             }
             let span = doc_span_at(app, m.column, m.row)?;
+            ptr.selecting = true;
             match ptr.clicks.press(m.column, m.row) {
                 2 => Some(Action::SelectWord(span.0)),
                 3 => Some(Action::SelectBlock(span.0)),
@@ -2644,7 +2709,7 @@ fn mouse_action(
                 ptr.dragging = None;
                 None
             } else {
-                Some(Action::SelectRelease)
+                std::mem::take(&mut ptr.selecting).then_some(Action::SelectRelease)
             }
         }
         // Decoration only, and last: every button the pointer could be over
@@ -3108,6 +3173,61 @@ mod tests {
             row,
             modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
         }
+    }
+
+    /// A release belongs to the press it ends. With words still selected
+    /// from earlier, the release of a click on a BUTTON used to arrive as
+    /// "copy the selection": the code block the chip had just copied was
+    /// overwritten by the old word, and the note and the peek the press
+    /// produced were gone before the hand had left the mouse.
+    #[test]
+    fn a_release_is_a_selection_release_only_when_the_press_began_one() {
+        use carrel::action::Action;
+        let src = "Some words here to select.\n\n```sh\ncargo build\n```\n\nafter\n";
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(src), 60, 16);
+        app.breadcrumb = false;
+        app.on_resize(60, 16);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 16)).unwrap();
+        let mut painted = carrel::render::Painted::default();
+        terminal
+            .draw(|frame| carrel::render::draw_full(frame, &app, &mut painted, &mut HashMap::new()))
+            .unwrap();
+        let chip = painted
+            .targets
+            .as_slice()
+            .iter()
+            .find(|t| matches!(t.action, Action::YankBlockAt(_)))
+            .expect("a copy chip")
+            .zone;
+        let mut ptr = Pointer::default();
+        let down = MouseEventKind::Down(MouseButton::Left);
+        let up = MouseEventKind::Up(MouseButton::Left);
+
+        // Words selected earlier and still on screen.
+        app.selection = Some(0..4);
+        let press = mouse_action(
+            mouse(down, chip.x, chip.y),
+            &app,
+            &painted.targets,
+            &mut ptr,
+        );
+        assert!(matches!(press, Some(Action::YankBlockAt(_))), "{press:?}");
+        assert_eq!(
+            mouse_action(mouse(up, chip.x, chip.y), &app, &painted.targets, &mut ptr),
+            None,
+            "the button's click is over; it is not a selection ending"
+        );
+
+        // The control: a press in the text does begin one, and its release
+        // ends it.
+        let (x, y) = (app.text_x_now(), app.text_y());
+        let press = mouse_action(mouse(down, x + 2, y), &app, &painted.targets, &mut ptr);
+        assert!(matches!(press, Some(Action::SelectAnchor(_))), "{press:?}");
+        assert_eq!(
+            mouse_action(mouse(up, x + 2, y), &app, &painted.targets, &mut ptr),
+            Some(Action::SelectRelease)
+        );
     }
 
     #[test]

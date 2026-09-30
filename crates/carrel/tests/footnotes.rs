@@ -60,7 +60,10 @@ fn every_footnote_mark_on_screen_is_a_button_on_its_own_text() {
         .iter()
         .map(|(_, z)| under(&buf, *z))
         .collect();
-    assert_eq!(found, ["[^why]", "[^missing]"]);
+    // `[^missing]` has no footnote. It reads like a mark — and so does the
+    // `[^a-z]` in a sentence about regular expressions — so only a mark with
+    // something to show is a button.
+    assert_eq!(found, ["[^why]"]);
 }
 
 #[test]
@@ -161,9 +164,11 @@ fn going_to_the_footnote_is_the_long_way_and_back_returns() {
 
 #[test]
 fn a_mark_with_no_footnote_says_so_instead_of_opening_an_empty_box() {
+    // Not reachable by a click any more — the mark is not a button — but a
+    // target from an older frame can still name one.
     let mut app = reader(80, 24);
-    let (_, targets) = painted(&app, 80, 24);
-    update(&mut app, marks(&targets)[1].0);
+    let byte = u32::try_from(app.doc.text.find("[^missing]").unwrap()).unwrap();
+    update(&mut app, Action::FootnotePeek { at: (4, 4), byte });
     assert!(app.peek.is_none());
     assert!(app.note.as_deref().unwrap().contains("[^missing]"));
     // A target from a frame the document has outlived is inert.

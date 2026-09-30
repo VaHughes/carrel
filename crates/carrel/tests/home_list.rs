@@ -453,3 +453,93 @@ fn a_paste_while_typing_is_typing() {
     assert!(h.filter.ends_with("a.md"), "{:?}", h.filter);
     let _ = PathBuf::new();
 }
+
+// --- what an independent review found ---
+
+/// Under "recently read", coming back from a document moves it to the top.
+/// The highlight was kept by row, so it was left on whichever file slid into
+/// that row and Enter opened something the reader never chose.
+#[test]
+fn the_highlight_stays_on_its_file_when_reading_reorders_the_list() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = listed(d.path(), 80, 30);
+    let h = app.home_mut().unwrap();
+    while h.sort != Sort::Read {
+        h.cycle_sort();
+    }
+    h.selected = 2;
+    let chosen = h.selected_path().unwrap().to_path_buf();
+    let reading = std::iter::once((
+        chosen.clone(),
+        Reading {
+            permille: 400,
+            rank: 0,
+        },
+    ))
+    .collect();
+    h.set_reading(reading);
+    assert_eq!(h.selected_path(), Some(chosen.as_path()));
+    assert_eq!(h.selected, 0, "and it is the most recently read");
+}
+
+#[test]
+fn a_pasted_parent_is_the_parent_and_not_a_path_with_dots_in_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = listed(d.path(), 80, 30);
+    let sub = d.path().join("sub");
+    paste_on_home(&mut app, &sub.display().to_string());
+    assert_eq!(app.home().unwrap().root, sub);
+    paste_on_home(&mut app, "..");
+    assert_eq!(app.home().unwrap().root, d.path());
+}
+
+/// Replayed a character at a time, every character narrowed the whole list
+/// again: a pasted paragraph froze the screen for a quarter of a minute.
+#[test]
+fn a_paragraph_pasted_into_the_filter_is_one_edit_and_not_two_thousand() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = listed(d.path(), 80, 30);
+    let h = app.home_mut().unwrap();
+    let more: Vec<Entry> = (0..6000)
+        .map(|i| Entry {
+            path: d
+                .path()
+                .join(format!("notes/section-{i:05}-of-the-long-report.md")),
+            mtime: at(1000 + i),
+        })
+        .collect();
+    h.push_many(more);
+    h.finish_scan(0);
+    h.mode = HomeMode::Filter;
+    let prose = "the quick brown fox jumps over the lazy dog and keeps going ".repeat(40);
+    let t = std::time::Instant::now();
+    paste_on_home(&mut app, &prose);
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    let filter = &app.home().unwrap().filter;
+    assert!(prose.starts_with(filter.as_str()) && filter.chars().count() == 256);
+
+    // And the short paste that is the ordinary case lands whole.
+    update(&mut app, Action::HomeKey(SearchKey::Cancel));
+    paste_on_home(&mut app, "section-00042\rsecond line");
+    assert_eq!(app.home().unwrap().filter, "section-00042");
+    assert_eq!(names(&app).len(), 1);
+}
+
+#[test]
+fn turning_the_preview_off_while_reading_reaches_the_list_behind() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = listed(d.path(), 120, 30);
+    assert!(app.home().unwrap().show_preview);
+    update(&mut app, Action::HomeOpen);
+    assert!(!app.is_home());
+    update(&mut app, Action::SettingsToggle);
+    let at = carrel::app::settings_rows(&app)
+        .iter()
+        .position(|r| r.key == carrel::app::Setting::Preview)
+        .unwrap();
+    update(&mut app, Action::SettingsPickAt(u32::try_from(at).unwrap()));
+    update(&mut app, Action::SettingsToggle);
+    update(&mut app, Action::CloseFile);
+    assert!(app.is_home());
+    assert!(!app.home().unwrap().show_preview);
+}

@@ -517,6 +517,10 @@ pub struct Document {
     /// alone and inside their parent's span; the fold layer resolves that,
     /// the same way it resolves nested headings.
     pub details: Box<[DetailsRegion]>,
+    /// Anchors written by hand — `<a id="x">`, `<h2 name="x">` — with the
+    /// doc byte each sits at. The tags themselves are stripped; this is what
+    /// keeps a `#x` link to one working.
+    pub anchors: Box<[(Box<str>, u32)]>,
 }
 
 impl Document {
@@ -592,11 +596,48 @@ impl Document {
     /// The 1-based source line a doc offset came from.
     #[must_use]
     pub fn line_of(&self, d: DocByte) -> u32 {
-        let src = (self.to_src(d).0 as usize).min(self.source.len());
+        let src = (self.line_src(d) as usize).min(self.source.len());
         // Bytes, not `str`: a provenance offset inside a substituted run is
         // not promised to sit on a character boundary. Pieces between
         // newlines number one more than the newlines, which is the line.
         self.source.as_bytes()[..src].split(|&b| b == b'\n').count() as u32
+    }
+
+    /// The source offset that decides which LINE a doc offset is on.
+    ///
+    /// [`Self::to_src`] sends a byte with no source — table padding, the gap
+    /// after a block — to the next run's source, which for the last such
+    /// byte of a block is past the block. For a line number that is the
+    /// wrong neighbour: padding is on the line of the cell it pads. So such
+    /// a byte takes the text before it while that is on the same display
+    /// line, and the text after it once a newline has come between.
+    fn line_src(&self, d: DocByte) -> u32 {
+        let real = |p: &&Prov| p.kind != ProvKind::Synthetic;
+        let i = self.prov.partition_point(|p| p.doc.end <= d.0);
+        if let Some(p) = self.prov.get(i)
+            && real(&p)
+            && p.doc.start <= d.0
+        {
+            return self.to_src(d).0;
+        }
+        let at = (d.0 as usize).min(self.text.len());
+        let prev = self.prov[..i.min(self.prov.len())]
+            .iter()
+            .rev()
+            .find(real)
+            .filter(|p| !self.text.as_bytes()[(p.doc.end as usize).min(at)..at].contains(&b'\n'));
+        let last_of = |p: &Prov| p.src.end.saturating_sub(1).max(p.src.start);
+        if let Some(p) = prev {
+            return last_of(p);
+        }
+        if let Some(p) = self.prov.get(i..).and_then(|rest| rest.iter().find(real)) {
+            return p.src.start;
+        }
+        self.prov
+            .iter()
+            .rev()
+            .find(real)
+            .map_or(self.source.len() as u32, last_of)
     }
 
     /// Whether this link came from `[[wikilink]]` syntax. Wikilink targets
@@ -613,11 +654,30 @@ impl Document {
     /// document order. Byte offsets in, byte offsets out — both frontends
     /// resolve fragments through this one function.
     #[must_use]
+    ///
+    /// A heading is tried first; failing that, an anchor the author wrote by
+    /// hand (`<a id="x">`), which is how a README links into the middle of
+    /// itself.
     pub fn fragment_target(&self, fragment: &str) -> Option<u32> {
         self.heading_slugs()
             .into_iter()
             .find(|(_, slug)| slug == fragment)
             .map(|(id, _)| self.nodes[id.0 as usize].doc.start)
+            .or_else(|| {
+                self.anchors
+                    .iter()
+                    .find(|(name, _)| &**name == fragment)
+                    .map(|(_, at)| {
+                        // The tag was stripped, and what it stood in front
+                        // of may begin after the blank it left behind.
+                        let bytes = self.text.as_bytes();
+                        let mut at = *at as usize;
+                        while bytes.get(at) == Some(&b'\n') {
+                            at += 1;
+                        }
+                        at.min(bytes.len()) as u32
+                    })
+            })
     }
 
     /// The `#fragment` that names `heading` — the inverse of
@@ -632,8 +692,14 @@ impl Document {
     }
 
     /// Every heading with its slug, duplicates numbered in document order.
-    /// The one place the numbering happens.
-    fn heading_slugs(&self) -> Vec<(NodeId, String)> {
+    /// The one place the numbering happens — and it is GitHub's: a duplicate
+    /// is numbered until the result is free, so every slug is unique and a
+    /// heading that already reads "Setup 1" cannot share `setup-1` with the
+    /// second "Setup".
+    ///
+    /// One pass over the nodes. A caller that wants many slugs asks once.
+    #[must_use]
+    pub fn heading_slugs(&self) -> Vec<(NodeId, String)> {
         let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         let mut out = Vec::new();
         for node in &self.nodes {
@@ -642,9 +708,13 @@ impl Document {
             }
             let text = &self.text[node.doc.start as usize..node.doc.end as usize];
             let base = slugify(text);
-            let n = seen.entry(base.clone()).or_insert(0);
-            let slug = if *n == 0 { base } else { format!("{base}-{n}") };
-            *n += 1;
+            let mut slug = base.clone();
+            while seen.contains_key(&slug) {
+                let n = seen.entry(base.clone()).or_insert(0);
+                *n += 1;
+                slug = format!("{base}-{n}");
+            }
+            seen.insert(slug.clone(), 0);
             out.push((node.id, slug));
         }
         out
@@ -1017,6 +1087,40 @@ impl HtmlStrip {
     }
 }
 
+/// The `id="…"` and `name="…"` values in a chunk of raw HTML, in order.
+///
+/// A scan, not a parser: the attribute must follow whitespace inside a tag
+/// and be quoted. Anything stranger is simply not an anchor.
+fn html_anchor_names(html: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(lt) = rest.find('<') {
+        let tag_end = rest[lt..].find('>').map_or(rest.len(), |i| lt + i);
+        let tag = &rest[lt..tag_end];
+        for attr in ["id=", "name="] {
+            let mut from = 0;
+            while let Some(i) = tag[from..].find(attr) {
+                let at = from + i;
+                from = at + attr.len();
+                if !tag[..at].ends_with(|c: char| c.is_ascii_whitespace()) {
+                    continue;
+                }
+                let value = &tag[from..];
+                let Some(quote) = value.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
+                    continue;
+                };
+                if let Some(len) = value[1..].find(quote)
+                    && len > 0
+                {
+                    out.push(&value[1..=len]);
+                }
+            }
+        }
+        rest = &rest[(tag_end + 1).min(rest.len())..];
+    }
+    out
+}
+
 /// GitHub's heading-anchor slug rules, near enough: lowercase; letters,
 /// digits, `-` and `_` survive; spaces become `-`; the rest vanishes.
 fn slugify(text: &str) -> String {
@@ -1072,6 +1176,7 @@ struct Builder<'a> {
     pending_details: Vec<PendingDetails>,
     /// Finished regions, in document order.
     details: Vec<DetailsRegion>,
+    anchors: Vec<(Box<str>, u32)>,
     /// Enclosing GFM alerts, innermost last (alerts can nest, in principle).
     alerts: Vec<AlertKind>,
     /// The column each enclosing quote's bar sits at, outermost first.
@@ -1110,6 +1215,7 @@ impl<'a> Builder<'a> {
             html: HtmlStrip::default(),
             pending_details: Vec::new(),
             details: Vec::new(),
+            anchors: Vec::new(),
             alerts: Vec::new(),
             quote_cols: Vec::new(),
             footnote: None,
@@ -1820,7 +1926,16 @@ impl<'a> Builder<'a> {
                     ..
                 }) => {
                     self.current_link = Some(LinkId(self.links.len() as u32));
-                    self.links.push(dest_url.into_string().into_boxed_str());
+                    // `<me@example.com>` arrives as the bare address, which
+                    // every consumer of the table would read as a file name.
+                    let dest = if matches!(link_type, LinkType::Email)
+                        && !dest_url.starts_with("mailto:")
+                    {
+                        format!("mailto:{dest_url}")
+                    } else {
+                        dest_url.into_string()
+                    };
+                    self.links.push(dest.into_boxed_str());
                     self.wiki
                         .push(matches!(link_type, LinkType::WikiLink { .. }));
                     self.style = self.style.insert(Style::LINK);
@@ -1941,6 +2056,9 @@ impl<'a> Builder<'a> {
                     // panic, and in release a wrapped offset that
                     // `details_mark` then sliced `self.text` with.
                     let before = self.text.len();
+                    for name in html_anchor_names(&t) {
+                        self.anchors.push((name.into(), before as u32));
+                    }
                     if kept > 0 {
                         self.push(&out, src, ProvKind::Substituted);
                     }
@@ -2011,6 +2129,7 @@ impl<'a> Builder<'a> {
             wiki: self.wiki.into_boxed_slice(),
             prov: self.prov.into_boxed_slice(),
             details: self.details.into_boxed_slice(),
+            anchors: self.anchors.into_boxed_slice(),
         }
     }
 }

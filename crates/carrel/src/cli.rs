@@ -84,9 +84,17 @@ fn line_suffix(arg: &str) -> Option<(&str, u32)> {
 /// else. The first line only — a paste with several is not a path — and
 /// `None` for anything that is not plausibly one, so a paragraph pasted by
 /// accident does not become a "no such file" about its own first sentence.
+///
+/// `dir` is the folder being listed: a bare name with no extension is a
+/// path when it names something there.
 #[must_use]
-pub fn pasted_path(text: &str) -> Option<String> {
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+pub fn pasted_path(text: &str, dir: &Path) -> Option<String> {
+    // A terminal sends a bare CR between the lines of a paste, which
+    // `str::lines` does not split on.
+    let line = text
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
     if line.len() > 4096 || line.chars().any(char::is_control) {
         return None;
     }
@@ -97,7 +105,14 @@ pub fn pasted_path(text: &str) -> Option<String> {
         line[1..line.len() - 1].to_string()
     } else if let Some(rest) = line.strip_prefix("file://") {
         // `file:///home/x` and `file://localhost/home/x` both mean `/home/x`.
-        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        // Any other host is another machine's file, not a path here.
+        let rest = rest
+            .strip_prefix("localhost")
+            .filter(|r| r.starts_with('/'))
+            .unwrap_or(rest);
+        if !rest.starts_with('/') {
+            return None;
+        }
         crate::links::percent_decoded(rest).unwrap_or_else(|| rest.to_string())
     } else {
         // A shell-escaped drop: `/my\ notes/a.md`.
@@ -111,7 +126,8 @@ pub fn pasted_path(text: &str) -> Option<String> {
         }
         out
     };
-    if path.is_empty() {
+    // Again, now that it is decoded: `%0a` is a newline too.
+    if path.is_empty() || path.chars().any(char::is_control) {
         return None;
     }
     if path == "~" || path.starts_with("~/") {
@@ -123,7 +139,7 @@ pub fn pasted_path(text: &str) -> Option<String> {
     // single name with an extension.
     let looks_like_a_path = path.contains('/')
         || (!path.contains(' ') && path.contains('.'))
-        || Path::new(&path).exists();
+        || dir.join(&path).exists();
     looks_like_a_path.then_some(path)
 }
 
@@ -298,7 +314,7 @@ mod tests {
 
     #[test]
     fn a_pasted_path_is_read_however_it_was_handed_over() {
-        let p = |s: &str| pasted_path(s);
+        let p = |s: &str| pasted_path(s, Path::new("/nowhere"));
         assert_eq!(p("/w/notes/PLAN.md").as_deref(), Some("/w/notes/PLAN.md"));
         assert_eq!(p("  /w/PLAN.md \n").as_deref(), Some("/w/PLAN.md"));
         assert_eq!(p("'/w/my notes/a.md'").as_deref(), Some("/w/my notes/a.md"));
@@ -321,6 +337,28 @@ mod tests {
             p("docs/PLAN.md\nsecond line").as_deref(),
             Some("docs/PLAN.md")
         );
+        // What a terminal actually sends between pasted lines is a bare CR.
+        assert_eq!(
+            p("docs/PLAN.md\rsecond line").as_deref(),
+            Some("docs/PLAN.md")
+        );
+    }
+
+    #[test]
+    fn a_file_url_for_another_machine_is_not_a_path_on_this_one() {
+        let p = |s: &str| pasted_path(s, Path::new("/nowhere"));
+        assert_eq!(p("file://host/etc/x.md"), None);
+        assert_eq!(p("file://localhostess/x.md"), None);
+        // An encoded control character is still a control character.
+        assert_eq!(p("file:///x/%0a.md"), None);
+    }
+
+    #[test]
+    fn a_bare_name_is_a_path_when_it_is_in_the_folder_being_listed() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("LICENSE"), "x").unwrap();
+        assert_eq!(pasted_path("LICENSE", d.path()).as_deref(), Some("LICENSE"));
+        assert_eq!(pasted_path("NOTICE", d.path()), None);
     }
 
     #[test]
@@ -332,9 +370,13 @@ mod tests {
             "hello",
             "a\u{7}b.md",
         ] {
-            assert_eq!(pasted_path(not), None, "{not:?}");
+            assert_eq!(pasted_path(not, Path::new("/nowhere")), None, "{not:?}");
         }
-        assert_eq!(pasted_path(&"x/".repeat(5000)), None, "absurdly long");
+        assert_eq!(
+            pasted_path(&"x/".repeat(5000), Path::new("/nowhere")),
+            None,
+            "absurdly long"
+        );
     }
 
     #[test]

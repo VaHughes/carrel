@@ -371,3 +371,72 @@ fn a_heading_knows_the_fragment_that_names_it() {
         );
     }
 }
+
+/// GitHub numbers a duplicate until the result is free, so a heading that
+/// already reads "Setup 1" does not collide with the second "Setup". Counting
+/// per base gave both `setup-1`: a link to the third landed on the second,
+/// and a collapsed "Setup 1" came back as a collapsed "Setup".
+#[test]
+fn a_numbered_duplicate_never_collides_with_a_heading_that_reads_the_same() {
+    let doc = Document::parse("# Setup\n\n# Setup\n\n# Setup 1\n\n# Setup\n");
+    let slugs: Vec<String> = doc.heading_slugs().into_iter().map(|(_, s)| s).collect();
+    assert_eq!(slugs, ["setup", "setup-1", "setup-1-1", "setup-2"]);
+    for (id, slug) in doc.heading_slugs() {
+        assert_eq!(
+            doc.fragment_target(&slug),
+            Some(doc.nodes[id.0 as usize].doc.start),
+            "{slug} resolves to its own heading"
+        );
+    }
+}
+
+/// Table padding and the gap after a block have no source of their own, and
+/// were sent to the source position AFTER the block: every padded cell of
+/// every row reported the line under the table.
+#[test]
+fn a_byte_with_no_source_is_on_the_line_of_the_text_beside_it() {
+    let src = "# T\n\n| Name | Value |\n|------|------:|\n| a | 1 |\n| longer name | 22 |\n| c | 3 |\n\nafter\n\nlast\n";
+    let doc = Document::parse(src);
+    let table = doc.text.find("Name").unwrap();
+    let end = table
+        + doc.text[table..doc.text.find("after").unwrap()]
+            .trim_end()
+            .len();
+    let mut at = table;
+    let mut seen = Vec::new();
+    for row in doc.text[table..end].split('\n') {
+        let lines: std::collections::BTreeSet<u32> = (at..at + row.len())
+            .map(|b| doc.line_of(carrel_core::DocByte(b as u32)))
+            .collect();
+        assert_eq!(lines.len(), 1, "one row, one line: {row:?} gave {lines:?}");
+        seen.extend(lines);
+        at += row.len() + 1;
+    }
+    assert_eq!(seen, [3, 5, 6, 7]);
+    // Just past the end of a paragraph is still that paragraph's line.
+    let after = doc.text.find("after").unwrap() + "after".len();
+    assert_eq!(doc.line_of(carrel_core::DocByte(after as u32)), 9);
+}
+
+#[test]
+fn an_html_anchor_is_a_place_a_fragment_can_name() {
+    let doc = Document::parse(
+        "# Top\n\n[go](#deep)\n\nfiller\n\n<a id=\"deep\"></a>\n\nThe place.\n\n<a name='older'></a>\n\nOlder style.\n",
+    );
+    let at = doc.fragment_target("deep").expect("an id is an anchor") as usize;
+    assert!(
+        doc.text[at..].starts_with("The place."),
+        "{:?}",
+        &doc.text[at..]
+    );
+    let at = doc.fragment_target("older").expect("so is a name") as usize;
+    assert!(doc.text[at..].starts_with("Older style."));
+    assert_eq!(doc.fragment_target("absent"), None);
+}
+
+#[test]
+fn an_email_autolink_is_a_mailto_and_not_a_file_name() {
+    let doc = Document::parse("<me@example.com> and <https://example.com>\n");
+    let links: Vec<&str> = doc.links.iter().map(AsRef::as_ref).collect();
+    assert_eq!(links, ["mailto:me@example.com", "https://example.com"]);
+}

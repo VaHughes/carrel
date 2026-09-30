@@ -322,6 +322,9 @@ pub struct App {
     /// What the document's blocks were when the reader last acknowledged
     /// them; reloads are compared against this. See [`Self::reload`].
     change_base: Option<HashMap<u64, u32>>,
+    /// The entry the last `c` or `X` landed on, and the row the view was
+    /// left at. See [`Self::step_index`].
+    step_cursor: Option<(StepKind, usize, u32)>,
     /// A document written beside this one since it was opened, for the
     /// status row to offer. Set by the event loop's watcher, never by
     /// `update`, which does no I/O.
@@ -773,6 +776,7 @@ impl App {
             peek: None,
             footnote_marks: Vec::new(),
             dead_links: std::collections::HashSet::new(),
+            step_cursor: None,
             task_counts: (0, 0),
             desks: Vec::new(),
             on_desk: None,
@@ -860,6 +864,16 @@ impl App {
         }
     }
 
+    /// The file list wherever it is: in front, or put aside behind a
+    /// document. A preference changed while reading is the list's too, and
+    /// the list that comes back on `q` is the one that was put aside.
+    fn home_anywhere_mut(&mut self) -> Option<&mut Home> {
+        match &mut self.screen {
+            Screen::Home(h) => Some(h),
+            Screen::Reader => self.home_stash.as_deref_mut(),
+        }
+    }
+
     /// Persist the current reading position — anchor 0 clears the entry.
     /// Quietly does nothing without a state dir (tests) or a file (home).
     fn save_position(&self) {
@@ -921,9 +935,7 @@ impl App {
     pub fn open_path(&mut self, path: &Path) -> std::io::Result<()> {
         self.save_position();
         let src = read_document(path)?;
-        if self.file.is_none() && self.piped.is_some() {
-            self.piped_notes.clone_from(&self.notes.entries);
-        }
+        self.stash_piped_notes();
         // A `.md` file is never sniffed; `.diff`/`.patch` always are. Set
         // before parsing, because `parse_adapting` reads it.
         self.diff_ok = self.diff_forced.unwrap_or_else(|| {
@@ -1055,6 +1067,11 @@ impl App {
             .iter()
             .position(|g| g.name.to_lowercase() == wanted)
         else {
+            // The document the tag was clicked in is not one of the ones
+            // listed (it is ignored, or outside the folder), and nothing
+            // that is listed shares the tag. Say so, rather than open a
+            // page that silently has no such section.
+            self.note = Some(format!("no listed document is tagged {tag}"));
             return;
         };
         let Some((id, at)) = self
@@ -1164,6 +1181,27 @@ impl App {
             .then(|| (PathBuf::from("(stdin)"), anchor))
     }
 
+    /// A pipe's notes live only in memory, so they are put aside whenever
+    /// the pipe leaves the screen — for a file, a generated page or the
+    /// welcome page alike — and only then: the notes of a page opened FROM
+    /// the pipe are not the pipe's.
+    fn stash_piped_notes(&mut self) {
+        if self.showing_pipe() {
+            self.piped_notes.clone_from(&self.notes.entries);
+        }
+    }
+
+    /// Is the document on screen the pipe itself? Not merely "no file": a
+    /// generated page and the welcome page are pathless too, and a chunk
+    /// that lands while one of them is up belongs to the pipe behind it.
+    #[must_use]
+    pub fn showing_pipe(&self) -> bool {
+        self.file.is_none()
+            && self.on_desk.is_none()
+            && self.piped.is_some()
+            && self.path.starts_with("(stdin")
+    }
+
     /// Come back to a [`Desk`] the trail left behind, as it was left.
     fn reopen_desk(&mut self, i: usize, anchor: u32) -> bool {
         let Some(desk) = self.desks.get(i).cloned() else {
@@ -1186,11 +1224,14 @@ impl App {
     /// links resolve against `root`.
     fn open_generated(&mut self, root: &Path, label: String, src: &str) {
         self.save_position();
+        self.stash_piped_notes();
         // Generated markdown, never sniffed as a diff: it is already one.
         self.diff_ok = false;
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
-        self.load_marks();
+        // A generated page has no bookmarks of its own, and must not show
+        // the ones of the file it was opened from.
+        self.marks.clear();
         self.mtime = None;
         self.matches = None;
         self.forward = None;
@@ -1227,6 +1268,7 @@ impl App {
     /// honest way to explain it is to hand the reader something to read.
     pub fn open_welcome(&mut self) {
         self.save_position();
+        self.stash_piped_notes();
         self.diff_ok = false;
         self.table_offsets.clear();
         self.doc = self.parse_adapting(WELCOME);
@@ -1237,6 +1279,7 @@ impl App {
         self.view = ViewState::new();
         self.path = "how carrel works".into();
         self.file = None;
+        self.on_desk = None;
         self.notes = crate::annotation_state::Notes::default();
         self.results_root = None;
         self.forget_derived_state();
@@ -1294,6 +1337,8 @@ impl App {
     /// thousand is a leak.
     fn push_history(&mut self, from: PathBuf, anchor: u32) {
         const HISTORY_CAP: usize = 256;
+        // A new departure: the way forward that `Back` left is gone.
+        self.future.clear();
         // Repeated `%` between the same two points would otherwise push a
         // duplicate per press.
         if self
@@ -1307,8 +1352,62 @@ impl App {
             self.history.remove(0);
         }
         self.history.push((from, anchor));
-        // A new departure: the way forward that `Back` left is gone.
-        self.future.clear();
+    }
+
+    /// Put the view back on a place the trail remembered.
+    ///
+    /// The anchor is a doc byte, so the position returns through the same
+    /// stable-viewport path as a resize — but the document may not be the
+    /// one the byte was taken from. It may have been rewritten shorter, so
+    /// the byte is held inside the text; and opening it restored the
+    /// sections that were left collapsed, so the place is expanded to, like
+    /// every other destination. Back used to land inside a collapsed
+    /// section: the top of a document with the place it meant at no height.
+    fn land_on(&mut self, anchor: u32, h: u16) {
+        let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let anchor = anchor.min(last);
+        if self.unfold_to(anchor) {
+            self.relayout();
+        }
+        self.view.anchor = anchor;
+        self.view.restore(&self.doc, &self.layout, h);
+    }
+
+    /// Which entry a step through a list of places lands on.
+    ///
+    /// `after` is how many entries sit at or before the top of the view and
+    /// `before` how many sit strictly before it; from those the step is "the
+    /// first one past the top, then the rest of the count", wrapping. But
+    /// the top of the view cannot say where you are once the view has
+    /// stopped moving: the last screenful of a document holds several
+    /// entries and scrolling to any of them leaves the same row on top, so
+    /// the step landed on the first of them forever. While the view is
+    /// where the last step left it, the step counts from that step instead.
+    fn step_index(&self, kind: StepKind, n: i32, len: usize, after: usize, before: usize) -> usize {
+        let count = usize::try_from(n.unsigned_abs()).unwrap_or(1).max(1);
+        let cursor = self
+            .step_cursor
+            .filter(|(k, i, row)| *k == kind && *i < len && *row == self.view.scroll_row)
+            .map(|(_, i, _)| i);
+        if n >= 0 {
+            (cursor.map_or(after, |i| i + 1) + count - 1) % len
+        } else {
+            // The last entry strictly before — `len - 1` when there is none,
+            // which is the wrap — then back the rest.
+            let last_before = cursor.unwrap_or(before) + len - 1;
+            (last_before % len + len - ((count - 1) % len)) % len
+        }
+    }
+
+    /// Remember this place before a jump inside the document, so `Back`
+    /// returns to it. Whatever is on screen — a file, a pipe, a generated
+    /// page — is named by the one function that names places; a jump in a
+    /// pipe used to push an empty path, and `Back` said it could not go
+    /// back to nothing.
+    fn push_here(&mut self) {
+        if let Some((from, anchor)) = self.location() {
+            self.push_history(from, anchor);
+        }
     }
 
     /// Forget every piece of state whose bytes or block indices belong to a
@@ -1339,6 +1438,7 @@ impl App {
         self.diagram_art.clear();
         self.changed.clear();
         self.change_base = None;
+        self.step_cursor = None;
     }
 
     /// Re-read the open file in place: same document identity, new content.
@@ -1752,7 +1852,33 @@ impl App {
         if self.streaming {
             return;
         }
+        // Asked once, not once per link: a table of contents is hundreds of
+        // fragments, and each of these walks every heading.
+        let slugs: std::collections::HashSet<String> = self
+            .doc
+            .heading_slugs()
+            .into_iter()
+            .map(|(_, slug)| slug)
+            .collect();
+        let named =
+            |f: &str| slugs.contains(f) || self.doc.anchors.iter().any(|(name, _)| &**name == f);
+        let fragment_lives =
+            |f: &str| named(f) || crate::links::percent_decoded(f).is_some_and(|d| named(&d));
+        let titles: std::collections::HashSet<String> = self
+            .headings()
+            .iter()
+            .map(|b| self.doc.block_text(*b).trim().to_ascii_lowercase())
+            .collect();
         let dir = self.doc_dir();
+        let dir = dir
+            .canonicalize()
+            .or_else(|_| std::path::absolute(&dir))
+            .unwrap_or(dir);
+        let root = self
+            .library_root
+            .as_deref()
+            .and_then(|r| r.canonicalize().ok());
+        let mut dead = std::collections::HashSet::new();
         for i in 0..self.doc.links.len().min(MAX) {
             let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
             let dest = self.doc.links[i].as_ref();
@@ -1760,17 +1886,11 @@ impl App {
                 Some((b, f)) => (b, Some(f)),
                 None => (dest, None),
             };
-            let dead = if self.doc.is_wikilink(id) {
+            let is_dead = if self.doc.is_wikilink(id) {
                 if bare.is_empty() {
                     // `[[#Heading]]` carries heading text or a slug.
                     frag.is_some_and(|f| {
-                        self.doc.fragment_target(f).is_none()
-                            && !self.headings().iter().any(|b| {
-                                self.doc
-                                    .block_text(*b)
-                                    .trim()
-                                    .eq_ignore_ascii_case(f.trim())
-                            })
+                        !fragment_lives(f) && !titles.contains(&f.trim().to_ascii_lowercase())
                     })
                 } else {
                     !self.wiki.contains_key(&id)
@@ -1779,66 +1899,29 @@ impl App {
                 false
             } else if bare.is_empty() {
                 frag.is_some_and(|f| {
-                    !f.is_empty()
-                        && line_fragment(f).is_none()
-                        && self.doc.fragment_target(f).is_none()
+                    !f.is_empty() && line_fragment(f).is_none() && !fragment_lives(f)
                 })
             } else {
-                let target = crate::links::resolve_local(&dir, bare);
-                // `escapes_library` canonicalizes, which needs the target to
-                // exist — so a path that is absent is only called dead when
-                // its lexical form stays inside the folder.
-                !target.exists() && !self.names_outside_library(&target)
+                // Every name the link might mean, folded WITHOUT touching the
+                // disk. If any of them leaves the folder the link is not
+                // looked at — not judged, and not probed either: a document
+                // is untrusted, and a `stat` of wherever it points (a network
+                // mount, another user's files) is a thing it should not be
+                // able to make a reader do by being opened.
+                let paths: Vec<PathBuf> = crate::links::candidates(bare)
+                    .iter()
+                    .map(|n| fold_lexically(&dir.join(n)))
+                    .collect();
+                let inside = root
+                    .as_ref()
+                    .is_none_or(|root| paths.iter().all(|n| n.starts_with(root)));
+                inside && !paths.iter().any(|n| n.exists())
             };
-            if dead {
-                self.dead_links.insert(id);
+            if is_dead {
+                dead.insert(id);
             }
         }
-    }
-
-    /// Does this path, as written, point outside the library? The lexical
-    /// twin of [`Self::escapes_library`], for a target that does not exist
-    /// and so cannot be canonicalized: `..` components are folded by hand.
-    fn names_outside_library(&self, target: &Path) -> bool {
-        let Some(root) = self
-            .library_root
-            .as_deref()
-            .and_then(|r| r.canonicalize().ok())
-        else {
-            return false;
-        };
-        let abs = std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
-        let mut folded = PathBuf::new();
-        for part in abs.components() {
-            match part {
-                std::path::Component::ParentDir => {
-                    folded.pop();
-                }
-                std::path::Component::CurDir => {}
-                other => folded.push(other),
-            }
-        }
-        // The root is canonical; fold the target's existing prefix the same
-        // way so a symlinked folder compares equal to itself.
-        let mut probe = folded.clone();
-        let mut tail = Vec::new();
-        while !probe.exists() {
-            match (
-                probe.file_name().map(std::ffi::OsStr::to_os_string),
-                probe.parent(),
-            ) {
-                (Some(name), Some(parent)) => {
-                    tail.push(name);
-                    probe = parent.to_path_buf();
-                }
-                _ => break,
-            }
-        }
-        let mut real = probe.canonicalize().unwrap_or(probe);
-        for name in tail.into_iter().rev() {
-            real.push(name);
-        }
-        !real.starts_with(&root)
+        self.dead_links = dead;
     }
 
     /// Every heading, in reading order, as layout blocks. Derived, never
@@ -2408,14 +2491,19 @@ impl App {
     /// comes back expanded.
     #[must_use]
     pub fn fold_keys(&self) -> Vec<String> {
-        let mut keys: Vec<String> = self
-            .doc
-            .nodes
-            .iter()
-            .filter(|n| self.folded.contains(&n.id))
-            .filter_map(|n| self.doc.fragment_for(n.id))
-            .map(|slug| format!("h:{slug}"))
-            .collect();
+        // The slugs are asked for ONCE. Asking per heading made this
+        // quadratic and its inverse below cubic: a reload of a document with
+        // 800 collapsed sections took 27 seconds.
+        let mut keys: Vec<String> = if self.folded.is_empty() {
+            Vec::new()
+        } else {
+            self.doc
+                .heading_slugs()
+                .into_iter()
+                .filter(|(id, _)| self.folded.contains(id))
+                .map(|(_, slug)| format!("h:{slug}"))
+                .collect()
+        };
         for &i in &self.folded_details {
             if let Some(region) = self.doc.details.get(i as usize) {
                 let summary =
@@ -2430,14 +2518,19 @@ impl App {
     /// whether anything changed; the caller lays out.
     fn apply_fold_keys(&mut self, keys: &[String]) -> bool {
         let mut changed = false;
+        if keys.is_empty() {
+            return false;
+        }
+        let by_slug: HashMap<String, carrel_core::NodeId> = self
+            .doc
+            .heading_slugs()
+            .into_iter()
+            .map(|(id, slug)| (slug, id))
+            .collect();
         for key in keys {
             if let Some(slug) = key.strip_prefix("h:") {
-                let id = self.doc.nodes.iter().find(|n| {
-                    matches!(n.kind, NodeKind::Heading { .. })
-                        && self.doc.fragment_for(n.id).as_deref() == Some(slug)
-                });
-                if let Some(n) = id {
-                    changed |= self.folded.insert(n.id);
+                if let Some(&id) = by_slug.get(slug) {
+                    changed |= self.folded.insert(id);
                 }
             } else if let Some(rest) = key.strip_prefix("d:")
                 && let Some((i, summary)) = rest.split_once(':')
@@ -2464,10 +2557,21 @@ impl App {
     /// itself.
     fn lay_out_new_document(&mut self) {
         self.peek = None;
+        // Only a mark that HAS a footnote is a button. `[^a-z]` in a
+        // sentence about regular expressions reads as a reference too, and
+        // a button whose whole answer is "there is no footnote" is worse
+        // than plain text.
+        let defined: std::collections::HashSet<Box<str>> = self
+            .doc
+            .footnote_defs()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
         self.footnote_marks = self
             .doc
             .footnote_refs()
             .into_iter()
+            .filter(|(name, _)| defined.contains(name))
             .map(|(name, at)| (at, u32::try_from(name.len() + 3).unwrap_or(u32::MAX)))
             .collect();
         let tasks = self.doc.tasks();
@@ -2544,15 +2648,21 @@ impl App {
 /// `reading` is canonical. A walk spells paths from its root, so each
 /// candidate is canonicalized before it is compared; that is one call per
 /// NEW file, which is almost always none.
+///
+/// Written after `since` and not after `now`. A file dated in the future —
+/// a skewed clock, a shared mount, an unpacked archive — is newer than any
+/// moment the reader can dismiss it at, so it was announced as just changed,
+/// again, a few seconds after every `Esc`, for as long as carrel ran.
 #[must_use]
 pub fn newest_sibling(
     entries: &[crate::scan::Entry],
     reading: &Path,
     since: std::time::SystemTime,
+    now: std::time::SystemTime,
 ) -> Option<Sibling> {
     let mut newer: Vec<&crate::scan::Entry> = entries
         .iter()
-        .filter(|e| e.mtime > since)
+        .filter(|e| e.mtime > since && e.mtime <= now)
         .filter(|e| e.path.canonicalize().map_or(true, |c| c != reading))
         .collect();
     newer.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.path.cmp(&b.path)));
@@ -2563,11 +2673,37 @@ pub fn newest_sibling(
     })
 }
 
-/// One block's identity for change detection: its kind and its text.
+/// The lists `c` and `X` step through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepKind {
+    Change,
+    Task,
+}
+
+/// One block's identity for change detection: everything about it a reader
+/// can see, and nothing that merely moves with the text around it.
+///
+/// The text alone missed the change an agent working down a plan makes most
+/// — `- [ ]` becoming `- [x]` lives in the item's marker, not its text — and
+/// with it a renumbered item, a heading that changed level, a fence that
+/// changed language and a link pointed somewhere else. Offsets are left out
+/// on purpose: they shift whenever anything earlier in the file does.
 fn block_hash(doc: &Document, b: BlockIdx) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    std::mem::discriminant(&doc.node_for_block(b).kind).hash(&mut h);
+    let node = doc.node_for_block(b);
+    std::mem::discriminant(&node.kind).hash(&mut h);
+    match &node.kind {
+        NodeKind::Heading { level } => level.hash(&mut h),
+        NodeKind::CodeBlock { lang } => lang.hash(&mut h),
+        _ => {}
+    }
+    if let Some(prefix) = &node.prefix {
+        prefix.text.hash(&mut h);
+    }
+    for link in node.inlines.iter().filter_map(|i| i.link) {
+        doc.links.get(link.0 as usize).hash(&mut h);
+    }
     doc.block_text(b).hash(&mut h);
     h.finish()
 }
@@ -2864,7 +3000,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
         Setting::Preview => {
             app.preview = !app.preview;
             let preview = app.preview;
-            if let Some(h) = app.home_mut() {
+            if let Some(h) = app.home_anywhere_mut() {
                 h.show_preview = preview;
             }
             if let Some(dir) = app.config_dir.as_deref() {
@@ -2874,7 +3010,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
         Setting::Titles => {
             app.titles = !app.titles;
             let titles = app.titles;
-            if let Some(h) = app.home_mut() {
+            if let Some(h) = app.home_anywhere_mut() {
                 h.show_titles = titles;
             }
             if let Some(dir) = app.config_dir.as_deref() {
@@ -3046,13 +3182,37 @@ pub fn paste_on_home(app: &mut App, text: &str) -> Outcome {
         return Outcome::Idle;
     };
     if home.mode != HomeMode::Normal {
-        for c in text.chars().filter(|c| !c.is_control()) {
-            update(app, Action::HomeKey(SearchKey::Char(c)));
+        // Typed as ONE edit. Replayed a character at a time, each character
+        // narrowed the whole list again: a paragraph pasted into the filter
+        // of a large folder froze the screen for a quarter of a minute with
+        // `Esc` queued behind it. The first line, and no more of it than a
+        // name could be.
+        const TYPED_MAX: usize = 256;
+        let typed: String = text
+            .split(['\n', '\r'])
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(TYPED_MAX)
+            .collect();
+        let Some(last) = typed.chars().last() else {
+            return Outcome::Idle;
+        };
+        let head = &typed[..typed.len() - last.len_utf8()];
+        if let Some(h) = app.home_mut() {
+            match h.mode {
+                HomeMode::Search => h.query.push_str(head),
+                HomeMode::Picker => h.picker.typed.push_str(head),
+                HomeMode::Filter | HomeMode::Normal => h.filter.push_str(head),
+            }
         }
-        return Outcome::Redraw;
+        // The last character goes the way a typed one does, so whatever a
+        // keystroke re-derives is re-derived once.
+        return update(app, Action::HomeKey(SearchKey::Char(last)));
     }
     let root = home.root.clone();
-    let Some(pasted) = crate::cli::pasted_path(text) else {
+    let Some(pasted) = crate::cli::pasted_path(text, &root) else {
         app.set_note("that does not look like a file or a folder".into());
         return Outcome::Redraw;
     };
@@ -3060,7 +3220,11 @@ pub fn paste_on_home(app: &mut App, text: &str) -> Outcome {
     let pasted = if Path::new(&pasted).is_absolute() {
         pasted
     } else {
-        root.join(&pasted).to_string_lossy().into_owned()
+        // Folded, so `..` names the parent rather than being carried in
+        // the path: the row showed `docs / ..` and `↑` from there went down.
+        fold_lexically(&root.join(&pasted))
+            .to_string_lossy()
+            .into_owned()
     };
     let (path, start) = crate::cli::split_target(&pasted);
     if path.is_dir() {
@@ -3644,9 +3808,7 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
             };
             app.outline = None;
             // A jump is a link follow in spirit: Ctrl-O comes back.
-            if let Some(here) = app.file.clone() {
-                app.push_history(here, app.view.anchor);
-            }
+            app.push_here();
             let byte = app.doc.node_for_block(block).doc.start;
             let h = app.text_h();
             app.reveal_byte(byte, h, Where::Top);
@@ -4246,9 +4408,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Idle;
             }
             let byte = n.doc.start;
-            if let Some(here) = app.file.clone() {
-                app.push_history(here, app.view.anchor);
-            }
+            app.push_here();
             app.reveal_byte(byte, h, Where::Top);
             Outcome::Redraw
         }
@@ -4367,9 +4527,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Idle;
             };
             app.mark_list = None;
-            if let Some(from) = app.file.clone() {
-                app.push_history(from, app.view.anchor);
-            }
+            app.push_here();
             app.reveal_byte(at, h, crate::action::Where::Top);
             Outcome::Redraw
         }
@@ -4546,11 +4704,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::OutlineJumpTo(b) => {
-            let here = app.view.anchor;
-            if app.file.is_some() || app.piped.is_some() {
-                let from = app.file.clone().unwrap_or_default();
-                app.push_history(from, here);
-            }
+            app.push_here();
             let byte = app.doc.node_for_block(b).doc.start;
             app.reveal_byte(byte, h, Where::Top);
             Outcome::Redraw
@@ -4588,17 +4742,16 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             }
             let top = app.layout.block_at_row(app.view.scroll_row);
             let len = app.changed.len();
-            let count = usize::try_from(n.unsigned_abs()).unwrap_or(1).max(1);
-            // `TaskStep`'s arithmetic: the first one strictly past the top
-            // of the view, and the rest of the count from there.
-            let i = if n >= 0 {
-                (app.changed.partition_point(|b| *b <= top) + count - 1) % len
-            } else {
-                let before = (app.changed.partition_point(|b| *b < top) + len - 1) % len;
-                (before + len - ((count - 1) % len)) % len
-            };
+            let i = app.step_index(
+                StepKind::Change,
+                n,
+                len,
+                app.changed.partition_point(|b| *b <= top),
+                app.changed.partition_point(|b| *b < top),
+            );
             let at = app.doc.node_for_block(app.changed[i]).doc.start;
             app.reveal_byte(at, h, crate::action::Where::Top);
+            app.step_cursor = Some((StepKind::Change, i, app.view.scroll_row));
             app.note = Some(format!("change {} of {len}", i + 1));
             Outcome::Redraw
         }
@@ -4664,17 +4817,16 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             // document, five presses of `X` walked 2, 1, 3, 2, 1 instead of
             // 1, 2, 3, 1, 2. `MarkNext` twenty lines up is the model: it takes
             // the first mark strictly after the cursor and adds nothing.
-            let count = usize::try_from(n.unsigned_abs()).unwrap_or(1).max(1);
-            let i = if n >= 0 {
-                (tasks.partition_point(|t| t.at <= here) + count - 1) % len
-            } else {
-                // The last task strictly before the cursor — `len - 1` when
-                // there is none, which is the wrap — then back the rest.
-                let last_before = (tasks.partition_point(|t| t.at < here) + len - 1) % len;
-                (last_before + len - ((count - 1) % len)) % len
-            };
+            let i = app.step_index(
+                StepKind::Task,
+                n,
+                len,
+                tasks.partition_point(|t| t.at <= here),
+                tasks.partition_point(|t| t.at < here),
+            );
             let t = &tasks[i];
             app.reveal_byte(t.at, h, crate::action::Where::Top);
+            app.step_cursor = Some((StepKind::Task, i, app.view.scroll_row));
             let state = if t.done { "done" } else { "open" };
             app.note = Some(format!("task {} of {len} ({state})", i + 1));
             Outcome::Redraw
@@ -4985,10 +5137,7 @@ fn footnote_jump(app: &mut App, h: u16) -> Outcome {
     let Some(target) = target else {
         return Outcome::Idle;
     };
-    if app.file.is_some() || app.piped.is_some() {
-        let from = app.file.clone().unwrap_or_default();
-        app.push_history(from, app.view.anchor);
-    }
+    app.push_here();
     app.reveal_byte(target, h, crate::action::Where::Top);
     Outcome::Redraw
 }
@@ -5131,11 +5280,7 @@ fn go_to(app: &mut App, to: &Path, anchor: u32, h: u16) -> bool {
     // A same-document entry (a fragment jump) restores the position without
     // re-reading the file — nothing about the document changed.
     if app.file.as_deref() == Some(to) {
-        if app.unfold_to(anchor) {
-            app.relayout();
-        }
-        app.view.anchor = anchor;
-        app.view.restore(&app.doc, &app.layout, h);
+        app.land_on(anchor, h);
         return true;
     }
     // A generated page: reopened from its kept source, with the sections
@@ -5163,20 +5308,22 @@ fn go_to(app: &mut App, to: &Path, anchor: u32, h: u16) -> bool {
         } else {
             "(stdin)".into()
         };
-        app.view.anchor = anchor;
-        app.view.restore(&app.doc, &app.layout, h);
+        app.land_on(anchor, h);
         return true;
     }
     match app.open_path(to) {
         Ok(()) => {
-            // The anchor is a doc byte, so the reading position returns
-            // through the same StableViewport path as a resize.
-            app.view.anchor = anchor;
-            app.view.restore(&app.doc, &app.layout, h);
+            app.land_on(anchor, h);
             true
         }
         Err(e) => {
-            app.note = Some(format!("cannot go back to {}: {e}", to.display()));
+            // Said the same way in both directions: `Forward` comes through
+            // here too, and "cannot go back" was wrong for it.
+            app.note = Some(format!(
+                "cannot return to {}: {}",
+                to.display(),
+                open_failure_reason(&e)
+            ));
             false
         }
     }
@@ -5596,6 +5743,22 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
     Outcome::Redraw
 }
 
+/// A path with its `.` and `..` components resolved by hand. No disk: the
+/// point is to know where a path leads before deciding whether to look.
+fn fold_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// `[[Note#Some Heading]]` carries heading TEXT, not a slug (Obsidian's
 /// convention). Try it as written first — someone may write the slug — then
 /// slugged the same way the core slugs headings.
@@ -5642,7 +5805,13 @@ fn jump_to_line(app: &mut App, line: u32) {
 }
 
 fn jump_to_fragment(app: &mut App, frag: &str) -> bool {
-    let Some(at) = app.doc.fragment_target(frag) else {
+    // As written, then percent-decoded: a link to a heading with an accent
+    // in it is written `#caf%C3%A9` by every tool that writes links.
+    let target = app
+        .doc
+        .fragment_target(frag)
+        .or_else(|| crate::links::percent_decoded(frag).and_then(|f| app.doc.fragment_target(&f)));
+    let Some(at) = target else {
         app.note = Some(format!("no such section: #{frag}"));
         return false;
     };

@@ -84,22 +84,43 @@ pub(crate) fn percent_decoded(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The file a relative link destination names.
+/// The names a relative link destination might mean, most literal first.
 ///
-/// **The name as written wins**; only if nothing is there is it tried again
-/// percent-decoded. So a file really called `50%20off.md` still opens, and
-/// `[notes](my%20notes.md)` — the way every other tool writes a link to a
-/// name with a space — opens `my notes.md`, which it did not before.
+/// **The name as written wins.** Failing that it is tried percent-decoded —
+/// `[notes](my%20notes.md)` is how every other tool writes a link to a name
+/// with a space — and then without a `?query`, which a web view reads and a
+/// file system does not (`guide.md?plain=1`).
+#[must_use]
+pub fn candidates(bare: &str) -> Vec<String> {
+    let mut out = vec![bare.to_string()];
+    let mut add = |c: Option<String>| {
+        if let Some(c) = c
+            && !c.is_empty()
+            && !out.contains(&c)
+        {
+            out.push(c);
+        }
+    };
+    add(percent_decoded(bare));
+    if let Some((path, _)) = bare.split_once('?') {
+        add(Some(path.to_string()));
+        add(percent_decoded(path));
+    }
+    out
+}
+
+/// The file a relative link destination names: the first of its
+/// [`candidates`] that exists, so a file really called `50%20off.md` still
+/// opens. When none does, the decoded form, which is the one worth naming
+/// in the message that says so.
 #[must_use]
 pub fn resolve_local(dir: &Path, bare: &str) -> PathBuf {
-    let raw = dir.join(bare);
-    if raw.exists() {
-        return raw;
-    }
-    match percent_decoded(bare) {
-        Some(decoded) => dir.join(decoded),
-        None => raw,
-    }
+    let names = candidates(bare);
+    names
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| dir.join(names.get(1).unwrap_or(&names[0])))
 }
 
 /// Skip anything larger, exactly as the content grep does.

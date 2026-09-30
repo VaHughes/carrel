@@ -94,7 +94,7 @@ fn a_target_that_has_vanished_does_not_strand_the_reader() {
     std::fs::remove_file(d.path().join("a.md")).unwrap();
     update(&mut app, Action::Back);
     assert_eq!(name(&app), "b.md", "still on the document that exists");
-    assert!(app.note.as_deref().unwrap().contains("cannot go back"));
+    assert!(app.note.as_deref().unwrap().contains("cannot return to"));
     assert!(
         app.future.is_empty(),
         "a Back that went nowhere left nothing ahead"

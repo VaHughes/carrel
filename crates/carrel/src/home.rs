@@ -691,6 +691,18 @@ impl Home {
     }
 
     /// Step to the next order, keeping the selection on the same file.
+    /// Take a fresh account of what has been read, keeping the highlight on
+    /// its file. Under [`Sort::Read`] this reorders the list — coming back
+    /// from a document moves that document to the top — and a highlight
+    /// kept by row number was left on whichever file slid into its place,
+    /// so Enter opened something the reader never chose.
+    pub fn set_reading(&mut self, reading: HashMap<PathBuf, Reading>) {
+        let anchor = self.selection_anchor();
+        self.reading = reading;
+        self.refilter();
+        self.restore_selection(anchor.as_deref());
+    }
+
     pub fn cycle_sort(&mut self) {
         let anchor = self.selected_path().map(Path::to_path_buf);
         self.sort = self.sort.next();
