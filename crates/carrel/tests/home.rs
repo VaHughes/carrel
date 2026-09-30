@@ -703,13 +703,18 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
     // the real machine for candidates, and on a COPR builder the working
     // directory alone is this deep — the row paints a clipped path and must
     // still resolve.
-    app.home_mut()
-        .unwrap()
-        .picker
-        .roots
-        .push(std::path::PathBuf::from(
-            "/builddir/build/BUILD/carrel-2026.8.17-build/carrel-2026.8.17/crates/carrel",
-        ));
+    //
+    // Everything the probe found past the parent and the folder itself is
+    // dropped first. How many directories the machine's home holds decided
+    // whether the long row was on screen at all: on a developer's machine it
+    // was scrolled out of the dialog and never checked, and on a CI runner
+    // it was visible — which is how this passed locally for a week while
+    // asserting something the painter had stopped doing.
+    let picker = &mut app.home_mut().unwrap().picker;
+    picker.roots.truncate(2);
+    picker.roots.push(std::path::PathBuf::from(
+        "/builddir/build/BUILD/carrel-2026.8.17-build/carrel-2026.8.17/crates/carrel",
+    ));
 
     let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     t.draw(|f| carrel::render::draw(f, &app)).unwrap();
@@ -717,8 +722,7 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
 
     let home = app.home().unwrap();
     // The painter writes rows as `▸/␣ mark path` one cell inside the box and
-    // clips to it, so a row shows at most `w - 5` cells of the path itself
-    // (ASCII here, so cells == chars). Two rows paint labels instead of
+    // clips to it, so a row shows at most `w - 5` cells of the path itself. Two rows paint labels instead of
     // paths: the parent is `..`, and where you are carries `· here`.
     let entries = u16::try_from(home.picker_entries()).unwrap();
     let (_, _, box_w, _) = carrel::home::picker_geometry(cols, rows, entries);
@@ -739,7 +743,9 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
             );
         } else {
             let path = root.display().to_string();
-            let shown: String = path.chars().take(budget).collect();
+            // A clipped path keeps its END — the part that tells two deep
+            // paths apart — behind an ellipsis.
+            let shown = carrel::layout::tail_text(&path, u16::try_from(budget).unwrap());
             assert!(
                 painted.contains(&shown),
                 "row {row}: click resolves to {path:?} but the row paints {painted:?}",
