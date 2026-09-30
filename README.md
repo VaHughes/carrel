@@ -70,7 +70,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 | **Everything worth doing is clickable** | Links, headings, collapse markers, the outline, the panes, the hint row along the bottom — click them. Right-click for a menu of what is under the pointer, or press `≡` on the status row for everything else. Carrel is built for people whose way into the terminal was an AI coding agent and who now have a `PLAN.md` to read; they should not have to learn `zR` first. Every key still works, and `--no-mouse` hands the pointer back. |
 | **A comfortable line length** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, collapsible, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
-| **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename — and walk the tree from the path row above the list, a segment at a time. |
+| **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename — and walk the tree from the path row above the list, a segment at a time. `#` answers what the folder is *about*: every frontmatter tag, with its documents under it. |
 | **Clickable links** | Click a link, wherever it is painted: a markdown file beside it opens in the reader, and a URL is copied to your clipboard to paste where you want it. In a terminal that supports it, a link is a real hyperlink too; elsewhere it is plain text. Carrel never fetches a URL and never launches a program to open one. |
 | **Correct emoji and wide characters** | Width is measured per visible character, not per code point, so emoji and CJK text line up instead of drifting. |
 | **Complete markdown** | CommonMark + GFM, footnotes, tables, definition lists, frontmatter, and LaTeX math as terminal box art. Every claim here is [a test](https://github.com/VaHughes/carrel/blob/main/crates/carrel/tests/conformance.rs). |
@@ -218,6 +218,19 @@ bookmarks, and links wrap; shortened paths retain their distinguishing end.
 On home, short windows prioritize files over the banner and
 continue-reading rows; the numbered resume shortcuts still work.
 
+A narrow column of unhyphenated English is ragged — every long word that misses
+the end of a row leaves a hole the size of itself — so where the text column is
+under 70 cells, carrel divides such a word to fill the row, by the rules TeX
+uses (`docu-` / `mentation`). It is deliberately reluctant: only running prose,
+only a plain lowercase word of six letters or more, never code, a heading, a
+table, a name or a path, never the last word of a paragraph, and never three
+rows in a row. It applies English rules to English only — a document that does
+not read as English is left alone, and a `lang:` line in the frontmatter settles
+it either way. **The hyphen is drawn, not written**: it is dimmer than the
+letters beside it, and search, selection and copy see the word whole, because it
+was never in the text. `--plain` and `--render` never divide a word. Turn it off
+in the settings pane (`,`) or with `hyphenate = false`.
+
 ### Images, highlights, and notes
 
 Click an image, press Enter at one when no link is selected, or choose **Images…**
@@ -250,6 +263,7 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 | Key | Default | What it does |
 |---|---|---|
 | `max_width` | `90` | The line length: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
+| `hyphenate` | `true` | Divide a long word to fill a row where the text column is under 70 cells — English prose only, and the hyphen is never in the text you search or copy. See [Small terminals](#small-terminals). |
 | `theme` | `terminal`, or `omarchy` where there is one | Palette name — one of the seventeen listed under the example. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` steps to the next one in the app and saves your choice. |
 | `hints` | `true` | The hint row along the bottom. `H` toggles it. |
 | `titles` | `false` | Show each document's own title — `title:` from frontmatter, else its first heading — instead of its file name. Falls back to the name for a file that has neither. |
@@ -425,7 +439,10 @@ The module map, the decisions already made, and the pinned dependencies are in
 - [x] Task-list awareness without editing — task-jumping in the reader (`X`), a
       `--tasks` report, the count on the info card; ticking a box is editor creep.
       Home-screen progress glyphs stay out: counting honestly means reading whole files.
-- [ ] Tags — frontmatter `tags:` indexed lazily the way titles are, tag-filtered views
+- [x] Tags — `#` on the home screen reads every document's frontmatter `tags:` in the
+      background and opens them as a page: a section per tag with a link per document,
+      collapsed into a list of tags when it is long, and `Backspace` returns to it from a
+      document opened there. No index on disk, so nothing to go stale
 - [x] A bookmark list overlay (`"`) — every bookmark with its context line, Enter jumps,
       Ctrl-O comes back
 - [x] Forward links (`l`) — what this note points at, the mirror of backlinks `L`
@@ -443,7 +460,8 @@ The module map, the decisions already made, and the pinned dependencies are in
       a file written elsewhere appears without a restart; and `d` browses from the folder
       you ran `carrel` in, highlight parked on here, so enter alone reads where you are,
       typing filters, and `Tab` goes in
-- [ ] Hyphenation at narrow measures — pattern-based breaks below roughly 70 columns
+- [x] Hyphenation at narrow measures — TeX's patterns, below 70 columns, English prose
+      only; the hyphen is paint and never enters the text, so search and copy are unchanged
 - [x] Auto-read mode (`A`) — the view scrolls slowly on its own, a line every 300 ms; any deliberate
       motion takes the wheel back, and the end of the document stops it gently
 - [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`
@@ -457,3 +475,8 @@ one-coordinate-space invariant above, and `./scripts/check-discipline.sh` is the
 ## License
 
 MIT OR Apache-2.0, at your option.
+
+The hyphenation patterns for American English embedded in `carrel-core`
+(`src/hyphen/hyph-en-us.pat.txt`) are Knuth's and Gerard D.C. Kuiken's, from the
+[hyph-utf8](https://www.hyphenation.org/tex) package, distributed under the permissive notice
+the file carries.

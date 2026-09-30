@@ -57,6 +57,8 @@ pub struct Config {
     pub breadcrumb: Option<bool>,
     pub outline_margin: Option<bool>,
     pub titles: Option<bool>,
+    /// Divide long words to fill narrow rows. Absent means on.
+    pub hyphenate: Option<bool>,
     /// Mouse capture. `false` hands the pointer back to the terminal, so its
     /// own selection and context menu work as they always did — the escape
     /// hatch a mouse-first reader owes anyone whose terminal disagrees with
@@ -110,6 +112,7 @@ fn parse_all(text: &str) -> Config {
                 c.outline_margin = Some(flag(v, false));
             }
             "titles" if c.titles.is_none() => c.titles = Some(flag(v, false)),
+            "hyphenate" if c.hyphenate.is_none() => c.hyphenate = Some(flag(v, true)),
             "mouse" if c.mouse.is_none() => c.mouse = Some(flag(v, true)),
             "max_width" if c.max_width.is_none() => {
                 // Unparseable stays absent rather than becoming zero: zero is
@@ -322,6 +325,18 @@ pub fn load_breadcrumb_in(dir: &Path) -> Option<bool> {
 
 pub fn save_breadcrumb_in(dir: &Path, on: bool) -> std::io::Result<()> {
     upsert_key_in(dir, "breadcrumb", if on { "true" } else { "false" })
+}
+
+/// The saved hyphenation preference. Absent means **on**: the narrow
+/// windows it helps are the ones a reader is least likely to go looking for
+/// a setting from, and it touches no window wide enough to read comfortably.
+#[must_use]
+pub fn load_hyphenate_in(dir: &Path) -> Option<bool> {
+    load_all_in(dir).hyphenate
+}
+
+pub fn save_hyphenate_in(dir: &Path, on: bool) -> std::io::Result<()> {
+    upsert_key_in(dir, "hyphenate", if on { "true" } else { "false" })
 }
 
 /// The saved margin-outline setting. Absent means **off**: it changes the

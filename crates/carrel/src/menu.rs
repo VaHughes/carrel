@@ -285,6 +285,7 @@ pub fn global(app: &App) -> Vec<Item> {
         return vec![
             Item::new("Filter names", Action::HomeFilterMode),
             Item::new("Search in files", Action::HomeSearchMode),
+            Item::new("Tags", Action::HomeTags),
             Item::new("Choose a folder…", Action::PickerOpen),
             Item::gap(),
             Item::new("Themes", Action::ThemeCycle),
@@ -776,6 +777,7 @@ mod tests {
             | A::HomeResume(_) => Pane,
 
             // --- only a menu offers these ---
+            A::HomeTags => Menu("Tags"),
             A::Back => Menu("Back"),
             A::InfoToggle => Menu("Document info"),
             A::ImageOpen(_) => Menu("Images…"),
@@ -852,6 +854,7 @@ mod tests {
             A::HelpKey(_) => Internal,   // typing, on the help sheet
             A::Hover(_) => Internal,     // decoration; it decides nothing
             A::AutoTick => Internal,     // a clock
+            A::HomeOpenTags => Internal, // the tag scan finishing
             A::Absorb => Internal,       // dropped at the hit-test
         }
     }

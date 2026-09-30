@@ -9,7 +9,7 @@
 use proptest::prelude::*;
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{cluster_width, display_width, wrap_text};
+use super::{RowKind, cluster_width, display_width, wrap_text, wrap_text_soft};
 use crate::document::Document;
 use crate::position::BlockIdx;
 use crate::search::search;
@@ -26,6 +26,10 @@ const PIECES: &[&str] = &[
     "quick",
     "brown",
     "antidisestablishmentarianism",
+    // Words the patterns divide, so the soft-break path is actually taken.
+    "documentation",
+    "international",
+    "(readable),",
     " ",
     "  ",
     "\n",
@@ -54,6 +58,23 @@ fn rows(text: &str, width: u16) -> Vec<(String, std::ops::Range<u32>, u16)> {
             text[r.doc.start as usize..r.doc.end as usize].to_string(),
             r.doc.clone(),
             r.indent,
+        ));
+    });
+    out
+}
+
+/// Wrap with word division on: `(row_text, row_range, row_indent, hyphen)`.
+fn soft_rows(text: &str, width: u16) -> Vec<(String, std::ops::Range<u32>, u16, bool)> {
+    let mut out = Vec::new();
+    wrap_text_soft(text, 0, BlockIdx(0), width, 0, &cluster_width, true, |r| {
+        let RowKind::Text { hyphen, .. } = r.kind else {
+            unreachable!("wrap emits only text rows")
+        };
+        out.push((
+            text[r.doc.start as usize..r.doc.end as usize].to_string(),
+            r.doc.clone(),
+            r.indent,
+            hyphen,
         ));
     });
     out
@@ -155,6 +176,42 @@ proptest! {
     #[test]
     fn wrapping_twice_gives_the_same_rows(t in text(), width in 1u16..=200) {
         prop_assert_eq!(rows(&t, width), rows(&t, width));
+    }
+
+    /// 7. Dividing words changes none of the above. A divided row fits WITH
+    ///    its hyphen, rows stay ordered, and every non-whitespace byte still
+    ///    lands in exactly one row — a division adds no character to the
+    ///    text and drops none.
+    #[test]
+    fn dividing_words_keeps_every_invariant(t in text(), width in 1u16..=200) {
+        let rs = soft_rows(&t, width);
+        let mut count = vec![0u8; t.len()];
+        for (s, r, indent, hyphen) in &rs {
+            let budget = width.saturating_sub(*indent).max(1);
+            let cells = display_width(s) + u16::from(*hyphen);
+            prop_assert!(
+                cells <= budget || (s.graphemes(true).count() <= 1 && !hyphen),
+                "row {s:?} (hyphen {hyphen}) is {cells} cells in {budget} at width {width}",
+            );
+            for i in r.start..r.end {
+                count[i as usize] += 1;
+            }
+        }
+        for w in rs.windows(2) {
+            prop_assert!(w[0].1.end <= w[1].1.start, "overlap: {:?} then {:?}", &w[0].1, &w[1].1);
+            // A division is the one break with no gap: it elides nothing.
+            if w[0].3 {
+                prop_assert_eq!(w[0].1.end, w[1].1.start, "a hyphenated row left a gap");
+            }
+        }
+        for (i, ch) in t.char_indices() {
+            if !ch.is_whitespace() {
+                prop_assert_eq!(count[i], 1, "byte {} ({:?}) at width {}", i, ch, width);
+            }
+        }
+        // The height pass and the row pass agree with division on, too.
+        let n = wrap_text_soft(&t, 0, BlockIdx(0), width, 0, &cluster_width, true, |_| {});
+        prop_assert_eq!(n as usize, rs.len());
     }
 
     /// 6. **The project's thesis.** A search hit recorded at one width paints

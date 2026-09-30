@@ -1907,6 +1907,16 @@ fn paint_row(
             x = nx;
             at = end;
         }
+
+        // 3'. The hyphen of a word divided to fill this row. Decoration, like
+        //     the bullet: it is in no text, so search, selection and copy
+        //     never see it, and it is painted dim so it does not pass for a
+        //     hyphen the author wrote. The core reserved its cell.
+        if let RowKind::Text { hyphen: true, .. } = row.kind
+            && x < area.right()
+        {
+            buf.set_stringn(x, y, "-", 1, theme::dim());
+        }
     }
 
     // 3a. Table column separators: a dim │ in the middle of each 2-cell gap,

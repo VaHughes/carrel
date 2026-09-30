@@ -294,6 +294,8 @@ pub struct Home {
     pub hit_top: usize,
     /// The background grep finished (footer honesty: "searching…" vs count).
     pub grep_done: bool,
+    /// The tags document's request: asked for, ready, or neither.
+    pub tags: crate::tags::Request,
     /// Paths the live walk has reported. Lets `finish_scan` drop cache entries
     /// the walk did not rediscover.
     seen: HashSet<PathBuf>,
@@ -328,6 +330,7 @@ impl Home {
             hit_selected: 0,
             hit_top: 0,
             grep_done: false,
+            tags: crate::tags::Request::Idle,
             seen: HashSet::new(),
         };
         h.refilter();

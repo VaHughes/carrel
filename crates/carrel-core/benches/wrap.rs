@@ -12,7 +12,7 @@
 //!
 //! Run with `cargo bench -p carrel-core`, or `-- --quick` for a rough figure.
 
-use carrel_core::{BlockIdx, Document, cluster_width, wrap};
+use carrel_core::{BlockIdx, Document, Hyphenation, cluster_width, wrap, wrap_with};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 /// Prose-shaped ASCII: paragraphs of varying sentence length, like a README.
@@ -69,6 +69,35 @@ fn bench_wrap(c: &mut Criterion) {
         g.bench_function(name, |b| b.iter(|| height_pass(&doc, 80)));
         g.finish();
     }
+
+    // What dividing words costs the same eager pass, at a width where it
+    // applies. The plain figure at that width is the baseline: a narrow
+    // column is more rows per byte whether or not any word is divided.
+    let doc = Document::parse(&corpus_ascii(MB));
+    let mut g = c.benchmark_group("height_pass_narrow");
+    g.throughput(Throughput::Bytes(doc.text.len() as u64));
+    for (name, hyphenation) in [
+        ("ascii_1mb_w40_plain", Hyphenation::Off),
+        ("ascii_1mb_w40_hyphenated", Hyphenation::English),
+    ] {
+        g.bench_function(name, |b| {
+            b.iter(|| {
+                let mut rows = 0u32;
+                for i in 0..doc.block_count() {
+                    rows += wrap_with(
+                        &doc,
+                        BlockIdx(i as u32),
+                        40,
+                        &cluster_width,
+                        hyphenation,
+                        |_| {},
+                    );
+                }
+                rows
+            });
+        });
+    }
+    g.finish();
 
     // The row pass materialises `Row`s rather than counting them. Measured
     // separately because only the viewport's worth of it runs per frame.

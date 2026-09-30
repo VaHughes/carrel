@@ -37,6 +37,7 @@
 pub mod diff;
 pub mod document;
 pub mod highlight;
+pub mod hyphen;
 pub mod layout;
 pub mod math;
 pub mod position;
@@ -47,9 +48,10 @@ pub use document::{
     AlertKind, Document, Inline, LinkId, Marker, Node, NodeKind, Prefix, Prov, ProvKind, Style,
 };
 pub use highlight::{Token, TokenKind};
+pub use hyphen::{Hyphenation, hyphenation_for};
 pub use layout::{
     CHUNK_BYTES, CONTINUATION_COLS, Row, RowKind, WidthFn, chunk_count, cluster_at_col,
-    cluster_width, cols_for_doc_range, display_width, wrap, wrap_chunk, wrap_range,
+    cluster_width, cols_for_doc_range, display_width, wrap, wrap_chunk, wrap_range, wrap_with,
 };
 pub use math::{MathClass, MathExpr, MatrixDelim};
 pub use position::{Affinity, BlockIdx, DocByte, NodeId, SrcByte};

@@ -100,6 +100,27 @@ pub enum MathForm {
     Source,
 }
 
+/// The history entry that stands for a [`Desk`]: a generated document has no
+/// path to go back to, so the trail names it this way and `go_back` reopens
+/// it from memory — the `(stdin)` sentinel's idea, for a document carrel wrote.
+/// The NUL is what makes it a name no file can have.
+const DESK: &str = "\0tags";
+
+/// A generated document the reader can come back to.
+///
+/// Search results are a desk you leave: following a hit pushes no history.
+/// A tags document is for browsing — open a document, come back, open the
+/// next — so its source is kept and `Back` returns to it, with the sections
+/// the reader had expanded still expanded. Collapse state is heading ids,
+/// and the same source parses to the same ids.
+#[derive(Clone, Debug)]
+pub struct Desk {
+    pub root: PathBuf,
+    pub label: String,
+    pub src: String,
+    pub folded: std::collections::HashSet<carrel_core::NodeId>,
+}
+
 // Four independent on/off facts (rendered blocks, card view, hints,
 // streaming) are four bools; an enum would invent states that cannot occur.
 #[allow(clippy::struct_excessive_bools)]
@@ -144,6 +165,12 @@ pub struct App {
     /// The section tree in the left margin is wanted (config `outline_margin`).
     /// Whether it actually shows also needs [`Self::gutter_w`].
     pub outline_margin: bool,
+    /// Long words may be divided to fill narrow rows (config `hyphenate`).
+    /// A preference, not a promise: whether THIS document's words are
+    /// divided is [`carrel_core::hyphenation_for`]'s call, asked at every
+    /// relayout rather than cached, so it cannot go stale across a reload,
+    /// a followed link or a growing pipe.
+    pub hyphenate: bool,
     /// Bookmarks for the open document, in document order.
     ///
     /// **Doc bytes**, so they survive reflow and resize by construction —
@@ -254,6 +281,9 @@ pub struct App {
     /// they resolve against the searched root, not the working directory a
     /// pipe uses. Set by opening results, cleared by opening anything else.
     pub results_root: Option<std::path::PathBuf>,
+    /// The tags document, while it is open or on the trail behind the
+    /// reader. `None` once they return to the file list. See [`Desk`].
+    pub desk: Option<Desk>,
     /// Where reading positions persist. Same contract as `config_dir`:
     /// `None` in every constructor, set by the BINARY at startup, so no test
     /// can ever write the real state file.
@@ -645,6 +675,7 @@ impl App {
             mark_list: None,
             notes: crate::annotation_state::Notes::default(),
             outline_margin: false,
+            hyphenate: true,
             marks: Vec::new(),
             diff_ok: false,
             diff_forced: None,
@@ -670,6 +701,7 @@ impl App {
             config_dir: None,
             launch_dir: None,
             results_root: None,
+            desk: None,
             state_dir: None,
             wrap_tables: false,
             table_offsets: HashMap::new(),
@@ -829,13 +861,6 @@ impl App {
         self.forward = None;
         self.mode = Mode::Normal;
         self.view = ViewState::new();
-        self.layout = Layout::with_measure(
-            &self.doc,
-            self.bleed_w(),
-            self.text_w(),
-            HashMap::new(),
-            false,
-        );
         self.path = path
             .file_name()
             .unwrap_or_default()
@@ -861,6 +886,7 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
+        self.lay_out_new_document();
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -881,26 +907,101 @@ impl App {
     /// screen rather than to the desk. Its links resolve against `root`
     /// through [`Self::results_root`], never against the working directory.
     pub fn open_results(&mut self, root: &Path, query: &str, hits: &[crate::grep::Hit]) {
+        let src = crate::grep::render_results(root, query, hits);
+        self.open_generated(root, format!("search: {query}"), &src);
+        self.desk = None;
+    }
+
+    /// Read the folder's frontmatter tags as a document: a section per tag,
+    /// a link per document that carries it (`tags.rs`).
+    ///
+    /// Opened **collapsed** when it is longer than the window, so what the
+    /// reader sees first is the list of tags with their counts and a tag
+    /// expands into its documents on a click — a tag browser, built out of
+    /// collapsing rather than out of a new pane. Unlike search results it is
+    /// kept as a [`Desk`], so `Back` from a document opened here returns.
+    pub fn open_tags(&mut self, root: &Path, index: &crate::tags::Index) {
+        let desk = Desk {
+            root: root.to_path_buf(),
+            label: "tags".into(),
+            src: crate::tags::render(root, index),
+            folded: std::collections::HashSet::new(),
+        };
+        self.open_generated(root, desk.label.clone(), &desk.src);
+        if self.layout.total_rows() > u32::from(self.text_h()) {
+            self.folded = self
+                .doc
+                .nodes
+                .iter()
+                .filter(|n| matches!(n.kind, carrel_core::NodeKind::Heading { level: 2 }))
+                .map(|n| n.id)
+                .collect();
+            self.relayout();
+        }
+        self.desk = Some(desk);
+    }
+
+    /// About to leave the [`Desk`] for a document: remember which sections
+    /// were expanded and put the desk on the trail, so `Back` returns to it.
+    /// Says whether it did, for [`Self::unpark_desk`].
+    ///
+    /// Before the open, not after, because opening clears the collapse state
+    /// this has to capture. Every way out of the desk comes through here —
+    /// a link followed in the text and one opened from the links pane are
+    /// the same departure.
+    fn park_desk(&mut self) -> bool {
+        if self.file.is_some() {
+            return false;
+        }
+        let folded = self.folded.clone();
+        let Some(desk) = self.desk.as_mut() else {
+            return false;
+        };
+        desk.folded = folded;
+        let anchor = self.view.anchor;
+        self.push_history(PathBuf::from(DESK), anchor);
+        true
+    }
+
+    /// The open failed: a document that did not open is not somewhere to
+    /// come back from.
+    fn unpark_desk(&mut self, parked: bool) {
+        if parked {
+            self.history.pop();
+        }
+    }
+
+    /// Come back to the [`Desk`] the trail left behind, as it was left.
+    fn reopen_desk(&mut self, anchor: u32) {
+        let Some(desk) = self.desk.clone() else {
+            return;
+        };
+        self.open_generated(&desk.root, desk.label.clone(), &desk.src);
+        // The same source is the same parse, so the ids still name the same
+        // headings — and the byte still names the same row.
+        self.folded = desk.folded;
+        self.relayout();
+        let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        self.view.anchor = anchor.min(last);
+        let h = self.text_h();
+        self.view.restore(&self.doc, &self.layout, h);
+    }
+
+    /// Open markdown carrel generated itself. Pathless, like a pipe; its
+    /// links resolve against `root`.
+    fn open_generated(&mut self, root: &Path, label: String, src: &str) {
         self.save_position();
         // Generated markdown, never sniffed as a diff: it is already one.
         self.diff_ok = false;
-        let src = crate::grep::render_results(root, query, hits);
         self.table_offsets.clear();
-        self.doc = self.parse_adapting(&src);
+        self.doc = self.parse_adapting(src);
         self.load_marks();
         self.mtime = None;
         self.matches = None;
         self.forward = None;
         self.mode = Mode::Normal;
         self.view = ViewState::new();
-        self.layout = Layout::with_measure(
-            &self.doc,
-            self.bleed_w(),
-            self.text_w(),
-            HashMap::new(),
-            false,
-        );
-        self.path = format!("search: {query}");
+        self.path = label;
         self.file = None;
         self.notes = crate::annotation_state::Notes::default();
         self.results_root = Some(root.to_path_buf());
@@ -914,6 +1015,7 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
+        self.lay_out_new_document();
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -936,13 +1038,6 @@ impl App {
         self.forward = None;
         self.mode = Mode::Normal;
         self.view = ViewState::new();
-        self.layout = Layout::with_measure(
-            &self.doc,
-            self.bleed_w(),
-            self.text_w(),
-            HashMap::new(),
-            false,
-        );
         self.path = "how carrel works".into();
         self.file = None;
         self.notes = crate::annotation_state::Notes::default();
@@ -954,6 +1049,7 @@ impl App {
         self.rebuild_math_art();
         self.words = word_count(&self.doc.text);
         self.has_headings = true;
+        self.lay_out_new_document();
         if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
             self.home_stash = Some(h);
         }
@@ -1073,13 +1169,6 @@ impl App {
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
         crate::annotation_state::reanchor(self);
-        self.layout = Layout::with_measure(
-            &self.doc,
-            self.bleed_w(),
-            self.text_w(),
-            HashMap::new(),
-            false,
-        );
         self.forget_derived_state();
         self.rebuild_math_art();
         self.words = word_count(&self.doc.text);
@@ -1096,9 +1185,11 @@ impl App {
                 f.selected = f.selected.min(f.rows.len().saturating_sub(1));
             }
         }
+        // Clamp first: the relayout restores the view, and the anchor it
+        // restores to must be a byte this parse has.
         let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
         self.view.anchor = self.view.anchor.min(last);
-        self.view.restore(&self.doc, &self.layout, self.text_h());
+        self.lay_out_new_document();
         if let Some(old) = self.matches.take() {
             let mut m = search(&self.doc, &old.pattern, old.flexible_ws);
             m.current = old
@@ -1901,6 +1992,32 @@ impl App {
         }
     }
 
+    /// How the open document's prose is hyphenated: the reader's preference,
+    /// then the document's language. English patterns divide English words
+    /// only, so a document that does not read as English is left alone.
+    #[must_use]
+    pub fn hyphenation(&self) -> carrel_core::Hyphenation {
+        if self.hyphenate {
+            carrel_core::hyphenation_for(&self.doc)
+        } else {
+            carrel_core::Hyphenation::Off
+        }
+    }
+
+    /// The layout for a document that has just replaced the last one.
+    ///
+    /// **Every opener ends here, after the per-document facts are in place**
+    /// (`has_headings`, the math art, the cleared folds), and none builds a
+    /// layout of its own. They used to: each constructed a plain one on the
+    /// spot — no math heights, cards whatever the reader's table mode was —
+    /// and only a later resize or an arriving image replaced it, so a file
+    /// reached from the home screen was laid out differently from the same
+    /// file named on the command line. One function cannot disagree with
+    /// itself.
+    fn lay_out_new_document(&mut self) {
+        self.relayout();
+    }
+
     /// **Image dimension arrival is just another reflow.** The anchor
     /// machinery that keeps a resize stable keeps this stable too; nothing
     /// about it is a special case.
@@ -1941,6 +2058,7 @@ impl App {
             block_rows,
             self.wrap_tables,
             &self.hidden_blocks(),
+            self.hyphenation(),
         );
         self.view.restore(&self.doc, &self.layout, self.text_h());
         // Matches and `matches.current` are untouched. That is the whole point.
@@ -2017,6 +2135,7 @@ pub struct SettingsRow {
 pub enum Setting {
     Theme,
     TextWidth,
+    Hyphenate,
     Hints,
     HeadingBar,
     OutlineMargin,
@@ -2041,6 +2160,11 @@ pub fn settings_rows(app: &App) -> Vec<SettingsRow> {
                 format!("{} columns", app.max_width)
             },
             key: Setting::TextWidth,
+        },
+        SettingsRow {
+            label: "Hyphenate narrow text",
+            value: on(app.hyphenate),
+            key: Setting::Hyphenate,
         },
         SettingsRow {
             label: "Hint row",
@@ -2206,6 +2330,15 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
             app.theme_cycle = true;
         }
         Setting::TextWidth => step_measure(app, d),
+        Setting::Hyphenate => {
+            // No key, like the margin outline: it is a preference set once,
+            // and the pane is where preferences are.
+            app.hyphenate = !app.hyphenate;
+            if let Some(dir) = app.config_dir.as_deref() {
+                let _ = crate::config::save_hyphenate_in(dir, app.hyphenate);
+            }
+            app.relayout(); // rows break in different places
+        }
         Setting::Hints => return update(app, Action::HintsToggle),
         Setting::HeadingBar => return update(app, Action::BreadcrumbToggle),
         Setting::OutlineMargin => {
@@ -2305,6 +2438,25 @@ fn step_measure(app: &mut App, d: i32) {
     app.relayout();
 }
 
+/// A pending tags request is withdrawn by whatever the reader does next.
+///
+/// The scan may take a moment on a large folder, and a document that opened
+/// itself over what they had moved on to would be carrel acting on a
+/// keystroke they had already taken back. A clock and a pointer passing over
+/// a menu are not the reader doing something.
+fn withdraw_tags_request(app: &mut App, action: Action) {
+    if !matches!(
+        action,
+        Action::HomeTags | Action::HomeOpenTags | Action::MenuHover(_) | Action::AutoTick
+    ) && let Some(h) = app.home_mut()
+        && h.tags == crate::tags::Request::Wanted
+    {
+        h.tags = crate::tags::Request::Idle;
+        // The note said it was reading. It is not any more.
+        h.note = None;
+    }
+}
+
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
@@ -2331,6 +2483,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.hover = Some(at);
         return Outcome::Redraw;
     }
+    withdraw_tags_request(app, action);
     if app.lightbox.is_some() {
         return lightbox_update(app, action);
     }
@@ -2841,6 +2994,49 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Redraw;
             }
             app.open_results(&root, &query, &hits);
+            return Outcome::Redraw;
+        }
+
+        // `#`: ask for the folder's tags. No I/O here — the event loop reads
+        // the files on a thread and answers with `HomeOpenTags`.
+        Action::HomeTags => {
+            let Some(h) = app.home_mut() else {
+                return Outcome::Idle;
+            };
+            if h.entries.is_empty() && !h.scanning {
+                h.note = Some("no documents here to read tags from".into());
+                return Outcome::Redraw;
+            }
+            h.tags = crate::tags::Request::Wanted;
+            h.note = Some("reading tags…".into());
+            return Outcome::Redraw;
+        }
+        Action::HomeOpenTags => {
+            let Some(h) = app.home_mut() else {
+                return Outcome::Idle;
+            };
+            let crate::tags::Request::Ready(index) = std::mem::take(&mut h.tags) else {
+                return Outcome::Idle;
+            };
+            // Whatever comes next — a page or a reason there is none — the
+            // "reading tags…" note has been answered.
+            h.note = None;
+            let root = h.root.clone();
+            if index.tagged.is_empty() {
+                // A dead end says why, and what would change it.
+                if let Some(h) = app.home_mut() {
+                    h.note = Some(format!(
+                        "no tags — none of the {} here has `tags:` in its frontmatter",
+                        if index.read == 1 {
+                            "1 document".to_string()
+                        } else {
+                            format!("{} documents", index.read)
+                        }
+                    ));
+                }
+                return Outcome::Redraw;
+            }
+            app.open_tags(&root, &index);
             return Outcome::Redraw;
         }
 
@@ -3602,9 +3798,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             if let Some(from) = app.file.clone() {
                 app.push_history(from, here);
             }
+            let parked = app.park_desk();
             match app.open_path(&path) {
                 Ok(()) => Outcome::Redraw,
                 Err(e) => {
+                    app.unpark_desk(parked);
                     app.note = Some(format!(
                         "cannot open {}: {}",
                         path.display(),
@@ -4014,7 +4212,7 @@ fn forward_rows(app: &App) -> Vec<ForwardRow> {
             None
         } else {
             let bare = link.split(['#', '?']).next().unwrap_or(link);
-            (!bare.is_empty()).then(|| dir.join(bare))
+            (!bare.is_empty()).then(|| crate::links::resolve_local(&dir, bare))
         };
         if rows
             .iter()
@@ -4072,6 +4270,7 @@ fn close_file(app: &mut App) -> Outcome {
     app.matches = None;
     app.selected_link = None;
     app.history.clear();
+    app.desk = None;
     Outcome::Redraw
 }
 
@@ -4087,6 +4286,12 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
         }
         app.view.anchor = anchor;
         app.view.restore(&app.doc, &app.layout, h);
+        return Outcome::Redraw;
+    }
+    // Back to the tags document: reopened from its kept source, with the
+    // sections that were expanded still expanded.
+    if prev == Path::new(DESK) {
+        app.reopen_desk(anchor);
         return Outcome::Redraw;
     }
     // Back to a piped document: no file to re-read, but the text was
@@ -4276,9 +4481,12 @@ fn link_follow(app: &mut App) -> Outcome {
     // A results document is pathless like a pipe, but its links are library
     // paths: they resolve against the searched root, never against the
     // working directory a pipe uses.
+    // The name as written, else percent-decoded — see `links::resolve_local`.
+    // Resolved BEFORE the containment check, so an encoded `..` is judged as
+    // the path it really is.
     let target = match app.results_root.clone() {
-        Some(root) if app.file.is_none() => root.join(bare),
-        _ => here.parent().unwrap_or(Path::new(".")).join(bare),
+        Some(root) if app.file.is_none() => crate::links::resolve_local(&root, bare),
+        _ => crate::links::resolve_local(here.parent().unwrap_or(Path::new(".")), bare),
     };
     if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
         return app.ask_before_leaving(id, &target);
@@ -4288,6 +4496,8 @@ fn link_follow(app: &mut App) -> Outcome {
     // go back to, so `Ctrl-O` from the opened file follows the trail that
     // already exists instead of stranding on a desk.
     let from_results = app.file.is_none() && app.results_root.is_some();
+    // ...unless the desk is one that can be reopened.
+    let parked = app.park_desk();
     match app.open_path(&target) {
         Ok(()) => {
             if !from_results {
@@ -4305,6 +4515,7 @@ fn link_follow(app: &mut App) -> Outcome {
             Outcome::Redraw
         }
         Err(e) => {
+            app.unpark_desk(parked);
             app.note = Some(format!(
                 "cannot open {}: {}",
                 target.display(),

@@ -43,7 +43,7 @@ records exactly this). Hence:
 5. **Never let the TUI dictate a core type.**
 6. **The TUI's state layer is ratatui-free.** `action`, `app`, `layout`, `view`, `plain`,
    `config`, `scan`, `home`, `images`, `state`, `wiki`, `grep`, `diagrams`, `footer`,
-   `breadcrumb`, `menu`, `marginalia`, `annotation_state` never import ratatui, so behavior is tested with no terminal and a
+   `breadcrumb`, `menu`, `marginalia`, `annotation_state`, `tags` never import ratatui, so behavior is tested with no terminal and a
    GTK frontend can reuse them verbatim.
 
 `./scripts/check-discipline.sh` enforces 1–4 and 6 mechanically (UI crates, ANSI escapes,
@@ -80,6 +80,7 @@ reopens one.
 | `document.rs` | The display-text model with the **doc-to-source provenance table** (`Prov`) — the part no editor has, because editors have source space == doc space and a markdown reader does not. Paragraphs, headings, code, lists, quotes, tables, rules, inline style, frontmatter metadata cards, definition lists, footnotes, GFM alerts, `<details>`, wikilinks, `www.` autolinks, attached `^sup^`/`~sub~`. The pulldown-cmark event match has **no catch-all**: a parser bump that adds a variant fails to compile rather than silently dropping a construct. |
 | `search.rs` | Complete per spec. `Matches` holds no row/column/width/block. `intersecting()` implements the wrap-affinity rule as two half-open comparisons. `content_pattern` keeps grep (home-screen `/`) and reader matching identical. Measured: 648 µs for a 3-char literal over 1 MB; 0.74 ms per keystroke. |
 | `layout/` | The reflow layer. `units.rs` = all Unicode (UAX #14 break units, measured, width-independent); `pack.rs` = all fitting (never sees a string, so its invariants are testable against hand-built units); `mod.rs` = public API and the 64 KiB chunker. **Wrapping uses the same `wrap`** — what differs is the fit: code carries a continuation marker + hanging indent, tables arrive pre-aligned from parse, images/mermaid/math wrap their alt text while their real heights are a frontend override (`block_rows`). `proptests.rs` holds the property tests. |
+| `hyphen/` | Where a word may be divided, and whether this document's words should be. Liang's algorithm over TeX's American English patterns (`hyph-en-us.pat.txt`, embedded with its notice; no dependency), verified against an independent implementation over 48k words. `word_in` is the narrow rule for what divides at all (a free-standing, all-lowercase ASCII word of six letters or more); `hyphenation_for` decides per document — a `lang:` in the frontmatter, else `reads_as_english` (function-word share of the first 2,000 prose words, inline code excluded: English measured 10–18%, thirteen other languages ≤ 0.2%, threshold one word in sixteen — and almost no word with a non-ASCII letter, which is what catches a German note quoting English). Everything fails toward *not dividing*. |
 | `highlight.rs` | syntect scopes classified into semantic `TokenKind`s (including `Inserted`/`Deleted`/`Meta` for diffs). **Lazy** — `Document::tokens(b)` on first paint; parse-time highlighting would cost a code-heavy document ~100 ms. Two-pass classification (containers before innermost specificity); use `Scope::is_prefix_of`, never `build_string`. |
 | `math.rs` | LaTeX via `pulldown-latex` (pinned `=0.8.0`) to a cell-free `MathExpr`. Inline math enters `Document::text` already rendered — the display text is authoritative. |
 | `diff.rs` | Turns a unified diff or `git log -p` into markdown — a heading per commit and per file, hunks as `diff` fences — so folding, breadcrumb, outline and search work on diffs with no new code. Detection never touches a `.md` file. |
@@ -90,6 +91,15 @@ into semantic `InsertedWord` / `DeletedWord` ranges. It never rewrites display t
 
 Key facts that are easy to get wrong:
 
+- **A hyphen is a fact about a row, never a character in the text.** `wrap_with` sets
+  `RowKind::Text { hyphen }` on a row that ends inside a divided word and reserves one cell for
+  the mark; the frontend draws it. A divided row is the one break with **no gap**: its `doc.end`
+  is the next row's `doc.start`. The packer still never sees a string — it asks a `divide`
+  closure for a head that fits and decides the geometry itself (the hole must be at least
+  `max(4, avail / 8)` cells, never a line's last word, never three rows running). Only rows
+  narrower than `NARROW_BELOW` (70) are considered, judged per logical line, so a nested list
+  item in a wide window qualifies. Plain `wrap` never divides, and that is the form for output
+  that leaves the screen. Measured: +12% on the height pass at 40 columns, nothing at 80.
 - **Table alignment happens at parse, not at paint.** Column widths are max-content display
   widths (width-independent), cells pad with synthetic spaces in the display text, every visual
   row is one contiguous doc range. The `│` separators are paint-time decoration. The synthetic
@@ -129,6 +139,7 @@ Key facts that are easy to get wrong:
 | `render.rs` | Paints rows into the `Buffer`; never uses `Paragraph`/`Wrap`. Highlights by `Buffer::set_style` over a rect, never by splitting spans. `declare_wide_cells` works around ratatui#2651. |
 | `theme.rs` | The only file with a color. 17 palettes plus `omarchy` (derived from the desktop's `colors.toml`, `omarchy.rs`). |
 | `home.rs`, `scan.rs`, `grep.rs`, `fuzzy.rs` | The home screen: streamed `.gitignore`-aware scan (`ignore` crate, `require_git(false)`), cached index, 2 s rescan while listed, directory picker with path completion and remembered places, fuzzy filter, multi-file content search, frontmatter titles. |
+| `tags.rs` | Frontmatter tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads the head of every scanned entry — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and `render` writes a section per tag with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. No UI dependencies. |
 | `menu.rs`, `footer.rs`, `breadcrumb.rs` | Pure selectors for the right-click/`≡` menus, the lamplight hint row, and the sticky heading band. |
 | `marginalia.rs`, `annotation_state.rs`, `annotation_render.rs` | Quote/context-anchored notes and highlights, atomic sidecars and Markdown export, modal list/editor state, and the terminal notes pane. The first two modules have no UI dependencies. |
 | `state.rs`, `config.rs` | XDG state (reading positions, bookmarks) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. |
@@ -169,6 +180,25 @@ Key facts:
   document changes. `visible_row` clips at grapheme boundaries for both paint and
   pointer inversion. Search reveals its column; offsets clamp to the current width.
   Table controls register their own targets, including the block they act on.
+- **Every opener ends in `relayout()`; none builds a layout of its own.** `open_path`,
+  `reload_from`, `open_generated` and `open_welcome` each used to construct a plain
+  `Layout::with_measure` — no math heights, cards whatever the table mode — that only a later
+  resize replaced. `tests/openers.rs` guards it.
+- **Hyphenation is asked, not cached.** `App::hyphenation()` is the reader's preference
+  (`hyphenate`) and then `carrel_core::hyphenation_for(&doc)`, evaluated at every relayout, so
+  it cannot go stale across a reload, a followed link or a growing pipe. `Layout` holds the
+  answer it was built with, for the reason it holds `wrap_tables`.
+- **The tags document is a `Desk`: a generated document `Back` can return to.** Search results
+  push no history when a hit is followed; the tags document keeps its source and its collapse
+  state, leaves a sentinel no file can be named on the trail, and `go_back` reopens it as it was left.
+  Closing to the file list drops it. `#` only *asks* (`Home::tags_wanted`): the event loop's
+  `TagScan` reads on a thread and answers with `Action::HomeOpenTags`, and anything the reader
+  does in between withdraws the request.
+- **A link destination is a URL on the way in, so generated pages encode their targets.**
+  `links::encode_target` percent-encodes what the follower acts on (`#`, `?`, `:`, `&`, `%`,
+  angle brackets, backslash, control characters); `links::resolve_local` tries the name as
+  written and then percent-decoded, before the out-of-folder check. Search results and the
+  tags page both come through it, because both are built from file names carrel did not choose.
 - **`App::reveal_byte` is the one gate** for every byte-targeted jump — a fold must never make
   a destination unreachable. Hidden blocks are zero rows and zero gap; `paint_rows` must skip
   them explicitly.

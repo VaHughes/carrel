@@ -50,7 +50,8 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::document::Document;
+use crate::document::{Document, Inline, Style};
+use crate::hyphen::{Hyphenation, NARROW_BELOW, divisible_kind};
 use crate::position::BlockIdx;
 
 /// Bytes after which a block is split into another layout chunk.
@@ -110,6 +111,14 @@ pub enum RowKind {
         /// This row continues a logical line that did not fit on one row.
         /// The core states the fact; the frontend decides whether to mark it.
         continued: bool,
+        /// This row ends **inside a word** that was divided to fill it, and
+        /// one cell after its content is reserved for a hyphen.
+        ///
+        /// The hyphen is the frontend's to draw and is in no text anywhere:
+        /// `doc` ends at the last letter before the division and the next
+        /// row's `doc` starts at the letter after it, with no gap. Only
+        /// [`wrap_with`] ever sets this.
+        hyphen: bool,
     },
     /// A rule, a table border, an image frame — has no content bytes.
     /// Nothing constructs this yet; see the scope note in the module docs.
@@ -185,12 +194,17 @@ pub fn chunk_count(doc: &Document, block: BlockIdx) -> u32 {
 /// Lets a caller bound work on a pathologically large paragraph. `first` says
 /// whether the next row emitted is the block's first, and is updated — a chunk
 /// boundary is not a block boundary.
+///
+/// `hyphenation` must be what the matching [`wrap_with`] was given, or the
+/// chunks stop summing to the block.
+#[allow(clippy::too_many_arguments)]
 pub fn wrap_chunk<F: FnMut(Row)>(
     doc: &Document,
     block: BlockIdx,
     chunk: u32,
     width: u16,
     w: &WidthFn,
+    hyphenation: Hyphenation,
     first: &mut bool,
     mut sink: F,
 ) -> u32 {
@@ -203,6 +217,7 @@ pub fn wrap_chunk<F: FnMut(Row)>(
         width,
         indent: node.indent,
         code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
+        soft: soft_breaks(doc, block, hyphenation),
     };
     wrap_slice(&text[r], &at, w, first, &mut sink)
 }
@@ -236,6 +251,7 @@ pub fn wrap_range<F: FnMut(Row)>(
         width,
         indent,
         code: false,
+        soft: None,
     };
     wrap_slice(text, &at, w, first, &mut sink)
 }
@@ -245,11 +261,44 @@ pub fn wrap_range<F: FnMut(Row)>(
 /// `sink` is called once per produced row — pass a counting closure for the
 /// height-only pass and a `Vec::push` for the row pass, so the two can never
 /// disagree.
+///
+/// Never divides a word; [`wrap_with`] is the one that may. This is the form
+/// for output that leaves the screen — a hyphen written into a pipe is a
+/// character somebody downstream has to take back out.
 pub fn wrap<F: FnMut(Row)>(
     doc: &Document,
     block: BlockIdx,
     width: u16,
     w: &WidthFn,
+    sink: F,
+) -> u32 {
+    wrap_with(doc, block, width, w, Hyphenation::Off, sink)
+}
+
+/// The style runs of a block whose words may be divided, or `None` when they
+/// may not: hyphenation is off, or the block is not running prose.
+fn soft_breaks(doc: &Document, block: BlockIdx, hyphenation: Hyphenation) -> Option<&[Inline]> {
+    let node = doc.node_for_block(block);
+    match hyphenation {
+        Hyphenation::English if divisible_kind(&node.kind) => Some(&node.inlines),
+        Hyphenation::English | Hyphenation::Off => None,
+    }
+}
+
+/// [`wrap`], dividing words to fill narrow rows where `hyphenation` allows.
+///
+/// A row that ends in a division says so (`RowKind::Text::hyphen`) and has a
+/// cell reserved for the mark. Only running prose is ever divided — never a
+/// heading, code, a table or a metadata card — and only on rows narrower than
+/// [`NARROW_BELOW`]; see [`crate::hyphen`] for which words qualify.
+///
+/// The height pass and the row pass must be given the same `hyphenation`.
+pub fn wrap_with<F: FnMut(Row)>(
+    doc: &Document,
+    block: BlockIdx,
+    width: u16,
+    w: &WidthFn,
+    hyphenation: Hyphenation,
     mut sink: F,
 ) -> u32 {
     let node = doc.node_for_block(block);
@@ -272,6 +321,7 @@ pub fn wrap<F: FnMut(Row)>(
             width,
             indent: node.indent,
             code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
+            soft: soft_breaks(doc, block, hyphenation),
         };
         rows = rows.saturating_add(wrap_slice(
             &text[*start as usize..end],
@@ -284,9 +334,22 @@ pub fn wrap<F: FnMut(Row)>(
     rows
 }
 
+/// Styles whose text is a name rather than a word: a hyphen inside one reads
+/// as part of it.
+const FIXED: u8 = Style::CODE.0 | Style::MATH.0 | Style::SUPERSCRIPT.0 | Style::SUBSCRIPT.0;
+
+/// Does any byte of doc range `r` sit in a style run that must not divide?
+fn fixed(inlines: &[Inline], r: &Range<u32>) -> bool {
+    let from = inlines.partition_point(|i| i.doc.end <= r.start);
+    inlines[from..]
+        .iter()
+        .take_while(|i| i.doc.start < r.end)
+        .any(|i| i.style.0 & FIXED != 0)
+}
+
 /// Where a slice of text sits, and how wide it may be. Everything `wrap_slice`
 /// needs that is not the text, the width function, or the sink.
-struct Slice {
+struct Slice<'a> {
     doc_base: u32,
     block: BlockIdx,
     width: u16,
@@ -294,6 +357,9 @@ struct Slice {
     /// Code blocks reserve [`CONTINUATION_COLS`] on continuation rows for a
     /// marker; prose reserves nothing.
     code: bool,
+    /// `Some` when this slice's words may be divided: the block's style
+    /// runs, which say which of them may not. See [`soft_breaks`].
+    soft: Option<&'a [Inline]>,
 }
 
 /// Widths and indents for one logical line.
@@ -391,13 +457,24 @@ fn wrap_slice<F: FnMut(Row)>(
         // and those break a few cells earlier on the first row than strictly
         // necessary — deterministic, and pathological tokens only.
         let fitted = units::fitted(units::units(line, w), line, fit.cont_avail, w);
+        let line_base = at.doc_base + offset as u32;
+        // Judged per line against the space a row really has, so a deeply
+        // nested item in a wide window hyphenates and a full measure does not.
+        let soft = at.soft.filter(|_| fit.cont_avail < NARROW_BELOW);
+        let mut divide = |u: &units::Unit, room: u16| {
+            let inlines = soft?;
+            units::divide(u, line, room, w, |r| {
+                fixed(inlines, &(line_base + r.start..line_base + r.end))
+            })
+        };
         rows = rows.saturating_add(pack::pack(
             fitted,
-            at.doc_base + offset as u32,
+            line_base,
             at.block,
             &fit,
             first,
             sink,
+            &mut divide,
         ));
         offset += line.len();
     }
@@ -405,7 +482,15 @@ fn wrap_slice<F: FnMut(Row)>(
     // An empty slice yields no lines at all, but a block is at least one row.
     if rows == 0 {
         let fit = LineFit::new(at.width, at.indent, 0, reserve);
-        rows = pack::pack(std::iter::empty(), at.doc_base, at.block, &fit, first, sink);
+        rows = pack::pack(
+            std::iter::empty(),
+            at.doc_base,
+            at.block,
+            &fit,
+            first,
+            sink,
+            &mut |_, _| None,
+        );
     }
     rows
 }
@@ -420,6 +505,22 @@ pub(crate) fn wrap_text<F: FnMut(Row)>(
     width: u16,
     indent: u16,
     w: &WidthFn,
+    sink: F,
+) -> u32 {
+    wrap_text_soft(text, doc_base, block, width, indent, w, false, sink)
+}
+
+/// [`wrap_text`] with word division on or off, as unstyled prose.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn wrap_text_soft<F: FnMut(Row)>(
+    text: &str,
+    doc_base: u32,
+    block: BlockIdx,
+    width: u16,
+    indent: u16,
+    w: &WidthFn,
+    soft: bool,
     mut sink: F,
 ) -> u32 {
     let mut first = true;
@@ -433,6 +534,7 @@ pub(crate) fn wrap_text<F: FnMut(Row)>(
             width,
             indent,
             code: false,
+            soft: soft.then_some(&[][..]),
         };
         rows = rows.saturating_add(wrap_slice(
             &text[*start as usize..end],
@@ -531,6 +633,200 @@ mod tests {
         out
     }
 
+    /// Stands in for the frontend's hyphen, so a test can tell a division
+    /// from a row that ends in a hyphen the author wrote.
+    const SOFT: char = '¬';
+
+    /// Wrap a parsed document's block with English hyphenation, marking
+    /// each divided row with [`SOFT`] where a frontend paints its hyphen.
+    fn hyphenated(doc: &Document, block: u32, width: u16) -> Vec<String> {
+        let mut out = Vec::new();
+        wrap_with(
+            doc,
+            BlockIdx(block),
+            width,
+            &cluster_width,
+            Hyphenation::English,
+            |r| {
+                let mut s = doc.text[r.doc.start as usize..r.doc.end as usize].to_string();
+                if matches!(r.kind, RowKind::Text { hyphen: true, .. }) {
+                    s.push(SOFT);
+                }
+                out.push(s);
+            },
+        );
+        out
+    }
+
+    const PROSE: &str = "the reader keeps documentation readable when the \
+        terminal becomes uncomfortably narrow for ordinary paragraphs";
+
+    #[test]
+    fn a_narrow_paragraph_divides_words_to_fill_its_rows() {
+        let doc = Document::parse(PROSE);
+        let rows = hyphenated(&doc, 0, 22);
+        assert_eq!(
+            rows,
+            [
+                "the reader keeps docu¬",
+                "mentation readable",
+                "when the terminal be¬",
+                "comes uncomfortably",
+                "narrow for ordinary",
+                "paragraphs",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_hyphen_is_in_no_text_and_no_byte_is_lost() {
+        // Rows joined with nothing across a division and a space elsewhere
+        // are the paragraph, exactly: the division added no character and
+        // dropped none.
+        let doc = Document::parse(PROSE);
+        let mut joined = String::new();
+        let mut divided = false;
+        wrap_with(
+            &doc,
+            BlockIdx(0),
+            22,
+            &cluster_width,
+            Hyphenation::English,
+            |r| {
+                if !joined.is_empty() && !divided {
+                    joined.push(' ');
+                }
+                joined.push_str(&doc.text[r.doc.start as usize..r.doc.end as usize]);
+                divided = matches!(r.kind, RowKind::Text { hyphen: true, .. });
+            },
+        );
+        assert_eq!(joined, doc.block_text(BlockIdx(0)));
+    }
+
+    #[test]
+    fn a_divided_row_still_fits_with_its_hyphen() {
+        let doc = Document::parse(PROSE);
+        for width in 8..NARROW_BELOW {
+            for row in hyphenated(&doc, 0, width) {
+                assert!(
+                    display_width(&row) <= width,
+                    "{row:?} is wider than {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_measure_is_never_hyphenated() {
+        let doc = Document::parse(&PROSE.repeat(4));
+        for width in [NARROW_BELOW, 80, 90, 120] {
+            assert!(
+                hyphenated(&doc, 0, width)
+                    .iter()
+                    .all(|r| !r.ends_with(SOFT)),
+                "hyphenated at {width}"
+            );
+        }
+        assert!(
+            hyphenated(&doc, 0, NARROW_BELOW - 1)
+                .iter()
+                .any(|r| r.ends_with(SOFT)),
+            "and the row just under the threshold is"
+        );
+    }
+
+    #[test]
+    fn plain_wrap_never_divides() {
+        let doc = Document::parse(PROSE);
+        let mut rows = Vec::new();
+        wrap(&doc, BlockIdx(0), 22, &cluster_width, |r| rows.push(r.kind));
+        assert!(
+            rows.iter()
+                .all(|k| matches!(k, RowKind::Text { hyphen: false, .. }))
+        );
+    }
+
+    #[test]
+    fn names_are_never_divided() {
+        // The same long word four ways. Only the plain one may divide: a
+        // hyphen inside code reads as part of the identifier, a capital
+        // marks a proper noun or an acronym, and a path is not a word.
+        for (src, why) in [
+            (
+                "aaaa bbbb cccc `documentation` dddd eeee ffff",
+                "inline code",
+            ),
+            ("aaaa bbbb cccc Documentation dddd eeee ffff", "a capital"),
+            ("aaaa bbbb cccc docs/documentation dddd eeee", "a path"),
+            (
+                "aaaa bbbb cccc documentation_index dddd eeee",
+                "an identifier",
+            ),
+            ("aaaa bbbb cccc x^documentation^ dddd eeee", "a superscript"),
+            // A break opportunity is not a word boundary: these are parts of
+            // something larger, on one side or the other.
+            (
+                "aaaa bbbb cccc self-documentation dddd eeee",
+                "a compound's tail",
+            ),
+            (
+                "aaaa bbbb cccc documentation-first dddd eee",
+                "a compound's head",
+            ),
+            (
+                "aaaa bbbb cccc xx\u{2014}documentation dddd eeee",
+                "after a dash",
+            ),
+            (
+                "aaaa bbbb cccc documentation\u{2014}xx dddd eeee",
+                "before a dash",
+            ),
+        ] {
+            let doc = Document::parse(src);
+            let rows = hyphenated(&doc, 0, 22);
+            assert!(
+                rows.iter().all(|r| !r.ends_with(SOFT)),
+                "{why} was divided: {rows:?}"
+            );
+        }
+        let doc = Document::parse("aaaa bbbb cccc documentation dddd eeee ffff");
+        assert!(
+            hyphenated(&doc, 0, 22).iter().any(|r| r.ends_with(SOFT)),
+            "the control: the plain word does divide"
+        );
+    }
+
+    #[test]
+    fn only_running_prose_is_divided() {
+        let long = "aaaa bbbb cccc documentation dddd eeee ffff gggg";
+        for (src, block, why) in [
+            (format!("# {long}"), 0, "a heading"),
+            (format!("```\n{long}\n```"), 0, "a code block"),
+            (
+                format!("---\ntitle: {long}\n---\n\nx"),
+                0,
+                "a metadata card",
+            ),
+        ] {
+            let doc = Document::parse(&src);
+            let rows = hyphenated(&doc, block, 22);
+            assert!(
+                rows.iter().all(|r| !r.ends_with(SOFT)),
+                "{why} was divided: {rows:?}"
+            );
+        }
+        for (src, why) in [
+            (format!("- {long}"), "a list item"),
+            (format!("> {long}"), "a quoted paragraph"),
+        ] {
+            let doc = Document::parse(&src);
+            assert!(
+                hyphenated(&doc, 0, 24).iter().any(|r| r.ends_with(SOFT)),
+                "{why} is prose and should divide"
+            );
+        }
+    }
+
     #[test]
     fn zwj_emoji_is_measured_as_a_cluster_not_a_sum_of_codepoints() {
         let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
@@ -552,6 +848,7 @@ mod tests {
             width,
             indent: 0,
             code,
+            soft: None,
         };
         let mut first = true;
         wrap_slice(text, &at, &cluster_width, &mut first, &mut sink);
@@ -649,7 +946,8 @@ mod tests {
             kinds[0],
             RowKind::Text {
                 first_in_block: true,
-                continued: false
+                continued: false,
+                hyphen: false,
             },
         );
         assert!(
@@ -862,7 +1160,8 @@ mod tests {
             rows[0].kind,
             RowKind::Text {
                 first_in_block: false,
-                continued: false
+                continued: false,
+                hyphen: false,
             }
         ));
         assert!(matches!(

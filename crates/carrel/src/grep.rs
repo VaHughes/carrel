@@ -170,12 +170,15 @@ pub fn render_results(root: &std::path::Path, query: &str, hits: &[Hit]) -> Stri
             .display()
             .to_string();
         let _ = writeln!(out, "## {rel} — {}", plural(h.count, "match", "matches"));
+        // Encoded, because the path is read back as a URL: a `#` in a file
+        // name would otherwise be taken for the fragment that follows it.
+        let target = crate::links::encode_target(&rel);
         for m in &h.matches {
             // Angle-bracket targets, because a vault path may hold a space;
             // a code span for the text, because it may hold markdown.
             let _ = writeln!(
                 out,
-                "- [{}](<{rel}#L{}>): `{}`",
+                "- [{}](<{target}#L{}>): `{}`",
                 m.lineno,
                 m.lineno,
                 m.line.replace('`', "’"),
@@ -183,7 +186,7 @@ pub fn render_results(root: &std::path::Path, query: &str, hits: &[Hit]) -> Stri
         }
         if h.count > h.matches.len() {
             let more = h.count - h.matches.len();
-            let _ = writeln!(out, "- […{more} more in {rel}](<{rel}>)");
+            let _ = writeln!(out, "- […{more} more in {rel}](<{target}>)");
         }
         out.push('\n');
     }

@@ -131,7 +131,7 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
 ## Configuration and state (for reference)
 
 - Config: `$XDG_CONFIG_HOME/carrel/config`, `key = value` lines. Keys: `max_width` (90),
-  `theme`, `hints` (true), `titles` (false), `outline_margin` (false), `breadcrumb` (true),
+  `hyphenate` (true), `theme`, `hints` (true), `titles` (false), `outline_margin` (false), `breadcrumb` (true),
   `mouse` (true), `root`, `place` (repeats, newest first, capped at eight). Unknown keys ignored.
   The settings pane (`,`) shows all but `mouse`, `root` and `place` with their live values and
   prints the file's path; each row writes through the one existing writer for that setting, so

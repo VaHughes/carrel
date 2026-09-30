@@ -4,6 +4,37 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Hyphenation in narrow windows.** Where the text column is under 70 cells, a
+  long word that misses the end of a row is divided to fill it, by TeX's American
+  English patterns (`docu-` / `mentation`). Deliberately reluctant: only running
+  prose, only a plain lowercase word of six letters or more, never code, a
+  heading, a table, a name or a path, never a paragraph's last word, never three
+  rows running. English rules are applied to English only — a document that does
+  not read as English is left alone, and `lang:` in the frontmatter decides
+  either way. The hyphen is drawn, not written: search, selection and copy see
+  the word whole, and `--plain` / `--render` never divide one. `hyphenate = false`
+  or the settings pane turns it off.
+- **Tags.** `#` on the home screen (or Tags in the `≡` menu) reads every
+  document's frontmatter `tags:` in the background and opens them as a page — a
+  section per tag, most used first, with a link to each document under it. A long
+  page opens collapsed into the list of tags; click one to see its documents.
+  `Backspace` from a document opened there returns to the page as you left it.
+  Flow lists, block lists and plain words are all read, in YAML and TOML; tags
+  that differ only in case are one tag. Nothing is indexed on disk.
+- **Links to files with awkward names open.** `[notes](my%20notes.md)` — the way
+  other tools write a link to a name with a space — looked for a file literally
+  called `my%20notes.md`; a destination is now tried as written and then
+  percent-decoded. Search results linked to `C# notes.md` or `re: plan.md` could
+  not open them (the `#` read as a fragment, the `re:` as a URL scheme); generated
+  pages now encode their targets.
+- **`carrel --tutorial` wears your settings.** It laid the page out before reading
+  the config, so text width and the heading bar applied only after a resize.
+- **A document opened from the file list is laid out like one named on the
+  command line.** Opening from the home screen, following a link, a reload and a
+  growing pipe each built a plain layout of their own: drawn math kept the height
+  of its source until the next resize, and the columns view chosen with `t`
+  silently reverted to cards.
+
 - **Readable searches and navigation.** Long queries keep their active end visible
   alongside result counts, including home search and filtering. Selected headings,
   bookmarks, and links wrap; elided paths preserve their distinguishing suffix.

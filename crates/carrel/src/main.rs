@@ -66,6 +66,7 @@ KEYS (home screen):
     j k ↓ ↑                      move           enter open
     i                            filter names: type to narrow, esc to leave
     /                            search inside files, enter opens at a match
+    #                            tags: a page of them, each with its documents
     gg G                         ends           d     choose a directory
     T                            cycle themes   q     quit
     h F1                         help
@@ -1268,6 +1269,9 @@ fn run_welcome() -> std::io::Result<Option<PathBuf>> {
     app.state_dir = carrel::state::state_dir();
     carrel::annotation_state::load(&mut app);
     apply_config(&mut app);
+    // The constructor laid the page out with the defaults; the reader's own
+    // text width, heading bar and hyphenation only apply from here.
+    app.on_resize(app.cols, app.rows);
     app.piped = Some(carrel::app::WELCOME.to_string());
     run_loop(terminal, app, images, None)
 }
@@ -1653,6 +1657,105 @@ impl Grep {
     }
 }
 
+/// The home screen's tag scan: one background thread per request, only
+/// current-generation results kept, the finished index handed to the state
+/// layer as an action. `Grep`'s shape, without the debounce — a request is a
+/// single keystroke, not a query being typed.
+struct TagScan {
+    rx: Option<Receiver<carrel::tags::Msg>>,
+    generation: u64,
+    found: Vec<carrel::tags::Tagged>,
+}
+
+impl TagScan {
+    fn new() -> Self {
+        Self {
+            rx: None,
+            generation: 0,
+            found: Vec::new(),
+        }
+    }
+
+    /// A scan is running: the loop should wake fast enough to finish it.
+    fn busy(&self) -> bool {
+        self.rx.is_some()
+    }
+
+    fn tick(&mut self, app: &mut App) {
+        let wanted = app
+            .home()
+            .is_some_and(|h| h.tags == carrel::tags::Request::Wanted);
+        if !wanted {
+            // Withdrawn. Dropping the receiver stops the thread at its next
+            // send; bumping the generation discards anything already queued.
+            if self.rx.take().is_some() {
+                self.generation += 1;
+            }
+            self.found.clear();
+            return;
+        }
+        if self.rx.is_none() {
+            let Some(h) = app.home() else { return };
+            // The walk is still finding files: wait for the list to be whole
+            // rather than report tags for half a folder as if it were all.
+            if h.scanning {
+                return;
+            }
+            self.generation += 1;
+            self.found.clear();
+            self.rx = Some(carrel::tags::spawn(
+                h.entries.clone(),
+                h.show_titles,
+                self.generation,
+            ));
+        }
+        let Some(rx) = self.rx.as_ref() else { return };
+        let mut done = None;
+        loop {
+            match rx.try_recv() {
+                Ok(carrel::tags::Msg::Found(t, generation)) => {
+                    if generation == self.generation {
+                        self.found.push(t);
+                    }
+                }
+                Ok(carrel::tags::Msg::Done {
+                    read,
+                    capped,
+                    generation,
+                }) => {
+                    if generation == self.generation {
+                        done = Some((read, capped));
+                    }
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                // The thread died without finishing. Stop waiting on a
+                // request nobody is serving.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+        self.rx = None;
+        let Some((read, capped)) = done else {
+            // Not "no tags": carrel does not know, and says that instead.
+            self.found.clear();
+            if let Some(h) = app.home_mut() {
+                h.tags = carrel::tags::Request::Idle;
+                h.note = Some("could not finish reading tags — press # to try again".into());
+            }
+            return;
+        };
+        let index = carrel::tags::Index {
+            tagged: std::mem::take(&mut self.found),
+            read,
+            capped,
+        };
+        if let Some(h) = app.home_mut() {
+            h.tags = carrel::tags::Request::Ready(index);
+        }
+        update(app, carrel::action::Action::HomeOpenTags);
+    }
+}
+
 fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     let theme_note = startup_theme();
     let note = note.or(theme_note);
@@ -1696,6 +1799,8 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
 
     // Content search (wave E): see `Grep`.
     let mut grep = Grep::new();
+    // The tags document: see `TagScan`.
+    let mut tag_scan = TagScan::new();
 
     let mut resize = Resize::default();
     let mut painted = Painted::default();
@@ -1719,11 +1824,12 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         drain_scan(&mut app, &mut scan);
 
         grep.tick(&mut app);
+        tag_scan.tick(&mut app);
 
         maybe_rescan(&mut app, &mut scan, &scan_root, &grep);
 
         // While a scan or search is live, wake often enough to stream.
-        let busy = scan.busy() || grep.busy();
+        let busy = scan.busy() || grep.busy() || tag_scan.busy();
         let idle = if busy { 16 } else { 100 };
         let timeout = resize.deadline.map_or(Duration::from_millis(idle), |d| {
             d.saturating_duration_since(Instant::now())
@@ -2231,6 +2337,7 @@ fn apply_config(app: &mut App) {
     app.hints = c.hints.unwrap_or(true);
     app.breadcrumb = c.breadcrumb.unwrap_or(true);
     app.outline_margin = c.outline_margin.unwrap_or(false);
+    app.hyphenate = c.hyphenate.unwrap_or(true);
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = c.max_width.unwrap_or(config::DEFAULT_MEASURE);
 }

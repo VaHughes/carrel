@@ -121,9 +121,18 @@ fn a_huge_paragraph_is_chunked_without_losing_content() {
     let mut first = true;
     let mut summed = 0u32;
     for c in 0..chunks {
-        summed += wrap_chunk(&doc, block, c, width, &cluster_width, &mut first, |r| {
-            per_chunk.push(r.doc);
-        });
+        summed += wrap_chunk(
+            &doc,
+            block,
+            c,
+            width,
+            &cluster_width,
+            carrel_core::Hyphenation::Off,
+            &mut first,
+            |r| {
+                per_chunk.push(r.doc);
+            },
+        );
     }
 
     assert_eq!(total, summed, "per-chunk row counts must sum to the whole");

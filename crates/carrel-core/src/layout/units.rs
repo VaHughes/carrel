@@ -188,6 +188,68 @@ pub(super) fn split_to_fit(u: &Unit, text: &str, avail: u16, w: &WidthFn) -> Vec
     out
 }
 
+/// Divide a word that missed the end of its row: a head that fits in `room`
+/// cells **with its hyphen**, and the tail that starts the next row.
+///
+/// The soft break, as opposed to [`split_to_fit`]'s emergency one: this is
+/// for a word that would fit on a row of its own and is divided only to fill
+/// the hole it leaves. `None` whenever the unit is not a free-standing word
+/// [`crate::hyphen`] will divide — which is most units, deliberately.
+///
+/// *Free-standing* means whitespace on both sides. A break opportunity is not
+/// a word boundary: UAX #14 also breaks after the `/` in `src/main`, after the
+/// hyphen in `well-known` and around an em dash, and what sits on either side
+/// of those is part of something larger. It is also what keeps a fragment
+/// `split_to_fit` already cut from being divided again as if it were a word.
+///
+/// `fixed(range)` answers whether any byte of the word sits in a style run
+/// that must not be divided (code, math, a script); the caller owns the
+/// document, this file does not.
+pub(super) fn divide(
+    u: &Unit,
+    text: &str,
+    room: u16,
+    w: &WidthFn,
+    fixed: impl Fn(Range<u32>) -> bool,
+) -> Option<(Unit, Unit)> {
+    let start = u.range.start as usize;
+    let after_space = text[..start]
+        .chars()
+        .next_back()
+        .is_none_or(char::is_whitespace);
+    if !after_space || u.trailing_ws_bytes == 0 {
+        return None;
+    }
+    let content = &text[start..u.content_end() as usize];
+    let word = crate::hyphen::word_in(content)?;
+    if fixed((start + word.start) as u32..(start + word.end) as u32) {
+        return None;
+    }
+    // Opening punctuation rides with the head and costs cells like any other.
+    let lead = sum_width(&content[..word.start], w);
+    let max_head = room.checked_sub(lead + super::pack::HYPHEN_COLS)?;
+    let cut = crate::hyphen::division(&content[word.clone()], usize::from(max_head))?;
+    // ASCII letters: one byte and one cell each.
+    let head_width = lead + cut as u16;
+    let at = (start + word.start + cut) as u32;
+    Some((
+        Unit {
+            range: u.range.start..at,
+            width: head_width,
+            trailing_ws: 0,
+            trailing_ws_bytes: 0,
+            mandatory: false,
+        },
+        Unit {
+            range: at..u.range.end,
+            width: u.width - head_width,
+            trailing_ws: u.trailing_ws,
+            trailing_ws_bytes: u.trailing_ws_bytes,
+            mandatory: u.mandatory,
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -476,6 +476,27 @@ reads the hits as a document instead — a section per file with a link per
 match, on the same machinery that reads a diff — so the outline, collapsing and
 a second search all work on the results, and every match jumps to its line.
 .TP
+.B #
+Tags. Reads the frontmatter of every document in the folder and opens what
+it finds as a page: a section per tag, most used first, and under each a
+link to every document that carries it, newest first. A long page opens
+collapsed into the list of tags \(em click one, or press
+.BR za ,
+to see its documents. Follow a link and
+.B Backspace
+returns to the page as you left it. A tag is a value of
+.B tags:
+(or
+.BR tag: )
+in a YAML block, or of
+.B tags =
+in a TOML one, written as a list or as words; two spellings that differ only
+in case are one tag. A
+.B #word
+in the body of a document is not read as a tag. With
+.B titles
+on, documents are listed by title.
+.TP
 .B d
 Choose a folder. The folder browser opens on the folder
 .B carrel
@@ -604,6 +625,22 @@ know is not an error: it opens on
 and says so.
 .B T
 steps to the next and saves the choice.
+.TP
+.B hyphenate
+Divide a long word that misses the end of a row, to fill the row, where the
+text column is narrower than 70 cells. Default true. Only running prose in a
+document that reads as English is divided \(em never a heading, code, a table,
+a name with a capital or a digit in it \(em and a
+.B lang:
+line in the frontmatter decides the language outright, in either direction.
+The hyphen is drawn, not written: searching, selecting and copying see the
+word whole, and
+.B \-\-plain
+and
+.B \-\-render
+never divide one. The settings pane
+.RB ( , )
+changes it.
 .TP
 .B hints
 The hint row along the bottom. Default true;

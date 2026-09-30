@@ -29,6 +29,79 @@ use std::sync::mpsc::{self, Receiver};
 
 use crate::scan::Entry;
 
+/// A relative path written as a link destination that survives being read
+/// back as one.
+///
+/// A destination is a URL on the way in: split at `#` for a fragment, at `?`
+/// by the links pane, copied rather than opened if it seems to carry a
+/// scheme, entity-decoded by the parser, and ended by a newline or a `>`.
+/// A file may be called `C# notes.md`, `re: plan.md` or `a&amp;b.md`, so
+/// every character that means something to any of those readers is
+/// percent-encoded, and [`resolve_local`] decodes on the other side. For the
+/// documents carrel generates itself — search results, the tags page —
+/// whose targets come from a folder it did not write.
+#[must_use]
+pub fn encode_target(rel: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(rel.len() + 8);
+    for c in rel.chars() {
+        if c.is_control() || matches!(c, '%' | '#' | '?' | ':' | '&' | '<' | '>' | '\\') {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                let _ = write!(out, "%{b:02X}");
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `%XX` escapes decoded, or `None` when there are none or the result is
+/// not text.
+fn percent_decoded(s: &str) -> Option<String> {
+    if !s.contains('%') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).copied().and_then(hex),
+                bytes.get(i + 2).copied().and_then(hex),
+            )
+        {
+            out.push(u8::try_from(hi * 16 + lo).unwrap_or(b'?'));
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The file a relative link destination names.
+///
+/// **The name as written wins**; only if nothing is there is it tried again
+/// percent-decoded. So a file really called `50%20off.md` still opens, and
+/// `[notes](my%20notes.md)` — the way every other tool writes a link to a
+/// name with a space — opens `my notes.md`, which it did not before.
+#[must_use]
+pub fn resolve_local(dir: &Path, bare: &str) -> PathBuf {
+    let raw = dir.join(bare);
+    if raw.exists() {
+        return raw;
+    }
+    match percent_decoded(bare) {
+        Some(decoded) => dir.join(decoded),
+        None => raw,
+    }
+}
+
 /// Skip anything larger, exactly as the content grep does.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 

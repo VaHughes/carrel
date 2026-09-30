@@ -443,6 +443,104 @@ fn search_results_read_as_a_document_end_to_end() {
     assert!(raw.contains("doc.md — 1 match"), "with a section per file");
 }
 
+/// `#` on the home screen reads every document's tags on a thread the EVENT
+/// LOOP owns and opens what it found. The state layer's tests hand it a
+/// finished scan; only a real run covers the driver that produces one — the
+/// spawn, the drain, and the action it sends when the thread is done.
+#[test]
+fn tags_are_read_in_the_background_and_open_as_a_document() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    for (name, tags) in [("a.md", "[rust, notes]"), ("b.md", "[rust]")] {
+        std::fs::write(
+            d.path().join(name),
+            format!("---\ntags: {tags}\n---\n\n# Doc\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(d.path().join("plain.md"), "# No tags here\n").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    let cmd = format!(
+        "( sleep 2; printf '#'; sleep 2; printf '\\003' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {bin}' '{}' >/dev/null 2>&1",
+        d.path().join("cfg").display(),
+        d.path().join("state").display(),
+        d.path().join("cache").display(),
+        d.path().display(),
+        out.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+
+    assert!(
+        raw.contains("2 tags in 2 documents of the 3 read"),
+        "the tags document opened, and says what it read",
+    );
+    assert!(raw.contains("rust (2)"), "with a section per tag");
+    assert!(raw.contains("notes (1)"));
+}
+
+/// `--tutorial` built its page with the constructor's defaults and then read
+/// the config without laying out again, so the reader's text width, heading
+/// bar and hyphenation did not apply to the one document meant to show them
+/// the reader. Every other entry point relays out after the config.
+#[test]
+fn the_tutorial_wears_the_readers_settings() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let run = |config: &str| {
+        let d = tempfile::tempdir().unwrap();
+        let cfg = d.path().join("cfg");
+        std::fs::create_dir_all(cfg.join("carrel")).unwrap();
+        std::fs::write(cfg.join("carrel/config"), config).unwrap();
+        let bin = env!("CARGO_BIN_EXE_carrel");
+        let out = d.path().join("pty-capture");
+        let cmd = format!(
+            "( sleep 2; printf 'q' ) | \
+             XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+             timeout 60 script -qec 'stty rows 40 cols 40; {bin} --tutorial' '{}' >/dev/null 2>&1",
+            cfg.display(),
+            d.path().join("state").display(),
+            d.path().join("cache").display(),
+            d.path().display(),
+            out.display(),
+        );
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(d.path())
+            .status()
+            .expect("sh must run");
+        assert!(status.success(), "the binary must exit cleanly");
+        std::fs::read_to_string(&out).unwrap_or_default()
+    };
+    // At forty columns the tutorial's opening paragraph divides `document`:
+    // the head, then a style change for the dim hyphen. A setting that only
+    // a relayout applies is what this needs — the chrome toggles are read
+    // at paint and would pass either way. (If the tutorial's wording moves
+    // the division, the control fails first and says so.)
+    let divided = "Hdocu\u{1b}[";
+    assert!(run("").contains(divided), "the control: divided by default");
+    assert!(
+        !run("hyphenate = false\n").contains(divided),
+        "the tutorial ignored `hyphenate = false`"
+    );
+}
+
 /// The home screen's list must pick up a file written while it is up.
 ///
 /// The unit tests cover the reconciliation ([`carrel::home::Home::begin_rescan`]

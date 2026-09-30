@@ -16,8 +16,8 @@
 use std::collections::HashMap;
 
 use carrel_core::{
-    Affinity, BlockIdx, Document, Node, NodeKind, Row, RowKind, cluster_width, display_width, wrap,
-    wrap_range,
+    Affinity, BlockIdx, Document, Hyphenation, Node, NodeKind, Row, RowKind, cluster_width,
+    display_width, wrap_range, wrap_with,
 };
 
 /// One blank row between blocks. Markdown renders with paragraph spacing
@@ -55,6 +55,11 @@ pub struct Layout {
     /// reader flips `App::wrap_tables`, which is threaded through here on
     /// every relayout.
     wrap_tables: bool,
+    /// Whether words are divided to fill narrow rows. Held here, not read
+    /// from `App` at paint, for the reason `wrap_tables` is: the height pass
+    /// and the row pass must wrap identically, and a layout that answers for
+    /// itself cannot be asked two different ways.
+    hyphenation: Hyphenation,
 }
 
 impl Layout {
@@ -102,6 +107,7 @@ impl Layout {
             block_rows,
             wrap_tables,
             &std::collections::HashSet::new(),
+            Hyphenation::Off,
         )
     }
 
@@ -122,6 +128,7 @@ impl Layout {
         block_rows: HashMap<BlockIdx, u32>,
         wrap_tables: bool,
         hidden: &std::collections::HashSet<BlockIdx>,
+        hyphenation: Hyphenation,
     ) -> Self {
         let mut block_row_start = Vec::with_capacity(doc.block_count() + 1);
         let mut acc = 0u32;
@@ -146,7 +153,7 @@ impl Layout {
                 } else if !wrap_tables && table_overflows(node, width) {
                     card_rows(doc, b, width, |_| {})
                 } else {
-                    wrap(doc, b, bw, &cluster_width, |_| {})
+                    wrap_with(doc, b, bw, &cluster_width, hyphenation, |_| {})
                 }
             };
             acc = acc
@@ -160,6 +167,7 @@ impl Layout {
             block_row_start,
             block_rows,
             wrap_tables,
+            hyphenation,
         }
     }
 
@@ -260,7 +268,9 @@ impl Layout {
             } else if !self.wrap_tables && table_overflows(node, self.width) {
                 card_rows(doc, b, self.width, |r| out.push(r));
             } else {
-                wrap(doc, b, bw, &cluster_width, |r| out.push(r));
+                wrap_with(doc, b, bw, &cluster_width, self.hyphenation, |r| {
+                    out.push(r);
+                });
             }
         }
         // The spacing row. Anchored (empty) at the block's START so the
@@ -388,6 +398,7 @@ fn column_rows(doc: &Document, b: BlockIdx, mut sink: impl FnMut(Row)) -> u32 {
             kind: RowKind::Text {
                 first_in_block: i == 0,
                 continued: false,
+                hyphen: false,
             },
         });
     }
@@ -567,6 +578,7 @@ fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F
                     kind: RowKind::Text {
                         first_in_block: false,
                         continued: false,
+                        hyphen: false,
                     },
                 });
                 n += 1;
@@ -689,7 +701,15 @@ mod tests {
         let all = Layout::with_measure(&doc, 40, 40, HashMap::new(), false);
         // Hide blocks 1 and 2 (A's two paragraphs).
         let hidden = hidden_of(&[1, 2]);
-        let folded = Layout::with_hidden(&doc, 40, 40, HashMap::new(), false, &hidden);
+        let folded = Layout::with_hidden(
+            &doc,
+            40,
+            40,
+            HashMap::new(),
+            false,
+            &hidden,
+            Hyphenation::Off,
+        );
         assert_eq!(folded.height(BlockIdx(1)), 0);
         assert_eq!(folded.height(BlockIdx(2)), 0);
         assert!(folded.total_rows() < all.total_rows());
@@ -708,7 +728,15 @@ mod tests {
     fn block_at_row_never_returns_a_hidden_block() {
         let doc = Document::parse(SECTIONS);
         let hidden = hidden_of(&[1, 2]);
-        let l = Layout::with_hidden(&doc, 40, 40, HashMap::new(), false, &hidden);
+        let l = Layout::with_hidden(
+            &doc,
+            40,
+            40,
+            HashMap::new(),
+            false,
+            &hidden,
+            Hyphenation::Off,
+        );
         for row in 0..l.total_rows() {
             let b = l.block_at_row(row);
             assert!(l.height(b) > 0, "row {row} resolved to hidden block {b:?}");

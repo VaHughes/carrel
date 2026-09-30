@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
 
 ## Current state
 
@@ -25,10 +25,38 @@ Last updated: 2026-09-29
   search feedback, distinguishable navigation entries, hidden-action guards, and
   live resize coverage for both event loops. All four follow-up items are complete;
   hyphenation remains separate work on the roadmap.
+- **Hyphenation and tags are complete and unreleased** (2026-09-30) — the last two open
+  feature lines on the README roadmap. With the small-terminal work they are the whole
+  of what the next release carries.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
-  authoritative done/open list.
+  authoritative done/open list. What remains on it is packaging (AUR, nixpkgs, `.deb`)
+  and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-09-30) — **hyphenation at narrow measures**. Below 70 cells of
+  text, a long word that misses a row end is divided by TeX's American English
+  patterns (`carrel-core/src/hyphen/`, no dependency; identical to an independent
+  implementation over 48k words). The hyphen is a flag on the row and a painted dim
+  cell, never text: search, selection, copy, `--plain` and `--render` are unchanged.
+  English only, decided per document (`lang:` in frontmatter, else a function-word
+  test calibrated against thirteen other languages); `hyphenate = false` or the
+  settings pane turns it off. +12% on the height pass at 40 columns, nothing at 80.
+- Unreleased (2026-09-30) — **tags**. `#` on the home screen reads every document's
+  frontmatter tags on a background thread and opens them as a generated page: a
+  section per tag, a link per document, collapsed into a tag list when long. It is
+  kept as a desk, so `Backspace` from a document opened there returns to the page as
+  it was left. No index on disk.
+- Unreleased (2026-09-30) — **three older defects, found by the tests written for the
+  above and by an independent review of the diff**. (1) Every opener but the first
+  built a plain layout of its own — wrong math heights and the columns table mode
+  reset until the next resize; all four now end in `relayout()`. (2) Link
+  destinations were never percent-decoded, and search-results links to files with
+  `#`, `:` or `?` in their names could not open; `links::encode_target` /
+  `resolve_local`. (3) `--tutorial` read the config after laying out.
+  Verification: **950 tests**, all five gates, all-target and MSRV checks; real PTY
+  screens inspected for hyphenation at 30–40 columns and for the tags page (expand,
+  open, back) on a 1,834-document tree.
 
 - Unreleased follow-up (2026-09-29) — **search tails, navigation, and resize safety**.
   Reader and home searches reserve room for counts and keep the query tail visible.
@@ -129,10 +157,12 @@ decision — do not propose them):
 5. Optional: set `HOMEBREW_TAP_TOKEN` and restore `publish-jobs = ["homebrew"]` to
    re-automate the formula push (currently hand-pushed each release).
 
-Features still open on the README roadmap: tags (a browser
-is deliberately not built — `/rust` on the home screen already
-retrieves; a browser adds discovery, wanted only if the vault persona is confirmed),
-hyphenation at narrow measures.
+Every feature line on the README roadmap is now checked. Known limits of the two newest,
+recorded rather than planned: hyphenation is English only, and a word longer than the
+whole row still takes the unmarked emergency break; tags are frontmatter only (no inline
+`#tags`), nested tags are plain strings, and there is no way into the tags page from
+inside the reader. Search results still push no history when a hit is followed — the tags
+page does, and the same change would give results `Back` if it is wanted.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) lands.
 
@@ -141,6 +171,14 @@ notes' `research.md`): Q29 (dual-frontend prior-art study, P0) and Q33 (P1), to 
 before that phase rather than during it.
 
 ## Recent decisions
+
+- 2026-09-30: **A hyphen is decoration, so it is a flag on a row and never a byte.**
+  The inline-math rule (content must be in the text) does not apply to it; the bullet's
+  rule does. English patterns divide English only, and everything fails toward not
+  dividing.
+- 2026-09-30: **Tags are a generated document, not a pane** — collapsing, the outline
+  and search already exist, and a collapsed tags page *is* a tag browser. It is the
+  first generated document `Back` can return to (`Desk`).
 
 - 2026-09-29: **Input cannot wait for resize debounce.** Keep the 40 ms debounce
   for idle resizing, but refresh dimensions before input so invisible actions

@@ -341,6 +341,8 @@ impl Keys {
                 KeyCode::Char(',') => Some(Action::SettingsToggle),
                 KeyCode::Char('i') => Some(Action::HomeFilterMode),
                 KeyCode::Char('/') => Some(Action::HomeSearchMode),
+                // The character a tag is written with, and free here.
+                KeyCode::Char('#') => Some(Action::HomeTags),
                 KeyCode::Char('G') | KeyCode::End => Some(Action::HomeGo(Edge::Last)),
                 KeyCode::Home => Some(Action::HomeGo(Edge::First)),
                 KeyCode::PageDown => Some(Action::HomePage(1)),
@@ -620,6 +622,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::HomeOpen => "Enter",
         A::HomeFilterMode => "i",
         A::HomeSearchMode => "/",
+        A::HomeTags => "#",
         A::HomeResume(_) => "1 2 3",
         A::HomeUp => "Backspace",
         A::PickerOpen => "d",
@@ -662,6 +665,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::SelectRelease
         | A::SelectWord(_)
         | A::SelectBlock(_)
+        | A::HomeOpenTags
         | A::HomeNormalMode
         | A::PickerChoose
         | A::PickerDescend
@@ -764,6 +768,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     ("i", "filter by name: just type"),
     ("/", "search inside files"),
     ("Tab", "open the results as a page"),
+    ("#", "tags, and their documents"),
     ("Esc", "clear the filter, then close"),
     ("§", "other"),
     ("d", "choose another folder"),
@@ -1680,6 +1685,7 @@ mod tests {
             A::HomeOpen,
             A::HomeFilterMode,
             A::HomeSearchMode,
+            A::HomeTags,
             A::PickerOpen,
         ] {
             if let Some(key) = doc_key(a) {

@@ -370,6 +370,14 @@ pub enum Action {
     /// `Tab` in content search: read the hits as a document — a section per
     /// file with a link per match — instead of opening one file.
     HomeOpenResults,
+    /// `#` on the home screen: read every document's frontmatter tags and
+    /// open them as a document — a section per tag, a link per document.
+    /// This only ASKS: the reading happens on a thread the event loop owns,
+    /// and [`Action::HomeOpenTags`] arrives when it is done.
+    HomeTags,
+    /// The tag scan finished; open what it found. Sent by the event loop,
+    /// never bound to a key or a button.
+    HomeOpenTags,
     PickerOpen,
     /// Put the picker's highlight on an absolute entry — a mouse click.
     /// An index into the picker's match list. Clamped by the receiver.
