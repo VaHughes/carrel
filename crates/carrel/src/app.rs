@@ -101,18 +101,34 @@ pub enum MathForm {
 }
 
 /// The history entry that stands for a [`Desk`]: a generated document has no
-/// path to go back to, so the trail names it this way and `go_back` reopens
-/// it from memory — the `(stdin)` sentinel's idea, for a document carrel wrote.
-/// The NUL is what makes it a name no file can have.
-const DESK: &str = "\0tags";
+/// path to go back to, so the trail names it `\0desk/<index>` and the
+/// navigation reopens it from memory — the `(stdin)` sentinel's idea, for a
+/// document carrel wrote. The NUL is what makes it a name no file can have.
+const DESK: &str = "\0desk";
 
-/// A generated document the reader can come back to.
+fn desk_entry(i: usize) -> PathBuf {
+    PathBuf::from(format!("{DESK}/{i}"))
+}
+
+fn desk_index(p: &Path) -> Option<usize> {
+    p.to_str()?
+        .strip_prefix(DESK)?
+        .strip_prefix('/')?
+        .parse()
+        .ok()
+}
+
+/// A generated document the reader can come back to: search results, the
+/// tags page.
 ///
-/// Search results are a desk you leave: following a hit pushes no history.
-/// A tags document is for browsing — open a document, come back, open the
-/// next — so its source is kept and `Back` returns to it, with the sections
-/// the reader had expanded still expanded. Collapse state is heading ids,
-/// and the same source parses to the same ids.
+/// Both are for browsing — open a document, come back, open the next — so
+/// the source is kept and `Back` returns to it, with the sections the reader
+/// had expanded still expanded. Collapse state is heading ids, and the same
+/// source parses to the same ids.
+///
+/// (Search results used to be "a desk, not a place": following a hit pushed
+/// no history, so the only way back to the results was to search again. The
+/// tags page showed what that costs, and what it takes to fix.)
 #[derive(Clone, Debug)]
 pub struct Desk {
     pub root: PathBuf,
@@ -281,9 +297,18 @@ pub struct App {
     /// they resolve against the searched root, not the working directory a
     /// pipe uses. Set by opening results, cleared by opening anything else.
     pub results_root: Option<std::path::PathBuf>,
-    /// The tags document, while it is open or on the trail behind the
-    /// reader. `None` once they return to the file list. See [`Desk`].
-    pub desk: Option<Desk>,
+    /// `(done, total)` task items; see [`Self::task_counts`].
+    task_counts: (u32, u32),
+    /// Every generated document opened since the file list, in the order
+    /// they were opened; history entries name them by index. Emptied when
+    /// the reader returns to the file list. See [`Desk`].
+    pub desks: Vec<Desk>,
+    /// Which desk is the open document, if one is.
+    pub on_desk: Option<usize>,
+    /// Where `Back` came from, newest last: what `Forward` returns to. Any
+    /// new departure empties it — the branch you did not take is gone, as in
+    /// every browser.
+    pub future: Vec<(PathBuf, u32)>,
     /// Where reading positions persist. Same contract as `config_dir`:
     /// `None` in every constructor, set by the BINARY at startup, so no test
     /// can ever write the real state file.
@@ -701,7 +726,10 @@ impl App {
             config_dir: None,
             launch_dir: None,
             results_root: None,
-            desk: None,
+            task_counts: (0, 0),
+            desks: Vec::new(),
+            on_desk: None,
+            future: Vec::new(),
             state_dir: None,
             wrap_tables: false,
             table_offsets: HashMap::new(),
@@ -738,7 +766,7 @@ impl App {
         // (new, open_path, reload) then has art without a special case.
         app.rebuild_math_art();
         app.words = word_count(&app.doc.text);
-        app.relayout();
+        app.lay_out_new_document();
         app
     }
 
@@ -867,6 +895,7 @@ impl App {
             .to_string_lossy()
             .into_owned();
         self.file = Some(path.to_path_buf());
+        self.on_desk = None;
         // Carrel parses whatever it is handed as markdown, and never checked
         // the extension — so `notes.txt` opened silently while the home
         // screen, which lists only `.md`/`.markdown`, pretended it was not
@@ -901,15 +930,17 @@ impl App {
     /// the outline, folding, breadcrumb, links and in-document search all
     /// work on results with no new code paths.
     ///
-    /// The document is pathless, like a pipe: no position persists, no
-    /// reload watches it, and leaving it pushes no history — it is a desk,
-    /// not a place, so `q` from a file opened through it returns to the home
-    /// screen rather than to the desk. Its links resolve against `root`
-    /// through [`Self::results_root`], never against the working directory.
+    /// The document is pathless, like a pipe: no position persists and no
+    /// reload watches it. Its links resolve against `root` through
+    /// [`Self::results_root`], never against the working directory. It is
+    /// kept as a [`Desk`], so `Back` from a hit returns to the results.
     pub fn open_results(&mut self, root: &Path, query: &str, hits: &[crate::grep::Hit]) {
-        let src = crate::grep::render_results(root, query, hits);
-        self.open_generated(root, format!("search: {query}"), &src);
-        self.desk = None;
+        self.open_desk(Desk {
+            root: root.to_path_buf(),
+            label: format!("search: {query}"),
+            src: crate::grep::render_results(root, query, hits),
+            folded: std::collections::HashSet::new(),
+        });
     }
 
     /// Read the folder's frontmatter tags as a document: a section per tag,
@@ -918,16 +949,14 @@ impl App {
     /// Opened **collapsed** when it is longer than the window, so what the
     /// reader sees first is the list of tags with their counts and a tag
     /// expands into its documents on a click — a tag browser, built out of
-    /// collapsing rather than out of a new pane. Unlike search results it is
-    /// kept as a [`Desk`], so `Back` from a document opened here returns.
+    /// collapsing rather than out of a new pane.
     pub fn open_tags(&mut self, root: &Path, index: &crate::tags::Index) {
-        let desk = Desk {
+        self.open_desk(Desk {
             root: root.to_path_buf(),
             label: "tags".into(),
             src: crate::tags::render(root, index),
             folded: std::collections::HashSet::new(),
-        };
-        self.open_generated(root, desk.label.clone(), &desk.src);
+        });
         if self.layout.total_rows() > u32::from(self.text_h()) {
             self.folded = self
                 .doc
@@ -938,45 +967,119 @@ impl App {
                 .collect();
             self.relayout();
         }
-        self.desk = Some(desk);
     }
 
-    /// About to leave the [`Desk`] for a document: remember which sections
-    /// were expanded and put the desk on the trail, so `Back` returns to it.
-    /// Says whether it did, for [`Self::unpark_desk`].
+    /// Open a generated document and keep it to come back to. The same page
+    /// opened twice is one desk, so asking for tags again and again does not
+    /// keep a copy per asking.
+    fn open_desk(&mut self, desk: Desk) {
+        self.open_generated(&desk.root, desk.label.clone(), &desk.src);
+        let at = self
+            .desks
+            .iter()
+            .position(|d| d.label == desk.label && d.root == desk.root && d.src == desk.src);
+        self.on_desk = Some(at.unwrap_or_else(|| {
+            self.desks.push(desk);
+            self.desks.len() - 1
+        }));
+    }
+
+    /// The name a history entry has when it is a generated page.
+    #[must_use]
+    pub fn desk_label(&self, entry: &Path) -> Option<&str> {
+        let desk = self.desks.get(desk_index(entry)?)?;
+        Some(desk.label.as_str())
+    }
+
+    /// [`Self::location`]'s path, for something that only needs to know
+    /// which document this is.
+    #[must_use]
+    pub fn location_path(&self) -> Option<PathBuf> {
+        if let Some(file) = &self.file {
+            return Some(file.clone());
+        }
+        if let Some(i) = self.on_desk {
+            return Some(desk_entry(i));
+        }
+        self.piped.is_some().then(|| PathBuf::from("(stdin)"))
+    }
+
+    /// Is anything drawn over the document — a pane, a menu, a prompt?
+    /// While one is, the pointer is on IT, whatever text is underneath.
+    #[must_use]
+    pub fn covered(&self) -> bool {
+        self.lightbox.is_some()
+            || self.notes.draft.is_some()
+            || self.notes.pane.is_some()
+            || self.menu.is_some()
+            || self.help.is_some()
+            || self.settings.is_some()
+            || self.outline.is_some()
+            || self.backlinks.is_some()
+            || self.forward.is_some()
+            || self.mark_list.is_some()
+            || self.info
+            || self.searching()
+            || self.is_home()
+    }
+
+    /// The link under the pointer, if the pointer is on the document and on
+    /// one. Derived from the hover cell every time it is asked, so a scroll
+    /// under a still pointer changes the answer by itself.
+    #[must_use]
+    pub fn hovered_link(&self) -> Option<LinkId> {
+        if self.covered() {
+            return None;
+        }
+        let (col, row) = self.hover?;
+        let (byte, _) = self.doc_span_at(col, row)?;
+        let block = self.doc.block_at_doc(DocByte(byte));
+        self.doc
+            .node_for_block(block)
+            .inlines
+            .iter()
+            .find(|i| i.link.is_some() && i.doc.contains(&byte))
+            .and_then(|i| i.link)
+    }
+
+    /// `(done, total)` task-list items in the open document. Counted when
+    /// the document arrives, like `words`: it is on the status row every
+    /// frame and a checklist does not change while it is being read.
+    #[must_use]
+    pub fn task_counts(&self) -> (u32, u32) {
+        self.task_counts
+    }
+
+    /// Where the reader is, as a history entry — and the ONE thing every
+    /// departure asks before it leaves.
     ///
-    /// Before the open, not after, because opening clears the collapse state
-    /// this has to capture. Every way out of the desk comes through here —
-    /// a link followed in the text and one opened from the links pane are
-    /// the same departure.
-    fn park_desk(&mut self) -> bool {
-        if self.file.is_some() {
-            return false;
-        }
-        let folded = self.folded.clone();
-        let Some(desk) = self.desk.as_mut() else {
-            return false;
-        };
-        desk.folded = folded;
+    /// A file is its path; a desk is its sentinel, with the sections that are
+    /// expanded right now remembered for the return (asked before the open,
+    /// because opening clears them); a pipe is `(stdin)`. `None` for a
+    /// document with nothing to come back to.
+    fn location(&mut self) -> Option<(PathBuf, u32)> {
         let anchor = self.view.anchor;
-        self.push_history(PathBuf::from(DESK), anchor);
-        true
-    }
-
-    /// The open failed: a document that did not open is not somewhere to
-    /// come back from.
-    fn unpark_desk(&mut self, parked: bool) {
-        if parked {
-            self.history.pop();
+        if let Some(file) = self.file.clone() {
+            return Some((file, anchor));
         }
+        if let Some(i) = self.on_desk
+            && let Some(desk) = self.desks.get_mut(i)
+        {
+            desk.folded.clone_from(&self.folded);
+            return Some((desk_entry(i), anchor));
+        }
+        self.piped
+            .is_some()
+            .then(|| (PathBuf::from("(stdin)"), anchor))
     }
 
-    /// Come back to the [`Desk`] the trail left behind, as it was left.
-    fn reopen_desk(&mut self, anchor: u32) {
-        let Some(desk) = self.desk.clone() else {
-            return;
+    /// Come back to a [`Desk`] the trail left behind, as it was left.
+    fn reopen_desk(&mut self, i: usize, anchor: u32) -> bool {
+        let Some(desk) = self.desks.get(i).cloned() else {
+            return false;
         };
         self.open_generated(&desk.root, desk.label.clone(), &desk.src);
+        self.on_desk = Some(i);
         // The same source is the same parse, so the ids still name the same
         // headings — and the byte still names the same row.
         self.folded = desk.folded;
@@ -985,6 +1088,7 @@ impl App {
         self.view.anchor = anchor.min(last);
         let h = self.text_h();
         self.view.restore(&self.doc, &self.layout, h);
+        true
     }
 
     /// Open markdown carrel generated itself. Pathless, like a pipe; its
@@ -1003,6 +1107,7 @@ impl App {
         self.view = ViewState::new();
         self.path = label;
         self.file = None;
+        self.on_desk = None;
         self.notes = crate::annotation_state::Notes::default();
         self.results_root = Some(root.to_path_buf());
         self.forget_derived_state();
@@ -1110,6 +1215,8 @@ impl App {
             self.history.remove(0);
         }
         self.history.push((from, anchor));
+        // A new departure: the way forward that `Back` left is gone.
+        self.future.clear();
     }
 
     /// Forget every piece of state whose bytes or block indices belong to a
@@ -2027,6 +2134,11 @@ impl App {
     /// file named on the command line. One function cannot disagree with
     /// itself.
     fn lay_out_new_document(&mut self) {
+        let tasks = self.doc.tasks();
+        self.task_counts = (
+            u32::try_from(tasks.iter().filter(|t| t.done).count()).unwrap_or(u32::MAX),
+            u32::try_from(tasks.len()).unwrap_or(u32::MAX),
+        );
         self.relayout();
     }
 
@@ -3586,6 +3698,8 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::Back => go_back(app, h),
+        Action::Forward => go_forward(app, h),
+        Action::BackTo(index) => go_back_to(app, index as usize, h),
 
         // A bookmark lands on the block the reader is looking at, not on a
         // raw scroll offset: `zz` and a resize both move the offset, and a
@@ -3746,12 +3860,14 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Idle;
             };
             app.backlinks = None;
-            let here = app.view.anchor;
-            if let Some(from) = app.file.clone() {
-                app.push_history(from, here);
-            }
+            let from = app.location();
             match app.open_path(&path) {
-                Ok(()) => Outcome::Redraw,
+                Ok(()) => {
+                    if let Some((from, anchor)) = from {
+                        app.push_history(from, anchor);
+                    }
+                    Outcome::Redraw
+                }
                 Err(e) => {
                     app.note = Some(format!(
                         "cannot open {}: {}",
@@ -3806,15 +3922,15 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return copy_link(app, &dest);
             };
             app.forward = None;
-            let here = app.view.anchor;
-            if let Some(from) = app.file.clone() {
-                app.push_history(from, here);
-            }
-            let parked = app.park_desk();
+            let from = app.location();
             match app.open_path(&path) {
-                Ok(()) => Outcome::Redraw,
+                Ok(()) => {
+                    if let Some((from, anchor)) = from {
+                        app.push_history(from, anchor);
+                    }
+                    Outcome::Redraw
+                }
                 Err(e) => {
-                    app.unpark_desk(parked);
                     app.note = Some(format!(
                         "cannot open {}: {}",
                         path.display(),
@@ -3861,6 +3977,29 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        Action::TaskOpen => {
+            let tasks = app.doc.tasks();
+            let open: Vec<u32> = tasks.iter().filter(|t| !t.done).map(|t| t.at).collect();
+            if open.is_empty() {
+                app.note = Some(match tasks.len() {
+                    0 => "no task lists in this document".into(),
+                    1 => "the one task here is done".into(),
+                    n => format!("all {n} tasks are done"),
+                });
+                return Outcome::Redraw;
+            }
+            let here = app
+                .doc
+                .node_for_block(app.layout.block_at_row(app.view.scroll_row))
+                .doc
+                .start;
+            // The first open task strictly after the top of the view, or
+            // round to the first one.
+            let i = open.partition_point(|&at| at <= here) % open.len();
+            app.reveal_byte(open[i], h, crate::action::Where::Top);
+            app.note = Some(format!("open task {} of {}", i + 1, open.len()));
+            Outcome::Redraw
+        }
         Action::TaskStep(n) => {
             let tasks = app.doc.tasks();
             if tasks.is_empty() {
@@ -4294,7 +4433,9 @@ fn close_file(app: &mut App) -> Outcome {
     app.matches = None;
     app.selected_link = None;
     app.history.clear();
-    app.desk = None;
+    app.future.clear();
+    app.desks.clear();
+    app.on_desk = None;
     Outcome::Redraw
 }
 
@@ -4302,30 +4443,69 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
     let Some((prev, anchor)) = app.history.pop() else {
         return Outcome::Idle;
     };
+    let from = app.location();
+    if go_to(app, &prev, anchor, h)
+        && let Some(from) = from
+    {
+        app.future.push(from);
+    }
+    Outcome::Redraw
+}
+
+/// `Back`'s mirror: return to where the last `Back` came from.
+fn go_forward(app: &mut App, h: u16) -> Outcome {
+    let Some((next, anchor)) = app.future.pop() else {
+        return Outcome::Idle;
+    };
+    let from = app.location();
+    if go_to(app, &next, anchor, h)
+        && let Some(from) = from
+    {
+        // Not `push_history`: that would empty the rest of the way forward.
+        app.history.push(from);
+    }
+    Outcome::Redraw
+}
+
+/// `Back`, as many times as it takes to reach history entry `index` — a
+/// click on a segment of the trail. One step at a time, so the way forward
+/// is exactly what pressing `Back` that many times would have left.
+fn go_back_to(app: &mut App, index: usize, h: u16) -> Outcome {
+    if index >= app.history.len() {
+        return Outcome::Idle; // a segment from a frame the trail outlived
+    }
+    while app.history.len() > index {
+        go_back(app, h);
+    }
+    Outcome::Redraw
+}
+
+/// Go to a history entry. Says whether the reader is now there.
+fn go_to(app: &mut App, to: &Path, anchor: u32, h: u16) -> bool {
     // A same-document entry (a fragment jump) restores the position without
     // re-reading the file — nothing about the document changed.
-    if app.file.as_deref() == Some(prev.as_path()) {
+    if app.file.as_deref() == Some(to) {
         if app.unfold_to(anchor) {
             app.relayout();
         }
         app.view.anchor = anchor;
         app.view.restore(&app.doc, &app.layout, h);
-        return Outcome::Redraw;
+        return true;
     }
-    // Back to the tags document: reopened from its kept source, with the
-    // sections that were expanded still expanded.
-    if prev == Path::new(DESK) {
-        app.reopen_desk(anchor);
-        return Outcome::Redraw;
+    // A generated page: reopened from its kept source, with the sections
+    // that were expanded still expanded.
+    if let Some(i) = desk_index(to) {
+        return app.reopen_desk(i, anchor);
     }
-    // Back to a piped document: no file to re-read, but the text was
-    // retained for exactly this. Re-parse from memory and become pathless
-    // again; the label follows whether the stream is still arriving.
-    if prev == Path::new("(stdin)")
+    // A piped document: no file to re-read, but the text was retained for
+    // exactly this. Re-parse from memory and become pathless again; the
+    // label follows whether the stream is still arriving.
+    if to == Path::new("(stdin)")
         && let Some(src) = app.piped.take()
     {
         app.save_position();
         app.file = None;
+        app.on_desk = None;
         app.notes = crate::annotation_state::Notes {
             entries: std::mem::take(&mut app.piped_notes),
             ..crate::annotation_state::Notes::default()
@@ -4339,20 +4519,21 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
         };
         app.view.anchor = anchor;
         app.view.restore(&app.doc, &app.layout, h);
-        return Outcome::Redraw;
+        return true;
     }
-    match app.open_path(&prev) {
+    match app.open_path(to) {
         Ok(()) => {
             // The anchor is a doc byte, so the reading position returns
             // through the same StableViewport path as a resize.
             app.view.anchor = anchor;
             app.view.restore(&app.doc, &app.layout, h);
+            true
         }
         Err(e) => {
-            app.note = Some(format!("cannot go back to {}: {e}", prev.display()));
+            app.note = Some(format!("cannot go back to {}: {e}", to.display()));
+            false
         }
     }
-    Outcome::Redraw
 }
 
 fn link_step(app: &mut App, n: i32, h: u16) -> Outcome {
@@ -4493,12 +4674,15 @@ fn link_follow(app: &mut App) -> Outcome {
             app.note = Some("nothing to follow".into());
             return Outcome::Redraw;
         };
-        let anchor = app.view.anchor;
-        if let Some(row) = line_fragment(frag) {
+        let from = app.location();
+        let jumped = if let Some(row) = line_fragment(frag) {
             jump_to_line(app, row);
-            app.push_history(here, anchor);
-        } else if jump_to_fragment(app, frag) {
-            app.push_history(here, anchor);
+            true
+        } else {
+            jump_to_fragment(app, frag)
+        };
+        if jumped && let Some((from, anchor)) = from {
+            app.push_history(from, anchor);
         }
         return Outcome::Redraw;
     }
@@ -4515,17 +4699,13 @@ fn link_follow(app: &mut App) -> Outcome {
     if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
         return app.ask_before_leaving(id, &target);
     }
-    let anchor = app.view.anchor;
-    // Leaving the results document pushes no history: there is no file to
-    // go back to, so `Ctrl-O` from the opened file follows the trail that
-    // already exists instead of stranding on a desk.
-    let from_results = app.file.is_none() && app.results_root.is_some();
-    // ...unless the desk is one that can be reopened.
-    let parked = app.park_desk();
+    // Where we are leaving from, asked BEFORE the open: a generated page's
+    // expanded sections are part of the answer, and opening clears them.
+    let from = app.location();
     match app.open_path(&target) {
         Ok(()) => {
-            if !from_results {
-                app.push_history(here, anchor);
+            if let Some((from, anchor)) = from {
+                app.push_history(from, anchor);
             }
             // A missing fragment in an opened file is not an error: you are
             // in the right document, at the top, and the note says why.
@@ -4539,7 +4719,6 @@ fn link_follow(app: &mut App) -> Outcome {
             Outcome::Redraw
         }
         Err(e) => {
-            app.unpark_desk(parked);
             app.note = Some(format!(
                 "cannot open {}: {}",
                 target.display(),
@@ -7791,7 +7970,12 @@ diff --git a/x.rs b/x.rs
             "the top row is the one holding source line 5: {:?}",
             &a.doc.text[top.doc.start as usize..top.doc.end as usize]
         );
-        assert!(a.history.is_empty(), "a desk leaves no trail");
+        // The results are somewhere to come back to: open a hit, read it,
+        // and `Back` is the results again — not the file list and a second
+        // search.
+        update(&mut a, Action::Back);
+        assert_eq!(a.path, "search: needle");
+        assert_eq!(a.file, None);
     }
 
     #[test]

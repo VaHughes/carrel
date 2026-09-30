@@ -667,6 +667,9 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::SelectWord(_)
         | A::SelectBlock(_)
         | A::HomeOpenTags
+        | A::Forward
+        | A::BackTo(_)
+        | A::TaskOpen
         | A::YankBlockAt(_)
         | A::CopyRef(_)
         | A::CopySection(_)

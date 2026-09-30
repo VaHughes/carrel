@@ -36,6 +36,7 @@ pub mod plain;
 pub mod render;
 pub mod scan;
 pub mod state;
+pub mod status;
 pub mod stream;
 pub mod tags;
 pub mod theme;

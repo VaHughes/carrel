@@ -2297,97 +2297,96 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
         paint_query_status(frame, app, area, targets, &left, &feedback, &compact);
         return;
     }
-    // `chrome` marks the ONE branch that writes `T theme` and the exit key as
-    // literal text. Only there may those substrings become buttons — a
-    // selected link's URL could contain anything.
-    let mut chrome = false;
-    let right = if let Some(id) = app.selected_link {
-        // The selected link's destination, always visible for copying.
-        app.doc.links[id.0 as usize].to_string()
-    } else {
-        // Percent of the SCROLLABLE range: the bottom of the document must
-        // read 100%, or the reader concludes scrolling is broken. scroll/total
-        // could never reach 100 — the viewport's own height was the shortfall.
-        let max = app.layout.max_scroll(app.text_h());
-        let pct = if max == 0 {
-            100
-        } else {
-            (u64::from(app.view.scroll_row) * 100 / u64::from(max)).min(100)
-        };
-        // The exit key, visibly: q returns to the home screen when one is
-        // behind this document, and quits when the file was opened directly.
-        // T is here for the same reason q is — a key nobody can see is a
-        // feature nobody has (field note, twice now).
-        let exit = if app.home_stash.is_some() {
-            "q home"
-        } else {
-            "q quit"
-        };
-        // "how much is left" is the question a reader actually has; the
-        // percentage answers "where am I". Both, when there is time worth
-        // mentioning — `minutes_left` stays quiet under a minute.
-        chrome = true;
-        match app.minutes_left() {
-            Some(m) => format!("{pct}% · {m} min left · T theme · {exit}"),
-            None => format!("{pct}% · T theme · {exit}"),
-        }
-    };
-
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
-    // The optional home icon gives way first. The menu launcher survives
-    // even a long filename, so small panes keep a visible route to commands.
-    let icons = icons_fit(area.width, lx, &left, &right);
-    let lx = if icons {
-        // The way back to the file list, at the head of the row where the
-        // filename is — which is the part of the chrome that says which
-        // document this is, and therefore where "a different one" belongs.
-        buf.set_stringn(lx, area.y, "\u{2302}", 1, theme::lamp());
-        targets.push(Action::GoHome, Zone::new(lx, area.y, 1, 1), Z_CHROME);
-        lx + 2
-    } else {
-        lx
-    };
-    buf.set_stringn(
-        lx,
-        area.y,
-        &left,
-        usize::from(area.right().saturating_sub(lx + 2)),
-        theme::status(),
-    );
     // The launcher takes the last column before anything else is placed, so
     // the status text is measured against what is left rather than painted
     // over it.
     let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
-    // Display width, never a scalar count — `right` is an arbitrary URL when a
-    // link is selected and `left` is a user's filename, so either can carry
-    // CJK or emoji. `put` nine lines down already measures this way, and
-    // breadcrumb.rs names the rule outright: "never per-char sums (the ZWJ
-    // rule)". This was the one place in the paint layer that broke it, which
-    // both mis-anchored a wide URL and let the two ends collide.
-    let rw = carrel_core::display_width(&right);
-    let rx = stop.saturating_sub(rw);
-    if rx > lx + carrel_core::display_width(&left) {
-        buf.set_stringn(rx, area.y, &right, rw as usize, theme::status());
-        if chrome {
-            // These two have been painted as words for a while — the field
-            // note behind them is that a key nobody can see is a feature
-            // nobody has. They read as labels, so they are buttons now. The
-            // offset is measured off the string that was just painted, the
-            // way it was painted: display width, never a byte count.
-            let mut button = |word: &str, action: Action| {
-                if let Some(at) = right.find(word) {
-                    let dx = carrel_core::display_width(&right[..at]);
-                    let w = carrel_core::display_width(word);
-                    targets.push(action, Zone::new(rx + dx, area.y, w, 1), Z_CHROME);
-                }
-            };
-            button("T theme", Action::ThemeCycle);
-            button("q home", Action::CloseFile);
-            button("q quit", Action::CloseFile);
+    let y = area.y;
+    let name_w = display_width(&left);
+
+    // The icons at the head of the row: the way back to the file list, and
+    // the way back and forward along the trail. They are optional — a long
+    // filename in a small pane keeps its name and loses them — and each of
+    // the two arrows is only there when it has somewhere to go, so a reader
+    // who has opened one document sees the row they always saw.
+    let icons: Vec<(&str, Action)> = [
+        Some(("\u{2302}", Action::GoHome)),
+        (!app.history.is_empty()).then_some(("\u{2039}", Action::Back)),
+        (!app.future.is_empty()).then_some(("\u{203a}", Action::Forward)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let icons_w = u16::try_from(icons.len() * 2).unwrap_or(u16::MAX);
+    let mut x = lx;
+    if lx
+        .saturating_add(icons_w)
+        .saturating_add(name_w)
+        .saturating_add(2)
+        <= stop
+    {
+        for (glyph, action) in icons {
+            buf.set_stringn(x, y, glyph, 1, theme::lamp());
+            targets.push(action, Zone::new(x, y, 1, 1), Z_CHROME);
+            x += 2;
         }
     }
+
+    // The right end first: what is left over after the name decides how much
+    // of it there is, and what it keeps decides how much room the trail has.
+    // Display width throughout, never a scalar count — a link's destination
+    // and a user's filename can both carry CJK or emoji.
+    let room = stop.saturating_sub(x.saturating_add(name_w).saturating_add(1));
+    let chips = crate::status::fit(crate::status::right(app), room);
+    let rx = stop.saturating_sub(crate::status::width(&chips, crate::status::SEP));
+    let mut cx = rx;
+    for (i, chip) in chips.iter().enumerate() {
+        if i > 0 {
+            put(buf, &mut cx, y, stop, crate::status::SEP, theme::status());
+        }
+        let w = display_width(&chip.text);
+        if let Some(action) = chip.action {
+            targets.push(action, Zone::new(cx, y, w, 1), Z_CHROME);
+        }
+        put(buf, &mut cx, y, stop, &chip.text, theme::status());
+    }
+
+    // The trail: the documents behind this one, nearest last, each a button
+    // back to itself. Only when the name is the name — a one-shot note takes
+    // the row for as long as it is up.
+    let text_stop = if chips.is_empty() {
+        stop
+    } else {
+        rx.saturating_sub(1)
+    };
+    if app.note.is_none() {
+        let spare = text_stop.saturating_sub(x.saturating_add(name_w));
+        for chip in crate::status::trail_chips(app, spare) {
+            let w = display_width(&chip.text);
+            if let Some(action) = chip.action {
+                targets.push(action, Zone::new(x, y, w, 1), Z_CHROME);
+            }
+            put(buf, &mut x, y, text_stop, &chip.text, theme::dim());
+            put(
+                buf,
+                &mut x,
+                y,
+                text_stop,
+                crate::status::TRAIL_SEP,
+                theme::dim(),
+            );
+        }
+    }
+    buf.set_stringn(
+        x,
+        y,
+        &left,
+        usize::from(text_stop.saturating_sub(x)),
+        theme::status(),
+    );
 }
 
 /// The `≡` at the right end of the status row: the visible, left-clickable
@@ -2516,18 +2515,6 @@ fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
             targets.push(Action::MenuMove(1), Zone::new(z.x + 1, y, 3, 1), Z_MENU);
         }
     }
-}
-
-/// Is there room on the status row for its icons AND both ends of its text?
-///
-/// The `⌂` and the `≡` cost two columns each — one for the glyph and one of
-/// air. On a wide terminal that is nothing; at thirty columns it is the
-/// reading percentage.
-fn icons_fit(width: u16, lx: u16, left: &str, right: &str) -> bool {
-    use carrel_core::display_width;
-    let text = display_width(left) + display_width(right);
-    // One column of gap between the two ends, so they never touch.
-    lx.saturating_add(text).saturating_add(5) <= width
 }
 
 /// When the hints are hidden, the status row's left edge shows the folded,

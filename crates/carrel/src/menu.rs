@@ -773,6 +773,9 @@ mod tests {
             A::HomeCrumb(_) => Chrome,    // a segment of the path row
             A::CrumbJump(_) => Chrome,    // a segment of the breadcrumb band
             A::GoHome => Chrome,          // the `⌂` on the reader's status row
+            A::Forward => Chrome,         // the `›` beside it
+            A::TaskOpen => Chrome,        // `7/12 tasks` on the status row
+            A::BackTo(_) => Chrome,       // a document's name on the trail
 
             // --- the document itself ---
             A::LinkOpen(_) => Doc,

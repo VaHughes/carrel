@@ -106,6 +106,11 @@ pub enum Action {
     LinkOpen(u32),
     /// `Ctrl-O`. Pop the history stack.
     Back,
+    /// Return to where the last `Back` came from — the `›` on the status row.
+    Forward,
+    /// Go back to a document on the trail, by index into `App::history`: a
+    /// click on its name in the status row. Clamped by the receiver.
+    BackTo(u32),
     /// `Esc` with nothing pending: clear transient selection state.
     Dismiss,
     /// `q` in the reader: back to the home screen when one is behind this
@@ -245,6 +250,10 @@ pub enum Action {
     CodeStep(i32),
     /// `X`: jump to the next GFM task item, wrapping. Count-multiplied.
     TaskStep(i32),
+    /// Jump to the next task that is still open, wrapping — the task count
+    /// on the status row. `X` steps through every task; this one answers
+    /// "what is left to do".
+    TaskOpen,
     /// Copy the focused code block to the clipboard.
     YankBlock,
     /// Copy THIS code block — the chip under it, which already said which
