@@ -1390,6 +1390,25 @@ fn paint_block_cursor(
             .buffer_mut()
             .set_stringn(area.x - 1, y, "▪", 1, crate::theme::lamp());
     }
+    // A block the last reload changed or added gets a thin bar down its
+    // side, so "what did the agent just do to this file" is answered by
+    // looking. The bookmark dot, painted above, keeps the first row's cell.
+    if app.changed.binary_search(&block).is_ok() && app.code_focus != Some(block) {
+        let rows_here = app
+            .layout
+            .content_height(&app.doc, block)
+            .saturating_sub(skip);
+        let marked = skip == 0 && app.marks.contains(&app.doc.node_for_block(block).doc.start);
+        for r in u16::from(marked)..u16::try_from(rows_here).unwrap_or(u16::MAX) {
+            let yy = y.saturating_add(r);
+            if yy >= area.bottom() {
+                break;
+            }
+            frame
+                .buffer_mut()
+                .set_stringn(area.x - 1, yy, "▎", 1, crate::theme::lamp());
+        }
+    }
     if app.code_focus != Some(block) {
         // Every code block says it can be copied, not only the one the
         // block cursor is on: `y` is a key, and a reader who does not know

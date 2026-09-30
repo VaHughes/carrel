@@ -258,6 +258,12 @@ pub enum Action {
     CodeStep(i32),
     /// `X`: jump to the next GFM task item, wrapping. Count-multiplied.
     TaskStep(i32),
+    /// `c`: jump to the next block that changed in the last reload, wrapping.
+    /// Signed and count-multiplied, like the other steps.
+    ChangeStep(i32),
+    /// Open the document that was just written beside this one — the chip
+    /// on the status row that says so.
+    SiblingOpen,
     /// Jump to the next task that is still open, wrapping — the task count
     /// on the status row. `X` steps through every task; this one answers
     /// "what is left to do".

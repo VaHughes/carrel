@@ -1560,10 +1560,12 @@ fn run_loop(
     let mut next_auto: Option<Instant> = None;
     // The tags page, asked for from inside a document: see `TagScan`.
     let mut tag_scan = TagScan::new();
+    let mut siblings = Siblings::new();
 
     loop {
         drive_backlinks(&mut app, &mut backlinks, &mut backlinks_for);
         tag_scan.tick(&mut app);
+        siblings.tick(&mut app);
         images.sync(&mut app);
         images.drain(&mut app);
         diagrams.sync(&app);
@@ -1858,6 +1860,96 @@ impl Grep {
     }
 }
 
+/// How often the folder is looked at while a document is open.
+const SIBLINGS_EVERY: Duration = Duration::from_secs(4);
+
+/// Watches the folder a document is being read from, and says when another
+/// document in it is written.
+///
+/// An agent that is asked for a plan and a changelog writes two files, and
+/// the reader is looking at one of them. This is what tells them the other
+/// exists, without a second terminal and without polling a file list by
+/// hand. It is a walk on a thread — the home screen's own, which honors
+/// `.gitignore` — one at a time, so a slow disk makes it late rather than
+/// making it pile up.
+///
+/// It only ever SETS `App::sibling`. The reader puts the news away (`Esc`)
+/// or acts on it (the chip); either empties it, and what counts as new is
+/// then measured from that moment.
+struct Siblings {
+    rx: Option<Receiver<Vec<scan::Entry>>>,
+    last: Instant,
+    /// The document being watched from, canonical, and the time newer
+    /// writes are measured against.
+    watching: Option<(PathBuf, PathBuf, std::time::SystemTime)>,
+    reported: bool,
+}
+
+impl Siblings {
+    fn new() -> Self {
+        Self {
+            rx: None,
+            last: Instant::now(),
+            watching: None,
+            reported: false,
+        }
+    }
+
+    fn tick(&mut self, app: &mut App) {
+        let file = match app.file.clone() {
+            Some(f) if !app.is_home() && !app.streaming => f,
+            _ => {
+                self.rx = None;
+                self.watching = None;
+                return;
+            }
+        };
+        let now = std::time::SystemTime::now();
+        if self.watching.as_ref().map(|w| &w.0) != Some(&file) {
+            // A different document: what is new is new from here.
+            let canon = file.canonicalize().unwrap_or_else(|_| file.clone());
+            self.watching = Some((file, canon, now));
+            self.rx = None;
+            self.reported = false;
+            app.sibling = None;
+        }
+        if self.reported && app.sibling.is_none() {
+            // Put away, or opened: start counting again.
+            self.reported = false;
+            if let Some(w) = self.watching.as_mut() {
+                w.2 = now;
+            }
+        }
+        let Some((_, canon, since)) = self.watching.clone() else {
+            return;
+        };
+        if let Some(rx) = self.rx.as_ref() {
+            match rx.try_recv() {
+                Ok(entries) => {
+                    self.rx = None;
+                    if let Some(sibling) = carrel::app::newest_sibling(&entries, &canon, since) {
+                        app.sibling = Some(sibling);
+                        self.reported = true;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.rx = None,
+            }
+            return;
+        }
+        if self.last.elapsed() < SIBLINGS_EVERY {
+            return;
+        }
+        let Some(root) = app.tags_root() else { return };
+        self.last = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(scan::walk_blocking(&root).0);
+        });
+        self.rx = Some(rx);
+    }
+}
+
 /// The home screen's tag scan: one background thread per request, only
 /// current-generation results kept, the finished index handed to the state
 /// layer as an action. `Grep`'s shape, without the debounce — a request is a
@@ -2010,6 +2102,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     // The tags document: see `TagScan`.
     let mut tag_scan = TagScan::new();
     let mut preview = PreviewLoad { rx: None };
+    let mut siblings = Siblings::new();
     // Coming back from a document, the list's reading columns are a
     // document out of date.
     let mut was_home = true;
@@ -2042,6 +2135,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         }
         was_home = app.is_home();
         preview.tick(&mut app);
+        siblings.tick(&mut app);
 
         maybe_rescan(&mut app, &mut scan, &scan_root, &grep);
 

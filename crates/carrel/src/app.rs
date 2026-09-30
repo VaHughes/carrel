@@ -118,6 +118,15 @@ fn desk_index(p: &Path) -> Option<usize> {
         .ok()
 }
 
+/// A document that was just written in the folder being read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sibling {
+    /// The most recently written one.
+    pub path: PathBuf,
+    /// How many others were written too.
+    pub more: u32,
+}
+
 /// A generated document the reader can come back to: search results, the
 /// tags page.
 ///
@@ -306,6 +315,17 @@ pub struct App {
     pub tags: crate::tags::Request,
     /// The tag to open the page at, when a tag was what was clicked.
     pub tags_focus: Option<String>,
+    /// The blocks the last reload changed or added, in order. Marked in the
+    /// margin; `c` steps through them. Emptied by the next document, the
+    /// next reload, and `Esc`.
+    pub changed: Vec<BlockIdx>,
+    /// What the document's blocks were when the reader last acknowledged
+    /// them; reloads are compared against this. See [`Self::reload`].
+    change_base: Option<HashMap<u64, u32>>,
+    /// A document written beside this one since it was opened, for the
+    /// status row to offer. Set by the event loop's watcher, never by
+    /// `update`, which does no I/O.
+    pub sibling: Option<Sibling>,
     /// An open footnote peek. Not a pane: see [`crate::peek`].
     pub peek: Option<crate::peek::Peek>,
     /// Every `[^name]` reference as `(start, len)` doc bytes, in order.
@@ -747,6 +767,9 @@ impl App {
             results_root: None,
             tags: crate::tags::Request::Idle,
             tags_focus: None,
+            changed: Vec::new(),
+            change_base: None,
+            sibling: None,
             peek: None,
             footnote_marks: Vec::new(),
             dead_links: std::collections::HashSet::new(),
@@ -1311,6 +1334,8 @@ impl App {
         self.image_errors.clear();
         self.lightbox = None;
         self.diagram_art.clear();
+        self.changed.clear();
+        self.change_base = None;
     }
 
     /// Re-read the open file in place: same document identity, new content.
@@ -1326,9 +1351,53 @@ impl App {
             return Ok(());
         };
         let src = read_document(&path)?;
+        // Against the document as the reader last acknowledged it, not as
+        // it was one write ago: an agent that saves three times in a row
+        // has made one set of changes, and the third save must not wipe
+        // the marks the first two left.
+        let base = self
+            .change_base
+            .take()
+            .unwrap_or_else(|| block_census(&self.doc));
         self.reload_from(&src);
-        self.note = Some("reloaded".into());
+        self.mark_changes(base.clone());
+        self.change_base = Some(base);
+        self.note = Some(match self.changed.len() {
+            // Everything differs: a rewrite, and a mark on every block would
+            // say nothing a reader cannot see. Or nothing a reader can see
+            // differs at all.
+            0 => "reloaded".into(),
+            1 => "reloaded — 1 change · c goes to it".into(),
+            n => format!("reloaded — {n} changes · c goes to the next"),
+        });
         Ok(())
+    }
+
+    /// Which blocks of the document are not in `before`: the ones the
+    /// reload changed or added.
+    ///
+    /// By content, not position — inserting a paragraph at the top moves
+    /// every block after it and changes none of them. A block is unchanged
+    /// if the old document had one with the same text that has not already
+    /// been matched, so a repeated line is counted as many times as it
+    /// appears. What was deleted leaves no block to mark, and is not shown.
+    fn mark_changes(&mut self, mut before: HashMap<u64, u32>) {
+        self.changed.clear();
+        if before.is_empty() {
+            return; // there was nothing to have changed from
+        }
+        let mut changed = Vec::new();
+        for i in 0..self.doc.block_count() {
+            let b = BlockIdx(i as u32);
+            match before.get_mut(&block_hash(&self.doc, b)) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ => changed.push(b),
+            }
+        }
+        // A rewrite marks nothing; see the note in `reload`.
+        if changed.len() < self.doc.block_count() {
+            self.changed = changed;
+        }
     }
 
     fn parse_adapting(&self, src: &str) -> Document {
@@ -2394,6 +2463,51 @@ impl App {
         // match across the author's hard-wrapped source line.
         self.matches = Some(search(&self.doc, input, true));
     }
+}
+
+/// The document written most recently among `entries` since `since`, other
+/// than the one being read — and how many more there were.
+///
+/// `reading` is canonical. A walk spells paths from its root, so each
+/// candidate is canonicalized before it is compared; that is one call per
+/// NEW file, which is almost always none.
+#[must_use]
+pub fn newest_sibling(
+    entries: &[crate::scan::Entry],
+    reading: &Path,
+    since: std::time::SystemTime,
+) -> Option<Sibling> {
+    let mut newer: Vec<&crate::scan::Entry> = entries
+        .iter()
+        .filter(|e| e.mtime > since)
+        .filter(|e| e.path.canonicalize().map_or(true, |c| c != reading))
+        .collect();
+    newer.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.path.cmp(&b.path)));
+    let first = newer.first()?;
+    Some(Sibling {
+        path: first.path.clone(),
+        more: u32::try_from(newer.len() - 1).unwrap_or(u32::MAX),
+    })
+}
+
+/// One block's identity for change detection: its kind and its text.
+fn block_hash(doc: &Document, b: BlockIdx) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(&doc.node_for_block(b).kind).hash(&mut h);
+    doc.block_text(b).hash(&mut h);
+    h.finish()
+}
+
+/// How many blocks of each identity a document has.
+fn block_census(doc: &Document) -> HashMap<u64, u32> {
+    let mut census = HashMap::new();
+    for i in 0..doc.block_count() {
+        *census
+            .entry(block_hash(doc, BlockIdx(i as u32)))
+            .or_insert(0) += 1;
+    }
+    census
 }
 
 /// Refuse documents whose byte offsets cannot fit the position type.
@@ -3968,6 +4082,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             // a search moved the reader somewhere on purpose, so clearing the
             // highlights afterwards is not an undo.
             app.matches = None;
+            // And the two things the status row was offering: they were
+            // news, and Esc is how news is put away.
+            app.changed.clear();
+            app.change_base = None;
+            app.sibling = None;
             Outcome::Redraw
         }
 
@@ -4358,6 +4477,48 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
 
+        Action::ChangeStep(n) => {
+            if app.changed.is_empty() {
+                app.note = Some("nothing has changed since this was opened".into());
+                return Outcome::Redraw;
+            }
+            let top = app.layout.block_at_row(app.view.scroll_row);
+            let len = app.changed.len();
+            let count = usize::try_from(n.unsigned_abs()).unwrap_or(1).max(1);
+            // `TaskStep`'s arithmetic: the first one strictly past the top
+            // of the view, and the rest of the count from there.
+            let i = if n >= 0 {
+                (app.changed.partition_point(|b| *b <= top) + count - 1) % len
+            } else {
+                let before = (app.changed.partition_point(|b| *b < top) + len - 1) % len;
+                (before + len - ((count - 1) % len)) % len
+            };
+            let at = app.doc.node_for_block(app.changed[i]).doc.start;
+            app.reveal_byte(at, h, crate::action::Where::Top);
+            app.note = Some(format!("change {} of {len}", i + 1));
+            Outcome::Redraw
+        }
+        Action::SiblingOpen => {
+            let Some(sibling) = app.sibling.take() else {
+                return Outcome::Idle;
+            };
+            let from = app.location();
+            match app.open_path(&sibling.path) {
+                Ok(()) => {
+                    if let Some((from, anchor)) = from {
+                        app.push_history(from, anchor);
+                    }
+                }
+                Err(e) => {
+                    app.note = Some(format!(
+                        "cannot open {}: {}",
+                        sibling.path.display(),
+                        open_failure_reason(&e)
+                    ));
+                }
+            }
+            Outcome::Redraw
+        }
         Action::TaskOpen => {
             let tasks = app.doc.tasks();
             let open: Vec<u32> = tasks.iter().filter(|t| !t.done).map(|t| t.at).collect();

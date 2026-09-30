@@ -157,6 +157,8 @@ impl Keys {
             // The same key the file list uses, so the tags page is one key
             // away from wherever the reader is.
             KeyCode::Char('#') => Some(Action::HomeTags),
+            // After a reload: where the document changed.
+            KeyCode::Char('c') if !ctrl => Some(Action::ChangeStep(self.take())),
             KeyCode::Char('F') => Some(Action::FollowToggle),
             KeyCode::Char('A') => Some(Action::AutoToggle),
             KeyCode::Char('L') => Some(Action::BacklinksToggle),
@@ -611,6 +613,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::AutoTick => return None,
         A::CodeStep(_) => "] [",
         A::TaskStep(_) => "X",
+        A::ChangeStep(_) => "c",
         A::YankBlock => "y",
         A::HelpToggle => "h F1",
         A::HintsToggle => "H",
@@ -674,6 +677,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::HomeOpenTags
         | A::TagOpen(_)
         | A::Forward
+        | A::SiblingOpen
         | A::BackTo(_)
         | A::FootnotePeek { .. }
         | A::PeekGo
@@ -742,6 +746,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("\"", "list bookmarks — enter jumps"),
     ("%", "footnote ↔ its text"),
     ("#", "tags, and their documents"),
+    ("c", "next change after a reload"),
     ("L", "what links here"),
     ("l", "what this points at"),
     ("] [", "next / previous code block"),

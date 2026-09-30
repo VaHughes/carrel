@@ -310,6 +310,13 @@ pub fn global(app: &App) -> Vec<Item> {
         } else {
             Item::new("Back", Action::Back)
         },
+        // After the file is rewritten under the reader: where. Greyed until
+        // there is a change to go to, so the row still says the way exists.
+        if app.changed.is_empty() {
+            Item::new("Next change", Action::ChangeStep(1)).greyed()
+        } else {
+            Item::new("Next change", Action::ChangeStep(1))
+        },
         Item::gap(),
         Item::new("Notes and highlights…", Action::NotesToggle),
         Item::new("Document info", Action::InfoToggle),
@@ -777,6 +784,8 @@ mod tests {
             A::GoHome => Chrome,          // the `⌂` on the reader's status row
             A::Forward => Chrome,         // the `›` beside it
             A::TaskOpen => Chrome,        // `7/12 tasks` on the status row
+            A::ChangeStep(_) => Chrome,   // `3 changed` beside it
+            A::SiblingOpen => Chrome,     // `PLAN.md changed` beside that
             A::BackTo(_) => Chrome,       // a document's name on the trail
 
             // --- the document itself ---

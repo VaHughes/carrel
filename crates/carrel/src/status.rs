@@ -78,6 +78,29 @@ pub fn right(app: &App) -> Vec<Chip> {
         return vec![Chip::says(dest, 9)];
     }
     let mut out = Vec::new();
+    // News first: another document was just written, or this one was.
+    if let Some(sibling) = &app.sibling {
+        let name = sibling.path.file_name().map_or_else(
+            || sibling.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let name: String = name.chars().filter(|c| !c.is_control()).collect();
+        out.push(Chip::does(
+            match sibling.more {
+                0 => format!("\u{25cf} {name} changed"),
+                n => format!("\u{25cf} {name} changed (+{n})"),
+            },
+            Action::SiblingOpen,
+            4,
+        ));
+    }
+    if !app.changed.is_empty() {
+        out.push(Chip::does(
+            format!("{} changed", app.changed.len()),
+            Action::ChangeStep(1),
+            5,
+        ));
+    }
     let (done, total) = app.task_counts();
     if total > 0 {
         // A plan is a checklist, and how much of it is done is the first

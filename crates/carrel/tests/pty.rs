@@ -535,6 +535,98 @@ fn tags_open_from_inside_a_document_too() {
     );
 }
 
+/// While a document is open, another one written in its folder is offered
+/// on the status row. The chip and what it opens are unit-tested; the
+/// watcher that notices is a thread and a timer in the event loop, and only
+/// a real run has either.
+#[test]
+fn a_document_written_beside_the_open_one_is_announced() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("PLAN.md"), "# Plan\n\nbeing read\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    // Open, let the watcher take its baseline, write a second document,
+    // then wait out one polling interval.
+    let cmd = format!(
+        "( sleep 3; printf '# New\\n' > '{new}'; sleep 7; printf 'Q' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 90; {bin} PLAN.md' '{}' >/dev/null 2>&1",
+        d.path().join("cfg").display(),
+        d.path().join("state").display(),
+        d.path().join("cache").display(),
+        d.path().display(),
+        out.display(),
+        new = d.path().join("CHANGELOG.md").display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(
+        raw.contains("CHANGELOG.md"),
+        "the status row named the document that was just written"
+    );
+}
+
+/// A path pasted onto the file list arrives as ONE event, because the list
+/// asks the terminal for bracketed paste — and opens that file. Without the
+/// bracket the same bytes are forty keystrokes, the first of which (`/`)
+/// opens the search prompt.
+#[test]
+fn a_path_pasted_onto_the_file_list_opens_it() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.md"), "# A\n\nthe first one\n").unwrap();
+    std::fs::write(
+        d.path().join("target.md"),
+        "# Target\n\npasted and opened\n",
+    )
+    .unwrap();
+    let path = d.path().join("target.md");
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    // The paste, a beat for the document to paint, then Ctrl-C — which
+    // quits from either screen, so a paste that did nothing still exits.
+    let cmd = format!(
+        "( sleep 2; printf '\\033[200~{path}\\033[201~'; sleep 1; printf '\\003' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -qec 'stty rows 20 cols 76; {bin}' '{}' >/dev/null 2>&1",
+        d.path().join("cfg").display(),
+        d.path().join("state").display(),
+        d.path().join("cache").display(),
+        d.path().display(),
+        out.display(),
+        path = path.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(
+        raw.contains("\u{1b}[?2004h"),
+        "the list asks for bracketed paste"
+    );
+    assert!(
+        raw.contains("pasted"),
+        "the pasted path opened the document it names"
+    );
+}
+
 /// `--tutorial` built its page with the constructor's defaults and then read
 /// the config without laying out again, so the reader's text width, heading
 /// bar and hyphenation did not apply to the one document meant to show them
