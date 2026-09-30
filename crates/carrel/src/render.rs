@@ -2484,33 +2484,7 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     let y = area.y;
     let name_w = display_width(&left);
 
-    // The icons at the head of the row: the way back to the file list, and
-    // the way back and forward along the trail. They are optional — a long
-    // filename in a small pane keeps its name and loses them — and each of
-    // the two arrows is only there when it has somewhere to go, so a reader
-    // who has opened one document sees the row they always saw.
-    let icons: Vec<(&str, Action)> = [
-        Some(("\u{2302}", Action::GoHome)),
-        (!app.history.is_empty()).then_some(("\u{2039}", Action::Back)),
-        (!app.future.is_empty()).then_some(("\u{203a}", Action::Forward)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let icons_w = u16::try_from(icons.len() * 2).unwrap_or(u16::MAX);
-    let mut x = lx;
-    if lx
-        .saturating_add(icons_w)
-        .saturating_add(name_w)
-        .saturating_add(2)
-        <= stop
-    {
-        for (glyph, action) in icons {
-            buf.set_stringn(x, y, glyph, 1, theme::lamp());
-            targets.push(action, Zone::new(x, y, 1, 1), Z_CHROME);
-            x += 2;
-        }
-    }
+    let mut x = paint_status_icons(buf, app, (lx, y), stop, name_w, targets);
 
     // The right end first: what is left over after the name decides how much
     // of it there is, and what it keeps decides how much room the trail has.
@@ -2564,6 +2538,64 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
         usize::from(text_stop.saturating_sub(x)),
         theme::status(),
     );
+}
+
+/// The icons at the head of the reader's status row. Returns where the text
+/// after them starts.
+fn paint_status_icons(
+    buf: &mut ratatui::buffer::Buffer,
+    app: &App,
+    at: (u16, u16),
+    stop: u16,
+    name_w: u16,
+    targets: &mut Targets,
+) -> u16 {
+    // The icons at the head of the row: the way back to the file list, and
+    // the way back and forward along the trail. They are optional — a long
+    // filename in a small pane keeps its name and loses them — and the
+    // arrows are only there once there is a trail, so a reader who has
+    // opened one document sees the row they always saw.
+    // The two arrows come as a pair: once there is a trail at all, both are
+    // drawn, and the one with nowhere to go is dim and does nothing. A lone
+    // `›` in front of a name reads as a separator, not as a button.
+    let trail = !app.history.is_empty() || !app.future.is_empty();
+    let icons: Vec<(&str, Option<Action>)> = [
+        Some(("\u{2302}", Some(Action::GoHome))),
+        trail.then_some((
+            "\u{2039}",
+            (!app.history.is_empty()).then_some(Action::Back),
+        )),
+        trail.then_some((
+            "\u{203a}",
+            (!app.future.is_empty()).then_some(Action::Forward),
+        )),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let icons_w = u16::try_from(icons.len() * 2).unwrap_or(u16::MAX);
+    let (lx, y) = at;
+    let mut x = lx;
+    if lx
+        .saturating_add(icons_w)
+        .saturating_add(name_w)
+        .saturating_add(2)
+        <= stop
+    {
+        for (glyph, action) in icons {
+            match action {
+                Some(action) => {
+                    buf.set_stringn(x, y, glyph, 1, theme::lamp());
+                    targets.push(action, Zone::new(x, y, 1, 1), Z_CHROME);
+                }
+                None => {
+                    buf.set_stringn(x, y, glyph, 1, theme::dim());
+                }
+            }
+            x += 2;
+        }
+    }
+    x
 }
 
 /// The `≡` at the right end of the status row: the visible, left-clickable

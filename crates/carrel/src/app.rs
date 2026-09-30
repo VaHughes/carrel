@@ -3190,6 +3190,15 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     if let Some(outcome) = blocked_action(app, action) {
         return outcome;
     }
+    // A click is a press and a release, and the release arrives as an action
+    // of its own. With no press pending and nothing selected it is the tail
+    // of a click that ALREADY acted — on a link, a footnote mark, a button —
+    // and it is not "the next thing the reader did". Treated as one, it
+    // cleared the note its own press had just produced: "cannot open …" and
+    // "copied …" were on screen for as long as the button was held down.
+    if action == Action::SelectRelease && app.sel_anchor.is_none() && app.selection.is_none() {
+        return Outcome::Idle;
+    }
     // The first-run invitation goes as soon as the reader does anything at
     // all — it exists to be acted on, and a line that stays after you have
     // acted is noise. Moving the pointer is not acting, and neither is a

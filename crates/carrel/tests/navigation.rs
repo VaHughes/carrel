@@ -450,3 +450,29 @@ fn a_document_that_fits_or_has_too_many_sections_has_no_notches() {
     assert!(!has(&sections(6, "####", 12)));
     assert!(has(&sections(6, "##", 12)));
 }
+
+/// Once there is a trail the two arrows are drawn together; the one with
+/// nowhere to go is there, dim, and is not a button. A lone `›` in front of
+/// a name reads as a separator.
+#[test]
+fn the_arrows_come_as_a_pair_and_only_the_live_one_is_a_button() {
+    let d = tempfile::tempdir().unwrap();
+    let (cols, rows) = (100u16, 20u16);
+    let mut app = chain(d.path());
+    app.on_resize(cols, rows);
+    update(&mut app, Action::LinkOpen(0));
+    update(&mut app, Action::Back); // on a.md: nothing behind, b.md ahead
+    let (buf, targets) = painted(&app, cols, rows);
+    let y = targets
+        .iter()
+        .find(|(a, _)| *a == Action::GoHome)
+        .map(|(_, z)| z.y)
+        .unwrap();
+    let row: String = (0..cols).map(|x| buf[(x, y)].symbol()).collect();
+    assert!(row.contains("\u{2039} \u{203a} a.md"), "{row:?}");
+    assert!(targets.iter().any(|(a, _)| *a == Action::Forward));
+    assert!(
+        !targets.iter().any(|(a, _)| *a == Action::Back),
+        "with nothing behind, the back arrow is not a button"
+    );
+}

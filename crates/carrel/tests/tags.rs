@@ -602,3 +602,16 @@ fn the_reader_can_ask_for_tags_with_no_file_list_behind_it() {
     assert_eq!(piped.tags, Request::Idle);
     assert!(piped.note.as_deref().unwrap().contains("no folder"));
 }
+
+/// The same trap as the footnote peek: a click on a tag is a press and a
+/// release, and the release must not withdraw the request the press made.
+#[test]
+fn the_release_of_a_click_on_a_tag_does_not_withdraw_the_request() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = reader_in(d.path());
+    let at = u32::try_from(app.doc.text.find("topic1").unwrap()).unwrap();
+    update(&mut app, Action::TagOpen(at));
+    update(&mut app, Action::SelectRelease);
+    assert_eq!(app.tags, Request::Wanted);
+    assert_eq!(app.note.as_deref(), Some("reading tags…"));
+}

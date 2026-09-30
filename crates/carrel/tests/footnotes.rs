@@ -178,3 +178,21 @@ fn a_mark_with_no_footnote_says_so_instead_of_opening_an_empty_box() {
         Outcome::Idle
     );
 }
+
+/// A click is a press and a release, and the release arrives as an action of
+/// its own. The press opens the peek; the release of that same click must
+/// not be "the next thing the reader did".
+#[test]
+fn the_release_of_the_click_that_opened_it_does_not_close_it() {
+    let mut app = reader(80, 24);
+    let (_, targets) = painted(&app, 80, 24);
+    update(&mut app, marks(&targets)[0].0);
+    update(&mut app, Action::SelectRelease);
+    assert!(
+        app.peek.is_some(),
+        "the mouse button coming up closed the peek"
+    );
+    // A second, separate click anywhere on the text does close it.
+    update(&mut app, Action::SelectAnchor((0, 1)));
+    assert!(app.peek.is_none());
+}

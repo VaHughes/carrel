@@ -158,3 +158,48 @@ fn a_dead_link_is_struck_through_and_a_live_one_is_not() {
     );
     assert!(painted.links.iter().any(|l| l.url.contains("other.md")));
 }
+
+/// A click is a press and a release, and the release reaches the state
+/// machine as an action of its own. Notes are one-shot — "whatever happens
+/// next clears them" — so the release of the very click that produced a note
+/// used to be the next thing that happened: "cannot open …" and "copied …"
+/// were on screen for as long as the mouse button was down.
+#[test]
+fn the_note_a_click_produced_survives_the_button_coming_up() {
+    let d = tempfile::tempdir().unwrap();
+    let mut app = folder(d.path());
+    let id = |label: &str| {
+        app.doc
+            .nodes
+            .iter()
+            .flat_map(|n| n.inlines.iter())
+            .find(|i| &app.doc.text[i.doc.start as usize..i.doc.end as usize] == label)
+            .and_then(|i| i.link)
+            .unwrap()
+            .0
+    };
+    let (gone, web) = (id("gone"), id("web"));
+
+    update(&mut app, Action::LinkOpen(gone));
+    update(&mut app, Action::SelectRelease);
+    assert!(
+        app.note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cannot open"),
+        "the reason the link did not open: {:?}",
+        app.note
+    );
+
+    update(&mut app, Action::LinkOpen(web));
+    update(&mut app, Action::SelectRelease);
+    assert!(
+        app.note.as_deref().unwrap_or_default().contains("copied"),
+        "that it was copied: {:?}",
+        app.note
+    );
+    // A release that ends a real selection still does its job.
+    app.selection = Some(0..4);
+    update(&mut app, Action::SelectRelease);
+    assert_eq!(app.clipboard.as_deref(), Some("Home"));
+}
