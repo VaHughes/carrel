@@ -2531,19 +2531,17 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     // over it.
     let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
     let y = area.y;
-    let name_w = display_width(&left);
 
-    let mut x = paint_status_icons(buf, app, (lx, y), stop, name_w, targets);
+    // What the row holds is decided in one place, in one order of giving
+    // way (`status::row`); the paint only places it. Display width
+    // throughout, never a scalar count — a link's destination and a user's
+    // filename can both carry CJK or emoji.
+    let row = crate::status::row(app, &left, stop.saturating_sub(lx));
+    let mut x = paint_status_icons(buf, app, (lx, y), row.icons, targets);
 
-    // The right end first: what is left over after the name decides how much
-    // of it there is, and what it keeps decides how much room the trail has.
-    // Display width throughout, never a scalar count — a link's destination
-    // and a user's filename can both carry CJK or emoji.
-    let room = stop.saturating_sub(x.saturating_add(name_w).saturating_add(1));
-    let chips = crate::status::fit(crate::status::right(app), room);
-    let rx = stop.saturating_sub(crate::status::width(&chips, crate::status::SEP));
+    let rx = stop.saturating_sub(crate::status::width(&row.right, crate::status::SEP));
     let mut cx = rx;
-    for (i, chip) in chips.iter().enumerate() {
+    for (i, chip) in row.right.iter().enumerate() {
         if i > 0 {
             put(buf, &mut cx, y, stop, crate::status::SEP, theme::status());
         }
@@ -2555,48 +2553,43 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     }
 
     // The trail: the documents behind this one, nearest last, each a button
-    // back to itself. Only when the name is the name — a one-shot note takes
-    // the row for as long as it is up.
-    let text_stop = if chips.is_empty() {
+    // back to itself.
+    let text_stop = if row.right.is_empty() {
         stop
     } else {
         rx.saturating_sub(1)
     };
-    if app.note.is_none() {
-        let spare = text_stop.saturating_sub(x.saturating_add(name_w));
-        for chip in crate::status::trail_chips(app, spare) {
-            let w = display_width(&chip.text);
-            if let Some(action) = chip.action {
-                targets.push(action, Zone::new(x, y, w, 1), Z_CHROME);
-            }
-            put(buf, &mut x, y, text_stop, &chip.text, theme::dim());
-            put(
-                buf,
-                &mut x,
-                y,
-                text_stop,
-                crate::status::TRAIL_SEP,
-                theme::dim(),
-            );
+    for chip in &row.trail {
+        let w = display_width(&chip.text);
+        if let Some(action) = chip.action {
+            targets.push(action, Zone::new(x, y, w, 1), Z_CHROME);
         }
+        put(buf, &mut x, y, text_stop, &chip.text, theme::dim());
+        put(
+            buf,
+            &mut x,
+            y,
+            text_stop,
+            crate::status::TRAIL_SEP,
+            theme::dim(),
+        );
     }
     buf.set_stringn(
         x,
         y,
-        &left,
+        &row.left,
         usize::from(text_stop.saturating_sub(x)),
         theme::status(),
     );
 }
 
-/// The icons at the head of the reader's status row. Returns where the text
-/// after them starts.
+/// The icons at the head of the reader's status row, when `show`. Returns
+/// where the text after them starts.
 fn paint_status_icons(
     buf: &mut ratatui::buffer::Buffer,
     app: &App,
     at: (u16, u16),
-    stop: u16,
-    name_w: u16,
+    show: bool,
     targets: &mut Targets,
 ) -> u16 {
     // The icons at the head of the row: the way back to the file list, and
@@ -2622,15 +2615,14 @@ fn paint_status_icons(
     .into_iter()
     .flatten()
     .collect();
-    let icons_w = u16::try_from(icons.len() * 2).unwrap_or(u16::MAX);
+    // `status::row` budgeted these cells; the two must agree.
+    debug_assert_eq!(
+        u16::try_from(icons.len() * 2).ok(),
+        Some(crate::status::icons_width(app))
+    );
     let (lx, y) = at;
     let mut x = lx;
-    if lx
-        .saturating_add(icons_w)
-        .saturating_add(name_w)
-        .saturating_add(2)
-        <= stop
-    {
+    if show {
         for (glyph, action) in icons {
             match action {
                 Some(action) => {
@@ -3606,13 +3598,18 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
     let lx = fold_lamp(buf, app.hints, area, targets);
-    buf.set_stringn(
-        lx,
-        area.y,
-        &left,
-        usize::from(area.right().saturating_sub(lx + 2)),
-        theme::status(),
-    );
+    // A note too long for the row gives way as the reader's does: whole
+    // clauses, then words, and an ellipsis whenever it was cut.
+    let room = area.right().saturating_sub(lx + 2);
+    let clauses = crate::status::clauses(&left);
+    let left = match clauses
+        .iter()
+        .find(|c| carrel_core::display_width(c) <= room)
+    {
+        Some(fits) => (*fits).to_string(),
+        None => crate::status::shorten(clauses.last().unwrap_or(&""), room),
+    };
+    buf.set_stringn(lx, area.y, &left, usize::from(room), theme::status());
     // The home screen gets the same launcher as the reader — it is the one
     // affordance that says a menu exists at all, and a reader who has not
     // opened a file yet is the one most likely to need it. Keep it visible
