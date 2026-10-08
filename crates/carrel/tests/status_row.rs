@@ -115,20 +115,39 @@ fn print_sweep() {
     }
 }
 
-const NOTES: [&str; 5] = [
+const NOTES: [&str; 6] = [
     "reloaded \u{2014} 7 changes \u{b7} c goes to the next",
+    "theme: everforest",
     "resumed where you left off \u{b7} Home for the top",
     "Notes kept for this session only \u{2014} export before leaving.",
     "a document read from a pipe has no folder to link from",
     "could-not-open-an-extraordinarily-long-file-name.md",
 ];
 
-/// A note cut short is cut where a reader can tell: at a clause, at a
-/// word with an ellipsis after it, or — when even its first word does not
-/// fit — at any cell, with the ellipsis saying so. Never mid-word in
-/// silence, and never longer at a narrower width.
+/// A cut note keeps most of the room it was given: the blank run between
+/// its ellipsis and whatever the row shows next is at most half of what
+/// it kept (plus the cell of air before the next thing, and one for a wide
+/// glyph that did not split). A word boundary bought at any price left
+/// `theme\u{2026}` beside eleven empty cells at 18 columns.
+fn assert_keeps_the_room(row: &str, shown: &str, ctx: &str) {
+    let at = row.find(shown).expect("the note is on the row");
+    let gap = row[at + shown.len()..]
+        .chars()
+        .take_while(|c| *c == ' ')
+        .count();
+    let kept = carrel_core::display_width(shown) as usize;
+    assert!(
+        gap <= kept / 2 + 2,
+        "kept {kept} cells and left {gap} empty: {ctx}"
+    );
+}
+
+/// A note cut short is cut where a reader can tell: at a clause, or with
+/// an ellipsis saying it was cut — at a word while that keeps most of the
+/// room, inside one past that. Never cut in silence, and never longer at a
+/// narrower width.
 #[test]
-fn a_note_gives_way_by_clauses_and_words_and_never_mid_word() {
+fn a_note_gives_way_by_clauses_and_words_and_never_in_silence() {
     let d = tempfile::tempdir().unwrap();
     for note in NOTES {
         for hints in [true, false] {
@@ -150,10 +169,7 @@ fn a_note_gives_way_by_clauses_and_words_and_never_mid_word() {
                     if shown != note {
                         if let Some(stem) = shown.strip_suffix('\u{2026}') {
                             assert!(note.starts_with(stem), "{ctx}");
-                            // At a word, unless not even the first word fit.
-                            let at_word = note[stem.len()..].starts_with(' ');
-                            let first_word = !stem.contains(' ');
-                            assert!(at_word || first_word, "cut mid-word: {ctx}");
+                            assert_keeps_the_room(&row, &shown, &ctx);
                         } else {
                             assert!(note.starts_with(&shown), "{ctx}");
                             let after = &note[shown.len()..];
@@ -243,7 +259,7 @@ fn the_status_row_only_ever_gives_way_as_it_narrows() {
 
 /// The home screen's row: its note gives way at words too.
 #[test]
-fn the_home_screen_note_is_never_cut_mid_word() {
+fn the_home_screen_note_is_never_cut_in_silence() {
     let d = tempfile::tempdir().unwrap();
     let note = "scan interrupted \u{2014} showing the cached list";
     let mut last: Option<String> = None;
@@ -261,13 +277,12 @@ fn the_home_screen_note_is_never_cut_mid_word() {
         if shown != note {
             if let Some(stem) = shown.strip_suffix('\u{2026}') {
                 assert!(note.starts_with(stem), "{ctx}");
-                let at_word = note[stem.len()..].starts_with(' ');
-                assert!(at_word || !stem.contains(' '), "cut mid-word: {ctx}");
+                assert_keeps_the_room(&row, &shown, &ctx);
             } else {
                 assert!(note.starts_with(&shown), "{ctx}");
                 assert!(
                     note[shown.len()..].starts_with(" \u{2014} "),
-                    "cut mid-word: {ctx}"
+                    "cut in silence, not at a clause: {ctx}"
                 );
             }
         }

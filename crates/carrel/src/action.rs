@@ -367,6 +367,14 @@ pub enum Action {
     /// It never reaches `update`: the frontend drops it at the hit-test, and
     /// the state machine's catch-all would ignore it anyway.
     Absorb,
+    /// A click OUTSIDE the open pane: close it, and do nothing else.
+    ///
+    /// The painter lays this over the whole frame, under the pane and
+    /// above everything else it covers — the document, the status row's
+    /// chips, the trail, the breadcrumb, the scrollbar — so a click beside
+    /// a pane is used up closing it, the way a click beside a menu always
+    /// was. It is not a button: hover never lights it.
+    PaneClose,
     Quit,
 
     // --- home screen ---
@@ -458,6 +466,18 @@ pub enum Action {
 //
 //   position depends only on (cols, rows, flags)  ->  invert a geometry fn
 //   position depends on the data being painted    ->  record a target
+
+impl Action {
+    /// A target that is a surface, not a button: a pane's own blank
+    /// ([`Action::Absorb`]) or the scrim beside it ([`Action::PaneClose`]).
+    /// Hover never lights one — lighting the scrim would light the whole
+    /// frame — and nothing beneath one lights either, since a click there
+    /// no longer reaches it.
+    #[must_use]
+    pub const fn is_backdrop(self) -> bool {
+        matches!(self, Self::Absorb | Self::PaneClose)
+    }
+}
 
 /// A rectangle in terminal cells. Deliberately not `ratatui::Rect`: this type
 /// crosses into the pure layer, and a GTK frontend has no cells.
@@ -571,7 +591,7 @@ impl Targets {
     #[must_use]
     pub fn hoverable(&self, col: u16, row: u16) -> Option<Zone> {
         self.hit(col, row)
-            .filter(|hit| hit.action != Action::Absorb)
+            .filter(|hit| !hit.action.is_backdrop())
             .map(|hit| hit.zone)
     }
 
@@ -580,7 +600,7 @@ impl Targets {
     #[must_use]
     pub fn shows(&self, zone: Zone, col: u16, row: u16) -> bool {
         self.hit(col, row)
-            .is_some_and(|hit| hit.zone == zone && hit.action != Action::Absorb)
+            .is_some_and(|hit| hit.zone == zone && !hit.action.is_backdrop())
     }
 
     /// Is any target at or above `z` under the pointer?

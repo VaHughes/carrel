@@ -7,7 +7,8 @@ use crate::{
 use ratatui::{Frame, layout::Rect, style::Modifier};
 use unicode_segmentation::UnicodeSegmentation;
 
-const Z: u8 = 3;
+/// Over everything: the notes pane owns the whole frame.
+const Z: u8 = crate::render::Z_MENU;
 
 fn button(
     frame: &mut Frame,

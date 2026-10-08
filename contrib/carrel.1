@@ -434,9 +434,20 @@ block. It collapses exactly what a click on the heading beside it collapses.
 In the outline, the bookmark list and the two link panes, a click opens the row
 under the pointer \(em not the row the keyboard cursor was resting on. A click
 anywhere else on an open pane does nothing: while a pane is up it takes every
-click inside it, so nothing reaches the document behind it. One pane is open
-at a time: while one is up, a key, button or menu row that would open another
-does nothing until it is closed.
+click inside it, so nothing reaches the document behind it. A click
+.I outside
+an open pane closes it and does nothing else \(em on the page, the status
+row, the trail, the heading bar or the scrollbar, with either button \(em the
+way a click outside a menu closes the menu. The pane's own buttons on the
+hint row, the lamp, and the
+.B \[u2261]
+keep working. One pane is open at a time: the
+.B \[u2261]
+over any pane, or a key that opens another pane over one with no text to
+type into, closes the pane that is up and opens the new one in its place.
+Over the help sheet, the outline and the search prompt the letters are typed
+instead, and a note being written is never closed by anything but its own
+keys.
 .TP
 .B right\-click
 Open a menu. In the document it is a menu for whatever is under the pointer
@@ -445,14 +456,16 @@ block offers copying, a table offers cards or columns \(em and it is positioned 
 it opens, so its rows act on what was clicked rather than on wherever the view
 happens to be. Anywhere else \(em the status row, the hint row, the
 heading bar, the margin, the scrollbar, or the home screen \(em it opens the
-global menu instead.
+global menu instead. With a pane open, a right\-click beside it only closes
+the pane.
 .TP
 .B menu button
 The
 .B \[u2261]
 at the right end of the status row opens the same global menu with a left
 click, for a reader who has no reason to guess that right\-clicking does
-anything.
+anything. It always works: with a pane open, it closes the pane and opens the
+menu.
 .TP
 .B menu
 Inside a menu:

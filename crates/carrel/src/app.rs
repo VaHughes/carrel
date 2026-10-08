@@ -218,6 +218,7 @@ impl Pane {
             | A::MenuClose
             | A::LinkCopy
             | A::Absorb
+            | A::PaneClose
             | A::Quit
             | A::HomeMove(_)
             | A::HomePage(_)
@@ -245,6 +246,31 @@ impl Pane {
             | A::PickerUp => return None,
         };
         Some(Opens::Pane(pane))
+    }
+
+    /// Does `action` do nothing but open a pane? Such an opener replaces
+    /// whatever pane is up (see `refuses` in `update`); one that also acts
+    /// on the page is refused under a pane instead.
+    ///
+    /// Also the list of keys `key_action` lets through a pane with no text
+    /// field to the page's own map — one list, so the key that may replace
+    /// a pane and the action `update` lets replace it cannot disagree.
+    #[must_use]
+    pub const fn switches(action: Action) -> bool {
+        matches!(
+            action,
+            Action::HelpToggle
+                | Action::SettingsToggle
+                | Action::OutlineToggle
+                | Action::MarkListToggle
+                | Action::BacklinksToggle
+                | Action::ForwardToggle
+                | Action::InfoToggle
+                | Action::NotesToggle
+                | Action::SearchOpen(_)
+                | Action::PickerOpen
+                | Action::MenuOpen { .. }
+        )
     }
 }
 
@@ -1298,6 +1324,34 @@ impl App {
         self.piped.is_some().then(|| PathBuf::from("(stdin)"))
     }
 
+    /// What closes the pane that is up, exactly as its own key would: the
+    /// action its Esc (or its own opener) runs.
+    ///
+    /// `None` when nothing is up — and while a note is being WRITTEN: the
+    /// draft is the one pane holding work that exists nowhere else, so
+    /// neither a click beside it nor another pane's opener may throw it
+    /// away. Only its own keys (save, or Esc on purpose) end it.
+    #[must_use]
+    pub fn pane_closer(&self) -> Option<Action> {
+        Some(match self.pane()? {
+            Pane::Notes if self.notes.draft.is_some() => return None,
+            Pane::Lightbox | Pane::Notes => Action::Dismiss,
+            Pane::Menu => Action::MenuClose,
+            Pane::Help => Action::HelpToggle,
+            Pane::Settings => Action::SettingsToggle,
+            Pane::Outline => Action::OutlineToggle,
+            Pane::Marks => Action::MarkListToggle,
+            Pane::Backlinks => Action::BacklinksToggle,
+            Pane::Forward => Action::ForwardToggle,
+            Pane::Info => Action::InfoToggle,
+            // Esc's answer: the prompt goes and the view returns to where
+            // the search began. A click beside a menu dismisses it without
+            // acting; a click beside the prompt does the same.
+            Pane::Search => Action::SearchKey(SearchKey::Cancel),
+            Pane::Picker => Action::PickerCancel,
+        })
+    }
+
     /// Is anything drawn over the document — a pane, a menu, a prompt?
     /// While one is, the pointer is on IT, whatever text is underneath.
     #[must_use]
@@ -1307,8 +1361,9 @@ impl App {
 
     /// The one modal thing that owns the screen, if any.
     ///
-    /// **At most one is ever up.** `update` refuses every opener of a
-    /// different pane while this answers `Some` (see [`Pane::opened_by`]),
+    /// **At most one is ever up.** `update` replaces it with, or refuses,
+    /// every opener of a different pane while this answers `Some` (see
+    /// [`Pane::opened_by`] and `refuses`),
     /// `key_action` dispatches on it, and the painter draws only it — so
     /// what is on top, what the keys reach and what the pointer reaches are
     /// one answer, not three lists that drift. They were three, and `I`
@@ -3621,7 +3676,7 @@ fn open_ready_tags(app: &mut App) -> Outcome {
 /// The one exception to "no I/O" is [`Action::HomeOpen`], which must read the
 /// file it is opening. Everything else is arithmetic over state.
 pub fn update(app: &mut App, action: Action) -> Outcome {
-    if let Some(outcome) = blocked_action(app, action) {
+    if let Some(outcome) = close_beside(app, action).or_else(|| blocked_action(app, action)) {
         return outcome;
     }
     // A click is a press and a release, and the release arrives as an action
@@ -3631,8 +3686,9 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     // cleared the note its own press had just produced: "cannot open …" and
     // "copied …" were on screen for as long as the button was held down.
     // And an opener the open pane refuses is likewise nothing the reader
-    // did: one modal thing at a time (see `refuses`).
-    if refuses(app, action) || stale_release(app, action) {
+    // did: one modal thing at a time (see `refuses`, which REPLACES the
+    // pane instead when the opener is a plain one).
+    if stale_release(app, action) || refuses(app, action) {
         return Outcome::Idle;
     }
     // The first-run invitation goes as soon as the reader does anything at
@@ -3770,15 +3826,46 @@ fn stale_release(app: &App, action: Action) -> bool {
 
 /// One modal thing at a time: is `action` an opener the open pane refuses?
 ///
-/// While a pane is up, an opener of anything else is refused wherever it
-/// came from — a key, a footer chip, a menu row, a click on the page beside
-/// the pane — so nothing is ever drawn over the pane that holds the keys,
-/// nor left open under another one. A pane's own opener is its closer and
-/// goes through. The help sheet's runnable rows and a menu's rows close
-/// their own pane FIRST and then run, so they are not refused by this.
-fn refuses(app: &App, action: Action) -> bool {
-    app.pane()
-        .is_some_and(|open| Pane::opened_by(action).is_some_and(|wants| wants != Opens::Pane(open)))
+/// While a pane is up, a plain opener of another pane ([`Pane::switches`])
+/// REPLACES it — the open pane closes, as its own Esc would close it, and
+/// the new one opens — so nothing is ever drawn over the pane that holds
+/// the keys, nor left open under another one. That is what the `≡`
+/// launcher does over any pane, and what a pane-opening key does over a
+/// pane that takes no typing (`key_action` decides which keys get that
+/// far: a pane with a text field keeps its letters as text). A pane's own
+/// opener is its closer and goes through untouched.
+///
+/// Refused instead, silently as before: an opener that also ACTS on the
+/// page — following a link, opening an image, starting a note at a place,
+/// peeking a footnote — since what it would act on is hidden under the
+/// pane; and anything at all over a note being written
+/// ([`App::pane_closer`] is `None` for it), because replacing the draft
+/// would throw it away.
+fn refuses(app: &mut App, action: Action) -> bool {
+    let Some(open) = app.pane() else {
+        return false;
+    };
+    if !Pane::opened_by(action).is_some_and(|wants| wants != Opens::Pane(open)) {
+        return false;
+    }
+    match app.pane_closer() {
+        Some(close) if Pane::switches(action) => {
+            update(app, close);
+            // A closer that left something up (a filter cleared, not a
+            // pane closed) must not let a second pane join it.
+            app.pane().is_some()
+        }
+        _ => true,
+    }
+}
+
+/// A click beside the open pane: close it, and that is all it does —
+/// answered before the small-window gate too, whose own closer is this one.
+fn close_beside(app: &mut App, action: Action) -> Option<Outcome> {
+    (action == Action::PaneClose).then(|| {
+        app.pane_closer()
+            .map_or(Outcome::Idle, |close| update(app, close))
+    })
 }
 
 fn blocked_action(app: &mut App, action: Action) -> Option<Outcome> {
@@ -6552,17 +6639,15 @@ mod tests {
         for action in [
             Action::Scroll(crate::action::Span::Page, 1),
             Action::GoToEnd,
-            Action::InfoToggle,
             Action::HintsToggle,
         ] {
             assert_eq!(update(&mut a, action), Outcome::Idle, "{action:?}");
         }
         assert_eq!(a.view.scroll_row, before);
-        assert!(!a.info, "the info card never opened");
-        assert!(a.hints, "and the lamp never switched");
-        update(&mut a, Action::MenuClose);
-        assert!(a.menu.is_none());
+        assert!(a.hints, "the lamp never switched");
+        // A pane's opener is not acted on UNDER the menu: it replaces it.
         assert_eq!(update(&mut a, Action::InfoToggle), Outcome::Redraw);
+        assert!(a.menu.is_none() && a.info, "the card replaced the menu");
     }
 
     #[test]
@@ -7349,13 +7434,11 @@ mod tests {
     fn other_keys_are_inert_while_help_is_up() {
         let mut a = app();
         update(&mut a, Action::HelpToggle);
-        assert_eq!(
-            update(&mut a, Action::SearchOpen(Direction::Forward)),
-            Outcome::Idle
-        );
-        assert!(!a.searching());
         assert_eq!(update(&mut a, Action::LinkStep(1)), Outcome::Idle);
         assert_eq!(a.selected_link, None);
+        // Another pane's opener is not inert: it takes the sheet's place.
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        assert!(a.searching() && a.help.is_none());
     }
 
     #[test]
@@ -7633,16 +7716,13 @@ mod tests {
     fn the_overlays_are_mutually_exclusive() {
         let mut a = App::new("t.md".into(), Document::parse(HEADINGS), 30, 6);
         update(&mut a, Action::HelpToggle);
-        assert_eq!(update(&mut a, Action::OutlineToggle), Outcome::Idle);
-        assert!(a.outline.is_none(), "help owns the keys");
-        update(&mut a, Action::HelpToggle); // close help
         update(&mut a, Action::OutlineToggle);
-        assert_eq!(
-            update(&mut a, Action::SearchOpen(Direction::Forward)),
-            Outcome::Idle,
-            "outline owns the keys"
+        assert!(
+            a.outline.is_some() && a.help.is_none(),
+            "one replaced the other"
         );
-        assert!(!a.searching());
+        update(&mut a, Action::SearchOpen(Direction::Forward));
+        assert!(a.searching() && a.outline.is_none(), "and again");
         assert_eq!(update(&mut a, Action::LinkStep(1)), Outcome::Idle);
     }
 
@@ -9417,10 +9497,11 @@ diff --git a/x.rs b/x.rs
 
     /// The reported bug was `I` then `h`: the info card painted over the
     /// help sheet that owned the keys. The rule it broke is general — at
-    /// most one modal thing is up, and while it is, opening anything else
-    /// is refused, from a key, a footer chip, a menu row or anywhere else
-    /// an action can come from. Walked as a matrix so a new pane has to
-    /// join it: every opener, tried against every open pane.
+    /// most one modal thing is up, whatever opens next and wherever it
+    /// came from. A plain pane opener REPLACES the pane that is up (the
+    /// `≡` rule); one that also acts on the page is refused; nothing is
+    /// ever drawn over a note being written. Walked as a matrix so a new
+    /// pane has to join it: every opener, tried against every open pane.
     #[test]
     fn at_most_one_pane_is_ever_open_whatever_opens_next() {
         let (probe, _dir) = modal_reader();
@@ -9441,8 +9522,14 @@ diff --git a/x.rs b/x.rs
                 let now = open_panes(&a);
                 // A footnote peek is a parenthesis, not a pane (see
                 // `peek_and_tags`): whatever comes next closes it and then
-                // happens. Every other owner refuses the newcomer.
-                let want = if first == "peek" { second } else { first };
+                // happens. A plain opener replaces any other owner but a
+                // draft; anything else is refused.
+                let draft = open_first == Action::NoteEdit;
+                let want = if first == "peek" || (Pane::switches(open_second) && !draft) {
+                    second
+                } else {
+                    first
+                };
                 if now != vec![want] {
                     stacked.push(format!("{first} + {open_second:?} -> {now:?}"));
                 }
@@ -9542,9 +9629,10 @@ diff --git a/x.rs b/x.rs
     }
 
     /// The home screen's half of the matrix: the help sheet, settings, the
-    /// folder dialog and a menu, each tried against the others.
+    /// folder dialog and a menu, each tried against the others — each gives
+    /// way to the next, and only one is ever up.
     #[test]
-    fn on_the_home_screen_too_one_pane_refuses_the_rest() {
+    fn on_the_home_screen_too_one_pane_gives_way_to_the_next() {
         let openers = [
             ("help", Action::HelpToggle),
             ("settings", Action::SettingsToggle),
@@ -9568,7 +9656,7 @@ diff --git a/x.rs b/x.rs
                 update(&mut a, open_first);
                 assert_eq!(open_panes(&a), vec![first], "{open_first:?}");
                 update(&mut a, open_second);
-                if open_panes(&a) != vec![first] {
+                if open_panes(&a) != vec![second] {
                     stacked.push(format!("{first} + {second} -> {:?}", open_panes(&a)));
                 }
             }
