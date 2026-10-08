@@ -54,7 +54,7 @@ const Z_OVERLAY: u8 = 2;
 /// question "was that click inside the open menu" — asked of the painter,
 /// never re-derived from the geometry.
 pub const Z_MENU: u8 = 3;
-use crate::app::{App, Mode, Screen};
+use crate::app::{App, Mode, Pane, Screen};
 
 /// A visible link span, for the OSC 8 post-draw pass in `main.rs`.
 ///
@@ -176,13 +176,7 @@ pub fn draw_full(
         }
         frame.buffer_mut().set_style(area, theme::body());
         draw_home(frame, app, h, &mut painted.targets);
-        if app.help.is_some() {
-            paint_help(frame, app, &mut painted.targets);
-        }
-        if app.outline.is_some() {
-            paint_outline(frame, app, &mut painted.targets);
-        }
-        paint_settings(frame, app, &mut painted.targets);
+        paint_pane(frame, app, &mut painted.targets);
         paint_menu(frame, app, &mut painted.targets);
         paint_hover(frame, app, &painted.targets);
         settle_links(frame, painted);
@@ -246,7 +240,7 @@ pub fn draw_full(
             &mut painted.targets,
         );
     }
-    paint_reader_panels(frame, app, &mut painted.targets);
+    paint_pane(frame, app, &mut painted.targets);
     // Last, and therefore on top of everything it was opened over.
     paint_peek(frame, app, &mut painted.targets);
     paint_menu(frame, app, &mut painted.targets);
@@ -254,27 +248,28 @@ pub fn draw_full(
     settle_links(frame, painted);
 }
 
-fn paint_reader_panels(frame: &mut Frame, app: &App, targets: &mut Targets) {
-    if app.help.is_some() {
-        paint_help(frame, app, targets);
+/// The one pane that owns the screen, and nothing under it.
+///
+/// Dispatched on [`App::pane`] — the same answer `key_action` routes the
+/// keys by — so the pane on top is by construction the pane the keys reach.
+/// This used to paint every pane whose field was set, in an order of its
+/// own (info last), while the keys went by a different order (help first):
+/// `I` then `h` drew the info card over the sheet that was typing.
+fn paint_pane(frame: &mut Frame, app: &App, targets: &mut Targets) {
+    match app.pane() {
+        Some(Pane::Help) => paint_help(frame, app, targets),
+        Some(Pane::Outline) => paint_outline(frame, app, targets),
+        Some(Pane::Backlinks) => paint_backlinks(frame, app, targets),
+        Some(Pane::Forward) => paint_forward(frame, app, targets),
+        Some(Pane::Marks) => paint_marks(frame, app, targets),
+        Some(Pane::Settings) => paint_settings(frame, app, targets),
+        Some(Pane::Info) => paint_info(frame, app, targets),
+        Some(Pane::Notes) => crate::annotation_render::paint(frame, app, targets),
+        // Painted elsewhere: the lightbox owns the whole frame, the menu
+        // goes on last, the prompt lives in the status row and the folder
+        // dialog is part of the home screen.
+        Some(Pane::Lightbox | Pane::Menu | Pane::Search | Pane::Picker) | None => {}
     }
-    if app.outline.is_some() {
-        paint_outline(frame, app, targets);
-    }
-    if app.backlinks.is_some() {
-        paint_backlinks(frame, app, targets);
-    }
-    if app.forward.is_some() {
-        paint_forward(frame, app, targets);
-    }
-    if app.mark_list.is_some() {
-        paint_marks(frame, app, targets);
-    }
-    paint_settings(frame, app, targets);
-    if app.info {
-        paint_info(frame, app, targets);
-    }
-    crate::annotation_render::paint(frame, app, targets);
 }
 
 /// The viewer gets the whole frame, so no inline graphics or links leak beneath it.
@@ -4531,6 +4526,25 @@ mod tests {
             .map(|y| line(buf, y))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// What is on top is what the keys reach. `update` keeps two panes
+    /// from ever being up together, so this state is built by hand — to
+    /// pin the painter to `App::pane`, the answer `key_action` routes by.
+    /// It used to paint every pane whose field was set, the info card last,
+    /// while the keys went to the help sheet: the reported `I`-then-`h`.
+    #[test]
+    fn the_pane_on_top_is_the_pane_that_owns_the_keys() {
+        let mut app = App::new("t.md".into(), Document::parse("# T\n\nbody"), 80, 24);
+        app.info = true;
+        app.help = Some(crate::app::Help::default());
+        assert_eq!(app.pane(), Some(Pane::Help), "help holds the keys");
+        let text = buffer_text(&buffer_of(&app, 80, 24));
+        assert!(text.contains("carrel — help"), "{text}");
+        assert!(
+            !text.contains("┌ document"),
+            "the info card must not be drawn over (or under) the sheet:\n{text}"
+        );
     }
 
     #[test]

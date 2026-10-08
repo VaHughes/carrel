@@ -5,7 +5,7 @@
 //! hint TABLES live in `keys.rs` beside the help tables, where the honesty
 //! test can feed every hinted key back through the real dispatcher.
 
-use crate::app::{App, Screen};
+use crate::app::{App, Pane, Screen};
 use crate::home::HomeMode;
 use crate::keys;
 
@@ -29,8 +29,16 @@ pub fn of(app: &App) -> Footer {
         word,
         hints,
     };
-    if app.help.is_some() {
-        return f('◎', "help", keys::HINT_HELP);
+    // The pane that owns the screen owns the footer too: its chips are the
+    // pane's own buttons, never a reader command the pane would refuse.
+    match app.pane() {
+        Some(Pane::Help) => return f('◎', "help", keys::HINT_HELP),
+        Some(Pane::Settings) => return f('◎', "settings", keys::HINT_SETTINGS),
+        Some(Pane::Marks) => return f('◎', "bookmarks", keys::HINT_MARKS),
+        Some(Pane::Backlinks) => return f('◎', "links here", keys::HINT_BACKLINKS),
+        Some(Pane::Forward) => return f('◎', "links", keys::HINT_FORWARD),
+        Some(Pane::Info) => return f('◎', "document", keys::HINT_INFO),
+        _ => {}
     }
     if let Screen::Home(h) = &app.screen {
         return match h.mode {
@@ -210,5 +218,52 @@ mod tests {
         let n = i32::try_from(a.home().unwrap().picker.roots.len()).unwrap();
         update(&mut a, Action::HomeMove(n));
         assert_eq!(of(&a).hints, keys::HINT_HOME_PICKER);
+    }
+
+    /// A footer chip is a button, and a button that does nothing is a lie
+    /// (the honesty test's rule, from the pointer's side). With a pane up,
+    /// `update` refuses every opener of another pane — so a chip offering
+    /// one, which is what the reading hints (`/ search`, `o outline`,
+    /// `h help`) are, would be dead. Each pane's footer must offer only
+    /// what that pane does.
+    #[test]
+    fn no_footer_chip_offers_what_the_open_pane_refuses() {
+        use crate::app::{Opens, Pane};
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("one.md");
+        let src = "# One\n\nSee [two](two.md).\n\n## Two\n";
+        std::fs::write(&file, src).unwrap();
+        let fresh = || {
+            let mut a = App::new("one.md".into(), Document::parse(src), 60, 20);
+            a.file = Some(file.clone());
+            update(&mut a, Action::MarkToggle);
+            a
+        };
+        let mut checked = 0;
+        for open in [
+            Action::HelpToggle,
+            Action::SettingsToggle,
+            Action::OutlineToggle,
+            Action::MarkListToggle,
+            Action::BacklinksToggle,
+            Action::ForwardToggle,
+            Action::InfoToggle,
+            Action::SearchOpen(Direction::Forward),
+        ] {
+            let mut a = fresh();
+            update(&mut a, open);
+            let pane = a.pane().expect("the pane opened");
+            for h in of(&a).hints {
+                let Some(click) = h.click else { continue };
+                assert!(
+                    Pane::opened_by(click).is_none_or(|o| o == Opens::Pane(pane)),
+                    "{pane:?} is up, but its footer offers `{} {}`, which it refuses",
+                    h.key,
+                    h.label
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 8, "the footers must be walked, got {checked}");
     }
 }
