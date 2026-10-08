@@ -1390,6 +1390,36 @@ impl<'a> Builder<'a> {
             });
             return;
         }
+        // Content never lands outside a block. Text can arrive with nothing
+        // open when a nested block closed the one it belonged to: in a TIGHT
+        // list item pulldown-cmark emits text directly under `Item` with no
+        // `Paragraph`, so the text after a fence, heading, rule or display
+        // equation inside the item has no Start event of its own — and
+        // display math mid-paragraph closes that paragraph the same way.
+        // Text pushed with no block was in `text` and found by search but
+        // covered by no node, so layout gave it no rows and it never painted.
+        // It opens a paragraph at the current indent, which hangs it under
+        // the item's text exactly as a loose item's second paragraph does.
+        // Synthetic pushes are exempt: the separator `close_block` writes is
+        // pushed with nothing open by design.
+        let (s, src) = if self.open.is_none() && kind != ProvKind::Synthetic {
+            // The whitespace left behind by whatever interrupted the run
+            // (`$$x$$ more`) would paint as a stray leading column.
+            let t = s.trim_start();
+            if t.is_empty() {
+                return;
+            }
+            let cut = s.len() - t.len();
+            let src = if kind == ProvKind::Verbatim && src.len() == s.len() {
+                src.start + cut..src.end
+            } else {
+                src
+            };
+            self.open_block(NodeKind::Paragraph, &src);
+            (t, src)
+        } else {
+            (s, src)
+        };
         // Synthetic pushes are structure, not content: the block separator and
         // the table cell separator, which marks where one cell ends and paint
         // renders as a space. Expanding those would destroy the marker.
@@ -2660,9 +2690,55 @@ mod tests {
         assert_eq!(d.block_text(BlockIdx(0)), "a   b");
     }
 
-    #[test]
-    fn every_byte_of_display_text_is_covered_by_a_block_or_a_separator() {
-        let src = "# T\n\npara *one*\n\n- a\n- b\n\n> quoted\n\n```rs\nlet x = 1;\n```\n";
+    /// Content that arrives DIRECTLY under a tight list item after the item
+    /// has already been closed by a nested block. pulldown-cmark wraps none of
+    /// it in a `Paragraph`, so each one tests that text with no open block
+    /// still gets one. `TRAILER` marks the text that must survive.
+    const TIGHT_ITEM_TRAILERS: &[&str] = &[
+        // after a fenced code block
+        "- item one\n  ```\n  code here\n  ```\n  TRAILER after fence\n- item two\n",
+        // the item's FIRST content is the fence
+        "- ```\n  code\n  ```\n  TRAILER\n- b\n",
+        // after an indented code block
+        "- a\n\n      indented\n  TRAILER\n",
+        // after a heading and after a rule
+        "- a\n  # Head\n  TRAILER\n- b\n",
+        "- a\n  ***\n  TRAILER\n- b\n",
+        // ordered and task items
+        "1. a\n   ```\n   c\n   ```\n   TRAILER\n2. b\n",
+        "- [ ] a\n  ```\n  c\n  ```\n  TRAILER\n- [x] b\n",
+        // nested two levels deep
+        "- a\n  - b\n    ```\n    c\n    ```\n    TRAILER\n  - c\n",
+        // inline markup FIRST in the trailing run: no Text opens it
+        "- a\n  ```\n  c\n  ```\n  *TRAILER* tail\n",
+        "- a\n  ```\n  c\n  ```\n  `TRAILER` tail\n",
+        "- a\n  ```\n  c\n  ```\n  [TRAILER](x.md) tail\n",
+        "- a\n  ```\n  c\n  ```\n  ![TRAILER](x.png)\n",
+        "- a\n  ```\n  c\n  ```\n  <b>TRAILER</b> tail\n",
+        "- a\n  ```\n  c\n  ```\n  $x$ TRAILER\n",
+        "- a\n  ```\n  c\n  ```\n  $$x$$ TRAILER\n",
+        // several runs, soft and hard breaks, two separate trailers
+        "- a\n  ```\n  c\n  ```\n  TRAILER one\n  two  \n  three\n  ```\n  d\n  ```\n  four\n",
+        // inside a block quote, and inside a footnote definition
+        "> - a\n>   ```\n>   c\n>   ```\n>   TRAILER\n",
+        "x[^n]\n\n[^n]: a\n    ```\n    c\n    ```\n    TRAILER\n",
+        // after a quote, a nested list, a table, an HTML block — most of
+        // these become lazy continuations or a loose item, but whatever
+        // shape the parser picks, the text must land in a block
+        "- a\n  > q\n  TRAILER\n- b\n",
+        "- a\n  > q\n\n  TRAILER\n- b\n",
+        "- a\n  - b\n  TRAILER\n- c\n",
+        "- a\n  | x | y |\n  |---|---|\n  | 1 | 2 |\n  TRAILER\n- b\n",
+        "- a\n  <div>\n  x\n  </div>\n  TRAILER\n- b\n",
+        "- a\n  $$\n  x\n  $$\n  TRAILER\n- b\n",
+        // display math closes the block it interrupts, outside lists too
+        "before $$x$$ TRAILER\n",
+        "# head $$x$$ TRAILER\n",
+    ];
+
+    /// Assert the coverage invariant on one source: everything outside a
+    /// block's doc range is separator whitespace.
+    fn assert_covered(src: &str) {
         let d = Document::parse(src);
         let mut cursor = 0u32;
         for n in &d.layout_order {
@@ -2670,11 +2746,81 @@ mod tests {
             let gap = &d.text[cursor as usize..node.doc.start as usize];
             assert!(
                 gap.chars().all(char::is_whitespace),
-                "non-separator gap {gap:?} before {node:?}"
+                "non-separator gap {gap:?} before {node:?} in {src:?}"
             );
             cursor = node.doc.end;
         }
-        assert!(d.text[cursor as usize..].chars().all(char::is_whitespace));
+        let tail = &d.text[cursor as usize..];
+        assert!(
+            tail.chars().all(char::is_whitespace),
+            "uncovered tail {tail:?} in {src:?}"
+        );
+    }
+
+    #[test]
+    fn every_byte_of_display_text_is_covered_by_a_block_or_a_separator() {
+        // A single fixed document checked only the shapes it happened to hold,
+        // and so missed text after a fence in a tight item for its whole life.
+        // Run it over every construct the builder distinguishes, including
+        // the conformance corpus.
+        assert_covered("# T\n\npara *one*\n\n- a\n- b\n\n> quoted\n\n```rs\nlet x = 1;\n```\n");
+        for src in TIGHT_ITEM_TRAILERS {
+            assert_covered(src);
+        }
+        assert_covered(include_str!("../../carrel/tests/corpus/conformance.md"));
+    }
+
+    #[test]
+    fn text_after_a_nested_block_in_a_tight_item_is_its_own_block() {
+        for src in TIGHT_ITEM_TRAILERS {
+            let d = Document::parse(src);
+            let at = d.text.find("TRAILER").unwrap_or_else(|| {
+                panic!("TRAILER missing from display text {:?} of {src:?}", d.text)
+            });
+            let b = d.block_at_doc(DocByte(at as u32));
+            let node = d.node_for_block(b);
+            assert!(
+                node.doc.contains(&(at as u32)),
+                "TRAILER at {at} is in no block ({node:?}) in {src:?}"
+            );
+            // No stray leading column left by whatever interrupted the run.
+            assert!(
+                !d.text[node.doc.start as usize..].starts_with(char::is_whitespace),
+                "block opens on whitespace: {:?} in {src:?}",
+                &d.text[node.doc.start as usize..node.doc.end as usize]
+            );
+            // Search lands inside that same block.
+            let hits = crate::search::search(&d, "TRAILER", true);
+            assert!(
+                hits.ranges.iter().any(|r| node.doc.contains(&r.start)),
+                "search misses the block in {src:?}"
+            );
+            // Provenance points back at the source spelling.
+            let s = d.to_src(DocByte(at as u32)).0 as usize;
+            // (Inline code is Substituted, so it maps to its opening tick.)
+            assert!(
+                src[s..].trim_start_matches('`').starts_with("TRAILER"),
+                "to_src lands at {:?} in {src:?}",
+                &src[s..]
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_text_in_an_item_hangs_under_the_item_text() {
+        let d = Document::parse(TIGHT_ITEM_TRAILERS[0]);
+        let item = d.node_for_block(BlockIdx(0));
+        assert_eq!(item.kind, NodeKind::Item);
+        let at = d.text.find("TRAILER").unwrap_or(0) as u32;
+        let trailer = d.node_for_block(d.block_at_doc(DocByte(at)));
+        assert_eq!(trailer.kind, NodeKind::Paragraph);
+        assert_eq!(trailer.indent, item.indent, "hangs under the marker");
+        assert!(trailer.prefix.is_none(), "no second bullet");
+        // The item after it keeps its own bullet and numbering.
+        let two = d.text.find("item two").unwrap_or(0) as u32;
+        let next = d.node_for_block(d.block_at_doc(DocByte(two)));
+        assert_eq!(next.kind, NodeKind::Item);
+        assert!(next.prefix.is_some());
     }
 
     // --- Q16: raw HTML strips its tags but keeps its text ---
