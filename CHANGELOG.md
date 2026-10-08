@@ -4,6 +4,37 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Closing a terminal no longer crashes carrel.** Since 2026.9.1, closing the
+  window carrel was open in made it abort and leave a core dump behind (a desktop
+  "crashed" notice, on systems that show one). When no hang-up signal reached it, it
+  could instead keep running unseen at full CPU. It now exits cleanly either way.
+- **Piped input is shown again.** `cat file | carrel`, `git diff | carrel` and carrel
+  as git's pager showed "This file is empty" in the builds since 2026-09-30.
+- **One pane at a time.** Opening a pane while another is up used to stack them — the
+  info card over the help sheet, and some ninety other pairs. Now a key that opens a
+  pane replaces the one that is up (except where you are typing), a click anywhere
+  outside a pane closes it and does nothing else, and `≡` always opens the menu in
+  its place. The info card scrolls like the page (`g`/`G`, `Ctrl-D`/`Ctrl-U`) and
+  closes on `q` or `Esc`. Panes no longer cover the status row; a key named on a
+  pane's border is a button that does it; filtering panes keep their input row still.
+- **The frontmatter card.** Long values wrap under their column instead of running off
+  the edge, so every tag is visible and clickable at any width, and no blank rows
+  follow the card. Values share one column; in a narrow window a key sits over its
+  value. Copying from the card gives back exactly what was written. Only a block at
+  the very start of a file is frontmatter — a `---` … `---` section in the middle is
+  ordinary markdown — and a file that starts with a byte-order mark keeps its
+  frontmatter and its title. Windows line endings align like any other.
+- **Wide code is no longer clipped.** On a wide window with the reading column
+  centred, long code lines, math and images were cut off at the right; the hidden
+  words were still found by search.
+- **Smaller fixes.** Text after a code block inside a tight list item was dropped. The
+  status row gives way in one order as the window narrows, and a note is cut at a word
+  with an ellipsis rather than mid-word. Margin marks (a change, a bookmark, a fold)
+  no longer paint over each other on a narrow margin. A wide table no longer paints
+  over the margin outline, and the margin outline ends a cut heading with `…`. Menus
+  offer only rows that can act. Leaving a document while writing a note asks you to
+  save or cancel it first. A footnote mark in backticks is not counted as a footnote.
+
 - **For the reader beside an agent.** `carrel --latest` opens the document written
   most recently; `carrel PLAN.md:42` and `PLAN.md#section` open at the place a tool
   or an agent names. When the file is rewritten under you, the blocks that changed

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-30
+Last updated: 2026-10-08
 
 ## Current state
 
@@ -13,9 +13,8 @@ Last updated: 2026-09-30
 - A fresh **unlocked `cargo install carrel --version 2026.9.23` succeeds**, confirming
   the exact `merman` sibling pins fix registry installs. The rendered crate README's
   links and images all resolve.
-- All five local gates passed on 2026-09-30: **1,102 tests**, zero-warning clippy,
-  formatting, architectural discipline and packaging. All-target, MSRV checks and the
-  debug build passed too; local `carrel` reports 2026.9.23. Color-sensitive PTY tests need
+- All five local gates passed on 2026-10-08: **1,173 tests**, zero-warning clippy,
+  formatting, architectural discipline and packaging. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
 - Release verification: all public artifact checksums match; the shell installer
   succeeds under a scratch home without changing real shell files; the musl archive
@@ -29,9 +28,18 @@ Last updated: 2026-09-30
 - **The reader-beside-an-agent slate is complete and unreleased** (2026-09-30):
   twenty-five additions for someone reading what an agent writes — see the first
   entry under *Recently completed*. Reviewed by three independent agents before
-  pushing; `main` is at `4a5b33e`, CI green. Together with the two items above, this is
-  what the next release carries.
-- **Decisions made this session:** `carrel --latest` means the current directory (or the
+  pushing.
+- **The known-defects list is cleared and unreleased** (2026-10-08), with what three
+  rounds of independent review found around it — two of them serious and already
+  shipped: closing a terminal crashed carrel (every release since 2026.9.1), and piped
+  input showed an empty page (`main` since 2026-09-30, never released). Together with
+  the three items above, this is what the next release carries; **the crash fix is
+  reason enough to release soon.**
+- **Decisions made 2026-10-08:** a click outside an open pane closes it and does nothing
+  else, the status-row chips included; `≡` always works, replacing whatever pane is up;
+  a key that opens a pane replaces one that takes no typed text; a note's trailing
+  clause outlasts the `T theme` and time-left chips.
+- **Decisions made 2026-09-30:** `carrel --latest` means the current directory (or the
   folder named), never the folder saved for the file list; a `[^mark]` with no footnote
   is plain text, not a button; search results keep `Back`, like the tags page; duplicate
   heading fragments are numbered GitHub's way (until free). Design record:
@@ -42,6 +50,33 @@ Last updated: 2026-09-30
 
 ## Recently completed
 
+- Unreleased (2026-10-08) — **the known-defects list, cleared, and what three rounds
+  of review found around it.** Fixed:
+  - *Crash on close (since 2026.9.1):* closing a terminal aborted carrel with a core dump —
+    `ratatui::restore` reports failure with `eprintln!`, which panics on the dead
+    terminal, and `panic = "abort"`. Restores are silent (`try_restore`, own panic hook
+    in `init_terminal`, `say!` for stderr), and a `watch_for_hangup` thread ends a reader
+    whose terminal is gone without a SIGHUP — crossterm 0.29's `try_read` retries an
+    EOF/EIO read forever inside `event::poll`.
+  - *Piped input (since 2026-09-30):* `poll_stream` asked `showing_pipe()` while the
+    buffer was taken out of `App::piped`, so nothing piped was drawn; the pty tests
+    passed on `script`'s typescript header, which echoes the command (now stripped by
+    `captured()`).
+  - *One pane at a time:* `App::pane()` is the one answer; openers replace a pane that
+    takes no typed text; a full-frame `PaneClose` scrim (`Z_SCRIM`) makes a click outside
+    a pane close it and nothing else; `≡` and the lamp stay live; panes never cover the
+    status row (`App::pane_rows`); border key hints are buttons.
+  - *Frontmatter:* aligned in `Document::text` at parse with one `value_col`, wrapped by
+    `meta_fit`, painted through `paint_row`; only a block at the start of the file
+    (`carrel_core::frontmatter`, shared with the tag and title scans) counts;
+    `meta_split(line, MetaFormat)`; `Document::copy_text` gives back the source.
+  - *Widths:* code, math and images are laid out at the width they are painted
+    (`layout::block_width`, `measure_inset`); tables use the bleed clear of the margin
+    outline.
+  - *Smaller:* text after a nested block in a tight item; the status row's one order of
+    giving way and word cuts; margin marks sharing cells (`theme::bar_cut`); menus offer
+    only rows that can act; a note draft is never dropped by leaving; footnote marks in
+    code spans.
 - Unreleased (2026-09-30) — **for the reader beside an agent: 25 additions**.
   *Arriving:* `carrel --latest`, `FILE:42` / `FILE#heading`, "did you mean" for a
   mistyped option or file. *Seeing what changed:* a reload marks changed blocks
@@ -213,19 +248,27 @@ than planned: hyphenation is English only, and a word longer than the whole row 
 the unmarked emergency break; tags are frontmatter only (no inline `#tags`) and nested tags
 are plain strings; the footnote box shows a footnote's first paragraph only.
 
-Defects known and not yet fixed, all older than the 2026-09-30 slate or cosmetic:
+The six defects this section listed on 2026-09-30 were fixed on 2026-10-08 (see
+*Recently completed*). Known and not yet fixed, all minor:
 
-- The frontmatter card paints each source line clipped while the layout counts it
-  wrapped, so in a narrow window a long `tags:` line runs off the edge (far tags cannot
-  be clicked) and blank rows follow the card. The value column is padding not in the
-  text, so this wants a redesign of the card rather than a patch.
-- The reload note (`reloaded — 7 changes · c goes to the next`) is cut mid-word below
-  about 45 columns; the change bar gives way to a collapse marker at a one-cell margin
-  and to the bookmark dot on a one-row block; the trail's `…` appears and disappears as
-  the status row narrows.
-- Seen once by the screen reviewer, outside the slate: `--plain` drops a line of text
-  that follows a fence inside a tight list item; `I` then `h` draws the info pane over
-  the help sheet.
+- "Go to the footnote text" in the right-click menu jumps from the reference nearest
+  above the view, not the one that was clicked; it needs a targeted action
+  (`FootnoteJumpAt(byte)`) wired into the key, menu and reachability matches.
+- The lightbox and the notes pane still cover the whole frame, `≡` and the lamp
+  included (by design; both have their own buttons). At 30×6 the help sheet clips
+  "esc close" off its border (its × still closes it).
+- `menu::reach` still classifies the pane move actions as keyboard-only, though the
+  footer chips and pane borders now click them.
+- In the card view of a wide table, a legend that wraps loses its `·` separators after
+  the first row.
+- README opened at the top shows "Carrel" first, but `G` then `gg` shows two blank rows
+  above it (the empty `<div align="center">` block).
+- The notes pane title reads "? unresolved", and `[export]` writes to a hashed path under
+  the state directory that is hard to find.
+- Copying from a CRLF frontmatter card gives LF line ends; the home list's title search
+  can take an indented `# x` inside a code block as a heading.
+- In help and the outline, `q` is typed into the filter rather than closing the pane (by
+  design: letters are the filter; the border says `esc close`).
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) lands.
 
