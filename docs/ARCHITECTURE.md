@@ -104,6 +104,13 @@ Key facts that are easy to get wrong:
   widths (width-independent), cells pad with synthetic spaces in the display text, every visual
   row is one contiguous doc range. The `│` separators are paint-time decoration. The synthetic
   `\t` between cells marks a cell boundary; the card view finds cells through `Table::cell_starts`.
+- **The frontmatter card is aligned at parse too.** The blanks after each key's separator are
+  padded so every value starts in one column (`key_col` + separator + a space), and the reflow
+  layer hangs a wrapped value under that column — or, too narrow for one, stacks the key over
+  its value. The card's rows are ordinary rows painted by `paint_row`; only the `╭ │ ╰` rule is
+  decoration. `meta_split` is the one "which lines are keys" predicate that parse, layout and
+  paint share. (The padding used to be added at paint, so the painted card disagreed with the
+  layout that counted its rows.)
 - **Tabs are expanded at parse, not at layout** — a tab's width depends on its column, which the
   per-cluster `WidthFn` cannot express.
 - **`Event::Text` is not always a source substring** (entity decoding, smart punctuation change

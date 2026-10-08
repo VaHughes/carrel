@@ -97,3 +97,197 @@ fn plain_mode_renders_frontmatter_as_ascii_key_value_lines() {
     );
     assert_plain_safe(&out);
 }
+
+// --- the card is a function of the layout that counts its rows ---
+
+/// Long values, a flow list of tags, a key wider than the cap, CJK, a URL
+/// too long for any narrow row, and a nested list.
+const CARD: &str = "---\n\
+title: A rather long title that will not fit on one narrow row at all\n\
+tags: [alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa]\n\
+a_key_wider_than_the_cap: value\n\
+summary: 日本語の文章がここにあります、とても長いです\n\
+url: https://example.com/a/very/long/path/that/cannot/break/anywhere/at/all\n\
+aliases:\n  - one\n  - two\n\
+---\n\n# Heading\n\nbody\n";
+
+const TAGS: [&str; 10] = [
+    "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+];
+
+const WIDTHS: [u16; 10] = [100, 80, 60, 50, 40, 34, 28, 24, 20, 16];
+
+fn sized(src: &str, cols: u16, rows: u16) -> App {
+    let mut a = app(src, cols, rows);
+    a.breadcrumb = false;
+    a.on_resize(cols, rows);
+    a
+}
+
+fn paint(a: &App, cols: u16, rows: u16) -> (ratatui::buffer::Buffer, carrel::render::Painted) {
+    let mut t = Terminal::new(TestBackend::new(cols, rows)).expect("test backend");
+    let mut painted = carrel::render::Painted::default();
+    t.draw(|f| {
+        carrel::render::draw_full(f, a, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .expect("draw");
+    (t.backend().buffer().clone(), painted)
+}
+
+fn row_text(buf: &ratatui::buffer::Buffer, cols: u16, y: u16) -> String {
+    (0..cols).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+/// The rule that outranks everything, on the card: a cell shows exactly the
+/// byte a click on it resolves to. The card used to paint each source line
+/// clipped, with its value shifted right by padding that was not in the text
+/// — so a click on a value landed on a different character, and every row
+/// the layout wrapped onto was painted blank.
+#[test]
+fn every_cell_of_the_card_is_the_byte_a_click_on_it_resolves_to() {
+    for cols in WIDTHS {
+        let a = sized(CARD, cols, 60);
+        let (buf, _) = paint(&a, cols, 60);
+        let card_rows = a.layout.content_height(&a.doc, carrel_core::BlockIdx(0));
+        let mut checked = 0;
+        for y in a.text_y()..a.text_y() + u16::try_from(card_rows).unwrap() {
+            for x in 0..cols {
+                let Some((start, end)) = a.doc_span_at(x, y) else {
+                    continue;
+                };
+                let painted = buf[(x, y)].symbol();
+                if painted == " " || painted.is_empty() {
+                    continue;
+                }
+                let byte = &a.doc.text[start as usize..end as usize];
+                assert_eq!(
+                    byte,
+                    painted,
+                    "cols={cols} ({x},{y}): a click resolves to {byte:?} but the \
+                     cell paints {painted:?}\n{}",
+                    row_text(&buf, cols, y)
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 50,
+            "cols={cols}: checked almost nothing ({checked})"
+        );
+    }
+}
+
+/// Every tag is painted, whole, under a button that covers exactly it — at
+/// every width, including the ones where the tags line wraps.
+#[test]
+fn every_tag_is_a_button_at_every_width() {
+    for cols in WIDTHS {
+        let a = sized(CARD, cols, 60);
+        let (buf, painted) = paint(&a, cols, 60);
+        let mut words: Vec<String> = painted
+            .targets
+            .as_slice()
+            .iter()
+            .filter(|t| matches!(t.action, carrel::action::Action::TagOpen(_)))
+            .map(|t| {
+                (t.zone.x..t.zone.x + t.zone.w)
+                    .map(|x| buf[(x, t.zone.y)].symbol())
+                    .collect()
+            })
+            .collect();
+        words.sort();
+        let mut want: Vec<String> = TAGS.iter().map(|s| (*s).to_string()).collect();
+        want.sort();
+        assert_eq!(words, want, "cols={cols}: every tag, each on its own word");
+    }
+}
+
+/// The card's rows are its painted rows: no blank run after it where the
+/// layout counted wrapped rows that were never drawn, and the rule runs
+/// unbroken from `╭` to `╰`.
+#[test]
+fn the_card_is_followed_by_one_gap_and_then_the_document() {
+    for cols in WIDTHS {
+        let a = sized(CARD, cols, 80);
+        let (buf, _) = paint(&a, cols, 80);
+        let rows: Vec<String> = (0..80).map(|y| row_text(&buf, cols, y)).collect();
+        let close = rows
+            .iter()
+            .position(|r| r.contains('╰'))
+            .unwrap_or_else(|| panic!("cols={cols}: the card closes\n{}", rows.join("\n")));
+        let heading = rows
+            .iter()
+            .position(|r| r.contains("Heading"))
+            .expect("the heading");
+        assert_eq!(
+            heading,
+            close + 2,
+            "cols={cols}: one spacing row between card and heading\n{}",
+            rows.join("\n")
+        );
+        let open = rows.iter().position(|r| r.contains('╭')).expect("opens");
+        for (y, r) in rows.iter().enumerate().take(close).skip(open + 1) {
+            assert!(r.contains('│'), "cols={cols}: row {y} lost its rule: {r:?}");
+        }
+    }
+}
+
+/// Keys wear their weight on their own cells, found through the same row
+/// geometry as everything else: not the value beside them, and not the rows
+/// a wrapped value continues on.
+#[test]
+fn only_the_key_is_bold() {
+    use ratatui::style::Modifier;
+    for cols in [80u16, 40, 20] {
+        let a = sized(CARD, cols, 60);
+        let (buf, _) = paint(&a, cols, 60);
+        // A key too long for a narrow row wraps, and stays bold on both
+        // rows, so the rows are joined with a `|` that only a key's own
+        // continuation may leave inside a name.
+        let bold: Vec<String> = (0..60u16)
+            .map(|y| {
+                (0..cols)
+                    .filter(|&x| buf[(x, y)].modifier.contains(Modifier::BOLD))
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        let joined = bold.join("|").replace("tha|n", "than");
+        assert!(
+            joined.starts_with("title|tags|a_key_wider_than_the_cap|summary|url|aliases|"),
+            "cols={cols}: {joined:?}"
+        );
+    }
+}
+
+/// Search paints over the card like over any other block. The old card
+/// painter returned before highlights, selection or saved notes ran.
+#[test]
+fn a_search_hit_in_the_card_is_highlighted_on_its_word() {
+    for cols in [80u16, 24] {
+        let mut a = sized(CARD, cols, 60);
+        a.matches = Some(carrel_core::search(&a.doc, "epsilon", true));
+        let (buf, _) = paint(&a, cols, 60);
+        let lit = [
+            carrel::theme::match_normal().bg,
+            carrel::theme::match_current().bg,
+        ];
+        let words: String = (0..60u16)
+            .flat_map(|y| (0..cols).map(move |x| (x, y)))
+            .filter(|&(x, y)| lit.contains(&Some(buf[(x, y)].bg)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert_eq!(words, "epsilon", "cols={cols}");
+    }
+}
+
+/// The value column is padding in the text, and a reader types what the
+/// source says: `title: A` must still find `title:   A`, the way a phrase
+/// finds itself across a table's padded cells.
+#[test]
+fn a_key_and_its_value_are_found_as_the_source_writes_them() {
+    let doc = Document::parse(CARD);
+    let hits = carrel_core::search(&doc, "title: A rather", true);
+    assert_eq!(hits.ranges.len(), 1);
+}
