@@ -103,14 +103,20 @@ fn bound_vs_unbound(src: &str) -> (u32, u32) {
 
 #[test]
 fn a_code_block_bleeds_past_the_measure() {
-    let long = "x".repeat(150);
+    // 120 columns: wider than the 90-column measure, narrower than what a
+    // 200-column terminal leaves right of the centred prose column's left
+    // edge (195 - 52 = 143), which is where code paints and so where it
+    // wraps. The whole bleed would put it off the right side of the screen.
+    let long = "x".repeat(108);
     let src = format!("```\nlet v = \"{long}\";\n```\n");
     let (bound, unbound) = bound_vs_unbound(&src);
     assert_eq!(
         bound, unbound,
-        "a 150-column code line must lay out the same whether or not prose is \
-         capped at 90 — code uses the bleed budget"
+        "a 120-column code line must lay out the same whether or not prose is \
+         capped at 90 — code is not bound by the measure"
     );
+    let app = app_at(200, 24, &src);
+    assert_eq!(app.block_span_x(BlockIdx(0)), (54, 143));
 }
 
 #[test]
@@ -1457,5 +1463,150 @@ fn a_wide_table_never_paints_over_the_margin_outline() {
                 );
             }
         }
+    }
+}
+
+// --- a block's layout width IS its painted width ---
+
+/// Every block kind, each long enough to bind at any width this suite tries.
+/// ASCII only, so a cluster is one byte and one cell and the paint check can
+/// walk the row text character by character.
+fn every_kind() -> String {
+    let words = |p: &str, n: usize| {
+        (0..n)
+            .map(|i| format!("{p}{i:03}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let cells = |p: &str| {
+        (0..9)
+            .map(|i| format!("{p}{i}-{}", "c".repeat(12)))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    format!(
+        "---\ntitle: {meta}\n---\n\n\
+         # Heading {h}\n\n\
+         {para}\n\n\
+         - {item}\n\n\
+         > {quote}\n\n\
+         ```\n{code}\n```\n\n\
+         | {head} |\n|{sep}\n| {row} |\n\n\
+         | a | b |\n|---|---|\n| narrow | table |\n\n\
+         $$\n{math}\n$$\n\n\
+         ![{alt}](missing.png)\n\n\
+         term\n: {def}\n\n\
+         ## Another heading\n\n---\n",
+        meta = words("m", 40),
+        h = words("h", 30),
+        para = words("p", 60),
+        item = words("i", 60),
+        quote = words("q", 60),
+        code = words("w", 60),
+        head = cells("H"),
+        sep = "---|".repeat(9),
+        row = cells("r"),
+        math = (0..60)
+            .map(|i| format!("x_{{{i}}}"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+        alt = words("a", 60),
+        def = words("d", 60),
+    )
+}
+
+/// **Layout and paint read one width.** A code block used to be wrapped at
+/// the full bleed but painted from the prose column's left edge, so whenever
+/// the measure was centred the end of every long row ran off the block's
+/// painted rect — at 130 columns `w029`…`w038` of a long line were never on
+/// screen, while search and double-click still resolved to them.
+///
+/// For every block kind, at many widths, with the measure off and binding,
+/// with the margin outline on and off: every row the layout produced fits
+/// inside the rect the block is painted in, and every character of it is
+/// on screen where the row says it is.
+#[test]
+fn every_row_a_block_lays_out_is_painted_in_full() {
+    let src = every_kind();
+    let mut checked = 0usize;
+    for cols in [60u16, 80, 100, 110, 125, 130, 150, 175, 200, 240] {
+        for measure in [0u16, 60, 90] {
+            for margin in [false, true] {
+                let mut app = app_at(cols, 24, &src);
+                app.max_width = measure;
+                app.outline_margin = margin;
+                app.on_resize(cols, 24);
+                let rows = u16::try_from(app.layout.total_rows() + 30).unwrap();
+                app.on_resize(cols, rows);
+                let buf = frame(&app, cols, rows);
+                let top = app.text_y();
+                let ctx = format!("cols={cols} measure={measure} margin={margin}");
+                let mut out = Vec::new();
+                for idx in 0..app.doc.block_count() {
+                    let block = BlockIdx(u32::try_from(idx).unwrap());
+                    let node = app.doc.node_for_block(block);
+                    let (left, width) = app.block_span_x(block);
+                    if !matches!(node.kind, carrel_core::NodeKind::Table { .. }) {
+                        assert_eq!(
+                            app.layout.block_width(&node.kind),
+                            width,
+                            "{ctx} {:?}: laid out at one width, painted at another",
+                            node.kind
+                        );
+                    }
+                    if app.math_art.contains_key(&block) || app.diagram_art.contains_key(&block) {
+                        continue; // rendered art: its rows carry no text
+                    }
+                    app.layout.rows_for(&app.doc, block, &mut out);
+                    let start = app.layout.row_start(block);
+                    for (nth, laid) in out.iter().enumerate() {
+                        let row = app.visible_row(laid);
+                        let text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+                        let extent = usize::from(row.indent) + text.chars().count();
+                        assert!(
+                            extent <= usize::from(width),
+                            "{ctx} {:?} row {nth}: extent {extent} overruns the painted width {width}",
+                            node.kind
+                        );
+                        let y = top + u16::try_from(start + u32::try_from(nth).unwrap()).unwrap();
+                        for (at, ch) in text.chars().enumerate() {
+                            if ch.is_whitespace() {
+                                continue;
+                            }
+                            let col = left + row.indent + u16::try_from(at).unwrap();
+                            let painted = buf[(col, y)].symbol();
+                            assert_eq!(
+                                painted,
+                                ch.to_string(),
+                                "{ctx} {:?} row {nth} char {at}: {text:?} is not on screen",
+                                node.kind
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 10_000, "checked almost nothing: {checked}");
+}
+
+/// The image twin: an image's row count is sized against the width it will
+/// be painted in, or the picture is scaled into a rect it does not fill.
+#[test]
+fn an_image_is_sized_against_the_width_it_is_painted_in() {
+    let src = "para\n\n![alt](wide.png)\n";
+    for cols in [100u16, 130, 200] {
+        let mut app = app_at(cols, 40, src);
+        app.font_px = (8, 16);
+        app.image_dims.insert(BlockIdx(1), (4000, 1000));
+        app.relayout();
+        let (_, w) = app.block_span_x(BlockIdx(1));
+        let indent = app.doc.node_for_block(BlockIdx(1)).indent;
+        assert_eq!(
+            app.layout.content_height(&app.doc, BlockIdx(1)),
+            carrel::images::rows_for_dims((4000, 1000), (8, 16), w - indent),
+            "cols={cols}"
+        );
     }
 }

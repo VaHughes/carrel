@@ -34,8 +34,9 @@ pub const BOTTOM_MARGIN: u32 = 2;
 /// Block heights at one width, as a prefix sum.
 #[derive(Debug)]
 pub struct Layout {
-    /// The **bleed** budget: the full text area. Blocks whose content has an
-    /// intrinsic width of its own — tables, code, math, images — wrap here.
+    /// The **bleed** budget: the full text area. A table wraps here; code,
+    /// math and images wrap at what is left of it right of the centred
+    /// measure's left edge (see [`block_width`]).
     width: u16,
     /// The **prose** budget: the reading measure. Paragraphs, headings, list
     /// items, definitions, the metadata card and rules wrap here instead.
@@ -332,26 +333,46 @@ fn gap_after(doc: &Document, b: BlockIdx) -> u32 {
     }
 }
 
-/// §3 of the card-view spec: does this table's aligned form exceed `width`?
-/// Decided fresh per layout — never stored.
+/// How far the centred measure sits in from the bleed area's left edge.
+///
+/// **The one statement of where the prose column starts.** `App::text_x`
+/// adds it to the margin, and [`block_width`] subtracts it from the bleed to
+/// get the width a code block, image or math block actually has to the
+/// right of that edge — so the column a block is painted in and the budget
+/// it was wrapped at cannot be computed two ways.
 #[must_use]
-/// The wrap budget for a block: the measure for prose, the bleed for anything
+pub const fn measure_inset(bleed: u16, measure: u16) -> u16 {
+    bleed.saturating_sub(measure) / 2
+}
+
+/// The wrap budget for a block: the measure for prose, more for anything
 /// whose content has an intrinsic width of its own.
+///
+/// **This is also the block's PAINTED width** — `App::block_span_x` reads it
+/// back for every kind but a table. The two used to differ: code, math and
+/// images wrapped at the whole bleed but painted from the prose column's left
+/// edge, so whenever the measure was centred the end of every long row ran
+/// off the rect it was painted in and was never on screen.
 ///
 /// **The match is exhaustive on purpose**, exactly like the event match in
 /// `document.rs`: a new `NodeKind` must be classified deliberately, and a
 /// pulldown-cmark bump that adds one should fail to COMPILE rather than
 /// silently binding a new construct to the wrong budget.
-fn block_width(kind: &NodeKind, bleed: u16, measure: u16) -> u16 {
+#[must_use]
+pub const fn block_width(kind: &NodeKind, bleed: u16, measure: u16) -> u16 {
     match kind {
-        // Intrinsic width: a table is as wide as its columns, code as wide as
-        // its longest line, art as wide as it was drawn. Narrowing these for
-        // the sake of the measure would not improve reading, it would only
-        // wrap or card content that fits.
-        NodeKind::CodeBlock { .. }
-        | NodeKind::Table { .. }
-        | NodeKind::Math
-        | NodeKind::Image { .. } => bleed,
+        // A table centres on the page axis by its own aligned width, so it
+        // may use the whole bleed — and the card threshold tests it there.
+        NodeKind::Table { .. } => bleed,
+        // Intrinsic width: code as wide as its longest line, art as wide as
+        // it was drawn. Narrowing these for the sake of the measure would not
+        // improve reading, it would only wrap content that fits. They keep
+        // the prose column's LEFT edge — centring each by its own width
+        // would make consecutive code blocks jitter — and extend right to
+        // the edge of the text area.
+        NodeKind::CodeBlock { .. } | NodeKind::Math | NodeKind::Image { .. } => {
+            bleed - measure_inset(bleed, measure)
+        }
         // Prose, and the containers that hold it.
         NodeKind::Root
         | NodeKind::List { .. }
@@ -367,6 +388,9 @@ fn block_width(kind: &NodeKind, bleed: u16, measure: u16) -> u16 {
     }
 }
 
+/// §3 of the card-view spec: does this table's aligned form exceed `width`?
+/// Decided fresh per layout — never stored.
+#[must_use]
 pub fn table_overflows(node: &Node, width: u16) -> bool {
     let NodeKind::Table { cols, .. } = &node.kind else {
         return false;

@@ -878,7 +878,9 @@ impl App {
     #[must_use]
     pub const fn text_x(cols: u16, max_width: u16, gutter: u16) -> u16 {
         let bleed = cols.saturating_sub(1 + 2 * Self::side_pad(cols) + gutter);
-        Self::side_pad(cols) + gutter + (bleed - measure_of(bleed, max_width)) / 2
+        Self::side_pad(cols)
+            + gutter
+            + crate::layout::measure_inset(bleed, measure_of(bleed, max_width))
     }
 
     /// Columns reserved on the left for the margin outline.
@@ -2473,25 +2475,28 @@ impl App {
         let full_right = full_x.saturating_add(full_w);
         let prose_x = self.text_x_now();
         let node = self.doc.node_for_block(block);
+        // The width the layout WRAPPED this block at. Everything but a table
+        // paints at exactly that width from the prose column's left edge:
+        // `layout::block_width` already subtracted the inset, so the rect and
+        // the rows it holds are one number, not two that happen to agree.
         let budget = self.layout.block_width(&node.kind);
-        if budget <= self.text_w() {
+        let carrel_core::NodeKind::Table { cols, .. } = &node.kind else {
+            let x = prose_x.min(full_right.saturating_sub(1));
+            return (x, budget.min(full_right - x));
+        };
+        if budget <= self.text_w() || cols.is_empty() {
             // Bound to the measure: the fixed column.
             return (prose_x, budget.min(full_w));
         }
-        // A bleed kind. Centre a table by the width it actually occupies.
-        let x = match &node.kind {
-            carrel_core::NodeKind::Table { cols, .. } if !cols.is_empty() => {
-                let aligned = cols.iter().map(|&c| u32::from(c)).sum::<u32>()
-                    + 3 * (cols.len() as u32 - 1)
-                    + u32::from(node.indent);
-                let aligned = u16::try_from(aligned).unwrap_or(u16::MAX).min(full_w);
-                if aligned > self.text_w() {
-                    full_x + (full_w - aligned) / 2
-                } else {
-                    prose_x
-                }
-            }
-            _ => prose_x,
+        // Centre a wide table by the width it actually occupies.
+        let aligned = cols.iter().map(|&c| u32::from(c)).sum::<u32>()
+            + 3 * (cols.len() as u32 - 1)
+            + u32::from(node.indent);
+        let aligned = u16::try_from(aligned).unwrap_or(u16::MAX).min(full_w);
+        let x = if aligned > self.text_w() {
+            full_x + (full_w - aligned) / 2
+        } else {
+            prose_x
         };
         // Never run off the right edge, and never start left of the text area.
         let x = x.max(full_x).min(full_right.saturating_sub(1));
@@ -2837,14 +2842,22 @@ impl App {
     pub fn relayout(&mut self) {
         // Images, diagrams and math art are *bleed* kinds — their width is
         // intrinsic to the content, not to the reading measure — so they size
-        // against the full budget. Prose alone binds to the measure.
+        // against the block's own budget, which is ALSO the width paint gives
+        // them (`layout::block_width`, read back by `block_span_x`). Sizing
+        // them against the whole bleed scaled a picture into a rect narrower
+        // than its rows assumed, and chose a math form paint then disagreed
+        // with.
         let w = self.bleed_w();
+        let measure = self.text_w();
+        let budget = |b: &BlockIdx| {
+            let node = self.doc.node_for_block(*b);
+            crate::layout::block_width(&node.kind, w, measure).saturating_sub(node.indent)
+        };
         let mut block_rows: HashMap<BlockIdx, u32> = self
             .image_dims
             .iter()
             .map(|(b, px)| {
-                let indent = self.doc.node_for_block(*b).indent;
-                let avail = w.saturating_sub(indent).max(1);
+                let avail = budget(b).max(1);
                 (*b, crate::images::rows_for_dims(*px, self.font_px, avail))
             })
             .collect();
@@ -2857,8 +2870,7 @@ impl App {
             // Math art rides the same channel. Which FORM is chosen depends on
             // the width, but neither form is recomputed here -- see math_form.
             for b in self.math_art.keys() {
-                let indent = self.doc.node_for_block(*b).indent;
-                let avail = w.saturating_sub(indent);
+                let avail = budget(b);
                 if let Some(rows) = self.math_rows(*b, avail) {
                     block_rows.insert(*b, rows);
                 }
@@ -2867,7 +2879,7 @@ impl App {
         self.layout = Layout::with_hidden(
             &self.doc,
             w,
-            self.text_w(),
+            measure,
             block_rows,
             self.wrap_tables,
             &self.hidden_blocks(),

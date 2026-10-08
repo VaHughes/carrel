@@ -186,6 +186,12 @@ Key facts:
 - **Two width budgets.** `text_size` returns `(prose, bleed, height)`; `text_w()` is the prose
   measure, `bleed_w()` the full area. `table_overflows` must get the bleed width.
   `paint_rows` takes the full area and shadows a per-block rect inside the loop.
+  **A block's layout width is its painted width**: `layout::block_width` gives a
+  table the whole bleed (it centres by its own width) and code, math and images
+  what lies right of the prose column's left edge (`measure_inset`), and
+  `App::block_span_x` reads that same number back. Sizing image and math art in
+  `relayout` goes through it too — never `bleed_w()` directly, or rows are wrapped
+  wider than the rect that paints them and their ends are never on screen.
 - **Columns-mode tables retain whole logical rows.** The frontend's `column_rows`
   bypasses wrapping; `App::table_offsets` is transient viewport state, cleared on
   document changes. `visible_row` clips at grapheme boundaries for both paint and
