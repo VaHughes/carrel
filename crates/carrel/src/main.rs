@@ -1834,11 +1834,16 @@ fn poll_stream(
             }
         }
     }
-    // Only while the pipe is what is on screen. A chunk that lands behind a
-    // file, the tags page or search results waits in `piped`; coming back
-    // parses all of it.
+    // The text goes back BEFORE asking whether the pipe is on screen:
+    // `showing_pipe` reads `piped`, and asking while it was taken out said
+    // no every time, so nothing piped was ever shown (2026-09-30 to
+    // 2026-10-08). Only while the pipe is what is on screen: a chunk that
+    // lands behind a file, the tags page or search results waits in
+    // `piped`, and coming back parses all of it.
+    app.piped = Some(buf);
     if grew && app.showing_pipe() {
-        app.reload_from(&buf);
+        let text = app.piped.clone().unwrap_or_default();
+        app.reload_from(&text);
         images.for_file = None;
         images.initialized = false;
         diagrams.for_file = None;
@@ -1849,7 +1854,6 @@ fn poll_stream(
             app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
         }
     }
-    app.piped = Some(buf);
     if done {
         app.streaming = false;
         // Nothing left to follow; the lamp says `reading` again.
@@ -1867,7 +1871,7 @@ fn poll_stream(
 fn run_stdin(rx: &Receiver<String>) -> std::io::Result<Option<PathBuf>> {
     let theme_note = startup_theme();
     let images = Images::detect();
-    let terminal = ratatui::try_init()?;
+    let terminal = init_terminal()?;
     let _guard = TerminalGuard::engage_mouse();
 
     let size = terminal.size()?;

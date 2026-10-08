@@ -51,7 +51,25 @@ fn pty_run(args: &str, keys: &str, dir: &Path) -> String {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    std::fs::read_to_string(&out).unwrap_or_default()
+    captured(&out)
+}
+
+/// What the program wrote to the pty, without `script`'s own header line.
+///
+/// util-linux `script` opens its typescript with `Script started on …
+/// [COMMAND="…"]`, which echoes the whole command — so a test that pipes
+/// `printf "# Piped"` into the reader and then looks for `Piped` found it in
+/// the header and passed while nothing piped was ever shown (2026-09-30 to
+/// 2026-10-08). Every capture goes through here, so no assertion can match
+/// its own command line.
+fn captured(out: &Path) -> String {
+    let raw = std::fs::read_to_string(out).unwrap_or_default();
+    match raw.strip_prefix("Script started") {
+        Some(rest) => rest
+            .split_once('\n')
+            .map_or(String::new(), |(_, r)| r.to_string()),
+        None => raw,
+    }
 }
 
 fn script_available() -> bool {
@@ -86,7 +104,7 @@ fn pty_run_cmd(cmd_in_pty: &str, keys: &str, delay: &str, dir: &Path) -> String 
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    std::fs::read_to_string(&out).unwrap_or_default()
+    captured(&out)
 }
 
 #[test]
@@ -126,8 +144,11 @@ fn a_slow_producer_streams_into_a_live_reader() {
         d.path(),
     );
     assert!(cap.contains("One"), "the first chunk painted");
+    // One word, not the phrase: ratatui skips the unchanged blank between
+    // `two` and `arrived` with a cursor move, so the phrase is never in the
+    // byte stream even when it is on screen.
     assert!(
-        cap.contains("two arrived"),
+        cap.contains("arrived"),
         "the second chunk landed in the live reader"
     );
     assert!(cap.contains("\u{1b}[?1049l"), "and it exits cleanly");
@@ -157,7 +178,7 @@ fn dash_on_a_terminal_refuses_with_a_note() {
         .arg(&cmd)
         .status()
         .expect("sh runs");
-    let cap = std::fs::read_to_string(&out).unwrap_or_default();
+    let cap = captured(&out);
     assert!(
         cap.contains("stdin is a terminal"),
         "the refusal names the reason: {cap}"
@@ -230,7 +251,7 @@ fn auto_read_drifts_to_the_end_without_a_resize() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
 
     assert!(
         raw.contains("auto-read"),
@@ -279,7 +300,7 @@ fn a_signal_still_hands_the_terminal_back() {
         .current_dir(d.path())
         .status()
         .expect("sh must run");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
 
     assert!(
         raw.contains("\x1b[?1049h"),
@@ -501,7 +522,7 @@ fn search_results_read_as_a_document_end_to_end() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
 
     assert!(
         raw.contains("Every line below is a link"),
@@ -549,7 +570,7 @@ fn tags_are_read_in_the_background_and_open_as_a_document() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
 
     assert!(
         raw.contains("2 tags in 2 documents of the 3 read"),
@@ -595,7 +616,7 @@ fn tags_open_from_inside_a_document_too() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
     assert!(
         raw.contains("2 tags in 2 documents of the 2 read"),
         "the tags page opened from the reader"
@@ -636,7 +657,7 @@ fn a_document_written_beside_the_open_one_is_announced() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
     assert!(
         raw.contains("CHANGELOG.md"),
         "the status row named the document that was just written"
@@ -683,7 +704,7 @@ fn a_path_pasted_onto_the_file_list_opens_it() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
     assert!(
         raw.contains("\u{1b}[?2004h"),
         "the list asks for bracketed paste"
@@ -728,7 +749,7 @@ fn the_tutorial_wears_the_readers_settings() {
             .status()
             .expect("sh must run");
         assert!(status.success(), "the binary must exit cleanly");
-        std::fs::read_to_string(&out).unwrap_or_default()
+        captured(&out)
     };
     // At forty columns the tutorial's opening paragraph divides `document`:
     // the head, then a style change for the dim hyphen. A setting that only
@@ -927,7 +948,7 @@ fn a_file_created_while_the_home_screen_is_up_appears_on_it() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
 
     assert!(
         raw.contains("already-here"),
@@ -989,7 +1010,7 @@ fn the_reader_wears_the_desktop_palette_and_follows_it_when_it_changes() {
         .status()
         .expect("sh must run");
     assert!(status.success(), "the binary must exit cleanly");
-    let raw = std::fs::read_to_string(&out).unwrap_or_default();
+    let raw = captured(&out);
 
     // No `theme` in the (scratch, empty) config, so the desktop's palette is
     // what a fresh reader opens wearing.
