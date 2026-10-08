@@ -30,10 +30,10 @@ pub fn of(app: &App) -> Footer {
         hints,
     };
     // The pane that owns the screen owns the footer too: its chips are the
-    // pane's own buttons, never a reader command the pane would refuse.
+    // pane's own buttons, never a reader command for the page beside it.
     // **Exhaustive on purpose** — a new `Pane` fails to compile here until
     // it is given hints, so it cannot inherit the reading row's `/ search`,
-    // `o outline` and `h help`, which the one-pane rule refuses under it.
+    // `o outline` and `h help`, which are not the pane's to offer.
     // The notes pane, a menu and the lightbox did exactly that.
     match app.pane() {
         Some(Pane::Help) => return f('◎', "help", keys::HINT_HELP),
@@ -90,7 +90,7 @@ pub fn of(app: &App) -> Footer {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::action::{Action, Direction, SearchKey};
     use crate::app::update;
@@ -232,7 +232,7 @@ mod tests {
     /// that puts it up. **Exhaustive on purpose**: the `next` walk names
     /// every `Pane`, so a new one fails to compile here until it is given a
     /// way to open — and with it, a place in the footer guard below.
-    fn every_pane_face() -> Vec<(crate::app::Pane, &'static str, App)> {
+    pub(crate) fn every_pane_face() -> Vec<(crate::app::Pane, &'static str, App)> {
         use crate::app::Pane;
         const fn next(p: Option<Pane>) -> Option<Pane> {
             match p {
@@ -313,10 +313,11 @@ mod tests {
 
     /// A footer chip is a button, and a button that does nothing is a lie
     /// (the honesty test's rule, from the pointer's side). With a pane up,
-    /// `update` refuses every opener of another pane — so a chip offering
-    /// one, which is what the reading hints (`/ search`, `o outline`,
-    /// `h help`) are, would be dead. Each pane's footer must offer only
-    /// what that pane does. Walks EVERY pane (`every_pane_face`), not a
+    /// its footer chips sit above the scrim as the pane's own buttons, so
+    /// a chip offering another pane's opener — which is what the reading
+    /// hints (`/ search`, `o outline`, `h help`) are — would act on the
+    /// page beside the pane from a row that names the pane. Each pane's
+    /// footer must offer only what that pane does. Walks EVERY pane (`every_pane_face`), not a
     /// list kept beside them: the list this used to keep skipped the notes
     /// pane, the menu and the folder dialog, and the first two offered the
     /// reading row's refused chips.

@@ -2419,12 +2419,18 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
         // own map the way the outline picker has — the reader's map would
         // scroll the document underneath instead.
         Some(Pane::Help) => Keys::map_help(k),
-        Some(Pane::Backlinks) => Keys::map_backlinks(k),
-        Some(Pane::Forward) => Keys::map_forward(k),
-        Some(Pane::Settings) => Keys::map_settings(k),
-        Some(Pane::Marks) => Keys::map_marks(k),
+        // The panes with no text field: a key they do not bind, which would
+        // open ANOTHER pane on the page underneath, opens it in their place
+        // (`update` closes this one first) — the `≡` rule, by key. Before,
+        // `h` over the info card did nothing at all, with nothing to say
+        // why. The panes that type (help, outline, the prompts, a note)
+        // are not here: their letters are text.
+        Some(Pane::Backlinks) => Keys::map_backlinks(k).or_else(|| pane_key(app, k)),
+        Some(Pane::Forward) => Keys::map_forward(k).or_else(|| pane_key(app, k)),
+        Some(Pane::Settings) => Keys::map_settings(k).or_else(|| pane_key(app, k)),
+        Some(Pane::Marks) => Keys::map_marks(k).or_else(|| pane_key(app, k)),
         Some(Pane::Outline) => Keys::map_outline(k),
-        Some(Pane::Info) => Keys::map_info(k),
+        Some(Pane::Info) => Keys::map_info(k).or_else(|| pane_key(app, k)),
         // Answered above, before the selection and peek checks.
         Some(Pane::Lightbox | Pane::Notes) => None,
         // The search prompt and the folder dialog are typed into through
@@ -2438,6 +2444,22 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
             }
         }
     }
+}
+
+/// `k` as the screen underneath would read it, if what it does there is open
+/// a pane — and nothing else.
+///
+/// Only the plain pane keys: a key that ACTS on the page (Enter following a
+/// link, `a` starting a note at the cursor) stays dead over a pane, because
+/// what it would act on is hidden. A fresh `Keys`, so no count or pending
+/// prefix leaks between the pane and the page.
+fn pane_key(app: &App, k: KeyEvent) -> Option<carrel::action::Action> {
+    let mut keys = Keys::new();
+    let a = match app.home() {
+        Some(h) => keys.map_home(k, h.mode),
+        None => keys.map(k, false),
+    }?;
+    carrel::app::Pane::switches(a).then_some(a)
 }
 
 /// Drain what `update` asked the outside world for.
@@ -2495,7 +2517,8 @@ fn hover_action(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::a
 ///
 /// A pane owns the pointer while it is up exactly as it owns the keyboard,
 /// so a right-click into one is inert rather than stacking a second modal
-/// thing on screen with no rule for which answers. Otherwise: the doc byte
+/// thing on screen with no rule for which answers — and one beside it never
+/// gets here: it lands on the scrim and only closes the pane (`beside_pane`). Otherwise: the doc byte
 /// under the pointer picks the context menu, and its absence — the chrome,
 /// the margin, the blank below the last line, the whole home screen — picks
 /// the global one.
@@ -2578,6 +2601,34 @@ fn menu_mouse(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::act
     }
 }
 
+/// The pointer while a pane is up, outside the pane's own surface.
+///
+/// A press of ANY button beside the pane lands on the scrim the painter
+/// laid under it (`render::paint_scrim`) and is used up closing the pane —
+/// the menu's rule, for every pane: no link follows, no chip fires, no
+/// selection starts and no context menu opens. The pane's own rows and
+/// footer chips, and the `≡`, sit above the scrim and answer as usual.
+///
+/// A drag with a pane up is nothing at all: the press that began it was
+/// either the pane's or used up closing it, and the text underneath must
+/// not start selecting. `Some(Absorb)` is "answered: do nothing", which
+/// the callers drop exactly as they drop a pane's own `Absorb`.
+fn beside_pane(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::action::Action> {
+    use carrel::action::Action;
+    app.pane()?;
+    match m.kind {
+        MouseEventKind::Down(_)
+            if targets
+                .hit(m.column, m.row)
+                .is_some_and(|hit| hit.action == Action::PaneClose) =>
+        {
+            Some(Action::PaneClose)
+        }
+        MouseEventKind::Drag(_) => Some(Action::Absorb),
+        _ => None,
+    }
+}
+
 /// Pane wheels use the same arrow dispatcher as the keyboard, without
 /// consuming the reader's pending count. Document scrolling keeps acceleration.
 fn pane_wheel(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
@@ -2647,6 +2698,9 @@ fn mouse_action(
     }
     if app.menu.is_some() {
         return menu_mouse(m, app, targets);
+    }
+    if let Some(action) = beside_pane(m, app, targets) {
+        return (action != carrel::action::Action::Absorb).then_some(action);
     }
     if let Some(action) = pane_wheel(m, app) {
         return Some(action);
@@ -2888,6 +2942,9 @@ fn home_mouse_action(
     }
     if app.menu.is_some() {
         return menu_mouse(m, app, targets);
+    }
+    if let Some(action) = beside_pane(m, app, targets) {
+        return (action != carrel::action::Action::Absorb).then_some(action);
     }
     if let Some(action) = pane_wheel(m, app) {
         return Some(action);
@@ -3571,11 +3628,13 @@ mod tests {
 
     /// The reported bug, by KEY, through the one dispatcher both loops use:
     /// `I` then `h` left the info card drawn over the help sheet. Every
-    /// pane's opener key is pressed with every other pane up; the one that
-    /// is up must stay the only one. Then Esc must close it — the info card
-    /// ignored Esc, and `q` with the card up quit the whole program.
+    /// pane's opener key is pressed with every other pane up; whatever is up
+    /// afterwards is at most ONE pane — the same one, or (over a pane with
+    /// no text field) the one the key opens in its place. Then Esc must
+    /// close it — the info card ignored Esc, and `q` with the card up quit
+    /// the whole program.
     #[test]
-    fn with_a_pane_up_no_key_opens_another_and_esc_closes_it() {
+    fn with_a_pane_up_a_key_never_stacks_another_and_esc_closes_it() {
         use carrel::action::{Action, Direction};
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
@@ -3618,9 +3677,12 @@ mod tests {
                 let mut keys = Keys::new();
                 let out = key_action(&mut keys, &a, k).map(|act| update(&mut a, act));
                 let now = up(&a);
-                // Its own key may close it; nothing may join it, and a
-                // letter must not quit the program from under a pane.
-                if !(now == vec![name] || now.is_empty()) || out == Some(Outcome::Quit) {
+                // Its own key may close it and a pane key may replace it;
+                // nothing may JOIN it, a pane that types keeps its letters,
+                // and a letter must not quit the program from under a pane.
+                let types = matches!(name, "help" | "outline" | "search" | "notes");
+                let replaced = now.len() == 1 && now != vec![name];
+                if now.len() > 1 || (types && replaced) || out == Some(Outcome::Quit) {
                     stacked.push(format!("{name} + {:?} -> {now:?} {out:?}", k.code));
                 }
             }
@@ -3639,6 +3701,320 @@ mod tests {
             }
         }
         assert!(stacked.is_empty(), "{}", stacked.join("\n"));
+    }
+
+    /// Paint `app` and return what the frame registered — the real input
+    /// to both mouse dispatchers.
+    fn frame_targets(app: &App) -> Targets {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(app.cols, app.rows)).unwrap();
+        let mut painted = carrel::render::Painted::default();
+        terminal
+            .draw(|frame| carrel::render::draw_full(frame, app, &mut painted, &mut HashMap::new()))
+            .unwrap();
+        painted.targets
+    }
+
+    /// Where the frame painted a target for `action`, whatever is on top
+    /// of it now.
+    fn zone_of(targets: &Targets, want: fn(&carrel::action::Action) -> bool) -> (u16, u16) {
+        let z = targets
+            .as_slice()
+            .iter()
+            .find(|t| want(&t.action))
+            .expect("the frame painted it")
+            .zone;
+        (z.x, z.y)
+    }
+
+    /// **A click outside an open pane closes it and is used up** — the
+    /// maintainer's rule, through the real mouse path of BOTH loops.
+    ///
+    /// The bugs it pins: with the info card up, the status row's `q quit`
+    /// quit the program (the `q` KEY closes the card); `T theme` cycled
+    /// while the `T` key was refused; a click on the page beside the
+    /// links pane followed a link, or started a selection, underneath.
+    /// And `≡` did nothing while any pane was up — it replaces the pane.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one walk: every pane, both loops, every way out
+    fn a_click_outside_a_pane_closes_it_and_does_nothing_else_in_both_loops() {
+        use carrel::action::Action;
+        let src = "# One\n\nSee [two](two.md) and more words to click on.\n\n## Two\n";
+        let down = |b, (x, y)| mouse(MouseEventKind::Down(b), x, y);
+        let dispatch = |app: &App, m, targets: &Targets, ptr: &mut Pointer| {
+            if app.is_home() || app.home().is_some() {
+                home_mouse_action(m, app, targets, ptr)
+            } else {
+                mouse_action(m, app, targets, ptr)
+            }
+        };
+        let fresh = |home: bool, open: Action| {
+            let mut a = if home {
+                App::new_home("/docs".into(), vec![], 80, 24)
+            } else {
+                App::new("t.md".into(), carrel_core::Document::parse(src), 80, 24)
+            };
+            update(&mut a, open);
+            assert!(a.pane().is_some(), "{open:?} opened a pane");
+            a
+        };
+        let quit = |a: &Action| matches!(a, Action::Quit | Action::CloseFile);
+        let theme = |a: &Action| *a == Action::ThemeCycle;
+        let launcher = |a: &Action| matches!(a, Action::MenuOpen { .. });
+        let mut cases: Vec<(bool, Action)> = vec![
+            (false, Action::InfoToggle),
+            (false, Action::ForwardToggle),
+            (false, Action::SettingsToggle),
+            (false, Action::HelpToggle),
+            (true, Action::SettingsToggle),
+            (true, Action::HelpToggle),
+            (true, Action::PickerOpen),
+        ];
+        // The reader's own chips are on its status row, the home screen's
+        // `q quit` on its own; both loops are walked.
+        let mut chips = Vec::new();
+        for (home, open) in cases.drain(..) {
+            let ctx = format!("home={home} {open:?}");
+            // The chips: used up closing the pane, never quitting.
+            for (chip, name) in [(quit as fn(&Action) -> bool, "q quit"), (theme, "T theme")] {
+                let mut a = fresh(home, open);
+                let t = frame_targets(&a);
+                if !t.as_slice().iter().any(|x| chip(&x.action)) {
+                    continue; // this row does not offer it at 80 columns
+                }
+                let at = zone_of(&t, chip);
+                if t.hit(at.0, at.1)
+                    .is_some_and(|h| h.action == Action::Absorb)
+                {
+                    continue; // under the pane itself: the pane's, not beside it
+                }
+                let mut ptr = Pointer::default();
+                let got = dispatch(&a, down(MouseButton::Left, at), &t, &mut ptr);
+                assert_eq!(got, Some(Action::PaneClose), "{ctx}: {name}");
+                let out = update(&mut a, got.unwrap());
+                assert_ne!(out, Outcome::Quit, "{ctx}: {name} quit from under the pane");
+                assert_eq!(a.pane(), None, "{ctx}: {name} closed the pane");
+                assert!(!a.theme_cycle, "{ctx}: {name} also cycled the theme");
+                assert_eq!(a.is_home(), home, "{ctx}: {name} left the screen");
+                chips.push((home, name));
+            }
+            // The page beside the pane, both buttons: closes, nothing else.
+            for button in [MouseButton::Left, MouseButton::Right] {
+                let mut a = fresh(home, open);
+                let t = frame_targets(&a);
+                let mut ptr = Pointer::default();
+                let corner = (0, 0);
+                assert!(
+                    !t.covered_at(0, 0, carrel::render::Z_MENU),
+                    "{ctx}: the corner is outside the pane"
+                );
+                let got = dispatch(&a, down(button, corner), &t, &mut ptr);
+                assert_eq!(got, Some(Action::PaneClose), "{ctx}: {button:?} beside it");
+                let anchor = a.view.anchor;
+                update(&mut a, got.unwrap());
+                assert_eq!(a.pane(), None, "{ctx}");
+                assert_eq!(a.view.anchor, anchor, "{ctx}: the document moved");
+                // The rest of the gesture is the same click: nothing.
+                let rest = [
+                    mouse(MouseEventKind::Drag(button), 5, 3),
+                    mouse(MouseEventKind::Up(button), 5, 3),
+                ];
+                for m in rest {
+                    if let Some(act) = dispatch(&a, m, &t, &mut ptr) {
+                        update(&mut a, act);
+                    }
+                }
+                assert_eq!(a.selection, None, "{ctx}: the used-up press selected");
+                assert_eq!(a.menu.as_ref().map(|_| ()), None, "{ctx}: a menu opened");
+            }
+            // `≡` always works: it closes the pane and opens the menu.
+            let mut a = fresh(home, open);
+            let t = frame_targets(&a);
+            let mut ptr = Pointer::default();
+            let got = dispatch(
+                &a,
+                down(MouseButton::Left, zone_of(&t, launcher)),
+                &t,
+                &mut ptr,
+            );
+            assert!(
+                matches!(got, Some(Action::MenuOpen { .. })),
+                "{ctx}: {got:?}"
+            );
+            update(&mut a, got.unwrap());
+            assert_eq!(
+                a.pane(),
+                Some(Pane::Menu),
+                "{ctx}: \u{2261} replaced the pane"
+            );
+            assert_eq!(
+                (
+                    a.help.is_some(),
+                    a.settings.is_some(),
+                    a.info,
+                    a.forward.is_some()
+                ),
+                (false, false, false, false),
+                "{ctx}: nothing left under the menu"
+            );
+        }
+        // Both loops, both chips, were really clicked through.
+        for want in [
+            (false, "q quit"),
+            (false, "T theme"),
+            (true, "q quit"),
+            (true, "T theme"),
+        ] {
+            assert!(chips.contains(&want), "never clicked {want:?}: {chips:?}");
+        }
+    }
+
+    /// The pane's OWN footer chips keep working with the pane up: they are
+    /// the pane, not the chrome beside it. So does the lamp, and so does a
+    /// click on the search prompt being typed into.
+    #[test]
+    fn a_panes_own_footer_chip_still_works() {
+        use carrel::action::Action;
+        let mut a = App::new(
+            "t.md".into(),
+            carrel_core::Document::parse("# One\n"),
+            80,
+            24,
+        );
+        update(&mut a, Action::InfoToggle);
+        let t = frame_targets(&a);
+        let mut ptr = Pointer::default();
+        let at = zone_of(&t, |a| *a == Action::InfoToggle);
+        let got = mouse_action(
+            mouse(MouseEventKind::Down(MouseButton::Left), at.0, at.1),
+            &a,
+            &t,
+            &mut ptr,
+        );
+        assert_eq!(
+            got,
+            Some(Action::InfoToggle),
+            "`esc close` is the card's own"
+        );
+
+        // The lamp, lit on the footer or folded on the status row, works
+        // from any state: it folds the hints and leaves the card up.
+        for hints in [true, false] {
+            let mut a = App::new(
+                "t.md".into(),
+                carrel_core::Document::parse("# One\n"),
+                80,
+                24,
+            );
+            a.hints = hints;
+            update(&mut a, Action::InfoToggle);
+            let t = frame_targets(&a);
+            let at = zone_of(&t, |a| *a == Action::HintsToggle);
+            let got = mouse_action(
+                mouse(MouseEventKind::Down(MouseButton::Left), at.0, at.1),
+                &a,
+                &t,
+                &mut Pointer::default(),
+            );
+            assert_eq!(got, Some(Action::HintsToggle), "hints={hints}");
+            update(&mut a, got.unwrap());
+            assert_eq!((a.hints, a.pane()), (!hints, Some(Pane::Info)));
+        }
+
+        // The search prompt IS the search pane: a click on what is being
+        // typed keeps it, while a click on the page beside it cancels it.
+        let src = "alpha beta gamma\n";
+        let mut a = App::new("t.md".into(), carrel_core::Document::parse(src), 80, 24);
+        update(
+            &mut a,
+            Action::SearchOpen(carrel::action::Direction::Forward),
+        );
+        update(
+            &mut a,
+            Action::SearchKey(carrel::action::SearchKey::Char('b')),
+        );
+        let t = frame_targets(&a);
+        let (_, row) = zone_of(&t, |a| matches!(a, Action::MenuOpen { .. }));
+        let on_prompt = mouse(MouseEventKind::Down(MouseButton::Left), 10, row);
+        let got = mouse_action(on_prompt, &a, &t, &mut Pointer::default());
+        assert_eq!(got, None, "a click on the prompt is the prompt's");
+        assert!(a.searching());
+        let beside = mouse(MouseEventKind::Down(MouseButton::Left), 2, 0);
+        let got = mouse_action(beside, &a, &t, &mut Pointer::default());
+        assert_eq!(got, Some(Action::PaneClose));
+        update(&mut a, got.unwrap());
+        assert!(!a.searching(), "a click beside the prompt is Esc");
+    }
+
+    /// A pane-opening key over a pane with no text field REPLACES it, the
+    /// way `≡` replaces any pane — `h` over the info card used to do
+    /// nothing at all, silently. Over a pane that types, the letter is
+    /// text: it narrows the help sheet or the outline, never swaps them.
+    #[test]
+    fn a_pane_key_replaces_a_pane_that_does_not_type() {
+        use carrel::action::Action;
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        let src = "# One\n\nSee [two](two.md).\n\n## Two\n";
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("one.md");
+        std::fs::write(&file, src).unwrap();
+        let press = |open: Action, code| {
+            let mut a = App::new(
+                file.display().to_string(),
+                carrel_core::Document::parse(src),
+                80,
+                24,
+            );
+            a.file = Some(file.clone());
+            update(&mut a, Action::MarkToggle);
+            update(&mut a, open);
+            let k = KeyEvent::new(code, KeyModifiers::NONE);
+            if let Some(act) = key_action(&mut Keys::new(), &a, k) {
+                update(&mut a, act);
+            }
+            a
+        };
+        let c = KeyCode::Char;
+        assert_eq!(press(Action::InfoToggle, c('h')).pane(), Some(Pane::Help));
+        assert_eq!(
+            press(Action::InfoToggle, KeyCode::F(1)).pane(),
+            Some(Pane::Help)
+        );
+        assert_eq!(
+            press(Action::BacklinksToggle, c('l')).pane(),
+            Some(Pane::Forward)
+        );
+        assert_eq!(
+            press(Action::ForwardToggle, c('L')).pane(),
+            Some(Pane::Backlinks)
+        );
+        assert_eq!(
+            press(Action::SettingsToggle, c('o')).pane(),
+            Some(Pane::Outline)
+        );
+        assert_eq!(
+            press(Action::MarkListToggle, c('I')).pane(),
+            Some(Pane::Info)
+        );
+        assert_eq!(press(Action::InfoToggle, c('/')).pane(), Some(Pane::Search));
+        // A key that is not a pane's opener stays dead over a pane: Enter
+        // on the card must not follow a link nobody can see.
+        let a = press(Action::InfoToggle, KeyCode::Enter);
+        assert_eq!((a.pane(), a.lightbox), (Some(Pane::Info), None));
+        assert_eq!(press(Action::InfoToggle, c('a')).pane(), Some(Pane::Info));
+        // Panes that type keep their letters.
+        let help = press(Action::HelpToggle, c('I'));
+        assert_eq!(help.pane(), Some(Pane::Help));
+        assert_eq!(help.help.as_ref().map(|h| h.filter.as_str()), Some("I"));
+        let outline = press(Action::OutlineToggle, c('h'));
+        assert_eq!(outline.pane(), Some(Pane::Outline));
+        // And on the home screen: F1 over settings is help.
+        let mut home = App::new_home("/docs".into(), vec![], 80, 24);
+        update(&mut home, Action::SettingsToggle);
+        let f1 = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
+        let act = key_action(&mut Keys::new(), &home, f1).expect("F1 answers");
+        update(&mut home, act);
+        assert_eq!(home.pane(), Some(Pane::Help));
     }
 
     /// A right-click never opens a menu over a pane. The list this used to

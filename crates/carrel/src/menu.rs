@@ -900,6 +900,7 @@ mod tests {
             A::AutoTick => Internal,     // a clock
             A::HomeOpenTags => Internal, // the tag scan finishing
             A::Absorb => Internal,       // dropped at the hit-test
+            A::PaneClose => Chrome,      // a click beside any open pane
         }
     }
 

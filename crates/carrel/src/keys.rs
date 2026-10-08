@@ -683,6 +683,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::MarkListJumpAt(_)
         | A::OutlineJumpAt(_)
         | A::Absorb
+        | A::PaneClose
         | A::Hover(_)
         | A::HomeCrumb(_)
         | A::GoHome
@@ -800,6 +801,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("click a [^mark]", "its footnote, in place"),
     ("click a tag", "on the card: the tags page"),
     ("click a row", "of this sheet: do it"),
+    ("click beside", "an open pane: close it"),
     // Carrel copies through OSC 52, which it writes blind: there is no
     // reply to read, so it CANNOT know whether the terminal took it. It
     // said "copied" either way, and a reader whose terminal drops the
@@ -1845,6 +1847,7 @@ mod tests {
                 "click a [^mark]",
                 "click a tag",
                 "click a row",
+                "click beside",
                 "how it works",
                 "if nothing pastes",
             ]

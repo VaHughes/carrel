@@ -333,10 +333,19 @@ pub fn clauses(note: &str) -> Vec<&str> {
     out
 }
 
-/// `text` in at most `room` cells: whole if it fits, otherwise cut after
-/// its last word that fits, with an ellipsis to say it was cut. Only when
-/// not even the first word fits is it cut inside one — still with the
-/// ellipsis, so a reader can always tell a cut from an end.
+/// `text` in at most `room` cells: whole if it fits, otherwise cut with an
+/// ellipsis to say it was cut — never silently.
+///
+/// Where it is cut: after the last word that fits, **while that keeps at
+/// least two thirds of what a cut inside a word would**. Past that, inside
+/// the word. A word boundary bought at any price threw most of the row away
+/// (`theme\u{2026}` beside eleven empty cells, where `theme: everfor\u{2026}`
+/// fits), and the ellipsis already tells the reader the text goes on. The
+/// threshold only falls as the room does, so a narrower row never shows
+/// more of the note than a wider one.
+///
+/// Either way a separator the cut would leave dangling (`reloaded \u{2014}`)
+/// goes with it.
 #[must_use]
 pub fn shorten(text: &str, room: u16) -> String {
     use unicode_segmentation::UnicodeSegmentation;
@@ -347,19 +356,11 @@ pub fn shorten(text: &str, room: u16) -> String {
         return String::new();
     }
     let budget = room - display_width(ELLIPSIS);
-    // At a word: before a blank, with any separator the cut leaves dangling
-    // (`reloaded —`) taken off too.
-    let at_word = text
-        .match_indices(' ')
-        .map(|(i, _)| {
-            text[..i]
-                .trim_end_matches(|c: char| c.is_whitespace() || "\u{2014}\u{b7}-:;,".contains(c))
-        })
-        .filter(|head| !head.is_empty() && display_width(head) <= budget)
-        .max_by_key(|head| head.len());
-    if let Some(head) = at_word {
-        return format!("{head}{ELLIPSIS}");
-    }
+    let trim = |head: &str| -> usize {
+        head.trim_end_matches(|c: char| c.is_whitespace() || "\u{2014}\u{b7}-:;,".contains(c))
+            .len()
+    };
+    // Inside a word: as many whole graphemes as the budget holds.
     let mut used = 0u16;
     let mut end = 0;
     for (at, g) in text.grapheme_indices(true) {
@@ -370,6 +371,16 @@ pub fn shorten(text: &str, room: u16) -> String {
         used += w;
         end = at + g.len();
     }
+    // At a word: before a blank.
+    let at_word = text
+        .match_indices(' ')
+        .map(|(i, _)| trim(&text[..i]))
+        .filter(|&i| i > 0 && display_width(&text[..i]) <= budget)
+        .max();
+    let end = match at_word {
+        Some(i) if display_width(&text[..i]) * 3 >= used * 2 => i,
+        _ => trim(&text[..end]),
+    };
     format!("{}{ELLIPSIS}", &text[..end])
 }
 
@@ -667,6 +678,50 @@ mod tests {
         assert_eq!(shorten(s, 0), "");
         for room in 0..30 {
             assert!(display_width(&shorten(s, room)) <= room, "{room}");
+        }
+    }
+
+    /// A cut at a word is only worth it while it keeps most of the room.
+    /// Preferring ANY word boundary threw most of the row away: the theme
+    /// note at 18 columns showed `theme\u{2026}` beside eleven empty cells,
+    /// and a reload note `reloaded \u{2014} 1\u{2026}` beside six. A cut inside
+    /// a word is honest as long as the ellipsis says so.
+    #[test]
+    fn a_cut_keeps_most_of_the_room_it_was_given() {
+        for s in [
+            "theme: everforest",
+            "reloaded \u{2014} 12 changes \u{b7} c goes to the next",
+            "Notes kept for this session only \u{2014} export before leaving.",
+            "could-not-open-an-extraordinarily-long-file-name.md",
+            "\u{6587}\u{5b57} wide \u{1f600} text and more words here",
+        ] {
+            let mut before = s.to_string();
+            for room in (0..=display_width(s)).rev() {
+                let cut = shorten(s, room);
+                let w = display_width(&cut);
+                assert!(w <= room, "{s:?} at {room}: {cut:?}");
+                // Two thirds of the room, less a cell for a wide glyph the
+                // budget could not split.
+                assert!(
+                    w * 3 + 3 >= room * 2,
+                    "{s:?} at {room} keeps only {w} cells: {cut:?}"
+                );
+                let stem = cut.trim_end_matches(ELLIPSIS);
+                assert!(s.starts_with(stem), "{cut:?} is not the note's head");
+                assert!(
+                    before.trim_end_matches(ELLIPSIS).starts_with(stem),
+                    "narrower showed more: {before:?} then {cut:?}"
+                );
+                // A cut never ends on the separator it left dangling.
+                assert!(
+                    !stem.ends_with([' ', '\u{2014}', '\u{b7}', ':', ',', ';', '-']),
+                    "{s:?} at {room}: {cut:?}"
+                );
+                if room > 0 && w < display_width(s) {
+                    assert!(cut.ends_with(ELLIPSIS), "a cut says so: {cut:?}");
+                }
+                before = cut;
+            }
         }
     }
 

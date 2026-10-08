@@ -48,12 +48,16 @@ pub struct Painted {
 /// paint order rather than being chosen per widget.
 const Z_DOC: u8 = 0;
 const Z_CHROME: u8 = 1;
-const Z_OVERLAY: u8 = 2;
+/// The scrim: with a pane up, the whole frame under it answers
+/// [`Action::PaneClose`], above the document and the chrome it covers and
+/// below the pane itself. A click beside a pane is used up closing it.
+const Z_SCRIM: u8 = 2;
+const Z_OVERLAY: u8 = 3;
 /// A menu is the last thing opened and sits over everything, including a
 /// pane. `Targets::covered_at(.., Z_MENU)` is therefore the frontend's
 /// question "was that click inside the open menu" — asked of the painter,
 /// never re-derived from the geometry.
-pub const Z_MENU: u8 = 3;
+pub const Z_MENU: u8 = 4;
 use crate::app::{App, Mode, Pane, Screen};
 
 /// A visible link span, for the OSC 8 post-draw pass in `main.rs`.
@@ -177,6 +181,7 @@ pub fn draw_full(
         frame.buffer_mut().set_style(area, theme::body());
         draw_home(frame, app, h, &mut painted.targets);
         paint_pane(frame, app, &mut painted.targets);
+        paint_scrim(frame, app, &mut painted.targets);
         paint_menu(frame, app, &mut painted.targets);
         paint_hover(frame, app, &painted.targets);
         settle_links(frame, painted);
@@ -241,6 +246,7 @@ pub fn draw_full(
         );
     }
     paint_pane(frame, app, &mut painted.targets);
+    paint_scrim(frame, app, &mut painted.targets);
     // Last, and therefore on top of everything it was opened over.
     paint_peek(frame, app, &mut painted.targets);
     paint_menu(frame, app, &mut painted.targets);
@@ -269,6 +275,27 @@ fn paint_pane(frame: &mut Frame, app: &App, targets: &mut Targets) {
         // goes on last, the prompt lives in the status row and the folder
         // dialog is part of the home screen.
         Some(Pane::Lightbox | Pane::Menu | Pane::Search | Pane::Picker) | None => {}
+    }
+}
+
+/// With a pane up, everything the pane does not cover closes it.
+///
+/// One target over the whole frame at [`Z_SCRIM`]: above the document, the
+/// status row's chips, the trail, the breadcrumb and the scrollbar, below
+/// the pane and its own footer chips. So a click beside a pane closes it
+/// and does nothing else — the rule menus always had — and it is decided
+/// here, by what this frame painted, rather than by a list of exceptions
+/// in each event loop. The menu keeps its own rule (`menu_mouse`), and the
+/// lightbox and the notes pane cover the frame themselves, so a scrim
+/// under them is never what a click finds.
+fn paint_scrim(frame: &Frame, app: &App, targets: &mut Targets) {
+    if app.pane().is_some_and(|p| p != Pane::Menu) {
+        let area = frame.area();
+        targets.push(
+            Action::PaneClose,
+            Zone::new(area.x, area.y, area.width, area.height),
+            Z_SCRIM,
+        );
     }
 }
 
@@ -2435,8 +2462,8 @@ fn paint_query_status(
 ) {
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
-    let left = fold_lamp(buf, app.hints, area, targets);
-    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
+    let left = fold_lamp(buf, app, area, targets);
+    let stop = paint_launcher(buf, app, area, targets);
     let room = stop.saturating_sub(left);
     let feedback = if display_width(input)
         .saturating_add(display_width(feedback))
@@ -2449,6 +2476,15 @@ fn paint_query_status(
         compact
     };
     let feedback = crate::layout::tail_text(feedback, room);
+    // The search prompt IS the search pane: a click on what is being typed
+    // is inside it, not beside it, and must not cancel it.
+    if app.pane() == Some(Pane::Search) {
+        targets.push(
+            Action::Absorb,
+            Zone::new(left, area.y, stop.saturating_sub(left), 1),
+            Z_OVERLAY,
+        );
+    }
     let right = stop.saturating_sub(display_width(&feedback));
     let query = crate::layout::tail_text(input, right.saturating_sub(left + 1));
     buf.set_stringn(
@@ -2497,11 +2533,11 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     }
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
-    let lx = fold_lamp(buf, app.hints, area, targets);
+    let lx = fold_lamp(buf, app, area, targets);
     // The launcher takes the last column before anything else is placed, so
     // the status text is measured against what is left rather than painted
     // over it.
-    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
+    let stop = paint_launcher(buf, app, area, targets);
     let y = area.y;
 
     // What the row holds is decided in one place, in one order of giving
@@ -2619,10 +2655,13 @@ fn paint_status_icons(
 /// this design is for — someone who arrived at a terminal because an agent
 /// lives there, and who is looking for a menu because that is what software
 /// has. Returns the column the status text must stop before.
+///
+/// It always works: with a pane up it sits above the scrim, and `update`
+/// lets the menu REPLACE the pane, so the launcher is never a dead button.
 fn paint_launcher(
     buf: &mut ratatui::buffer::Buffer,
+    app: &App,
     area: Rect,
-    at: (u16, u16),
     targets: &mut Targets,
 ) -> u16 {
     let x = area.right().saturating_sub(1);
@@ -2631,9 +2670,12 @@ fn paint_launcher(
     }
     buf.set_stringn(x, area.y, "\u{2261}", 1, theme::lamp());
     targets.push(
-        Action::MenuOpen { at, byte: None },
+        Action::MenuOpen {
+            at: (x, area.y),
+            byte: None,
+        },
         Zone::new(x, area.y, 1, 1),
-        Z_CHROME,
+        lamp_z(app),
     );
     // One cell of air, so the launcher never touches the text beside it.
     x.saturating_sub(1)
@@ -2821,11 +2863,11 @@ fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
 /// status text starts.
 fn fold_lamp(
     buf: &mut ratatui::buffer::Buffer,
-    hints: bool,
+    app: &App,
     area: Rect,
     targets: &mut Targets,
 ) -> u16 {
-    if hints {
+    if app.hints {
         return area.x;
     }
     let width = area.width.saturating_sub(2).min(3);
@@ -2839,9 +2881,22 @@ fn fold_lamp(
     targets.push(
         Action::HintsToggle,
         Zone::new(area.x, area.y, width, 1),
-        Z_CHROME,
+        lamp_z(app),
     );
     area.x + width
+}
+
+/// The layer the lamp and a pane's footer chips register on: above the
+/// scrim while a pane is up, because they are the pane's — its footer
+/// names it (`◎ settings`) and offers only what it does — and the lamp
+/// "works from ANY state" (`update`), folded on the status row or lit on
+/// the footer. Everything else on those rows is chrome beside the pane.
+fn lamp_z(app: &App) -> u8 {
+    if app.pane().is_some() {
+        Z_OVERLAY
+    } else {
+        Z_CHROME
+    }
 }
 
 /// Advance-and-paint for the footer's segments: writes `s` at `*x`, clipped
@@ -2932,7 +2987,7 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     targets.push(
         Action::HintsToggle,
         Zone::new(lamp_x, area.y, x.saturating_sub(lamp_x), 1),
-        Z_CHROME,
+        lamp_z(app),
     );
     if word {
         put(buf, &mut x, area.y, right, " ", Style::default());
@@ -2971,10 +3026,12 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
             if pad {
                 put(buf, &mut x, area.y, right, " ", theme::button());
             }
+            // A pane's footer is the pane's own: its chips stay live above
+            // the scrim, while the lamp beside them is chrome like any other.
             targets.push(
                 action,
                 Zone::new(from, area.y, x.saturating_sub(from), 1),
-                Z_CHROME,
+                lamp_z(app),
             );
         }
     }
@@ -3569,7 +3626,7 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
 
     let buf = frame.buffer_mut();
     buf.set_style(area, theme::status());
-    let lx = fold_lamp(buf, app.hints, area, targets);
+    let lx = fold_lamp(buf, app, area, targets);
     // A note too long for the row gives way as the reader's does: whole
     // clauses, then words, and an ellipsis whenever it was cut.
     let room = area.right().saturating_sub(lx + 2);
@@ -3586,7 +3643,7 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
     // affordance that says a menu exists at all, and a reader who has not
     // opened a file yet is the one most likely to need it. Keep it visible
     // even when the filename or status text must clip.
-    let stop = paint_launcher(buf, area, (area.right().saturating_sub(1), area.y), targets);
+    let stop = paint_launcher(buf, app, area, targets);
     // Display width, never a scalar count — the same rule as the reader's
     // status row, where a wide filename or URL once collided with the count.
     let rw = carrel_core::display_width(&right);
@@ -3845,6 +3902,94 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::style::Modifier;
+
+    /// **One pane at a time, for the pointer, over EVERY pane.**
+    ///
+    /// With any pane up, each cell of the frame is the pane's own — its
+    /// rows, its blank, its footer chips — or the scrim that closes it.
+    /// The one exception is the `≡`, which always works. Nothing beneath
+    /// may answer a click, and nothing a click no longer reaches may light
+    /// under the pointer. Then the scrim's action closes the pane and does
+    /// nothing else, and `≡` over the pane replaces it with the menu —
+    /// except over a note being written, which neither may throw away.
+    ///
+    /// Walks `every_pane_face`, which is exhaustive over `Pane`: a new pane
+    /// fails to compile there until it is put through this too.
+    #[test]
+    fn with_any_pane_up_every_cell_is_the_panes_or_closes_it() {
+        use crate::app::{Outcome, update};
+        let faces = crate::footer::tests::every_pane_face;
+        let mut problems = Vec::new();
+        // The faces' own size, a short one, and one small enough that
+        // some panes give way to the "too small" card.
+        let sized = [(60, 20), (34, 9), (20, 6)].into_iter().flat_map(|(c, r)| {
+            faces().into_iter().map(move |(p, f, mut a)| {
+                a.on_resize(c, r);
+                (p, f, a)
+            })
+        });
+        for (pane, face, mut app) in sized {
+            if pane == Pane::Menu {
+                continue; // the menu's own rule: any click outside closes it
+            }
+            let (cols, rows) = (app.cols, app.rows);
+            let face = format!("{face} at {cols}x{rows}");
+            let mut painted = Painted::default();
+            let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+            t.draw(|f| draw_full(f, &app, &mut painted, &mut HashMap::new()))
+                .unwrap();
+            let targets = &painted.targets;
+            let mut bad = 0;
+            for y in 0..rows {
+                for x in 0..cols {
+                    let hit = targets.hit(x, y).map(|h| h.action);
+                    let mine = targets.covered_at(x, y, Z_OVERLAY);
+                    let ok =
+                        mine || matches!(hit, Some(Action::PaneClose | Action::MenuOpen { .. }));
+                    if !ok && bad < 3 {
+                        problems.push(format!("{face}: ({x},{y}) answers {hit:?}"));
+                        bad += 1;
+                    }
+                    if hit == Some(Action::PaneClose) && targets.hoverable(x, y).is_some() {
+                        problems.push(format!("{face}: ({x},{y}) lights the scrim"));
+                    }
+                }
+            }
+            let anchor = app.view.anchor;
+            let out = update(&mut app, Action::PaneClose);
+            let draft = pane == Pane::Notes && app.notes.draft.is_some();
+            if out == Outcome::Quit || app.view.anchor != anchor && pane != Pane::Search {
+                problems.push(format!("{face}: closing did more than close ({out:?})"));
+            }
+            if draft != app.pane().is_some() {
+                problems.push(format!("{face}: after a click beside it, {:?}", app.pane()));
+            }
+        }
+        // `≡` over each pane: the menu, alone.
+        for (pane, face, mut app) in faces() {
+            let draft = pane == Pane::Notes && app.notes.draft.is_some();
+            let at = (app.cols - 1, app.rows - 1);
+            update(&mut app, Action::MenuOpen { at, byte: None });
+            let want = if draft { Pane::Notes } else { Pane::Menu };
+            let others = [
+                app.help.is_some(),
+                app.settings.is_some(),
+                app.outline.is_some(),
+                app.mark_list.is_some(),
+                app.backlinks.is_some(),
+                app.forward.is_some(),
+                app.info,
+                app.lightbox.is_some(),
+                app.searching(),
+                app.home()
+                    .is_some_and(|h| h.mode == crate::home::HomeMode::Picker),
+            ];
+            if app.pane() != Some(want) || (!draft && others.contains(&true)) {
+                problems.push(format!("{face}: \u{2261} left {:?} {others:?}", app.pane()));
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
 
     fn buffer_of(app: &App, cols: u16, rows: u16) -> Buffer {
         let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
