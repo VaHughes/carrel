@@ -65,6 +65,185 @@ pub enum FoldTarget {
     Details(u32),
 }
 
+/// A modal thing on screen: it takes the keys and the pointer while it is
+/// up, and nothing else may open until it closes. See [`App::pane`].
+///
+/// A footnote peek is deliberately NOT one: it is a parenthesis that
+/// whatever happens next closes, and it never refuses anything.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Pane {
+    Lightbox,
+    /// The notes list or a note being written — one pane, two faces.
+    Notes,
+    Menu,
+    Help,
+    Settings,
+    Outline,
+    Marks,
+    Backlinks,
+    Forward,
+    Info,
+    /// The search prompt while it is being typed into.
+    Search,
+    /// The home screen's folder dialog.
+    Picker,
+}
+
+/// What a footnote peek is to [`Pane::opened_by`]: something an action can
+/// open, which a pane must refuse, but which never refuses anything itself.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Opens {
+    Pane(Pane),
+    Peek,
+}
+
+impl Pane {
+    /// What `action` puts on screen, if it puts up anything modal.
+    ///
+    /// **Exhaustive on purpose**: a new `Action` fails to compile until
+    /// someone decides whether it opens something, so a new pane cannot
+    /// slip past the one-pane rule by being forgotten here. A pane's own
+    /// opener is also its closer, which `update` lets through.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // one exhaustive match, one arm per action
+    pub const fn opened_by(action: Action) -> Option<Opens> {
+        use Action as A;
+        let pane = match action {
+            A::HelpToggle => Self::Help,
+            A::SettingsToggle => Self::Settings,
+            A::OutlineToggle => Self::Outline,
+            A::MarkListToggle => Self::Marks,
+            A::BacklinksToggle => Self::Backlinks,
+            A::ForwardToggle => Self::Forward,
+            A::InfoToggle => Self::Info,
+            A::NotesToggle | A::NoteEdit | A::NoteAt(_) => Self::Notes,
+            A::ImageOpen(_) => Self::Lightbox,
+            A::SearchOpen(_) => Self::Search,
+            A::MenuOpen { .. } => Self::Menu,
+            A::PickerOpen => Self::Picker,
+            A::FootnotePeek { .. } => return Some(Opens::Peek),
+            // Everything below acts inside whatever is up, or on the
+            // document, or on chrome; none of it opens a modal thing.
+            A::HighlightAdd
+            | A::HighlightAt(_)
+            | A::NoteMove(_)
+            | A::NoteSelect(_)
+            | A::NoteJump
+            | A::NoteNext
+            | A::NoteDelete
+            | A::NotesExport
+            | A::NoteInput(_)
+            | A::Scroll(..)
+            | A::GoToStart
+            | A::GoToEnd
+            | A::GoToRow(_)
+            | A::BlockStep(_)
+            | A::Recenter(_)
+            | A::SearchKey(_)
+            | A::MatchStep(_)
+            | A::LinkStep(_)
+            | A::LinkFollow
+            | A::ImageStep(_)
+            | A::LinkOpen(_)
+            | A::Back
+            | A::Forward
+            | A::BackTo(_)
+            | A::Dismiss
+            | A::CloseFile
+            | A::ThemeCycle
+            | A::TableToggle
+            | A::TableScroll { .. }
+            | A::HintsToggle
+            | A::BreadcrumbToggle
+            | A::FocusToggle
+            | A::FoldToggle
+            | A::FoldAll
+            | A::UnfoldAll
+            | A::FoldAt(_)
+            | A::SelectAnchor(_)
+            | A::SelectDrag(_)
+            | A::SelectRelease
+            | A::SelectWord(_)
+            | A::SelectBlock(_)
+            | A::RenderedToggle
+            | A::FootnoteJump
+            | A::PeekGo
+            | A::BacklinksMove(_)
+            | A::BacklinksOpen
+            | A::BacklinksOpenAt(_)
+            | A::ForwardMove(_)
+            | A::ForwardOpen
+            | A::ForwardOpenAt(_)
+            | A::OutlineJumpTo(_)
+            | A::HomeUp
+            | A::HomeCrumb(_)
+            | A::GoHome
+            | A::HomeResume(_)
+            | A::MarkToggle
+            | A::MarkNext
+            | A::MarkListMove(_)
+            | A::MarkListJump
+            | A::MarkListJumpAt(_)
+            | A::FollowToggle
+            | A::AutoToggle
+            | A::AutoTick
+            | A::CodeStep(_)
+            | A::TaskStep(_)
+            | A::ChangeStep(_)
+            | A::SiblingOpen
+            | A::TaskOpen
+            | A::YankBlock
+            | A::YankBlockAt(_)
+            | A::CopyRef(_)
+            | A::CopySection(_)
+            | A::CopyQuote
+            | A::NotesCopy
+            | A::OutlineMove(_)
+            | A::OutlineKey(_)
+            | A::HelpKey(_)
+            | A::HelpRun(_)
+            | A::OutlineJump
+            | A::OutlineJumpAt(_)
+            | A::CrumbJump(_)
+            | A::ScrollTo(_)
+            | A::Hover(_)
+            | A::MenuMove(_)
+            | A::MenuHover(_)
+            | A::MenuChoose
+            | A::MenuPick(_)
+            | A::MenuClose
+            | A::LinkCopy
+            | A::Absorb
+            | A::Quit
+            | A::HomeMove(_)
+            | A::HomePage(_)
+            | A::HomeSelect(_)
+            | A::HomeGo(_)
+            | A::MeasureStep(_)
+            | A::WelcomeOpen
+            | A::SettingsMove(_)
+            | A::SettingsAdjust(_)
+            | A::SettingsPickAt(_)
+            | A::HomeOpen
+            | A::HomeKey(_)
+            | A::HomeNormalMode
+            | A::HomeFilterMode
+            | A::HomeSearchMode
+            | A::HomeOpenResults
+            | A::HomeTags
+            | A::TagOpen(_)
+            | A::HomeOpenTags
+            | A::HomeSort
+            | A::PickerSelect(_)
+            | A::PickerChoose
+            | A::PickerCancel
+            | A::PickerDescend
+            | A::PickerUp => return None,
+        };
+        Some(Opens::Pane(pane))
+    }
+}
+
 /// Which screen is in front of the reader.
 ///
 /// The reader's own state (`doc`, `layout`, `view`) always exists; on the home
@@ -1118,20 +1297,52 @@ impl App {
     /// While one is, the pointer is on IT, whatever text is underneath.
     #[must_use]
     pub fn covered(&self) -> bool {
-        self.lightbox.is_some()
-            || self.peek.is_some()
-            || self.notes.draft.is_some()
-            || self.notes.pane.is_some()
-            || self.menu.is_some()
-            || self.help.is_some()
-            || self.settings.is_some()
-            || self.outline.is_some()
-            || self.backlinks.is_some()
-            || self.forward.is_some()
-            || self.mark_list.is_some()
-            || self.info
-            || self.searching()
-            || self.is_home()
+        self.pane().is_some() || self.peek.is_some() || self.is_home()
+    }
+
+    /// The one modal thing that owns the screen, if any.
+    ///
+    /// **At most one is ever up.** `update` refuses every opener of a
+    /// different pane while this answers `Some` (see [`Pane::opened_by`]),
+    /// `key_action` dispatches on it, and the painter draws only it — so
+    /// what is on top, what the keys reach and what the pointer reaches are
+    /// one answer, not three lists that drift. They were three, and `I`
+    /// then `h` drew the info card over the help sheet that held the keys.
+    ///
+    /// The order only matters for a state built by hand around `update`;
+    /// it follows the old key-dispatch precedence.
+    #[must_use]
+    pub fn pane(&self) -> Option<Pane> {
+        Some(if self.lightbox.is_some() {
+            Pane::Lightbox
+        } else if self.notes.draft.is_some() || self.notes.pane.is_some() {
+            Pane::Notes
+        } else if self.menu.is_some() {
+            Pane::Menu
+        } else if self.help.is_some() {
+            Pane::Help
+        } else if self.backlinks.is_some() {
+            Pane::Backlinks
+        } else if self.forward.is_some() {
+            Pane::Forward
+        } else if self.settings.is_some() {
+            Pane::Settings
+        } else if self.mark_list.is_some() {
+            Pane::Marks
+        } else if self.outline.is_some() {
+            Pane::Outline
+        } else if self.info {
+            Pane::Info
+        } else if self.searching() {
+            Pane::Search
+        } else if self
+            .home()
+            .is_some_and(|h| h.mode == crate::home::HomeMode::Picker)
+        {
+            Pane::Picker
+        } else {
+            return None;
+        })
     }
 
     /// The link under the pointer, if the pointer is on the document and on
@@ -3375,7 +3586,9 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     // and it is not "the next thing the reader did". Treated as one, it
     // cleared the note its own press had just produced: "cannot open …" and
     // "copied …" were on screen for as long as the button was held down.
-    if action == Action::SelectRelease && app.sel_anchor.is_none() && app.selection.is_none() {
+    // And an opener the open pane refuses is likewise nothing the reader
+    // did: one modal thing at a time (see `refuses`).
+    if refuses(app, action) || stale_release(app, action) {
         return Outcome::Idle;
     }
     // The first-run invitation goes as soon as the reader does anything at
@@ -3458,9 +3671,8 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         app.relayout(); // the band's rows come from / return to the text
         return Outcome::Redraw;
     }
-    // `I` reaches the information card from any reader state, the way `H`
-    // and `B` do. Scrolling is routed into the visible card below. So does the
-    // spotlight, its neighbour in the capital-toggle row.
+    // The capital toggles. `I` is a pane (`refuses` has had its say); `S`
+    // and `A` work from any reader state, as `H` and `B` do.
     if !app.is_home() {
         match action {
             Action::InfoToggle => {
@@ -3506,6 +3718,25 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     reader_update(app, action)
 }
 
+/// The release of a click that already acted: no press pending, nothing
+/// selected. See the comment where `update` asks.
+fn stale_release(app: &App, action: Action) -> bool {
+    action == Action::SelectRelease && app.sel_anchor.is_none() && app.selection.is_none()
+}
+
+/// One modal thing at a time: is `action` an opener the open pane refuses?
+///
+/// While a pane is up, an opener of anything else is refused wherever it
+/// came from — a key, a footer chip, a menu row, a click on the page beside
+/// the pane — so nothing is ever drawn over the pane that holds the keys,
+/// nor left open under another one. A pane's own opener is its closer and
+/// goes through. The help sheet's runnable rows and a menu's rows close
+/// their own pane FIRST and then run, so they are not refused by this.
+fn refuses(app: &App, action: Action) -> bool {
+    app.pane()
+        .is_some_and(|open| Pane::opened_by(action).is_some_and(|wants| wants != Opens::Pane(open)))
+}
+
 fn blocked_action(app: &mut App, action: Action) -> Option<Outcome> {
     if let Some((_, close)) = app.blocked_pane() {
         if action == Action::Quit {
@@ -3531,22 +3762,22 @@ fn blocked_action(app: &mut App, action: Action) -> Option<Outcome> {
 }
 
 fn scroll_info(app: &mut App, action: Action) -> Option<Outcome> {
-    if app.info
-        && app.settings.is_none()
-        && app.mark_list.is_none()
-        && app.backlinks.is_none()
-        && app.forward.is_none()
-        && let Action::Scroll(_, delta) = action
+    if app.pane() == Some(Pane::Info)
+        && let Action::Scroll(span, delta) = action
     {
         let height = usize::from(app.info_size().1.saturating_sub(2));
         let max = app.info_lines().len().saturating_sub(height);
         let current = app.info_scroll.min(max);
+        let rows = delta.unsigned_abs() as usize
+            * match span {
+                Span::Line => 1,
+                Span::HalfPage => (height / 2).max(1),
+                Span::Page => height.max(1),
+            };
         app.info_scroll = if delta < 0 {
-            current.saturating_sub(delta.unsigned_abs() as usize)
+            current.saturating_sub(rows)
         } else {
-            current
-                .saturating_add(delta.unsigned_abs() as usize)
-                .min(max)
+            current.saturating_add(rows).min(max)
         };
         return Some(Outcome::Redraw);
     }
@@ -3597,7 +3828,6 @@ fn open_image(app: &mut App, requested: Option<BlockIdx>) -> Outcome {
         app.lightbox = Some(block);
         app.auto_read = false;
         app.following = false;
-        app.info = false;
         Outcome::Redraw
     } else {
         app.note = Some("No image here".into());
@@ -5249,6 +5479,16 @@ fn close_file(app: &mut App) -> Outcome {
         return Outcome::Quit;
     };
     app.screen = Screen::Home(h);
+    // The document's panes go with it, as they do in `open_path`. A click
+    // on the status row's `⌂` or `q` is chrome, so it reaches here with a
+    // list pane or the info card still up — which then sat over the file
+    // list holding the keys, describing a document no longer open.
+    app.info = false;
+    app.forward = None;
+    app.backlinks = None;
+    app.mark_list = None;
+    app.outline = None;
+    app.peek = None;
     app.matches = None;
     app.selected_link = None;
     app.history.clear();
@@ -8975,5 +9215,199 @@ diff --git a/x.rs b/x.rs
 
         assert_eq!(a.matches.as_ref().unwrap().ranges, ranges, "mdfried #52");
         assert_eq!(a.matches.as_ref().unwrap().current, current);
+    }
+
+    // --- one modal pane at a time ---
+
+    /// Every pane, menu, prompt and popup that can be up, read straight off
+    /// the fields — deliberately NOT through `App::pane`, so a field that
+    /// function forgets still shows up here as a second thing on screen.
+    pub(crate) fn open_panes(a: &App) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        let mut add = |on: bool, name| {
+            if on {
+                v.push(name);
+            }
+        };
+        add(a.lightbox.is_some(), "lightbox");
+        add(a.notes.pane.is_some() || a.notes.draft.is_some(), "notes");
+        add(a.menu.is_some(), "menu");
+        add(a.help.is_some(), "help");
+        add(a.settings.is_some(), "settings");
+        add(a.outline.is_some(), "outline");
+        add(a.mark_list.is_some(), "bookmarks");
+        add(a.backlinks.is_some(), "backlinks");
+        add(a.forward.is_some(), "forward");
+        add(a.info, "info");
+        add(a.peek.is_some(), "peek");
+        add(a.searching(), "search");
+        add(
+            a.home()
+                .is_some_and(|h| h.mode == crate::home::HomeMode::Picker),
+            "picker",
+        );
+        v
+    }
+
+    const MODAL_DOC: &str = "# One\n\nSee [two](two.md) and a note[^n].\n\n\
+        ![alt](pic.png)\n\n## Two\n\nMore text.\n\n[^n]: the note\n";
+
+    /// A reader with something to show in every pane: headings, a link, an
+    /// image, a footnote, a bookmark, and a file on disk to find links to.
+    fn modal_reader() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("one.md");
+        std::fs::write(&file, MODAL_DOC).unwrap();
+        let mut a = App::new(
+            file.display().to_string(),
+            Document::parse(MODAL_DOC),
+            80,
+            24,
+        );
+        a.file = Some(file);
+        update(&mut a, Action::MarkToggle);
+        a.note = None;
+        (a, dir)
+    }
+
+    /// Every way to put something modal on the reader's screen, and the
+    /// name `open_panes` gives what it opens.
+    fn reader_openers(a: &App) -> Vec<(&'static str, Action)> {
+        let mark = a.doc.footnote_refs()[0].1;
+        vec![
+            ("help", Action::HelpToggle),
+            ("settings", Action::SettingsToggle),
+            ("outline", Action::OutlineToggle),
+            ("bookmarks", Action::MarkListToggle),
+            ("backlinks", Action::BacklinksToggle),
+            ("forward", Action::ForwardToggle),
+            ("info", Action::InfoToggle),
+            ("notes", Action::NotesToggle),
+            ("notes", Action::NoteEdit),
+            ("lightbox", Action::ImageOpen(None)),
+            ("search", Action::SearchOpen(Direction::Forward)),
+            (
+                "menu",
+                Action::MenuOpen {
+                    at: (2, 2),
+                    byte: None,
+                },
+            ),
+            (
+                "peek",
+                Action::FootnotePeek {
+                    at: (2, 2),
+                    byte: mark,
+                },
+            ),
+        ]
+    }
+
+    /// The reported bug was `I` then `h`: the info card painted over the
+    /// help sheet that owned the keys. The rule it broke is general — at
+    /// most one modal thing is up, and while it is, opening anything else
+    /// is refused, from a key, a footer chip, a menu row or anywhere else
+    /// an action can come from. Walked as a matrix so a new pane has to
+    /// join it: every opener, tried against every open pane.
+    #[test]
+    fn at_most_one_pane_is_ever_open_whatever_opens_next() {
+        let (probe, _dir) = modal_reader();
+        let openers = reader_openers(&probe);
+        let mut tried = 0;
+        let mut stacked = Vec::new();
+        for &(first, open_first) in &openers {
+            let (mut a, _dir) = modal_reader();
+            update(&mut a, open_first);
+            assert_eq!(open_panes(&a), vec![first], "{open_first:?} opens {first}");
+            for &(second, open_second) in &openers {
+                if second == first {
+                    continue;
+                }
+                let (mut a, _dir) = modal_reader();
+                update(&mut a, open_first);
+                update(&mut a, open_second);
+                let now = open_panes(&a);
+                // A footnote peek is a parenthesis, not a pane (see
+                // `peek_and_tags`): whatever comes next closes it and then
+                // happens. Every other owner refuses the newcomer.
+                let want = if first == "peek" { second } else { first };
+                if now != vec![want] {
+                    stacked.push(format!("{first} + {open_second:?} -> {now:?}"));
+                }
+                tried += 1;
+            }
+        }
+        assert!(tried > 140, "the matrix must be walked, got {tried}");
+        // The owner stays the only thing up: nothing opens over it, and
+        // nothing is left open under something else.
+        assert!(
+            stacked.is_empty(),
+            "{} pairs stacked:\n{}",
+            stacked.len(),
+            stacked.join("\n")
+        );
+    }
+
+    /// The home screen's half of the matrix: the help sheet, settings, the
+    /// folder dialog and a menu, each tried against the others.
+    #[test]
+    fn on_the_home_screen_too_one_pane_refuses_the_rest() {
+        let openers = [
+            ("help", Action::HelpToggle),
+            ("settings", Action::SettingsToggle),
+            ("picker", Action::PickerOpen),
+            (
+                "menu",
+                Action::MenuOpen {
+                    at: (2, 2),
+                    byte: None,
+                },
+            ),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let mut stacked = Vec::new();
+        for (first, open_first) in openers {
+            for (second, open_second) in openers {
+                if first == second {
+                    continue;
+                }
+                let mut a = App::new_home(dir.path().into(), Vec::new(), 80, 24);
+                update(&mut a, open_first);
+                assert_eq!(open_panes(&a), vec![first], "{open_first:?}");
+                update(&mut a, open_second);
+                if open_panes(&a) != vec![first] {
+                    stacked.push(format!("{first} + {second} -> {:?}", open_panes(&a)));
+                }
+            }
+        }
+        assert!(stacked.is_empty(), "{}", stacked.join("\n"));
+    }
+
+    /// The status row's `⌂` and `q quit` are chrome, clickable beside a
+    /// list pane, and both end in `close_file`. The pane must not follow
+    /// the reader back to the file list: there it covered the list, took
+    /// its keys, and described a document that was no longer open.
+    #[test]
+    fn going_home_leaves_the_documents_panes_behind() {
+        for (name, open) in [
+            ("info", Action::InfoToggle),
+            ("forward", Action::ForwardToggle),
+            ("backlinks", Action::BacklinksToggle),
+            ("bookmarks", Action::MarkListToggle),
+        ] {
+            for leave in [Action::CloseFile, Action::GoHome] {
+                let (mut a, dir) = modal_reader();
+                a.home_stash = Some(Box::new(Home::new(dir.path().into(), Vec::new())));
+                update(&mut a, open);
+                assert_eq!(open_panes(&a), vec![name]);
+                update(&mut a, leave);
+                assert!(a.is_home(), "{leave:?} went home");
+                assert_eq!(
+                    open_panes(&a),
+                    Vec::<&str>::new(),
+                    "{name} followed {leave:?} home"
+                );
+            }
+        }
     }
 }

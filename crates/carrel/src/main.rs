@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use std::io::Write as _;
 
 use carrel::action::Targets;
-use carrel::app::{App, Outcome, update};
+use carrel::app::{App, Outcome, Pane, update};
 use carrel::images::{self, ImageMsg};
 use carrel::keys::Keys;
 use carrel::render::{OscLink, Painted};
@@ -2410,30 +2410,33 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
     if app.peek.is_some() && k.code == KeyCode::Enter {
         return Some(carrel::action::Action::PeekGo);
     }
-    // A menu is the last thing opened, so it is the first thing that answers
-    // — above every pane, and above the home screen's typing modes.
-    if app.menu.is_some() {
-        Keys::map_menu(k)
-    } else if app.help.is_some() {
+    // The pane that owns the screen owns the keys — the SAME answer the
+    // painter uses to decide what is on top (`App::pane`), so the two can
+    // no longer disagree. A menu can only be up with no pane under it.
+    match app.pane() {
+        Some(Pane::Menu) => Keys::map_menu(k),
         // The sheet types: every printable key narrows it, so it needs its
         // own map the way the outline picker has — the reader's map would
         // scroll the document underneath instead.
-        Keys::map_help(k)
-    } else if app.backlinks.is_some() {
-        Keys::map_backlinks(k)
-    } else if app.forward.is_some() {
-        Keys::map_forward(k)
-    } else if app.settings.is_some() {
-        Keys::map_settings(k)
-    } else if app.mark_list.is_some() {
-        Keys::map_marks(k)
-    } else if app.outline.is_some() {
-        Keys::map_outline(k)
-    } else if app.is_home() {
-        let mode = app.home().map_or(home::HomeMode::Filter, |h| h.mode);
-        keys.map_home(k, mode)
-    } else {
-        keys.map(k, app.searching())
+        Some(Pane::Help) => Keys::map_help(k),
+        Some(Pane::Backlinks) => Keys::map_backlinks(k),
+        Some(Pane::Forward) => Keys::map_forward(k),
+        Some(Pane::Settings) => Keys::map_settings(k),
+        Some(Pane::Marks) => Keys::map_marks(k),
+        Some(Pane::Outline) => Keys::map_outline(k),
+        Some(Pane::Info) => Keys::map_info(k),
+        // Answered above, before the selection and peek checks.
+        Some(Pane::Lightbox | Pane::Notes) => None,
+        // The search prompt and the folder dialog are typed into through
+        // their own screen's map, which knows their modes.
+        Some(Pane::Search | Pane::Picker) | None => {
+            if app.is_home() {
+                let mode = app.home().map_or(home::HomeMode::Filter, |h| h.mode);
+                keys.map_home(k, mode)
+            } else {
+                keys.map(k, app.searching())
+            }
+        }
     }
 }
 
@@ -2497,15 +2500,10 @@ fn hover_action(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::a
 /// the margin, the blank below the last line, the whole home screen — picks
 /// the global one.
 fn open_menu_at(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
-    if app.notes.draft.is_some()
-        || app.notes.pane.is_some()
-        || app.help.is_some()
-        || app.outline.is_some()
-        || app.backlinks.is_some()
-        || app.forward.is_some()
-        || app.mark_list.is_some()
-        || app.searching()
-    {
+    // `App::pane`, not a list of its own: the list this used to keep had
+    // no settings pane, no info card and no folder dialog, so a right-click
+    // opened a menu over all three.
+    if app.pane().is_some() {
         return None;
     }
     let byte = if app.is_home() {
@@ -2587,13 +2585,18 @@ fn pane_wheel(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
         MouseEventKind::ScrollUp => KeyCode::Up,
         _ => return None,
     };
-    if app.help.is_some()
-        || app.backlinks.is_some()
-        || app.forward.is_some()
-        || app.settings.is_some()
-        || app.mark_list.is_some()
-        || app.outline.is_some()
-    {
+    if matches!(
+        app.pane(),
+        Some(
+            Pane::Help
+                | Pane::Backlinks
+                | Pane::Forward
+                | Pane::Settings
+                | Pane::Marks
+                | Pane::Outline
+                | Pane::Info
+        )
+    ) {
         key_action(
             &mut Keys::new(),
             app,
@@ -3540,6 +3543,128 @@ mod tests {
             Some(Action::MarkListMove(1)),
             "and the bookmark list owns it too"
         );
+    }
+
+    /// Everything modal that is up, read off the fields rather than through
+    /// `App::pane`, so a pane that function forgets still counts.
+    fn up(a: &App) -> Vec<&'static str> {
+        [
+            (a.lightbox.is_some(), "lightbox"),
+            (a.notes.pane.is_some() || a.notes.draft.is_some(), "notes"),
+            (a.menu.is_some(), "menu"),
+            (a.help.is_some(), "help"),
+            (a.settings.is_some(), "settings"),
+            (a.outline.is_some(), "outline"),
+            (a.mark_list.is_some(), "bookmarks"),
+            (a.backlinks.is_some(), "backlinks"),
+            (a.forward.is_some(), "forward"),
+            (a.info, "info"),
+            (a.peek.is_some(), "peek"),
+            (a.searching(), "search"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
+    }
+
+    /// The reported bug, by KEY, through the one dispatcher both loops use:
+    /// `I` then `h` left the info card drawn over the help sheet. Every
+    /// pane's opener key is pressed with every other pane up; the one that
+    /// is up must stay the only one. Then Esc must close it — the info card
+    /// ignored Esc, and `q` with the card up quit the whole program.
+    #[test]
+    fn with_a_pane_up_no_key_opens_another_and_esc_closes_it() {
+        use carrel::action::{Action, Direction};
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        let src = "# One\n\nSee [two](two.md).\n\n![alt](pic.png)\n\n## Two\n\nMore.\n";
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("one.md");
+        std::fs::write(&file, src).unwrap();
+        let fresh = || {
+            let mut a = App::new(
+                file.display().to_string(),
+                carrel_core::Document::parse(src),
+                80,
+                24,
+            );
+            a.file = Some(file.clone());
+            update(&mut a, Action::MarkToggle);
+            a
+        };
+        let openers = [
+            ("help", Action::HelpToggle),
+            ("settings", Action::SettingsToggle),
+            ("outline", Action::OutlineToggle),
+            ("bookmarks", Action::MarkListToggle),
+            ("backlinks", Action::BacklinksToggle),
+            ("forward", Action::ForwardToggle),
+            ("info", Action::InfoToggle),
+            ("notes", Action::NotesToggle),
+            ("lightbox", Action::ImageOpen(None)),
+            ("search", Action::SearchOpen(Direction::Forward)),
+        ];
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let opener_keys = ['h', ',', 'o', '"', 'L', 'l', 'I', 'V', 'a', '/', '?', 'q']
+            .map(|c| key(KeyCode::Char(c)));
+        let mut stacked = Vec::new();
+        for (name, open) in openers {
+            for k in opener_keys.iter().copied().chain([key(KeyCode::F(1))]) {
+                let mut a = fresh();
+                update(&mut a, open);
+                assert_eq!(up(&a), vec![name], "{open:?} opens {name}");
+                let mut keys = Keys::new();
+                let out = key_action(&mut keys, &a, k).map(|act| update(&mut a, act));
+                let now = up(&a);
+                // Its own key may close it; nothing may join it, and a
+                // letter must not quit the program from under a pane.
+                if !(now == vec![name] || now.is_empty()) || out == Some(Outcome::Quit) {
+                    stacked.push(format!("{name} + {:?} -> {now:?} {out:?}", k.code));
+                }
+            }
+            // Esc closes it — in at most two presses, for the panes whose
+            // first Esc clears a typed filter.
+            let mut a = fresh();
+            update(&mut a, open);
+            let mut keys = Keys::new();
+            for _ in 0..2 {
+                if let Some(act) = key_action(&mut keys, &a, key(KeyCode::Esc)) {
+                    update(&mut a, act);
+                }
+            }
+            if !up(&a).is_empty() {
+                stacked.push(format!("{name}: Esc Esc leaves {:?} up", up(&a)));
+            }
+        }
+        assert!(stacked.is_empty(), "{}", stacked.join("\n"));
+    }
+
+    /// A right-click never opens a menu over a pane. The list this used to
+    /// keep had no settings pane and no info card, so both got a menu
+    /// stacked on top with no rule for which one answered.
+    #[test]
+    fn a_right_click_opens_no_menu_over_any_pane() {
+        use carrel::action::{Action, Direction};
+        let src = "# One\n\nSee [two](two.md).\n";
+        let right = mouse(MouseEventKind::Down(MouseButton::Right), 3, 3);
+        for open in [
+            Action::HelpToggle,
+            Action::SettingsToggle,
+            Action::OutlineToggle,
+            Action::ForwardToggle,
+            Action::InfoToggle,
+            Action::NotesToggle,
+            Action::SearchOpen(Direction::Forward),
+        ] {
+            let mut a = App::new("t.md".into(), carrel_core::Document::parse(src), 80, 24);
+            assert!(
+                open_menu_at(right, &a).is_some(),
+                "with nothing up it opens"
+            );
+            update(&mut a, open);
+            assert!(a.pane().is_some(), "{open:?} opened something");
+            assert_eq!(open_menu_at(right, &a), None, "over {:?}", a.pane());
+        }
     }
 
     #[test]

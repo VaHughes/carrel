@@ -460,6 +460,28 @@ impl Keys {
         }
     }
 
+    /// Information-card bindings. The card is a pane like the link panes,
+    /// so it owns the keys the way they do: the motion keys scroll the card,
+    /// `I` closes it the way it opened, and so do `q` and Esc — `q` used to
+    /// fall through to the reader and quit the program from under the card,
+    /// and Esc did nothing at all.
+    #[must_use]
+    pub fn map_info(key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('n' | 'j') if ctrl => Some(Action::Scroll(Span::Line, 1)),
+            KeyCode::Char('p' | 'k') if ctrl => Some(Action::Scroll(Span::Line, -1)),
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::Scroll(Span::Line, 1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::Scroll(Span::Line, -1)),
+            KeyCode::Char(' ') | KeyCode::PageDown => Some(Action::Scroll(Span::Page, 1)),
+            KeyCode::Char('b') | KeyCode::PageUp => Some(Action::Scroll(Span::Page, -1)),
+            KeyCode::Char('I' | 'q') | KeyCode::Esc => Some(Action::InfoToggle),
+            KeyCode::Char('Q') => Some(Action::Quit),
+            _ => None,
+        }
+    }
+
     /// Settings-pane bindings: the bookmark pane's idiom — arrows move,
     /// Enter changes the highlighted row, and the row's own sign keys nudge
     /// it either way, which is what the text width needs and the booleans
@@ -1009,6 +1031,34 @@ pub const HINT_OUTLINE: &[Hint] = &[
     says("type", "to filter"),
     hint("enter", "go", Action::OutlineJump),
     hint("esc", "close", Action::OutlineKey(SearchKey::Cancel)),
+];
+// The five list panes. Each used to fall through to the READING hints, whose
+// `/ search`, `o outline` and `h help` chips are openers the open pane now
+// refuses — buttons that did nothing (and, before the one-pane rule, opened a
+// second pane under or over the first).
+pub const HINT_SETTINGS: &[Hint] = &[
+    hint("↑/↓", "move", Action::SettingsMove(1)),
+    hint("enter", "change", Action::SettingsAdjust(1)),
+    hint("esc", "close", Action::SettingsToggle),
+];
+pub const HINT_MARKS: &[Hint] = &[
+    hint("↑/↓", "move", Action::MarkListMove(1)),
+    hint("enter", "go", Action::MarkListJump),
+    hint("esc", "close", Action::MarkListToggle),
+];
+pub const HINT_BACKLINKS: &[Hint] = &[
+    hint("↑/↓", "move", Action::BacklinksMove(1)),
+    hint("enter", "open", Action::BacklinksOpen),
+    hint("esc", "close", Action::BacklinksToggle),
+];
+pub const HINT_FORWARD: &[Hint] = &[
+    hint("↑/↓", "move", Action::ForwardMove(1)),
+    hint("enter", "open", Action::ForwardOpen),
+    hint("esc", "close", Action::ForwardToggle),
+];
+pub const HINT_INFO: &[Hint] = &[
+    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
+    hint("esc", "close", Action::InfoToggle),
 ];
 pub const HINT_HELP: &[Hint] = &[
     says("type", "to filter"),
@@ -1561,6 +1611,9 @@ mod tests {
         };
         let outline: Dispatch = Box::new(|evs| evs.iter().fold(None, |_, e| Keys::map_outline(*e)));
         let help: Dispatch = Box::new(|evs| evs.iter().fold(None, |_, e| Keys::map_help(*e)));
+        let pane = |map: fn(KeyEvent) -> Option<Action>| -> Dispatch {
+            Box::new(move |evs| evs.iter().fold(None, |_, e| map(*e)))
+        };
 
         let cases: Vec<Case> = vec![
             ("reading", HINT_READING, reader(false)),
@@ -1572,6 +1625,11 @@ mod tests {
             ("link", HINT_LINK, reader(false)),
             ("outline", HINT_OUTLINE, outline),
             ("help", HINT_HELP, help),
+            ("settings", HINT_SETTINGS, pane(Keys::map_settings)),
+            ("bookmarks", HINT_MARKS, pane(Keys::map_marks)),
+            ("backlinks", HINT_BACKLINKS, pane(Keys::map_backlinks)),
+            ("forward", HINT_FORWARD, pane(Keys::map_forward)),
+            ("info", HINT_INFO, pane(Keys::map_info)),
             ("home-browse", HINT_HOME_BROWSE, home(HomeMode::Normal)),
             ("home-filter", HINT_HOME_FILTER, home(HomeMode::Filter)),
             ("home-search", HINT_HOME_SEARCH, home(HomeMode::Search)),
