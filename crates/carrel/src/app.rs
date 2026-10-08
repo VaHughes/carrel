@@ -117,7 +117,12 @@ impl Pane {
             A::ForwardToggle => Self::Forward,
             A::InfoToggle => Self::Info,
             A::NotesToggle | A::NoteEdit | A::NoteAt(_) => Self::Notes,
-            A::ImageOpen(_) => Self::Lightbox,
+            // `Enter` follows a link, but on an image block with no link
+            // picked it opens the lightbox instead (`reader_update`). An
+            // action that CAN open a pane is classed by that pane, so the
+            // rule refuses it under any other one; refusing a follow there
+            // costs nothing, since no pane's own map binds it.
+            A::ImageOpen(_) | A::LinkFollow => Self::Lightbox,
             A::SearchOpen(_) => Self::Search,
             A::MenuOpen { .. } => Self::Menu,
             A::PickerOpen => Self::Picker,
@@ -142,7 +147,6 @@ impl Pane {
             | A::SearchKey(_)
             | A::MatchStep(_)
             | A::LinkStep(_)
-            | A::LinkFollow
             | A::ImageStep(_)
             | A::LinkOpen(_)
             | A::Back
@@ -1151,8 +1155,7 @@ impl App {
         self.forget_derived_state();
         // A different document: the panes that answered questions about the
         // one we are leaving would otherwise keep answering them.
-        self.backlinks = None;
-        self.mark_list = None;
+        self.close_document_panes();
         self.rebuild_math_art();
         self.words = word_count(&self.doc.text);
         self.has_headings = self
@@ -1638,6 +1641,32 @@ impl App {
     /// `matches` survives a reload and is re-run, `forward` is re-derived
     /// rather than dropped, and `open_path` alone clears the panes that
     /// answer questions about a file it is leaving.
+    /// Close every pane that belongs to the document being left — the ONE
+    /// list both ways out use (`open_path` to another document,
+    /// `close_file` to the file list), so they cannot disagree again.
+    ///
+    /// What stays is what belongs to the app rather than the text: the
+    /// settings pane and the help sheet, which have the same rows on either
+    /// screen. Everything else describes, points into, or was opened on the
+    /// document — a context menu's rows carry its byte offsets, a note
+    /// draft is anchored in its text, the search prompt searches it.
+    fn close_document_panes(&mut self) {
+        self.info = false;
+        self.info_scroll = 0;
+        self.forward = None;
+        self.backlinks = None;
+        self.mark_list = None;
+        self.outline = None;
+        self.peek = None;
+        self.lightbox = None;
+        self.menu = None;
+        self.notes.pane = None;
+        self.notes.draft = None;
+        if self.searching() {
+            self.mode = Mode::Normal;
+        }
+    }
+
     fn forget_derived_state(&mut self) {
         self.pending_open = None;
         self.selection = None;
@@ -3765,26 +3794,36 @@ fn blocked_action(app: &mut App, action: Action) -> Option<Outcome> {
 }
 
 fn scroll_info(app: &mut App, action: Action) -> Option<Outcome> {
-    if app.pane() == Some(Pane::Info)
-        && let Action::Scroll(span, delta) = action
+    if app.pane() != Some(Pane::Info)
+        || !matches!(
+            action,
+            Action::Scroll(..) | Action::GoToStart | Action::GoToEnd
+        )
     {
-        let height = usize::from(app.info_size().1.saturating_sub(2));
-        let max = app.info_lines().len().saturating_sub(height);
-        let current = app.info_scroll.min(max);
-        let rows = delta.unsigned_abs() as usize
-            * match span {
-                Span::Line => 1,
-                Span::HalfPage => (height / 2).max(1),
-                Span::Page => height.max(1),
-            };
-        app.info_scroll = if delta < 0 {
-            current.saturating_sub(rows)
-        } else {
-            current.saturating_add(rows).min(max)
-        };
-        return Some(Outcome::Redraw);
+        return None;
     }
-    None
+    let height = usize::from(app.info_size().1.saturating_sub(2));
+    let max = app.info_lines().len().saturating_sub(height);
+    let current = app.info_scroll.min(max);
+    app.info_scroll = match action {
+        // The ends move the CARD, never the document under it.
+        Action::GoToEnd => max,
+        Action::Scroll(span, delta) => {
+            let rows = delta.unsigned_abs() as usize
+                * match span {
+                    Span::Line => 1,
+                    Span::HalfPage => (height / 2).max(1),
+                    Span::Page => height.max(1),
+                };
+            if delta < 0 {
+                current.saturating_sub(rows)
+            } else {
+                current.saturating_add(rows).min(max)
+            }
+        }
+        _ => 0, // GoToStart
+    };
+    Some(Outcome::Redraw)
 }
 
 fn lightbox_update(app: &mut App, action: Action) -> Outcome {
@@ -5482,16 +5521,12 @@ fn close_file(app: &mut App) -> Outcome {
         return Outcome::Quit;
     };
     app.screen = Screen::Home(h);
-    // The document's panes go with it, as they do in `open_path`. A click
-    // on the status row's `⌂` or `q` is chrome, so it reaches here with a
-    // list pane or the info card still up — which then sat over the file
-    // list holding the keys, describing a document no longer open.
-    app.info = false;
-    app.forward = None;
-    app.backlinks = None;
-    app.mark_list = None;
-    app.outline = None;
-    app.peek = None;
+    // The document's panes go with it — the same list `open_path` uses. A
+    // click on the status row's `⌂` or `q` is chrome, so it reaches here
+    // with a list pane or the info card still up — which then sat over the
+    // file list holding the keys, describing a document no longer open.
+    // Settings stays: it is the app's, and the home screen has it too.
+    app.close_document_panes();
     app.matches = None;
     app.selected_link = None;
     app.history.clear();
@@ -9349,6 +9384,87 @@ diff --git a/x.rs b/x.rs
             stacked.len(),
             stacked.join("\n")
         );
+    }
+
+    /// `Enter` on an image block with no link picked opens the lightbox —
+    /// so `LinkFollow` IS an opener, and `opened_by` must say so or the
+    /// one-pane rule cannot refuse it. With the info card up (whose own map
+    /// does not bind Enter, but a synthetic action can arrive), it put the
+    /// lightbox over the card and left the card open under it.
+    #[test]
+    fn following_on_an_image_is_an_opener_the_open_pane_refuses() {
+        assert_eq!(
+            Pane::opened_by(Action::LinkFollow),
+            Some(Opens::Pane(Pane::Lightbox))
+        );
+        let src = "![alt](pic.png)\n\n# One\n\nSee [two](two.md) and a note[^n].\n\n\
+                   ## Two\n\n[^n]: the note\n";
+        let fresh = || {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("one.md");
+            std::fs::write(&file, src).unwrap();
+            let mut a = App::new(file.display().to_string(), Document::parse(src), 80, 24);
+            a.file = Some(file);
+            update(&mut a, Action::MarkToggle);
+            a.note = None;
+            (a, dir)
+        };
+        // The control: with nothing up, the same action opens the lightbox.
+        let (mut a, _dir) = fresh();
+        update(&mut a, Action::LinkFollow);
+        assert_eq!(open_panes(&a), vec!["lightbox"]);
+
+        let (probe, _dir) = fresh();
+        let mut stacked = Vec::new();
+        for (name, open) in reader_openers(&probe) {
+            if matches!(name, "lightbox" | "peek") {
+                continue;
+            }
+            let (mut a, _dir) = fresh();
+            update(&mut a, open);
+            assert_eq!(open_panes(&a), vec![name], "{open:?}");
+            update(&mut a, Action::LinkFollow);
+            if open_panes(&a) != vec![name] {
+                stacked.push(format!("{name} -> {:?}", open_panes(&a)));
+            }
+        }
+        assert!(stacked.is_empty(), "{}", stacked.join("\n"));
+    }
+
+    /// Leaving a document — for the file list (`close_file`) or for another
+    /// document (`open_path`) — closes every pane that belongs to it, and
+    /// the two exits agree on which those are. Settings and the help sheet
+    /// are the app's, not the document's: both have the same rows on the
+    /// home screen, so they stay. The two exits kept separate lists, and
+    /// neither was complete: `open_path` left the info card and the outline
+    /// up over the next document, `close_file` the lightbox and a menu
+    /// whose rows named bytes of the text that had just gone.
+    #[test]
+    fn both_ways_out_of_a_document_close_the_same_panes() {
+        let (probe, _dir) = modal_reader();
+        let mut wrong = Vec::new();
+        for (name, open) in reader_openers(&probe) {
+            let stays = matches!(name, "help" | "settings");
+            let want: Vec<&str> = if stays { vec![name] } else { vec![] };
+            for exit in ["close_file", "open_path"] {
+                let (mut a, dir) = modal_reader();
+                let other = dir.path().join("two.md");
+                std::fs::write(&other, "# Two\n\ntext\n").unwrap();
+                a.home_stash = Some(Box::new(Home::new(dir.path().into(), Vec::new())));
+                update(&mut a, open);
+                assert_eq!(open_panes(&a), vec![name], "{open:?}");
+                if exit == "close_file" {
+                    close_file(&mut a);
+                    assert!(a.is_home());
+                } else {
+                    a.open_path(&other).unwrap();
+                }
+                if open_panes(&a) != want {
+                    wrong.push(format!("{name} after {exit}: {:?}", open_panes(&a)));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     /// The home screen's half of the matrix: the help sheet, settings, the
