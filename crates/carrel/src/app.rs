@@ -2225,7 +2225,10 @@ impl App {
     /// Returns columns in screen space, already clamped to the text area.
     #[must_use]
     pub fn block_span_x(&self, block: BlockIdx) -> (u16, u16) {
-        let full_x = Self::side_pad(self.cols);
+        // The bleed area starts past the margin outline: `bleed_w` already
+        // gives the gutter's columns up, so measuring from the side pad
+        // alone centred a wide table across the outline's rows.
+        let full_x = Self::side_pad(self.cols) + self.gutter_w();
         let full_w = self.bleed_w();
         let full_right = full_x.saturating_add(full_w);
         let prose_x = self.text_x_now();

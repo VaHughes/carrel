@@ -1403,3 +1403,59 @@ fn every_osc8_span_carries_the_style_its_cells_were_painted_with() {
         "the hovered link's recorded style must carry the hover"
     );
 }
+
+/// A bleeding block is centred in the area the margin outline leaves, never
+/// over the outline. `bleed_w` already subtracted the gutter while the left
+/// edge did not, so a wide table centred from the side pad and painted its
+/// first columns across the outline's rows.
+#[test]
+fn a_wide_table_never_paints_over_the_margin_outline() {
+    let cells = (0..12).map(|i| format!("column {i}")).collect::<Vec<_>>();
+    let src = format!(
+        "# One\n\n## Two\n\n## Three\n\n| {} |\n|{}|\n| {} |\n",
+        cells.join(" | "),
+        vec!["---"; 12].join("|"),
+        cells.join(" | "),
+    );
+    for cols in [150, 160, 200, 240] {
+        let mut app = app_at(cols, 30, &src);
+        app.outline_margin = true;
+        app.on_resize(cols, 30);
+        let g = app.gutter_w();
+        assert!(g > 0, "precondition at {cols}: the outline is shown");
+        let table = (0..app.doc.block_count())
+            .map(|b| BlockIdx(u32::try_from(b).unwrap()))
+            .find(|&b| {
+                matches!(
+                    app.doc.node_for_block(b).kind,
+                    carrel_core::NodeKind::Table { .. }
+                )
+            })
+            .unwrap();
+        let (x, w) = app.block_span_x(table);
+        assert!(
+            w > app.text_w(),
+            "precondition at {cols}: the table bleeds ({w})"
+        );
+        let edge = App::side_pad(cols) + g;
+        assert!(
+            x >= edge,
+            "at {cols}: table starts at {x}, outline ends at {edge}"
+        );
+        assert!(
+            x + w <= cols - 1 - App::side_pad(cols),
+            "at {cols}: table runs to {}",
+            x + w
+        );
+        let buf = frame(&app, cols, 30);
+        for y in 0..30 {
+            for c in 0..edge {
+                assert_ne!(
+                    buf[(c, y)].symbol(),
+                    "│",
+                    "at {cols}: a table rule in the outline's column {c}, row {y}"
+                );
+            }
+        }
+    }
+}
