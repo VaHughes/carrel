@@ -6,7 +6,9 @@ Last updated: 2026-10-08
 
 - **Latest release: v2026.10.8** (2026-10-08), published to crates.io (both crates),
   GitHub (six Unix targets and shell installer), the Homebrew tap, and Fedora COPR
-  (build 11094487, F43/F44, x86_64 and aarch64). It carries everything built since
+  (build 11094511, F43/F44, x86_64 and aarch64; the first, 11094487, failed `%check`
+  because the build root had no `python3` for the live-resize pty test — the spec now
+  requires it, and the test skips loudly without it). It carries everything built since
   2026.9.23: small-terminal layouts, hyphenation and the tags page, the 25-item
   reader-beside-an-agent slate, and the known-defects work below — including the fix
   for a crash on closing the terminal that was in every release since 2026.9.1.
@@ -16,7 +18,8 @@ Last updated: 2026-10-08
   real shell files; the musl archive passes `check-packaging.sh` and its binary enters
   and leaves the alternate screen and exits cleanly, with no core dump, when its tmux
   server is killed; `carrel-bin` builds with `makepkg -f` (eight files); `.SRCINFO`
-  regenerates identically; the Homebrew formula's four sums match the release's.
+  regenerates identically; the Homebrew formula's four sums match the release's; the
+  COPR repo metadata lists 2026.10.8 in all four chroots.
 - All five local gates passed on 2026-10-08: **1,173 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
