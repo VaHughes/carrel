@@ -191,6 +191,11 @@ pub fn icons_width(app: &App) -> u16 {
     }
 }
 
+/// The highest chip rank a note's trailing clause outlasts: time left (1)
+/// and `T theme` (2) give way to it; the task count, the changes, the
+/// percentage and the exit key do not.
+pub const NOTE_OUTRANKS: u8 = 2;
+
 /// The whole row for `room` cells, `left` being the name or the note.
 ///
 /// **One order of giving way, for every part of the row.** The parts used to
@@ -204,14 +209,19 @@ pub fn icons_width(app: &App) -> u16 {
 ///
 /// 1. the trail, oldest name first, its `…` standing for them;
 /// 2. the `…` itself;
-/// 3. a note's trailing clauses, last first (see [`clauses`]) — the
-///    afterthought after a `·` is the cheapest thing on the row, and keeping
-///    it while the right end empties left a row of blanks once it went;
-/// 4. the right end, least important chip first (the last one standing is
-///    shortened before it goes — for a link's destination it is the only
-///    thing the right end has to say);
-/// 5. the icons;
-/// 6. and last the name or note itself, cut at a word with an ellipsis
+/// 3. the right end's standing furniture — time left and `T theme`, the
+///    chips ranked at or below [`NOTE_OUTRANKS`] — while a note is up: a
+///    note says what just happened and how to act on it, and is gone in a
+///    moment, while those two are on the row all the time;
+/// 4. a note's trailing clauses, last first (see [`clauses`]), before the
+///    chips that answer "where am I" and "how do I leave" — keeping the
+///    afterthought after a `·` while the right end emptied left a row of
+///    blanks once it went;
+/// 5. the rest of the right end, least important chip first (the last one
+///    standing is shortened before it goes — for a link's destination it is
+///    the only thing the right end has to say);
+/// 6. the icons;
+/// 7. and last the name or note itself, cut at a word with an ellipsis
 ///    ([`shorten`]).
 #[must_use]
 pub fn row(app: &App, left: &str, room: u16) -> Row {
@@ -254,6 +264,16 @@ pub fn arrange(
             ellipsis = true;
         } else if ellipsis {
             ellipsis = false;
+        } else if clause + 1 < clauses.len()
+            && let Some(i) = out
+                .right
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.rank <= NOTE_OUTRANKS)
+                .min_by_key(|(_, c)| c.rank)
+                .map(|(i, _)| i)
+        {
+            out.right.remove(i);
         } else if clause + 1 < clauses.len() {
             clause += 1;
         } else if out.right.len() > 1 {
@@ -466,6 +486,37 @@ mod tests {
         let chips = right(&a);
         assert_eq!(chips[0].text, "2/3 tasks");
         assert_eq!(chips[0].action, Some(Action::TaskOpen));
+    }
+
+    #[test]
+    fn a_notes_last_clause_outlasts_the_theme_chip_but_not_the_percentage() {
+        let chip = |t: &str, rank| Chip::says(t, rank);
+        let right = vec![
+            chip("7 changed", 5),
+            chip("40%", 6),
+            chip("3 min left", 1),
+            chip("T theme", 2),
+            chip("q quit", 7),
+        ];
+        let note = "reloaded \u{2014} 7 changes \u{b7} c goes to the next";
+        let full = arrange(note, true, &[], right.clone(), 2, 200);
+        assert_eq!(full.left, note);
+        let mut saw_clause_without_furniture = false;
+        for room in (10..200).rev() {
+            let r = arrange(note, true, &[], right.clone(), 2, room);
+            let has = |t: &str| r.right.iter().any(|c| c.text == t);
+            if has("T theme") || has("3 min left") {
+                assert_eq!(r.left, note, "at {room}: the note's tail went before {r:?}");
+            }
+            if r.left != note {
+                assert!(!has("T theme") && !has("3 min left"), "at {room}: {r:?}");
+            }
+            if r.left == note && !has("T theme") {
+                saw_clause_without_furniture = true;
+                assert!(has("40%") && has("q quit"), "at {room}: {r:?}");
+            }
+        }
+        assert!(saw_clause_without_furniture);
     }
 
     #[test]
