@@ -884,6 +884,37 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
     }
 }
 
+/// Raw mode and the alternate screen, with a panic hook that hands them back.
+///
+/// `ratatui::init()` does the same, but both its hook and its `restore()`
+/// report a failed restore with `eprintln!` — and a restore fails exactly when
+/// the terminal is gone, which is when stderr is gone too. That `eprintln!`
+/// panics, the hook runs again and panics again, and the process aborts: every
+/// window closed with carrel open dumped core and raised a "carrel crashed"
+/// notification. Here, and in `TerminalGuard`, a failed restore is silent —
+/// there is no one left to tell.
+fn init_terminal() -> std::io::Result<ratatui::DefaultTerminal> {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::try_restore();
+        prev(info);
+    }));
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::terminal::EnterAlternateScreen
+    )?;
+    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
+}
+
+/// Whether the terminal this reader paints into has been hung up.
+///
+/// A hung-up tty fails every ioctl, so `isatty` on stdout — the one stream a
+/// reader always paints to, piped or not — is the cheap, exact test.
+fn terminal_gone() -> bool {
+    !std::io::stdout().is_terminal()
+}
+
 /// Restores the terminal on every ordinary exit path, including `?`.
 ///
 /// `ratatui::init()` installs the panic hook for raw mode and the alternate
@@ -924,7 +955,30 @@ impl TerminalGuard {
             prev(info);
         }));
         Self::watch_for_signals();
+        Self::watch_for_hangup();
         Self
+    }
+
+    /// End the reader when its terminal goes away and no signal says so.
+    ///
+    /// Closing a window usually delivers SIGHUP (see `watch_for_signals`),
+    /// but not always: a shell in front of the reader that ignores the
+    /// hang-up keeps it from ever arriving. The terminal then reads as
+    /// permanently ready with nothing in it, and crossterm 0.29's
+    /// `try_read` retries a read that returns end-of-file or `EIO` forever,
+    /// inside `event::poll` — so no check in the event loop can run again,
+    /// and the reader was left orphaned at ~90% CPU with nowhere to draw.
+    /// A thread outside that loop is the only place the hang-up can be seen.
+    fn watch_for_hangup() {
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                if terminal_gone() {
+                    let _ = ratatui::try_restore();
+                    std::process::exit(128 + signal_hook::consts::SIGHUP);
+                }
+            }
+        });
     }
 
     /// Restore the terminal when the process is signalled rather than exiting.
@@ -960,7 +1014,7 @@ impl TerminalGuard {
                     DisableBracketedPaste,
                     Show
                 );
-                ratatui::restore();
+                let _ = ratatui::try_restore();
                 std::process::exit(128 + sig);
             }
         });
@@ -981,7 +1035,7 @@ impl Drop for TerminalGuard {
             DisableBracketedPaste,
             Show
         );
-        ratatui::restore();
+        let _ = ratatui::try_restore();
     }
 }
 
@@ -1510,7 +1564,7 @@ fn run_welcome() -> std::io::Result<Option<PathBuf>> {
     let doc = carrel_core::Document::parse(carrel::app::WELCOME);
     let images = Images::detect();
     let theme_note = startup_theme();
-    let terminal = ratatui::init();
+    let terminal = init_terminal()?;
     let _guard = TerminalGuard::engage_mouse();
     let size = terminal.size()?;
     let mut app = App::new("welcome".into(), doc, size.width, size.height);
@@ -1546,7 +1600,7 @@ fn run(
     // before the alternate screen swallows the replies.
     let images = Images::detect();
 
-    let terminal = ratatui::init();
+    let terminal = init_terminal()?;
     let _guard = TerminalGuard::engage_mouse();
 
     let size = terminal.size()?;
@@ -2183,7 +2237,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
     let note = note.or(theme_note);
     let mut images = Images::detect();
 
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal()?;
     let _guard = TerminalGuard::engage_mouse();
 
     let size = terminal.size()?;

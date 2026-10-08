@@ -297,6 +297,72 @@ fn a_signal_still_hands_the_terminal_back() {
     assert!(raw.contains("\x1b[?25h"), "…and must give the cursor back");
 }
 
+/// Closing the terminal a reader is open in must end it quietly, not abort it.
+///
+/// When the window goes, the kernel hangs up the pty: carrel gets SIGHUP and
+/// every write to the terminal fails. `ratatui::restore` reports a failed
+/// restore with `eprintln!`, which panics when stderr is that same dead
+/// terminal; the panic hook restored again, panicked again, and the process
+/// aborted and dumped core — a "carrel crashed" notification every time a
+/// window holding it was closed, from 2026.9.1 to 2026-10-08.
+#[test]
+fn closing_the_terminal_ends_the_reader_without_an_abort() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let marker = format!(
+        "doc-hup-{}.md",
+        d.path().file_name().unwrap().to_string_lossy()
+    );
+    std::fs::write(d.path().join(&marker), "# Title\n\nbody\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let status = d.path().join("status");
+    // `script` owns the pty's master side; killing it outright is exactly a
+    // closed window. The child shell ignores the hang-up so it lives to record
+    // carrel's exit status; carrel installs its own SIGHUP handler, which
+    // replaces the inherited disposition, so it still sees the signal.
+    let cmd = format!(
+        "( sleep 2; pkill -KILL -f '^script .*{marker}' ) & \
+         XDG_CONFIG_HOME='{0}' XDG_STATE_HOME='{0}' XDG_CACHE_HOME='{0}' HOME='{0}' \
+         timeout 30 script -qec 'trap \"\" HUP; stty rows 20 cols 76; {bin} {marker}; echo $? > {1}' /dev/null \
+         >/dev/null 2>&1; wait",
+        d.path().display(),
+        status.display(),
+    );
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    // The hang-up is noticed on the watchdog's half-second clock.
+    for _ in 0..50 {
+        if status.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Never leave an orphan spinning behind a failed run.
+    let _ = std::process::Command::new("pkill")
+        .args(["-KILL", "-f", &format!("^{bin} {marker}$")])
+        .status();
+    let code: i32 = std::fs::read_to_string(&status)
+        .expect("carrel must exit when its terminal is closed, not spin on")
+        .trim()
+        .parse()
+        .unwrap();
+    // 128 + 6 is SIGABRT. The shell here ignores the hang-up, so no SIGHUP
+    // reaches carrel either — this is the orphaned-reader case, ended by the
+    // watchdog with 128 + 1, after a restore into a dead terminal (the abort).
+    assert_ne!(code, 134, "carrel aborted when its terminal closed");
+    assert!(
+        code == 129,
+        "unexpected exit status {code} after the terminal closed"
+    );
+}
+
 #[test]
 fn every_frame_is_bracketed_in_a_synchronized_update() {
     if !script_available() {
