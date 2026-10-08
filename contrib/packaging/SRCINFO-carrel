@@ -1,6 +1,6 @@
 pkgbase = carrel
 	pkgdesc = A quiet place to read your markdown — a terminal markdown reader
-	pkgver = 2026.9.23
+	pkgver = 2026.10.8
 	pkgrel = 1
 	url = https://github.com/VaHughes/carrel
 	arch = x86_64
@@ -8,7 +8,7 @@ pkgbase = carrel
 	license = MIT OR Apache-2.0
 	makedepends = cargo
 	depends = gcc-libs
-	source = carrel-2026.9.23.tar.gz::https://github.com/VaHughes/carrel/archive/v2026.9.23.tar.gz
+	source = carrel-2026.10.8.tar.gz::https://github.com/VaHughes/carrel/archive/v2026.10.8.tar.gz
 	sha256sums = 448c906485dad84bfde7fe1a2f35f85f9c36ea568ef902e6b38a2a9fde772f78
 
 pkgname = carrel

@@ -211,6 +211,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 | **A heading, or a `▸` / `▾` in the margin** | Collapses or expands that section, or that `<details>` block. |
 | **The hint row along the bottom** | Every hint is a button and looks like one — `↑/↓ scroll`, `/ search`, `o outline`, `h help`, each a chip on the status bar's surface. So are `T theme` and `q quit` on the status row, and the lamp at the far left, which hides the hint row itself. |
 | **A row in a pane** | The outline, the bookmark list and both link panes open the row under the pointer. |
+| **Beside an open pane** | Closes the pane, and does nothing else — the click never lands on what is underneath. One pane is open at a time; the **`≡`** opens the menu in place of whatever pane is up, and a key on a pane's border (`esc close`, `↑ ↓`) is a button for that key. |
 | **The margin outline** | Click a section to jump to it. |
 | **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
 | **The scrollbar** | Drag the thumb, or click the track to jump to that position. It is notched where the document's sections begin. The wheel scrolls, and gathers speed if you keep spinning it. |
@@ -228,7 +229,7 @@ shrink; below 20 they disappear. Below 12 rows the heading bar and vertical
 padding give way to text, and below 8 rows the hint row does too. Your saved
 preferences return when the window grows. The **`≡`** menu remains visible.
 
-Compact panes use the whole window. Help wraps its descriptions; settings wrap long labels and values, and settings
+Panes stay above the status row, so the **`≡`** and the lamp stay in reach. Help wraps its descriptions; settings wrap long labels and values, and settings
 and menus keep the selected entry visible. The wheel navigates the open pane;
 settings also offer arrow buttons. The document information card (`I`) wraps
 long values and scrolls with the wheel, arrows, or its arrow buttons. Close a

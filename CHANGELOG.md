@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.10.8
 
 - **Closing a terminal no longer crashes carrel.** Since 2026.9.1, closing the
   window carrel was open in made it abort and leave a core dump behind (a desktop
