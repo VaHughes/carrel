@@ -108,9 +108,11 @@ Key facts that are easy to get wrong:
   padded so every value starts in one column (`key_col` + separator + a space), and the reflow
   layer hangs a wrapped value under that column — or, too narrow for one, stacks the key over
   its value. The card's rows are ordinary rows painted by `paint_row`; only the `╭ │ ╰` rule is
-  decoration. `meta_split` is the one "which lines are keys" predicate that parse, layout and
-  paint share. (The padding used to be added at paint, so the painted card disagreed with the
-  layout that counted its rows.)
+  decoration (`╶` for a one-row card). `meta_split` is the one "which lines are keys" predicate
+  that parse, layout and paint share, and it takes the block's `MetaFormat`: YAML splits at
+  `:`, TOML at `=`, never at the other's. Alignment is decided per line, so a CRLF file — whose
+  `\r`s pulldown-cmark drops — still aligns, with exact provenance. (The padding used to be
+  added at paint, so the painted card disagreed with the layout that counted its rows.)
 - **Tabs are expanded at parse, not at layout** — a tab's width depends on its column, which the
   per-cluster `WidthFn` cannot express.
 - **`Event::Text` is not always a source substring** (entity decoding, smart punctuation change

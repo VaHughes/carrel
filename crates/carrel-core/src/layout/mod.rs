@@ -364,18 +364,19 @@ struct Slice<'a> {
     /// Code blocks reserve [`CONTINUATION_COLS`] on continuation rows for a
     /// marker; prose reserves nothing.
     code: bool,
-    /// `Some(key_col)` for a frontmatter card: a key line's continuation
-    /// rows hang under its value column. See [`meta_hang`].
-    meta: Option<u16>,
+    /// `Some((key_col, format))` for a frontmatter card: a key line's
+    /// continuation rows hang under its value column. See [`meta_fit`].
+    meta: Option<(u16, crate::document::MetaFormat)>,
     /// `Some` when this slice's words may be divided: the block's style
     /// runs, which say which of them may not. See [`soft_breaks`].
     soft: Option<&'a [Inline]>,
 }
 
-/// The `key_col` of a frontmatter card, or `None` for every other kind.
-fn meta_key_col(kind: &crate::document::NodeKind) -> Option<u16> {
+/// The `key_col` and dialect of a frontmatter card, or `None` for every
+/// other kind.
+fn meta_key_col(kind: &crate::document::NodeKind) -> Option<(u16, crate::document::MetaFormat)> {
     match kind {
-        crate::document::NodeKind::Metadata { key_col } => Some(*key_col),
+        crate::document::NodeKind::Metadata { key_col, format } => Some((*key_col, *format)),
         _ => None,
     }
 }
@@ -403,13 +404,25 @@ const MIN_VALUE_COLS: u16 = 12;
 /// first row only the key's own width. Without that the first value word
 /// sat beside the key and the rest fell under it, a shape that reads as two
 /// different keys.
-fn meta_fit(line: &str, key_col: u16, at: &Slice, w: &WidthFn) -> LineFit {
+///
+/// `key_col` and the padding were measured at parse with the core's widths;
+/// this measures with `w`. They agree for every frontend that exists (the
+/// terminal injects `cluster_width`), and taking the smaller of the shared
+/// column and the line's own value column means a frontend that disagreed
+/// could only pull a continuation row left of its value, never past it.
+fn meta_fit(
+    line: &str,
+    (key_col, format): (u16, crate::document::MetaFormat),
+    at: &Slice,
+    w: &WidthFn,
+) -> LineFit {
     let measure = |s: &str| {
         s.graphemes(true)
             .fold(0u16, |acc, g| acc.saturating_add(w(g)))
     };
     let avail = at.width.saturating_sub(at.indent);
-    let split = crate::document::meta_split(line).filter(|m| !line[m.value..].trim().is_empty());
+    let split =
+        crate::document::meta_split(line, format).filter(|m| !line[m.value..].trim().is_empty());
     let hang = match split {
         Some(m) => {
             let shared = key_col
@@ -520,7 +533,7 @@ fn wrap_slice<F: FnMut(Row)>(
     // mandatory set, not just '\n' — see `MANDATORY_BREAKS`.
     for line in text.split_inclusive(MANDATORY_BREAKS) {
         let fit = match at.meta {
-            Some(key_col) => meta_fit(line, key_col, at, w),
+            Some(meta) => meta_fit(line, meta, at, w),
             None => LineFit::new(at.width, at.indent, leading_width(line, w), reserve),
         };
         // Split against the NARROWER budget so a unit can never overflow the

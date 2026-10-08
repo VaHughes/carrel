@@ -232,6 +232,37 @@ fn the_card_is_followed_by_one_gap_and_then_the_document() {
     }
 }
 
+/// The rule's glyph on each of the card's rows, top to bottom.
+fn rule_glyphs(src: &str, cols: u16) -> String {
+    let a = sized(src, cols, 40);
+    let (buf, _) = paint(&a, cols, 40);
+    let card_rows = a.layout.content_height(&a.doc, carrel_core::BlockIdx(0));
+    (a.text_y()..a.text_y() + u16::try_from(card_rows).unwrap())
+        .map(|y| {
+            row_text(&buf, cols, y)
+                .chars()
+                .find(|c| "╭│╰╶".contains(*c))
+                .unwrap_or('?')
+        })
+        .collect()
+}
+
+/// Exactly one close, on the card's LAST row — a blank or whitespace-only
+/// line at the end of the body is a row of the card like any other, and
+/// every row from the last non-blank one on used to read as "last". A card
+/// of one row has no top and no bottom, so it takes the rule's one-row form.
+#[test]
+fn the_card_rule_closes_once_on_its_last_row() {
+    for (src, want) in [
+        ("---\nk: v\n\n# c\nkk: w\n   \n---\n\nbody\n", "╭│││╰"),
+        ("---\nk: v\nkk: w\n\n---\n\nbody\n", "╭│╰"),
+        ("---\nk: v\nkk: w\n---\n\nbody\n", "╭╰"),
+        ("---\nk: v\n---\n\nbody\n", "╶"),
+    ] {
+        assert_eq!(rule_glyphs(src, 40), want, "{src:?}");
+    }
+}
+
 /// Keys wear their weight on their own cells, found through the same row
 /// geometry as everything else: not the value beside them, and not the rows
 /// a wrapped value continues on.

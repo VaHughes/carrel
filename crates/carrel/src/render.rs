@@ -1623,11 +1623,15 @@ fn paint_rows(
 
         app.layout.rows_for(&app.doc, block, &mut rows);
         let first_y = y;
-        for row in rows.iter().skip(skip as usize) {
+        // The block's last CONTENT row: `rows` ends in the spacing row(s).
+        let last = usize::try_from(app.layout.content_height(&app.doc, block))
+            .unwrap_or(usize::MAX)
+            .saturating_sub(1);
+        for (i, row) in rows.iter().enumerate().skip(skip as usize) {
             if y >= area.bottom() {
                 break;
             }
-            paint_row(frame, app, block, row, area, y, painted);
+            paint_row(frame, app, block, row, i == last, area, y, painted);
             y += 1;
         }
         if matches!(app.doc.node_for_block(block).kind, NodeKind::Image { .. }) && y > first_y {
@@ -1706,11 +1710,15 @@ fn paint_fold_ellipsis(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect
 }
 
 #[allow(clippy::too_many_lines)]
+/// `last` says this is the block's final row — a fact of the row stream, not
+/// of the row, which only the caller holding the stream knows.
+#[allow(clippy::too_many_arguments)]
 fn paint_row(
     frame: &mut Frame,
     app: &App,
     block: BlockIdx,
     row: &Row,
+    last: bool,
     area: Rect,
     y: u16,
     painted: &mut Painted,
@@ -1962,7 +1970,7 @@ fn paint_row(
     //     in the gutter `indent` reserved, the key's weight, and the tags'
     //     buttons, each placed through `cols_for_doc_range` on THIS row.
     if let NodeKind::Metadata { .. } = node.kind {
-        paint_card_row(frame, app, node, row, area, y, targets);
+        paint_card_row(frame, app, node, row, last, area, y, targets);
     }
 
     // 3a. Table column separators: a dim │ in the middle of each 2-cell gap,
@@ -2196,11 +2204,19 @@ fn paint_row(
 /// `indent` reserved at parse. Everything else here restyles or registers
 /// cells the row already painted from the text, so a click, a search hit and
 /// a tag button all land on the same cells.
+///
+/// The rule is a bracket: it turns right at the card's first row and at its
+/// LAST — the block's final row in the row stream, which is not the same as
+/// the row reaching its last non-blank byte when the body ends in a blank or
+/// whitespace-only line. A card of one row has both ends on one row, so the
+/// bracket shrinks to its rightward stroke alone: `╶`.
+#[allow(clippy::too_many_arguments)]
 fn paint_card_row(
     frame: &mut Frame,
     app: &App,
     node: &carrel_core::Node,
     row: &Row,
+    last: bool,
     area: Rect,
     y: u16,
     targets: &mut Targets,
@@ -2214,15 +2230,11 @@ fn paint_card_row(
             ..
         }
     );
-    // The last row is the one that reaches the body's last visible byte; a
-    // trailing newline is no row of its own.
-    let last = row.doc.end as usize >= start + body.trim_end().len();
-    let rule = if first {
-        '╭'
-    } else if last {
-        '╰'
-    } else {
-        '│'
+    let rule = match (first, last) {
+        (true, true) => '╶',
+        (true, false) => '╭',
+        (false, true) => '╰',
+        (false, false) => '│',
     };
     let rx = area.x + node.indent.saturating_sub(2);
     let buf = frame.buffer_mut();
@@ -2251,7 +2263,10 @@ fn paint_card_row(
     let line_end = body[line_start..]
         .find('\n')
         .map_or(body.len(), |i| line_start + i);
-    if let Some(m) = carrel_core::meta_split(&body[line_start..line_end]) {
+    let NodeKind::Metadata { format, .. } = node.kind else {
+        return;
+    };
+    if let Some(m) = carrel_core::meta_split(&body[line_start..line_end], format) {
         if let Some(rect) = cells(line_start..line_start + m.key_end) {
             frame.buffer_mut().set_style(rect, theme::meta_key());
         }

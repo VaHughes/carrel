@@ -29,7 +29,9 @@ use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
-use pulldown_cmark::{CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    CodeBlockKind, Event, LinkType, MetadataBlockKind, Options, Parser, Tag, TagEnd,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::highlight::{self, Token};
@@ -340,6 +342,9 @@ pub enum NodeKind {
         /// **Width-independent** — a property of the text alone, so it has the
         /// same standing here as `Table::cols` and `Node::indent`.
         key_col: u16,
+        /// Which dialect the fence declared — and so which separator
+        /// [`meta_split`] divides its lines at.
+        format: MetaFormat,
     },
     /// A paragraph that contains **only** an image — the figure pattern. The
     /// node's doc text is the alt text, so the placeholder stays searchable.
@@ -1340,9 +1345,13 @@ impl<'a> Builder<'a> {
     /// contributes nothing, because it renders as a raw continuation line
     /// under its parent. A *reader* must never fail on exotic YAML; the worst
     /// outcome here is an unaligned line, not a lost document.
-    fn meta_key_col(body: &str) -> u16 {
+    ///
+    /// Measured as the TEXT will hold the key — tabs expanded, which
+    /// [`Self::push`] does to every metadata line from column 0 — because
+    /// that is what the reflow layer measures when it hangs a wrapped value.
+    fn meta_key_col(body: &str, format: MetaFormat) -> u16 {
         body.lines()
-            .filter_map(|l| meta_split(l).map(|m| display_width(&l[..m.key_end])))
+            .filter_map(|l| meta_split(l, format).map(|m| expanded_width(&l[..m.key_end])))
             .max()
             .unwrap_or(0)
             .min(16)
@@ -1359,47 +1368,95 @@ impl<'a> Builder<'a> {
     /// a click on a value landed on another character, and every row a long
     /// value wrapped onto was counted and painted blank.
     ///
-    /// Only a body that is a verbatim copy of its source is aligned; anything
-    /// else is pushed as it came, unaligned but whole.
-    fn flush_metadata(&mut self, pieces: Vec<(String, Range<usize>)>) -> u16 {
+    /// Decided LINE BY LINE. A line is aligned when the blanks being
+    /// replaced are a verbatim run of the source, so the padding has an exact
+    /// source range; every other byte is pushed with the provenance its own
+    /// piece gives it. A CRLF file is the common case this matters for:
+    /// pulldown-cmark drops each `\r`, so the body is no contiguous copy of
+    /// its source as a whole, but every line in it is.
+    ///
+    /// The padding is measured with the core's [`display_width`], as table
+    /// alignment is; the reflow layer measures the same text with the
+    /// frontend's `WidthFn`. The two agree for every frontend that exists —
+    /// the terminal injects [`crate::cluster_width`], which `display_width`
+    /// sums — and a frontend that measured differently would misalign tables
+    /// for the same reason. The layout's hang takes the smaller of the two
+    /// readings, so a disagreement could only pull a continuation row left,
+    /// never past its value.
+    fn flush_metadata(&mut self, pieces: &[(String, Range<usize>)], format: MetaFormat) -> u16 {
         let body: String = pieces.iter().map(|(t, _)| t.as_str()).collect();
-        let key_col = Self::meta_key_col(&body);
-        let verbatim = pieces.windows(2).all(|w| w[0].1.end == w[1].1.start)
-            && pieces.iter().all(|(t, r)| t.len() == r.len());
-        let Some(base) = pieces.first().map(|(_, r)| r.start).filter(|_| verbatim) else {
-            for (t, r) in pieces {
-                self.push_linkified(&t, r);
-            }
-            return key_col;
-        };
-        let mut at = base;
+        let key_col = Self::meta_key_col(&body, format);
+        // For each body byte: the piece it came from, and its source byte
+        // when that piece is a verbatim copy of its source.
+        let mut map: Vec<(usize, Option<usize>)> = Vec::with_capacity(body.len());
+        for (p, (t, r)) in pieces.iter().enumerate() {
+            let verbatim = self.source.get(r.clone()) == Some(t.as_str());
+            map.extend((0..t.len()).map(|i| (p, verbatim.then_some(r.start + i))));
+        }
+        let mut off = 0;
         for line in body.split_inclusive('\n') {
-            let src = |r: Range<usize>| at + r.start..at + r.end;
-            match meta_split(line).filter(|m| !line[m.value..].trim().is_empty()) {
-                Some(m) => {
+            let end = off + line.len();
+            let split = meta_split(line, format)
+                .filter(|m| !line[m.value..].trim().is_empty())
+                .and_then(|m| Some((m, exact_src(&map, off + m.sep_end..off + m.value)?)));
+            match split {
+                Some((m, blanks_src)) => {
                     let target = key_col
-                        .saturating_add(display_width(&line[m.key_end..m.sep_end]))
+                        .saturating_add(
+                            expanded_width(&line[..m.sep_end])
+                                .saturating_sub(expanded_width(&line[..m.key_end])),
+                        )
                         .saturating_add(1);
                     let pad = usize::from(
                         target
-                            .saturating_sub(display_width(&line[..m.sep_end]))
+                            .saturating_sub(expanded_width(&line[..m.sep_end]))
                             .max(1),
                     );
-                    self.push_linkified(&line[..m.sep_end], src(0..m.sep_end));
+                    self.push_meta_run(&body, &map, pieces, off..off + m.sep_end);
                     let blanks = &line[m.sep_end..m.value];
                     if blanks.len() == pad && blanks.bytes().all(|b| b == b' ') {
-                        self.push(blanks, src(m.sep_end..m.value), ProvKind::Verbatim);
+                        self.push(blanks, blanks_src, ProvKind::Verbatim);
                     } else {
                         let spaces = " ".repeat(pad);
-                        self.push(&spaces, src(m.sep_end..m.value), ProvKind::Substituted);
+                        self.push(&spaces, blanks_src, ProvKind::Substituted);
                     }
-                    self.push_linkified(&line[m.value..], src(m.value..line.len()));
+                    self.push_meta_run(&body, &map, pieces, off + m.value..end);
                 }
-                None => self.push_linkified(line, src(0..line.len())),
+                None => self.push_meta_run(&body, &map, pieces, off..end),
             }
-            at += line.len();
+            off = end;
         }
         key_col
+    }
+
+    /// Push `body[r]` of a frontmatter body, split wherever its provenance
+    /// changes: each verbatim run with its exact source range, anything else
+    /// as `Substituted` against the piece it came from.
+    fn push_meta_run(
+        &mut self,
+        body: &str,
+        map: &[(usize, Option<usize>)],
+        pieces: &[(String, Range<usize>)],
+        range: Range<usize>,
+    ) {
+        let mut from = range.start;
+        while from < range.end {
+            let (piece, src) = map[from];
+            let mut to = from + 1;
+            if let Some(start) = src {
+                while to < range.end && map[to].1 == Some(start + (to - from)) {
+                    to += 1;
+                }
+                self.push_linkified(&body[from..to], start..start + (to - from));
+            } else {
+                while to < range.end && map[to] == (piece, None) {
+                    to += 1;
+                }
+                let src = pieces[piece].1.clone();
+                self.push(&body[from..to], src, ProvKind::Substituted);
+            }
+            from = to;
+        }
     }
 
     fn opts() -> Options {
@@ -1462,8 +1519,11 @@ impl<'a> Builder<'a> {
         // pushed with nothing open by design.
         let (s, src) = if self.open.is_none() && kind != ProvKind::Synthetic {
             // The whitespace left behind by whatever interrupted the run
-            // (`$$x$$ more`) would paint as a stray leading column.
-            let t = s.trim_start();
+            // (`$$x$$ more`) would paint as a stray leading column. Only what
+            // Markdown itself treats as indentation goes: a no-break space or
+            // an ideographic space the author wrote is content, kept exactly
+            // as a loose item's paragraph keeps it.
+            let t = s.trim_start_matches([' ', '\t', '\n']);
             if t.is_empty() {
                 return;
             }
@@ -1908,19 +1968,27 @@ impl<'a> Builder<'a> {
                 // Frontmatter. The body is pushed verbatim like any other text;
                 // `key_col` is computed at close from the lines actually
                 // captured, because the width is a property of the whole block.
-                Event::Start(Tag::MetadataBlock(_)) => {
+                Event::Start(Tag::MetadataBlock(kind)) => {
                     // Reserve the card's gutter in the MODEL, not at paint:
                     // `indent` is width-independent, so layout wraps long
                     // values inside the card instead of under its rule.
                     self.indent = self.indent.saturating_add(2);
-                    self.open_block(NodeKind::Metadata { key_col: 0 }, &src);
+                    let format = match kind {
+                        MetadataBlockKind::YamlStyle => MetaFormat::Yaml,
+                        MetadataBlockKind::PlusesStyle => MetaFormat::Toml,
+                    };
+                    self.open_block(NodeKind::Metadata { key_col: 0, format }, &src);
                     self.meta = Some(Vec::new());
                 }
-                Event::End(TagEnd::MetadataBlock(_)) => {
+                Event::End(TagEnd::MetadataBlock(kind)) => {
                     let pieces = self.meta.take().unwrap_or_default();
-                    let key_col = self.flush_metadata(pieces);
+                    let format = match kind {
+                        MetadataBlockKind::YamlStyle => MetaFormat::Yaml,
+                        MetadataBlockKind::PlusesStyle => MetaFormat::Toml,
+                    };
+                    let key_col = self.flush_metadata(&pieces, format);
                     if let Some(o) = self.open.as_mut() {
-                        o.kind = NodeKind::Metadata { key_col };
+                        o.kind = NodeKind::Metadata { key_col, format };
                     }
                     self.close_block(src.end);
                     self.indent = self.indent.saturating_sub(2);
@@ -2035,6 +2103,14 @@ impl<'a> Builder<'a> {
                 // The destination is recorded so a paragraph holding nothing
                 // but this image can become an Image node at close.
                 Event::Start(Tag::Image { dest_url, .. }) => {
+                    // An image can arrive with no block open — first in the
+                    // run after a nested block closed a tight item's text
+                    // (see `push`). Open the paragraph HERE, before the alt
+                    // text does it, or the destination has nowhere to go
+                    // and a figure the loose spelling makes becomes prose.
+                    if self.open.is_none() {
+                        self.open_block(NodeKind::Paragraph, &src);
+                    }
                     if let Some(o) = self.open.as_mut() {
                         let empty_so_far = o.doc_start as usize == self.text.len();
                         if o.image.is_some() || !empty_so_far {
@@ -2239,31 +2315,82 @@ pub struct MetaLine {
     pub value: usize,
 }
 
+/// Display width of `s` laid out from column 0 with its tabs expanded — the
+/// width it will have in [`Document::text`].
+fn expanded_width(s: &str) -> u16 {
+    let mut col = 0;
+    let _ = expand_tabs(s, &mut col);
+    col
+}
+
+/// The source range of `body[r]` when every byte of it is one contiguous
+/// verbatim run, given a frontmatter body's byte map (see `flush_metadata`).
+/// An empty `r` sits just after the byte before it, or else at the byte at it.
+fn exact_src(map: &[(usize, Option<usize>)], r: Range<usize>) -> Option<Range<usize>> {
+    if r.is_empty() {
+        let at = r
+            .start
+            .checked_sub(1)
+            .and_then(|p| map.get(p)?.1.map(|s| s + 1))
+            .or_else(|| map.get(r.start)?.1)?;
+        return Some(at..at);
+    }
+    let s = map.get(r.start)?.1?;
+    r.clone()
+        .enumerate()
+        .all(|(i, b)| map.get(b).and_then(|m| m.1) == Some(s + i))
+        .then_some(s..s + r.len())
+}
+
+/// Which frontmatter dialect a block is written in — the fence says so, so
+/// the separator is known rather than guessed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MetaFormat {
+    /// `---` fences: `key: value`.
+    Yaml,
+    /// `+++` fences: `key = value`.
+    Toml,
+}
+
 /// How a frontmatter line splits into key and value, or `None` when it is
 /// not a key line.
 ///
 /// Deliberately **not** a YAML parse — a reader must never fail on exotic
 /// YAML. A key line is flush left (an indented line is a nested value, a
-/// `-` line a list item, a `#` line a comment) and is split at its FIRST
-/// `:` or `=`, so a TOML `url = "https://…"` splits at the `=`. A `:` must be
-/// followed by a blank or the line's end, as in YAML, where `a:b` is a
-/// scalar and not a mapping; a TOML `=` needs nothing after it.
+/// `-` line a list item, a `#` line a comment) and is split at the block's
+/// OWN separator: YAML at its first `:` followed by a blank or the line's
+/// end (`a:b` is a scalar, not a mapping), TOML at its first `=`. Neither
+/// splits at the other's character, so a YAML key `a=b` and a TOML quoted
+/// key `"x:y"` stay whole. A key that opens with a quote is skipped to its
+/// closing quote first, in both dialects, so `"a: b": c` and `"a=b" = 1`
+/// split after the key.
 ///
 /// The one predicate the parser's alignment, the reflow layer's hanging
 /// indent and the frontend's key styling all share, so they cannot disagree
 /// about which lines are keys.
 #[must_use]
-pub fn meta_split(line: &str) -> Option<MetaLine> {
+pub fn meta_split(line: &str, format: MetaFormat) -> Option<MetaLine> {
     if line.starts_with([' ', '\t', '#', '-']) {
         return None;
     }
-    let sep = line.find([':', '='])?;
+    // A quoted key: search for the separator after its closing quote. An
+    // unclosed quote is not a key.
+    let from = match line.as_bytes().first() {
+        Some(&q @ (b'"' | b'\'')) => {
+            let close = line[1..].find(char::from(q))? + 1;
+            close + 1
+        }
+        _ => 0,
+    };
+    let sep = from
+        + match format {
+            MetaFormat::Yaml => line[from..].match_indices(':').find_map(|(i, _)| {
+                let after = &line[from + i + 1..];
+                (after.is_empty() || after.starts_with([' ', '\t', '\n', '\r'])).then_some(i)
+            })?,
+            MetaFormat::Toml => line[from..].find('=')?,
+        };
     let after = &line[sep + 1..];
-    if line.as_bytes()[sep] == b':'
-        && !(after.is_empty() || after.starts_with([' ', '\t', '\n', '\r']))
-    {
-        return None;
-    }
     let key_end = line[..sep].trim_end().len();
     if key_end == 0 {
         return None;
@@ -2935,6 +3062,78 @@ mod tests {
         assert!(next.prefix.is_some());
     }
 
+    /// The same source with a blank line before the trailer's line, which
+    /// makes the item LOOSE: pulldown-cmark then wraps the trailer in a
+    /// `Paragraph` of its own. `None` when the trailer is on the first line,
+    /// where there is no item for the blank line to loosen.
+    fn loose_twin(src: &str) -> Option<String> {
+        let at = src.find("TRAILER")?;
+        let line = src[..at].rfind('\n')? + 1;
+        // A blank line inside a block quote must keep the quote's markers.
+        let blank: String = src[line..]
+            .chars()
+            .take_while(|c| *c == '>' || *c == ' ')
+            .filter(|c| *c == '>')
+            .collect();
+        Some(format!("{}{blank}\n{}", &src[..line], &src[line..]))
+    }
+
+    /// Every tight trailer lands in the block its LOOSE twin gives it — the
+    /// same kind at the same indent. Coverage alone let an image after a
+    /// fence become an alt-text paragraph while the loose spelling of the
+    /// same item made a figure.
+    #[test]
+    fn a_tight_trailer_is_the_block_its_loose_twin_would_be() {
+        fn trailer(src: &str) -> (NodeKind, u16) {
+            let d = Document::parse(src);
+            let at = d.text.find("TRAILER").unwrap_or(0) as u32;
+            let n = d.node_for_block(d.block_at_doc(DocByte(at)));
+            (n.kind.clone(), n.indent)
+        }
+        // Without the blank line these three are LAZY continuations of the
+        // nested block — CommonMark puts the trailer in the quote's
+        // paragraph, the nested item, the table's last row — so the blank
+        // line changes which container it is in, and there is no twin.
+        const LAZY: [&str; 3] = [
+            "- a\n  > q\n  TRAILER\n- b\n",
+            "- a\n  - b\n  TRAILER\n- c\n",
+            "- a\n  | x | y |\n  |---|---|\n  | 1 | 2 |\n  TRAILER\n- b\n",
+        ];
+        let mut compared = 0;
+        for src in TIGHT_ITEM_TRAILERS {
+            let Some(twin) = loose_twin(src).filter(|_| !LAZY.contains(src)) else {
+                continue;
+            };
+            assert_eq!(
+                trailer(src),
+                trailer(&twin),
+                "tight {src:?} vs loose {twin:?}"
+            );
+            compared += 1;
+        }
+        assert!(compared >= 20, "compared only {compared} cases");
+    }
+
+    /// The stray-column trim takes only what Markdown itself treats as
+    /// indentation. A no-break space the author wrote (`&nbsp;`, or U+3000
+    /// typed directly) is content, and survives as it does in a loose item.
+    #[test]
+    fn a_tight_trailer_keeps_the_non_ascii_space_its_author_wrote() {
+        for (src, want) in [
+            ("- a\n  ```\n  c\n  ```\n  &nbsp;x\n", "\u{a0}x"),
+            ("- a\n  ```\n  c\n  ```\n  \u{3000}x\n", "\u{3000}x"),
+        ] {
+            let d = Document::parse(src);
+            assert!(d.text.contains(want), "{want:?} lost from {:?}", d.text);
+            let at = d.text.find(want).unwrap_or(0) as u32;
+            assert_eq!(
+                d.node_for_block(d.block_at_doc(DocByte(at))).doc.start,
+                at,
+                "the paragraph opens on the author's character in {src:?}"
+            );
+        }
+    }
+
     // --- Q16: raw HTML strips its tags but keeps its text ---
 
     #[test]
@@ -3330,7 +3529,7 @@ mod tests {
     #[test]
     fn frontmatter_key_col_is_the_widest_key_capped_at_sixteen() {
         let doc = Document::parse("---\na: 1\nlonger_key: 2\n---\n");
-        let NodeKind::Metadata { key_col } = doc.node_for_block(BlockIdx(0)).kind else {
+        let NodeKind::Metadata { key_col, .. } = doc.node_for_block(BlockIdx(0)).kind else {
             panic!("expected a metadata block");
         };
         assert_eq!(key_col, 10, "`longer_key` is 10 cells wide");
@@ -3359,20 +3558,93 @@ mod tests {
     }
 
     #[test]
-    fn a_frontmatter_key_line_is_flush_left_and_split_at_its_first_separator() {
-        fn m(l: &str) -> Option<(&str, &str)> {
-            meta_split(l).map(|m| (&l[..m.key_end], &l[m.value..]))
+    fn a_frontmatter_key_line_is_flush_left_and_split_at_its_own_separator() {
+        fn y(l: &str) -> Option<(&str, &str)> {
+            meta_split(l, MetaFormat::Yaml).map(|m| (&l[..m.key_end], &l[m.value..]))
         }
-        assert_eq!(m("title: x"), Some(("title", "x")));
-        assert_eq!(m("tags:"), Some(("tags", "")));
-        assert_eq!(m("url = \"https://x\""), Some(("url", "\"https://x\"")));
-        assert_eq!(m("time: 12:30"), Some(("time", "12:30")));
-        assert_eq!(m("a=1"), Some(("a", "1")));
-        assert_eq!(m("https://example.com"), None, "a YAML `:` needs a blank");
-        assert_eq!(m("  - item"), None, "a nested line");
-        assert_eq!(m("- item"), None, "a list item");
-        assert_eq!(m("# comment: x"), None, "a comment");
-        assert_eq!(m(": x"), None, "no key");
+        fn t(l: &str) -> Option<(&str, &str)> {
+            meta_split(l, MetaFormat::Toml).map(|m| (&l[..m.key_end], &l[m.value..]))
+        }
+        assert_eq!(y("title: x"), Some(("title", "x")));
+        assert_eq!(y("tags:"), Some(("tags", "")));
+        assert_eq!(y("time: 12:30"), Some(("time", "12:30")));
+        assert_eq!(y("a:b: c"), Some(("a:b", "c")), "`a:b` is a plain key");
+        assert_eq!(y("a=b: c"), Some(("a=b", "c")));
+        assert_eq!(y("\"a: b\": c"), Some(("\"a: b\"", "c")));
+        assert_eq!(y("url = x"), None, "a YAML scalar, not a key");
+        assert_eq!(y("https://example.com"), None, "a YAML `:` needs a blank");
+        assert_eq!(y("  - item"), None, "a nested line");
+        assert_eq!(y("- item"), None, "a list item");
+        assert_eq!(y("# comment: x"), None, "a comment");
+        assert_eq!(y(": x"), None, "no key");
+        assert_eq!(t("url = \"https://x\""), Some(("url", "\"https://x\"")));
+        assert_eq!(t("a=1"), Some(("a", "1")));
+        assert_eq!(t("\"x:y\" = 1"), Some(("\"x:y\"", "1")));
+        assert_eq!(t("'a=b' = 2"), Some(("'a=b'", "2")));
+        assert_eq!(t("\"open = 1"), None, "an unclosed quote is no key");
+        assert_eq!(t("title: x"), None, "a TOML key needs its `=`");
+        assert_eq!(t("[section]"), None);
+    }
+
+    /// A CRLF file's body reaches the builder as pieces with the `\r`s
+    /// dropped between them, so it is no verbatim copy of its source as a
+    /// whole — but each LINE is. Alignment is decided line by line, and each
+    /// key and value maps back to its own source bytes.
+    #[test]
+    fn crlf_frontmatter_is_aligned_line_by_line() {
+        let src = "---\r\ntitle: Hello\r\ntags: [a, b]\r\n---\r\n\r\nbody\r\n";
+        let doc = Document::parse(src);
+        assert_eq!(doc.block_text(BlockIdx(0)), "title: Hello\ntags:  [a, b]\n");
+        for word in ["title", "Hello", "tags", "[a, b]"] {
+            let d = doc.text.find(word).unwrap() as u32;
+            assert_eq!(
+                &src[doc.to_src(DocByte(d)).0 as usize..][..word.len()],
+                word,
+                "{word} maps back to its own source"
+            );
+        }
+    }
+
+    /// Each line's value column, in display cells, for the lines with one.
+    fn value_cols(doc: &Document) -> Vec<u16> {
+        let NodeKind::Metadata { format, .. } = doc.node_for_block(BlockIdx(0)).kind else {
+            panic!("expected a metadata block");
+        };
+        doc.block_text(BlockIdx(0))
+            .lines()
+            .filter_map(|l| meta_split(l, format).map(|m| display_width(&l[..m.value])))
+            .collect()
+    }
+
+    /// YAML separates at `:`, TOML at `=`; neither at the other's character.
+    /// A YAML key holding `=` stayed whole only by luck before — it split at
+    /// the `=` and padded the INSIDE of the key, so search for it failed.
+    #[test]
+    fn yaml_splits_at_its_colon_and_toml_at_its_equals_sign() {
+        let doc = Document::parse("---\na=b: c\nlonger: d\nurl = x\n---\n");
+        assert_eq!(
+            doc.block_text(BlockIdx(0)),
+            "a=b:    c\nlonger: d\nurl = x\n",
+            "`url = x` is a YAML scalar, not a key"
+        );
+        assert_eq!(crate::search::search(&doc, "a=b", true).len(), 1);
+
+        let doc = Document::parse("+++\n\"x:y\" = 1\n'a=b' = 2\nlonger = 3\n+++\n");
+        assert_eq!(
+            doc.block_text(BlockIdx(0)),
+            "\"x:y\" =  1\n'a=b' =  2\nlonger = 3\n",
+            "a quoted TOML key keeps its `:` and `=`"
+        );
+    }
+
+    /// A tab in a key is measured as the columns it will EXPAND to, the way
+    /// the text holds it and the layout measures it.
+    #[test]
+    fn a_tab_inside_a_key_is_measured_expanded() {
+        let doc = Document::parse("---\na\tb: 1\ncc: 2\n---\n");
+        let cols = value_cols(&doc);
+        assert_eq!(cols.len(), 2, "{:?}", doc.text);
+        assert_eq!(cols[0], cols[1], "values align: {:?}", doc.text);
     }
 
     #[test]
