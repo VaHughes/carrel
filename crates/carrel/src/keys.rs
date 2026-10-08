@@ -465,6 +465,11 @@ impl Keys {
     /// `I` closes it the way it opened, and so do `q` and Esc — `q` used to
     /// fall through to the reader and quit the program from under the card,
     /// and Esc did nothing at all.
+    ///
+    /// It scrolls with the reader's own vocabulary — lines, half pages,
+    /// pages, top and bottom — since it has no filter to type into. `g` is
+    /// one press here, not the reader's `gg`: this map keeps no pending key,
+    /// and on a card there is nothing else for `g` to begin.
     #[must_use]
     pub fn map_info(key: KeyEvent) -> Option<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -472,6 +477,11 @@ impl Keys {
             KeyCode::Char('n' | 'j') if ctrl => Some(Action::Scroll(Span::Line, 1)),
             KeyCode::Char('p' | 'k') if ctrl => Some(Action::Scroll(Span::Line, -1)),
             KeyCode::Char('c') if ctrl => Some(Action::Quit),
+            KeyCode::Char('d') if ctrl => Some(Action::Scroll(Span::HalfPage, 1)),
+            KeyCode::Char('u') if ctrl => Some(Action::Scroll(Span::HalfPage, -1)),
+            KeyCode::Char('f') if ctrl => Some(Action::Scroll(Span::Page, 1)),
+            KeyCode::Char('g') | KeyCode::Home => Some(Action::GoToStart),
+            KeyCode::Char('G') | KeyCode::End => Some(Action::GoToEnd),
             KeyCode::Char('j') | KeyCode::Down => Some(Action::Scroll(Span::Line, 1)),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::Scroll(Span::Line, -1)),
             KeyCode::Char(' ') | KeyCode::PageDown => Some(Action::Scroll(Span::Page, 1)),
@@ -1060,6 +1070,39 @@ pub const HINT_INFO: &[Hint] = &[
     hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
     hint("esc", "close", Action::InfoToggle),
 ];
+// The three panes that once fell through to the reading hints as well. The
+// lightbox covers the whole screen and paints no footer, but `footer::of`
+// still answers for it, and the answer should be true.
+pub const HINT_NOTES: &[Hint] = &[
+    hint("↑/↓", "move", Action::NoteMove(1)),
+    hint("enter", "go", Action::NoteJump),
+    hint("e", "edit", Action::NoteEdit),
+    hint("esc", "close", Action::NotesToggle),
+];
+pub const HINT_NOTE_DRAFT: &[Hint] = &[
+    says("type", "the note"),
+    hint(
+        "enter",
+        "save",
+        Action::NoteInput(crate::action::NoteKey::Save),
+    ),
+    hint(
+        "esc",
+        "cancel",
+        Action::NoteInput(crate::action::NoteKey::Cancel),
+    ),
+];
+pub const HINT_LIGHTBOX: &[Hint] = &[
+    hint("→", "next image", Action::ImageStep(1)),
+    hint("esc", "close", Action::Dismiss),
+];
+// A click outside an open menu closes it, so a chip under one can only ever
+// close it: `esc close` is the one button that tells the truth. Moving and
+// choosing are said, not offered.
+pub const HINT_MENU: &[Hint] = &[
+    says("click", "a row"),
+    hint("esc", "close", Action::MenuClose),
+];
 pub const HINT_HELP: &[Hint] = &[
     says("type", "to filter"),
     hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
@@ -1584,6 +1627,7 @@ mod tests {
                 "o" => vec![k('o')],
                 "h" => vec![k('h')],
                 "d" => vec![k('d')],
+                "e" => vec![k('e')],
                 "i" => vec![k('i')],
                 "n/N" => vec![k('n')],
                 "zz" => vec![k('z'), k('z')],
@@ -1630,6 +1674,14 @@ mod tests {
             ("backlinks", HINT_BACKLINKS, pane(Keys::map_backlinks)),
             ("forward", HINT_FORWARD, pane(Keys::map_forward)),
             ("info", HINT_INFO, pane(Keys::map_info)),
+            ("notes", HINT_NOTES, pane(|e| Keys::map_notes(e, false))),
+            (
+                "note-draft",
+                HINT_NOTE_DRAFT,
+                pane(|e| Keys::map_notes(e, true)),
+            ),
+            ("lightbox", HINT_LIGHTBOX, pane(Keys::map_lightbox)),
+            ("menu", HINT_MENU, pane(Keys::map_menu)),
             ("home-browse", HINT_HOME_BROWSE, home(HomeMode::Normal)),
             ("home-filter", HINT_HOME_FILTER, home(HomeMode::Filter)),
             ("home-search", HINT_HOME_SEARCH, home(HomeMode::Search)),

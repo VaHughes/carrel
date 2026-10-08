@@ -31,6 +31,10 @@ pub fn of(app: &App) -> Footer {
     };
     // The pane that owns the screen owns the footer too: its chips are the
     // pane's own buttons, never a reader command the pane would refuse.
+    // **Exhaustive on purpose** — a new `Pane` fails to compile here until
+    // it is given hints, so it cannot inherit the reading row's `/ search`,
+    // `o outline` and `h help`, which the one-pane rule refuses under it.
+    // The notes pane, a menu and the lightbox did exactly that.
     match app.pane() {
         Some(Pane::Help) => return f('◎', "help", keys::HINT_HELP),
         Some(Pane::Settings) => return f('◎', "settings", keys::HINT_SETTINGS),
@@ -38,10 +42,20 @@ pub fn of(app: &App) -> Footer {
         Some(Pane::Backlinks) => return f('◎', "links here", keys::HINT_BACKLINKS),
         Some(Pane::Forward) => return f('◎', "links", keys::HINT_FORWARD),
         Some(Pane::Info) => return f('◎', "document", keys::HINT_INFO),
-        _ => {}
+        Some(Pane::Outline) => return f('◎', "outline", keys::HINT_OUTLINE),
+        Some(Pane::Search) => return f('◉', "searching", keys::HINT_SEARCH_TYPING),
+        Some(Pane::Picker) => return f('◎', "choose", keys::HINT_HOME_PICKER),
+        Some(Pane::Menu) => return f('◎', "menu", keys::HINT_MENU),
+        Some(Pane::Lightbox) => return f('◎', "image", keys::HINT_LIGHTBOX),
+        Some(Pane::Notes) if app.notes.draft.is_some() => {
+            return f('◉', "writing", keys::HINT_NOTE_DRAFT);
+        }
+        Some(Pane::Notes) => return f('◎', "notes", keys::HINT_NOTES),
+        None => {}
     }
     if let Screen::Home(h) = &app.screen {
         return match h.mode {
+            // Answered above, as the pane it is.
             HomeMode::Picker => f('◎', "choose", keys::HINT_HOME_PICKER),
             HomeMode::Filter => f('◉', "filter", keys::HINT_HOME_FILTER),
             HomeMode::Search => f('◉', "search", keys::HINT_HOME_SEARCH),
@@ -49,12 +63,6 @@ pub fn of(app: &App) -> Footer {
             HomeMode::Normal if app.first_run => f('●', "browse", keys::HINT_FIRST_RUN),
             HomeMode::Normal => f('●', "browse", keys::HINT_HOME_BROWSE),
         };
-    }
-    if app.outline.is_some() {
-        return f('◎', "outline", keys::HINT_OUTLINE);
-    }
-    if app.searching() {
-        return f('◉', "searching", keys::HINT_SEARCH_TYPING);
     }
     if app.selected_link.is_some() {
         return f('●', "link picked", keys::HINT_LINK);
@@ -220,50 +228,115 @@ mod tests {
         assert_eq!(of(&a).hints, keys::HINT_HOME_PICKER);
     }
 
+    /// Every face of every pane `App::pane` can answer, each with the state
+    /// that puts it up. **Exhaustive on purpose**: the `next` walk names
+    /// every `Pane`, so a new one fails to compile here until it is given a
+    /// way to open — and with it, a place in the footer guard below.
+    fn every_pane_face() -> Vec<(crate::app::Pane, &'static str, App)> {
+        use crate::app::Pane;
+        const fn next(p: Option<Pane>) -> Option<Pane> {
+            match p {
+                None => Some(Pane::Lightbox),
+                Some(Pane::Lightbox) => Some(Pane::Notes),
+                Some(Pane::Notes) => Some(Pane::Menu),
+                Some(Pane::Menu) => Some(Pane::Help),
+                Some(Pane::Help) => Some(Pane::Settings),
+                Some(Pane::Settings) => Some(Pane::Outline),
+                Some(Pane::Outline) => Some(Pane::Marks),
+                Some(Pane::Marks) => Some(Pane::Backlinks),
+                Some(Pane::Backlinks) => Some(Pane::Forward),
+                Some(Pane::Forward) => Some(Pane::Info),
+                Some(Pane::Info) => Some(Pane::Search),
+                Some(Pane::Search) => Some(Pane::Picker),
+                Some(Pane::Picker) => None,
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("one.md");
+        let src = "Some prose to annotate.\n\n# One\n\nSee [two](two.md).\n\n\
+                   ![alt](pic.png)\n\n## Two\n";
+        std::fs::write(&file, src).unwrap();
+        let reader = |steps: &[Action]| {
+            let mut a = App::new("one.md".into(), Document::parse(src), 60, 20);
+            a.file = Some(file.clone());
+            update(&mut a, Action::MarkToggle);
+            for &s in steps {
+                update(&mut a, s);
+            }
+            a
+        };
+        let home = |steps: &[Action]| {
+            let mut a = App::new_home(dir.path().into(), vec![], 60, 20);
+            for &s in steps {
+                update(&mut a, s);
+            }
+            a
+        };
+        let menu = Action::MenuOpen {
+            at: (2, 2),
+            byte: None,
+        };
+        let mut faces = Vec::new();
+        let mut at = next(None);
+        while let Some(p) = at {
+            let mut add = |face, a: App| faces.push((p, face, a));
+            match p {
+                Pane::Lightbox => add("lightbox", reader(&[Action::ImageOpen(None)])),
+                Pane::Notes => {
+                    add("notes list", reader(&[Action::NotesToggle]));
+                    add("note draft", reader(&[Action::NoteEdit]));
+                }
+                Pane::Menu => {
+                    add("menu", reader(&[menu]));
+                    add("home menu", home(&[menu]));
+                }
+                Pane::Help => {
+                    add("help", reader(&[Action::HelpToggle]));
+                    add("home help", home(&[Action::HelpToggle]));
+                }
+                Pane::Settings => {
+                    add("settings", reader(&[Action::SettingsToggle]));
+                    add("home settings", home(&[Action::SettingsToggle]));
+                }
+                Pane::Outline => add("outline", reader(&[Action::OutlineToggle])),
+                Pane::Marks => add("bookmarks", reader(&[Action::MarkListToggle])),
+                Pane::Backlinks => add("backlinks", reader(&[Action::BacklinksToggle])),
+                Pane::Forward => add("forward", reader(&[Action::ForwardToggle])),
+                Pane::Info => add("info", reader(&[Action::InfoToggle])),
+                Pane::Search => add("search", reader(&[Action::SearchOpen(Direction::Forward)])),
+                Pane::Picker => add("picker", home(&[Action::PickerOpen])),
+            }
+            at = next(at);
+        }
+        faces
+    }
+
     /// A footer chip is a button, and a button that does nothing is a lie
     /// (the honesty test's rule, from the pointer's side). With a pane up,
     /// `update` refuses every opener of another pane — so a chip offering
     /// one, which is what the reading hints (`/ search`, `o outline`,
     /// `h help`) are, would be dead. Each pane's footer must offer only
-    /// what that pane does.
+    /// what that pane does. Walks EVERY pane (`every_pane_face`), not a
+    /// list kept beside them: the list this used to keep skipped the notes
+    /// pane, the menu and the folder dialog, and the first two offered the
+    /// reading row's refused chips.
     #[test]
     fn no_footer_chip_offers_what_the_open_pane_refuses() {
-        use crate::app::{Opens, Pane};
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("one.md");
-        let src = "# One\n\nSee [two](two.md).\n\n## Two\n";
-        std::fs::write(&file, src).unwrap();
-        let fresh = || {
-            let mut a = App::new("one.md".into(), Document::parse(src), 60, 20);
-            a.file = Some(file.clone());
-            update(&mut a, Action::MarkToggle);
-            a
-        };
+        use crate::app::Opens;
         let mut checked = 0;
-        for open in [
-            Action::HelpToggle,
-            Action::SettingsToggle,
-            Action::OutlineToggle,
-            Action::MarkListToggle,
-            Action::BacklinksToggle,
-            Action::ForwardToggle,
-            Action::InfoToggle,
-            Action::SearchOpen(Direction::Forward),
-        ] {
-            let mut a = fresh();
-            update(&mut a, open);
-            let pane = a.pane().expect("the pane opened");
+        for (pane, face, a) in every_pane_face() {
+            assert_eq!(a.pane(), Some(pane), "{face} opened");
             for h in of(&a).hints {
                 let Some(click) = h.click else { continue };
                 assert!(
                     Pane::opened_by(click).is_none_or(|o| o == Opens::Pane(pane)),
-                    "{pane:?} is up, but its footer offers `{} {}`, which it refuses",
+                    "{face} is up, but its footer offers `{} {}`, which it refuses",
                     h.key,
                     h.label
                 );
                 checked += 1;
             }
         }
-        assert!(checked > 8, "the footers must be walked, got {checked}");
+        assert!(checked > 20, "the footers must be walked, got {checked}");
     }
 }

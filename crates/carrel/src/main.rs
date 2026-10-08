@@ -2502,8 +2502,10 @@ fn hover_action(m: MouseEvent, app: &App, targets: &Targets) -> Option<carrel::a
 fn open_menu_at(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
     // `App::pane`, not a list of its own: the list this used to keep had
     // no settings pane, no info card and no folder dialog, so a right-click
-    // opened a menu over all three.
-    if app.pane().is_some() {
+    // opened a menu over all three. The menu itself is the exception: a
+    // menu's own opener REPLACES it (`update` lets a pane's own opener
+    // through), which is how `menu_mouse` moves it to a right-click outside.
+    if app.pane().is_some_and(|p| p != Pane::Menu) {
         return None;
     }
     let byte = if app.is_home() {
@@ -3664,6 +3666,101 @@ mod tests {
             update(&mut a, open);
             assert!(a.pane().is_some(), "{open:?} opened something");
             assert_eq!(open_menu_at(right, &a), None, "over {:?}", a.pane());
+        }
+    }
+
+    /// The information card scrolls with the reader's whole vocabulary, not
+    /// just the arrows. Before the one-pane rule the reader's map handled
+    /// the card's keys, so `Ctrl-D` scrolled it and `g`/`G`/Home/End
+    /// reached the document under it; `map_info` then dropped all of them,
+    /// and `scroll_info` handled a half page that nothing could emit.
+    #[test]
+    fn the_info_card_takes_the_readers_scroll_keys_and_leaves_the_document() {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        let src = "# Heading\n\ntext\n".repeat(20);
+        // Short enough that the card's dozen rows overflow it.
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(&src), 28, 9);
+        update(&mut app, carrel::action::Action::InfoToggle);
+        assert_eq!(app.pane(), Some(Pane::Info));
+        let height = usize::from(app.info_size().1.saturating_sub(2));
+        let max = app.info_lines().len().saturating_sub(height);
+        assert!(
+            max > 4 && height >= 4,
+            "the card must scroll: {max} {height}"
+        );
+        let anchor = app.view.anchor;
+        let press = |app: &mut App, code, mods| {
+            let action = key_action(&mut Keys::new(), app, KeyEvent::new(code, mods))
+                .unwrap_or_else(|| panic!("{code:?} {mods:?} does nothing on the card"));
+            update(app, action);
+            app.info_scroll
+        };
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        assert_eq!(press(&mut app, KeyCode::End, none), max, "End");
+        assert_eq!(press(&mut app, KeyCode::Home, none), 0, "Home");
+        assert_eq!(press(&mut app, KeyCode::Char('G'), none), max, "G");
+        assert_eq!(press(&mut app, KeyCode::Char('g'), none), 0, "g");
+        assert_eq!(
+            press(&mut app, KeyCode::Char('d'), ctrl),
+            height / 2,
+            "Ctrl-D"
+        );
+        assert_eq!(press(&mut app, KeyCode::Char('u'), ctrl), 0, "Ctrl-U");
+        assert_eq!(
+            press(&mut app, KeyCode::Char('f'), ctrl),
+            height.min(max),
+            "Ctrl-F"
+        );
+        assert_eq!(press(&mut app, KeyCode::Char('b'), ctrl), 0, "Ctrl-B");
+        assert_eq!(app.pane(), Some(Pane::Info), "still up");
+        assert_eq!(app.view.anchor, anchor, "the document never moved");
+    }
+
+    /// The menu is the one pane a right-click may replace: right-clicking
+    /// outside an open menu moves it there. The one-pane rule made
+    /// `open_menu_at` refuse whenever ANY pane was up, and the menu counts,
+    /// so the arm in `menu_mouse` that promises this was dead in both loops.
+    #[test]
+    fn a_right_click_outside_an_open_menu_moves_it_in_both_loops() {
+        use carrel::action::Action;
+        for home in [false, true] {
+            let mut app = if home {
+                App::new_home("/docs".into(), vec![], 80, 24)
+            } else {
+                App::new(
+                    "t.md".into(),
+                    carrel_core::Document::parse("# Heading\n\ntext\n"),
+                    80,
+                    24,
+                )
+            };
+            update(
+                &mut app,
+                Action::MenuOpen {
+                    at: (2, 2),
+                    byte: None,
+                },
+            );
+            assert_eq!(app.pane(), Some(Pane::Menu));
+            let right = mouse(MouseEventKind::Down(MouseButton::Right), 60, 20);
+            let mut pointer = Pointer::default();
+            let got = if home {
+                home_mouse_action(right, &app, &Targets::new(), &mut pointer)
+            } else {
+                mouse_action(right, &app, &Targets::new(), &mut pointer)
+            };
+            assert!(
+                matches!(got, Some(Action::MenuOpen { at: (60, 20), .. })),
+                "home={home}: {got:?}"
+            );
+            // …and `update` lets it through: a pane's own opener replaces it.
+            update(&mut app, got.unwrap());
+            assert_eq!(
+                app.menu.as_ref().map(|m| m.at),
+                Some((60, 20)),
+                "home={home}"
+            );
         }
     }
 
