@@ -691,6 +691,9 @@ pub const READING_WPM: usize = 200;
 /// — brisk enough to feel like reading, gentle enough to stop mid-sentence.
 pub const AUTO_READ_MS: u64 = 300;
 
+/// Why a document cannot be left while a note on it is being written.
+const LEAVE_WITH_DRAFT: &str = "a note is being written — save it (Enter) or cancel it (Esc) first";
+
 /// Epoch seconds as `YYYY-MM-DD HH:MM`, no calendar library — Howard
 /// Hinnant's `civil_from_days` arithmetic, which every state timestamp here
 /// already implicitly assumes.
@@ -738,50 +741,81 @@ impl App {
     /// Painting and input use this same predicate, including wrapped settings.
     #[must_use]
     pub fn blocked_pane(&self) -> Option<(&'static str, Action)> {
-        let small = self.cols < 12 || self.rows < 3;
-        let pane = if self.lightbox.is_some() {
-            (self.cols < 12 || self.rows < 5, "image", Action::Dismiss)
+        let card = self.pane_card()?;
+        (!self.pane_fits(self.pane_rows())).then_some(card)
+    }
+
+    /// The open pane's name and closer, for the "needs room" card.
+    fn pane_card(&self) -> Option<(&'static str, Action)> {
+        Some(if self.lightbox.is_some() {
+            ("image", Action::Dismiss)
         } else if self.notes.draft.is_some() || self.notes.pane.is_some() {
-            (self.cols < 12 || self.rows < 5, "notes", Action::Dismiss)
+            ("notes", Action::Dismiss)
         } else if self.menu.is_some() {
-            (small, "menu", Action::MenuClose)
+            ("menu", Action::MenuClose)
         } else if self.help.is_some() {
-            (small, "help", Action::Dismiss)
-        } else if let Some(selected) = self.settings {
-            let rows = settings_rows(self);
-            let (w, h) = crate::layout::panel_size(self.cols, self.rows, 60, rows.len() as u16 + 3);
-            let inner = usize::from(h.saturating_sub(2)).saturating_sub(usize::from(h >= 10));
-            let fits = rows.get(selected).is_some_and(|row| {
-                crate::layout::setting_lines(row, w.saturating_sub(2)).len() <= inner
-            });
-            (
-                small || self.rows < 4 || !fits,
-                "settings",
-                Action::SettingsToggle,
-            )
+            ("help", Action::Dismiss)
+        } else if self.settings.is_some() {
+            ("settings", Action::SettingsToggle)
         } else if self.outline.is_some() {
-            (small, "outline", Action::OutlineToggle)
+            ("outline", Action::OutlineToggle)
         } else if self.mark_list.is_some() {
-            (small, "bookmarks", Action::MarkListToggle)
+            ("bookmarks", Action::MarkListToggle)
         } else if self.backlinks.is_some() {
-            (small, "links here", Action::BacklinksToggle)
+            ("links here", Action::BacklinksToggle)
         } else if self.forward.is_some() {
-            (small, "links", Action::ForwardToggle)
+            ("links", Action::ForwardToggle)
         } else if self.info {
-            (small, "document", Action::InfoToggle)
+            ("document", Action::InfoToggle)
         } else if self
             .home()
             .is_some_and(|h| h.mode == crate::home::HomeMode::Picker)
         {
-            (
-                self.cols < 12 || self.rows < 4,
-                "folder",
-                Action::PickerCancel,
-            )
+            ("folder", Action::PickerCancel)
         } else {
             return None;
-        };
-        pane.0.then_some((pane.1, pane.2))
+        })
+    }
+
+    /// Can the open pane show its choices in `room` rows? The lightbox, the
+    /// notes pane and a menu are measured against the whole frame, which
+    /// they cover; a card against the rows it is given.
+    #[must_use]
+    pub fn pane_fits(&self, room: u16) -> bool {
+        if self.cols < 12 {
+            return false;
+        }
+        if self.lightbox.is_some() || self.notes.draft.is_some() || self.notes.pane.is_some() {
+            return self.rows >= 5;
+        }
+        if self.menu.is_some() {
+            return self.rows >= 3;
+        }
+        if self.help.is_none()
+            && let Some(selected) = self.settings
+        {
+            let rows = settings_rows(self);
+            let (w, h) = crate::layout::panel_size(self.cols, room, 60, rows.len() as u16 + 3);
+            let inner = usize::from(h.saturating_sub(2)).saturating_sub(usize::from(h >= 10));
+            return room >= 4
+                && rows.get(selected).is_some_and(|row| {
+                    crate::layout::setting_lines(row, w.saturating_sub(2)).len() <= inner
+                });
+        }
+        let picker_only = self.help.is_none()
+            && self.outline.is_none()
+            && self.mark_list.is_none()
+            && self.backlinks.is_none()
+            && self.forward.is_none()
+            && !self.info;
+        if picker_only
+            && self
+                .home()
+                .is_some_and(|h| h.mode == crate::home::HomeMode::Picker)
+        {
+            return room >= 4;
+        }
+        room >= 3
     }
 
     /// Keep decoration out of scarce reading columns. A one-cell margin still
@@ -803,12 +837,38 @@ impl App {
         wanted && rows >= 8
     }
 
+    /// The rows above the status row and the footer. Those two rows hold
+    /// `≡` and the lamp, which stay live while a pane is up — a card drawn
+    /// through them hid both and left fragments of the status text either
+    /// side of its border.
+    #[must_use]
+    pub const fn pane_rows_of(rows: u16, hints: bool) -> u16 {
+        rows.saturating_sub(if Self::show_hints(rows, hints) { 2 } else { 1 })
+    }
+
+    /// The rows the open pane may cover: [`Self::pane_rows_of`] — unless
+    /// the pane cannot show its choices there, when it takes the whole
+    /// frame as it always did (a short window: help at three rows, a
+    /// wrapped setting at six). A card with no room for its own rows is
+    /// worth more than the chrome under it, and its `×` stays. Paint
+    /// ([`crate::render`]'s pane area) and [`Self::blocked_pane`] both ask
+    /// this, so they cannot disagree about where a pane is.
+    #[must_use]
+    pub fn pane_rows(&self) -> u16 {
+        let above = Self::pane_rows_of(self.rows, self.hints);
+        if self.pane_fits(above) {
+            above
+        } else {
+            self.rows
+        }
+    }
+
     /// Shared geometry for the information card's paint and scroll limit.
     #[must_use]
     pub fn info_size(&self) -> (u16, u16) {
         crate::layout::panel_size(
             self.cols,
-            self.rows,
+            self.pane_rows(),
             56,
             u16::try_from(self.info_rows().len())
                 .unwrap_or(u16::MAX)
@@ -1144,6 +1204,13 @@ impl App {
     /// incoming one — callers that reposition afterwards (history anchors,
     /// fragment jumps) run later and simply win.
     pub fn open_path(&mut self, path: &Path) -> std::io::Result<()> {
+        // A note being written is anchored in THIS text and exists nowhere
+        // else; leaving would drop it. Refused here, at the exit, rather
+        // than trusted to every caller (`close_document_panes`).
+        if self.notes.draft.is_some() {
+            self.note = Some(LEAVE_WITH_DRAFT.into());
+            return Err(std::io::Error::other(LEAVE_WITH_DRAFT));
+        }
         self.save_position();
         // Before the read, so a write that lands during it shows up as a
         // change on the reloader's first look rather than being missed.
@@ -1259,6 +1326,16 @@ impl App {
             self.desks.push(desk);
             self.desks.len() - 1
         }));
+    }
+
+    /// Would asking for the tags page read anything? The one predicate
+    /// [`request_tags`] refuses by and the menus offer `Tags` by.
+    #[must_use]
+    pub fn tags_readable(&self) -> bool {
+        let empty = self
+            .home()
+            .is_some_and(|h| h.entries.is_empty() && !h.scanning);
+        !empty && self.tags_root().is_some()
     }
 
     /// The folder a tags page is about: the file list's, when there is one
@@ -1717,8 +1794,12 @@ impl App {
         self.peek = None;
         self.lightbox = None;
         self.menu = None;
-        self.notes.pane = None;
-        self.notes.draft = None;
+        // NOT the draft: a note being written is never discarded, and both
+        // exits refuse to leave while there is one (`LEAVE_WITH_DRAFT`).
+        debug_assert!(self.notes.draft.is_none(), "left a document mid-note");
+        if self.notes.draft.is_none() {
+            self.notes.pane = None;
+        }
         if self.searching() {
             self.mode = Mode::Normal;
         }
@@ -3603,15 +3684,12 @@ fn withdraw_tags_request(app: &mut App, action: Action) {
 /// Ask for the folder's tags. No I/O here — the event loop reads the files
 /// on a thread and answers with [`Action::HomeOpenTags`].
 fn request_tags(app: &mut App, focus: Option<String>) -> Outcome {
-    if let Some(h) = app.home()
-        && h.entries.is_empty()
-        && !h.scanning
-    {
-        app.set_note("no documents here to read tags from".into());
-        return Outcome::Redraw;
-    }
-    if app.tags_root().is_none() {
-        app.set_note("there is no folder here to read tags from".into());
+    if !app.tags_readable() {
+        app.set_note(if app.tags_root().is_some() {
+            "no documents here to read tags from".into()
+        } else {
+            "there is no folder here to read tags from".into()
+        });
         return Outcome::Redraw;
     }
     app.tags = crate::tags::Request::Wanted;
@@ -3722,17 +3800,19 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     // below, because `H` reaching the hints THROUGH an open menu would be a
     // key acting on something the reader cannot see.
     if let Action::MenuOpen { at, byte } = action {
+        // `popup_setpos`: put the reader's own cursors where the pointer is
+        // BEFORE the menu opens, so `Copy code block` copies the block under
+        // the pointer and the status bar already names the link the menu is
+        // about. Neovim moves the text cursor for exactly this reason. And
+        // before the rows are chosen, so `Next code block` is offered by
+        // whether there is one after THIS block.
+        if let Some(b) = byte {
+            app.aim_at(b);
+        }
         let items = match byte {
             Some(b) => crate::menu::context(app, b),
             None => crate::menu::global(app),
         };
-        // `popup_setpos`: put the reader's own cursors where the pointer is
-        // BEFORE the menu opens, so `Copy code block` copies the block under
-        // the pointer and the status bar already names the link the menu is
-        // about. Neovim moves the text cursor for exactly this reason.
-        if let Some(b) = byte {
-            app.aim_at(b);
-        }
         app.menu = Some(crate::menu::Menu::new(items, at));
         return Outcome::Redraw;
     }
@@ -4220,9 +4300,14 @@ fn home_update(app: &mut App, action: Action) -> Outcome {
     let (_, list_h) = crate::home::list_geometry(app.cols, app.rows, app.hints, resume);
     let (cols, rows) = (app.cols, app.rows);
     let out = home_action(app, action);
+    let pane_rows = if app.rows == rows {
+        app.pane_rows()
+    } else {
+        rows
+    };
     if let Some(h) = app.home_mut() {
         h.clamp_scroll(usize::from(list_h));
-        h.clamp_picker_scroll(cols, rows);
+        h.clamp_picker_scroll(cols, pane_rows);
     }
     out
 }
@@ -5615,6 +5700,10 @@ fn go_to_root(app: &mut App, root: std::path::PathBuf) -> Outcome {
 }
 
 fn close_file(app: &mut App) -> Outcome {
+    if app.notes.draft.is_some() {
+        app.note = Some(LEAVE_WITH_DRAFT.into());
+        return Outcome::Redraw;
+    }
     app.save_position();
     let Some(h) = app.home_stash.take() else {
         return Outcome::Quit;
@@ -8274,6 +8363,31 @@ mod tests {
         assert!(!a.info);
     }
 
+    /// A `[^x]` in a code span is not a footnote, for every reader of
+    /// `footnote_refs`: the info card counts none, `%` says there are none,
+    /// and the context menu over the span offers no footnote row.
+    #[test]
+    fn a_footnote_mark_in_backticks_is_code_to_every_consumer() {
+        let src = "write `[^x]` for a footnote\n";
+        let mut a = App::new("f.md".into(), Document::parse(src), 60, 12);
+        let rows = a.info_rows();
+        let get = |k: &str| {
+            rows.iter()
+                .find(|(l, _)| *l == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(get("footnotes"), "0 refs · 0 notes");
+        let at = u32::try_from(a.doc.text.find("[^x]").unwrap()).unwrap();
+        let labels: Vec<_> = crate::menu::context(&a, at + 1)
+            .iter()
+            .map(|i| i.label)
+            .collect();
+        assert!(!labels.contains(&"Go to the footnote text"), "{labels:?}");
+        update(&mut a, Action::FootnoteJump);
+        assert_eq!(a.note.as_deref(), Some("no footnotes in this document"));
+    }
+
     #[test]
     fn a_piped_document_reports_itself_as_stdin_with_no_mtime() {
         let a = App::new(String::new(), Document::parse("hello world\n"), 40, 10);
@@ -9605,7 +9719,9 @@ diff --git a/x.rs b/x.rs
         let (probe, _dir) = modal_reader();
         let mut wrong = Vec::new();
         for (name, open) in reader_openers(&probe) {
-            let stays = matches!(name, "help" | "settings");
+            // A note being written refuses the exit instead, so it stays
+            // too — `a_note_being_written_is_never_left_behind`.
+            let stays = matches!(name, "help" | "settings") || open == Action::NoteEdit;
             let want: Vec<&str> = if stays { vec![name] } else { vec![] };
             for exit in ["close_file", "open_path"] {
                 let (mut a, dir) = modal_reader();
@@ -9614,7 +9730,11 @@ diff --git a/x.rs b/x.rs
                 a.home_stash = Some(Box::new(Home::new(dir.path().into(), Vec::new())));
                 update(&mut a, open);
                 assert_eq!(open_panes(&a), vec![name], "{open:?}");
-                if exit == "close_file" {
+                if open == Action::NoteEdit {
+                    // Covered by its own test; here only the pane list.
+                    let _ = close_file(&mut a);
+                    let _ = a.open_path(&other);
+                } else if exit == "close_file" {
                     close_file(&mut a);
                     assert!(a.is_home());
                 } else {
@@ -9626,6 +9746,46 @@ diff --git a/x.rs b/x.rs
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// **A note being written is never discarded by leaving its document.**
+    /// `close_document_panes` — the one list both exits use — set the
+    /// draft to `None`, contradicting the rule that only the draft's own
+    /// keys (save, or Esc on purpose) end it. No action reaches an exit
+    /// with a draft up today (the notes pane takes every action first), so
+    /// the exits refuse it themselves rather than trusting every future
+    /// caller: neither `close_file` nor `open_path` leaves, the draft and
+    /// the document are as they were, and the reader is told why.
+    #[test]
+    fn a_note_being_written_is_never_left_behind() {
+        for exit in ["close_file", "open_path"] {
+            let (mut a, dir) = modal_reader();
+            let other = dir.path().join("two.md");
+            std::fs::write(&other, "# Two\n\ntext\n").unwrap();
+            a.home_stash = Some(Box::new(Home::new(dir.path().into(), Vec::new())));
+            update(&mut a, Action::NoteEdit);
+            for c in "half a thought".chars() {
+                update(&mut a, Action::NoteInput(crate::action::NoteKey::Char(c)));
+            }
+            let text = a.doc.text.clone();
+            if exit == "close_file" {
+                assert_eq!(close_file(&mut a), Outcome::Redraw);
+                assert!(!a.is_home(), "{exit}: left the document");
+            } else {
+                assert!(a.open_path(&other).is_err(), "{exit}: opened another");
+            }
+            assert_eq!(a.doc.text, text, "{exit}: the document changed");
+            assert_eq!(
+                a.notes.draft.as_ref().map(|d| d.text.as_str()),
+                Some("half a thought"),
+                "{exit}: the draft was dropped"
+            );
+            assert!(
+                a.note.as_deref().is_some_and(|n| n.contains("note")),
+                "{exit}: nothing said why: {:?}",
+                a.note
+            );
+        }
     }
 
     /// The home screen's half of the matrix: the help sheet, settings, the

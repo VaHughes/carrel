@@ -729,6 +729,20 @@ pub const fn accel(a: Action) -> Option<&'static str> {
     })
 }
 
+/// Does an open menu take this printed key for itself? A single
+/// character pressed through [`Keys::map_menu`] — `q`, which closes the
+/// menu. A menu row must not print such a key (`menu::printable`).
+#[must_use]
+pub fn menu_takes(key: &str) -> bool {
+    let mut chars = key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => {
+            Keys::map_menu(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)).is_some()
+        }
+        _ => false,
+    }
+}
+
 /// The one key a menu prints from an [`accel`] row: the first.
 #[must_use]
 pub fn first(keys: &str) -> &str {
@@ -1004,6 +1018,25 @@ const fn says(key: &'static str, label: &'static str) -> Hint {
         label,
         click: None,
     }
+}
+
+/// The `↑` half of a `↑/↓` hint, whose `click` is the `↓` half.
+///
+/// A pane's border paints the two arrows as two buttons; this is what the
+/// up arrow does, and the honesty test presses `Up` through the real
+/// dispatcher to prove it. `None` for an action with no direction.
+#[must_use]
+pub const fn upward(a: Action) -> Option<Action> {
+    Some(match a {
+        Action::Scroll(span, n) => Action::Scroll(span, -n),
+        Action::NoteMove(n) => Action::NoteMove(-n),
+        Action::BacklinksMove(n) => Action::BacklinksMove(-n),
+        Action::ForwardMove(n) => Action::ForwardMove(-n),
+        Action::MarkListMove(n) => Action::MarkListMove(-n),
+        Action::HomeMove(n) => Action::HomeMove(-n),
+        Action::SettingsMove(n) => Action::SettingsMove(-n),
+        _ => return None,
+    })
 }
 
 pub const HINT_READING: &[Hint] = &[
@@ -1609,6 +1642,7 @@ mod tests {
     /// the state that advertises it, must produce an action from the REAL
     /// dispatcher. `("type", …)` entries are prose and skipped.
     #[test]
+    #[allow(clippy::too_many_lines)] // one table walk; the cases ARE the test
     fn every_footer_hint_key_acts_in_its_own_state() {
         // The keypress sequence exercising a hint; the LAST press must yield
         // Some(action). `zz` needs two presses — the first arms the prefix.
@@ -1716,6 +1750,17 @@ mod tests {
                     "{state}: clicking `{} {}` would do something its key does not",
                     h.key, h.label
                 );
+                // A pane border paints `↑/↓` as two buttons, the up one
+                // through `upward` — which must be what `Up` does.
+                if h.key == "↑/↓" {
+                    let up = dispatch(&[code(KeyCode::Up)]);
+                    assert!(up.is_some(), "{state}: `↑` is inert");
+                    assert_eq!(
+                        h.click.and_then(upward),
+                        up,
+                        "{state}: clicking `↑` would do something the key does not"
+                    );
+                }
                 checked += 1;
             }
         }

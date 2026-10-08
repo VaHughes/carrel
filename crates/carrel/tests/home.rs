@@ -725,6 +725,10 @@ fn clicking_a_picker_row_resolves_to_the_directory_painted_on_it() {
     // clips to it, so a row shows at most `w - 5` cells of the path itself. Two rows paint labels instead of
     // paths: the parent is `..`, and where you are carries `· here`.
     let entries = u16::try_from(home.picker_entries()).unwrap();
+    // The dialog lives above the status row and the footer.
+    let screen = rows;
+    let rows = app.pane_rows();
+    assert!(rows < screen, "the dialog keeps the chrome rows clear");
     let (_, _, box_w, _) = carrel::home::picker_geometry(cols, rows, entries);
     let budget = usize::from(box_w) - 5;
     let browsing = home.picker.browsing.clone();

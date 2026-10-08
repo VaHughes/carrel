@@ -463,7 +463,15 @@ fn paint_tiny_modal(frame: &mut Frame, app: &App, targets: &mut Targets) -> bool
     false
 }
 
-/// Compact panes use the whole window, keeping their title and a way out.
+/// Where a pane may be drawn: the frame above the status row and the
+/// footer ([`App::pane_rows`]), which keep `≡` and the lamp live while
+/// the pane is up. [`App::blocked_pane`] asks the same height.
+fn pane_area(frame: &Frame, app: &App) -> Rect {
+    let a = frame.area();
+    Rect::new(a.x, a.y, a.width, app.pane_rows().min(a.height))
+}
+
+/// Compact panes use the whole pane area, keeping their title and a way out.
 /// Large windows retain the existing centered cards.
 fn panel_rect(area: Rect, width: u16, height: u16) -> Rect {
     let (w, h) = crate::layout::panel_size(area.width, area.height, width, height);
@@ -473,6 +481,19 @@ fn panel_rect(area: Rect, width: u16, height: u16) -> Rect {
         w,
         h,
     )
+}
+
+/// A filtering pane's rectangle: placed where its UNFILTERED list would
+/// put it, sized by what survives the filter. So the title row — where the
+/// filter is typed — holds still while the matches change, as the home
+/// folder dialog's input does. Centred by the current match count, the
+/// outline's title jumped eight rows down the screen typing `inst`.
+fn panel_rect_top(area: Rect, width: u16, full: u16, height: u16) -> Rect {
+    let placed = panel_rect(area, width, full.max(height));
+    Rect {
+        height: panel_rect(area, width, height).height,
+        ..placed
+    }
 }
 
 fn panel_close(
@@ -532,7 +553,7 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(selected) = app.settings else {
         return;
     };
-    let area = frame.area();
+    let area = pane_area(frame, app);
     if area.width < 12 || area.height < 4 {
         small_panel(frame, targets, "settings", Action::SettingsToggle);
         return;
@@ -602,13 +623,7 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
             theme::dim(),
         );
     }
-    buf.set_stringn(
-        x,
-        y + h - 1,
-        "└ ↑ ↓ · ↵ change",
-        w as usize,
-        theme::status(),
-    );
+    paint_pane_foot(buf, targets, app, Rect::new(x, y, w, h), "");
 
     paint_setting_entries(
         buf,
@@ -617,13 +632,6 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
         &entries,
         selected,
     );
-    for (dx, label, action) in [
-        (2, "↑", Action::SettingsMove(-1)),
-        (4, "↓", Action::SettingsMove(1)),
-    ] {
-        buf.set_stringn(x + dx, y + h - 1, label, 1, theme::button());
-        targets.push(action, Zone::new(x + dx, y + h - 1, 1, 1), Z_OVERLAY);
-    }
 }
 
 fn paint_setting_entries(
@@ -744,7 +752,7 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(selected) = app.mark_list else {
         return;
     };
-    let area = frame.area();
+    let area = pane_area(frame, app);
     if area.width < 12 || area.height < 3 {
         small_panel(frame, targets, "bookmarks", Action::MarkListToggle);
         return;
@@ -779,12 +787,12 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::MarkListToggle);
 
-    buf.set_stringn(
-        x,
-        y + h - 1,
-        format!("└ {} bookmarks · ↵ go · esc close {bar}", app.marks.len()),
-        w as usize,
-        theme::status(),
+    paint_pane_foot(
+        buf,
+        targets,
+        app,
+        Rect::new(x, y, w, h),
+        &format!("{} bookmarks", app.marks.len()),
     );
 
     let entries: Vec<_> = app
@@ -818,7 +826,7 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
 /// should not have to learn two of them.
 fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(bl) = &app.backlinks else { return };
-    let area = frame.area();
+    let area = pane_area(frame, app);
     if area.width < 12 || area.height < 3 {
         small_panel(frame, targets, "links here", Action::BacklinksToggle);
         return;
@@ -853,12 +861,12 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::BacklinksToggle);
 
-    let foot = if bl.done {
-        format!("└ {} found · ↵ open · esc close {bar}", bl.rows.len())
+    let lead = if bl.done {
+        format!("{} found", bl.rows.len())
     } else {
-        format!("└ looking… {bar}")
+        "looking…".to_string()
     };
-    buf.set_stringn(x, y + h - 1, foot, w as usize, theme::status());
+    paint_pane_foot(buf, targets, app, Rect::new(x, y, w, h), &lead);
 
     if bl.rows.is_empty() {
         let msg = if bl.done {
@@ -894,7 +902,7 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
 /// pane's mirror — same overlay, same keys, the other direction.
 fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(pane) = &app.forward else { return };
-    let area = frame.area();
+    let area = pane_area(frame, app);
     if area.width < 12 || area.height < 3 {
         small_panel(frame, targets, "links", Action::ForwardToggle);
         return;
@@ -925,12 +933,12 @@ fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::ForwardToggle);
 
-    buf.set_stringn(
-        x,
-        y + h - 1,
-        format!("└ {} links · ↵ open · esc close {bar}", pane.rows.len()),
-        w as usize,
-        theme::status(),
+    paint_pane_foot(
+        buf,
+        targets,
+        app,
+        Rect::new(x, y, w, h),
+        &format!("{} links", pane.rows.len()),
     );
 
     if pane.rows.is_empty() {
@@ -973,7 +981,7 @@ fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
 /// fresh every frame. Scroll moves the card while it is visible.
 fn paint_info(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let lines = app.info_lines();
-    let area = frame.area();
+    let area = pane_area(frame, app);
     if area.width < 12 || area.height < 3 {
         small_panel(frame, targets, "document", Action::InfoToggle);
         return;
@@ -998,10 +1006,7 @@ fn paint_info(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::InfoToggle);
 
-    buf.set_stringn(x, y + h - 1, format!("└{bar}"), w as usize, theme::status());
-    if w >= 18 {
-        buf.set_stringn(x + w - 8, y + h - 1, "I close", 7, theme::status());
-    }
+    paint_pane_foot(buf, targets, app, Rect::new(x, y, w, h), "");
 
     let inner = usize::from(h.saturating_sub(2));
     let first = app.info_scroll.min(lines.len().saturating_sub(inner));
@@ -1014,31 +1019,12 @@ fn paint_info(frame: &mut Frame, app: &App, targets: &mut Targets) {
             theme::body(),
         );
     }
-    for (dx, label, action, visible) in [
-        (
-            1,
-            " ↑ ",
-            Action::Scroll(crate::action::Span::Line, -1),
-            first > 0,
-        ),
-        (
-            5,
-            " ↓ ",
-            Action::Scroll(crate::action::Span::Line, 1),
-            first + inner < lines.len(),
-        ),
-    ] {
-        if visible {
-            buf.set_stringn(x + dx, y + h - 1, label, 3, theme::button());
-            targets.push(action, Zone::new(x + dx, y + h - 1, 3, 1), Z_OVERLAY);
-        }
-    }
 }
 
 fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(picker) = &app.outline else { return };
     let matches = app.outline_matches();
-    let area = frame.area();
+    let area = pane_area(frame, app);
     if area.width < 12 || area.height < 3 {
         small_panel(frame, targets, "outline", Action::OutlineToggle);
         return;
@@ -1048,9 +1034,13 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
         y,
         width: w,
         height: h,
-    } = panel_rect(
+    } = panel_rect_top(
         area,
         52,
+        u16::try_from(app.headings().len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(3),
         u16::try_from(matches.len())
             .unwrap_or(u16::MAX)
             .saturating_add(2)
@@ -1077,13 +1067,7 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
     buf.set_stringn(x, y, title, w as usize, theme::status());
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::OutlineToggle);
 
-    buf.set_stringn(
-        x,
-        y + h - 1,
-        format!("└ type to filter · ↵ jump · esc close {bar}"),
-        w as usize,
-        theme::status(),
-    );
+    paint_pane_foot(buf, targets, app, Rect::new(x, y, w, h), "");
 
     let entries: Vec<_> = matches
         .iter()
@@ -1128,7 +1112,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     };
     let filter = app.help.as_ref().map_or("", |h| h.filter.as_str());
     let rows = crate::keys::help_matching(table, filter);
-    let area = frame.area();
+    let area = pane_area(frame, app);
     if area.width < 12 || area.height < 3 {
         small_panel(frame, targets, "help", Action::Dismiss);
         return;
@@ -1138,9 +1122,13 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
         y,
         width: w,
         height: h,
-    } = panel_rect(
+    } = panel_rect_top(
         area,
         52,
+        u16::try_from(table.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(3),
         u16::try_from(rows.len())
             .unwrap_or(u16::MAX)
             .saturating_add(2)
@@ -1162,13 +1150,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     buf.set_stringn(x, y, format!("{title} {bar}"), w as usize, theme::status());
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::Dismiss);
 
-    buf.set_stringn(
-        x,
-        y + h - 1,
-        format!("└ type to filter · ↑↓ scroll · esc close {bar}"),
-        w as usize,
-        theme::status(),
-    );
+    paint_pane_foot(buf, targets, app, Rect::new(x, y, w, h), "");
 
     let inner_h = usize::from(h - 2);
     // Each painted line with the table row it belongs to, when that row
@@ -1511,14 +1493,16 @@ fn paint_margin_outline(frame: &mut Frame, app: &App, area: Rect) {
         if *here {
             buf.set_stringn(crate::app::PAD_LEFT, y, "▸", 1, theme::lamp());
         }
-        let text = format!("{}{label}", "  ".repeat(indent));
-        buf.set_stringn(
-            crate::app::PAD_LEFT + 1,
-            y,
-            &text,
-            usize::from(g.saturating_sub(2)),
-            style,
+        // Cut with an ellipsis, never silently mid-word: the status row's
+        // own rule (`status::shorten`). Clipped by the cell budget alone,
+        // "Reading what an agent just wrote" read "Reading what an ag".
+        let room = g.saturating_sub(2);
+        let pad = "  ".repeat(indent);
+        let text = format!(
+            "{pad}{}",
+            crate::status::shorten(label, room.saturating_sub(display_width(&pad)))
         );
+        buf.set_stringn(crate::app::PAD_LEFT + 1, y, &text, usize::from(room), style);
     }
 }
 /// An empty document, said out loud.
@@ -2899,9 +2883,94 @@ fn lamp_z(app: &App) -> u8 {
     }
 }
 
+/// A pane's own hints, painted where a pane names its keys — its bottom
+/// border, the notes pane's title. Every hint that names a key is a button
+/// doing what the key does: the hints are the footer's own tables
+/// (`footer::of`), so the honesty test that presses each key through the
+/// real dispatcher covers these buttons too. `↑/↓` is two buttons, the up
+/// one through [`crate::keys::upward`]. Prose (`type to filter`) is plain.
+///
+/// The border used to say `I close` and `↵ jump` as text: it looked like a
+/// row of keys to click and none of it answered a click.
+pub(crate) fn paint_hint_run(
+    buf: &mut ratatui::buffer::Buffer,
+    targets: &mut Targets,
+    x: &mut u16,
+    y: u16,
+    right: u16,
+    hints: &[crate::keys::Hint],
+    z: u8,
+) {
+    for (i, h) in hints.iter().enumerate() {
+        if i > 0 {
+            put(buf, x, y, right, " · ", theme::status());
+        }
+        let Some(action) = h.click else {
+            put(buf, x, y, right, h.key, theme::status());
+            put(buf, x, y, right, " ", theme::status());
+            put(buf, x, y, right, h.label, theme::status());
+            continue;
+        };
+        if h.key == "↑/↓"
+            && let Some(up) = crate::keys::upward(action)
+        {
+            push_button(buf, targets, x, y, right, "↑", up, z);
+            put(buf, x, y, right, "/", theme::status());
+            push_button(buf, targets, x, y, right, "↓", action, z);
+            put(buf, x, y, right, " ", theme::status());
+            put(buf, x, y, right, h.label, theme::status());
+            continue;
+        }
+        let from = *x;
+        put(buf, x, y, right, h.key, theme::button_key());
+        put(buf, x, y, right, " ", theme::button());
+        put(buf, x, y, right, h.label, theme::button());
+        let w = x.saturating_sub(from).min(right.saturating_sub(from));
+        targets.push(action, Zone::new(from, y, w, 1), z);
+    }
+}
+
+/// A card's bottom border: `└ `, an optional count, then the pane's hints
+/// as buttons ([`paint_hint_run`]), on a rule the width of the card.
+fn paint_pane_foot(
+    buf: &mut ratatui::buffer::Buffer,
+    targets: &mut Targets,
+    app: &App,
+    card: Rect,
+    lead: &str,
+) {
+    let y = card.bottom().saturating_sub(1);
+    let w = usize::from(card.width);
+    buf.set_stringn(card.x, y, "─".repeat(w), w, theme::status());
+    let right = card.right();
+    let mut x = card.x;
+    put(buf, &mut x, y, right, "└ ", theme::status());
+    if !lead.is_empty() {
+        put(buf, &mut x, y, right, lead, theme::status());
+        put(buf, &mut x, y, right, " · ", theme::status());
+    }
+    paint_hint_run(
+        buf,
+        targets,
+        &mut x,
+        y,
+        right,
+        crate::footer::of(app).hints,
+        Z_OVERLAY,
+    );
+    put(buf, &mut x, y, right, " ", theme::status());
+}
+
 /// Advance-and-paint for the footer's segments: writes `s` at `*x`, clipped
 /// to the row, and moves `*x` past it.
-fn put(buf: &mut ratatui::buffer::Buffer, x: &mut u16, y: u16, right: u16, s: &str, style: Style) {
+pub(crate) fn put(
+    buf: &mut ratatui::buffer::Buffer,
+    x: &mut u16,
+    y: u16,
+    right: u16,
+    s: &str,
+    style: Style,
+) {
     if *x >= right {
         return;
     }
@@ -3212,7 +3281,7 @@ fn draw_home(frame: &mut Frame, app: &App, home: &Home, targets: &mut Targets) {
     }
 
     if home.mode == HomeMode::Picker {
-        paint_picker(frame, home, area, targets);
+        paint_picker(frame, home, pane_area(frame, app), targets);
     }
 }
 
@@ -3916,6 +3985,7 @@ mod tests {
     /// Walks `every_pane_face`, which is exhaustive over `Pane`: a new pane
     /// fails to compile there until it is put through this too.
     #[test]
+    #[allow(clippy::too_many_lines)] // one walk over every pane face
     fn with_any_pane_up_every_cell_is_the_panes_or_closes_it() {
         use crate::app::{Outcome, update};
         let faces = crate::footer::tests::every_pane_face;
@@ -3938,14 +4008,56 @@ mod tests {
             let mut t = Terminal::new(TestBackend::new(cols, rows)).unwrap();
             t.draw(|f| draw_full(f, &app, &mut painted, &mut HashMap::new()))
                 .unwrap();
+            let buf = t.backend().buffer().clone();
             let targets = &painted.targets;
+            // The pane's OWN rectangle, read off the paint — not "anything
+            // registered at the overlay layer", which a pane that wrongly
+            // absorbed the whole frame would satisfy everywhere. The
+            // lightbox, the notes pane and the "needs room" card do own the
+            // frame; the search prompt owns the status row it is typed in.
+            let footer = App::show_hints(rows, app.hints);
+            let status_y = rows.saturating_sub(1 + u16::from(footer));
+            let own =
+                if app.blocked_pane().is_some() || matches!(pane, Pane::Lightbox | Pane::Notes) {
+                    Some(Rect::new(0, 0, cols, rows))
+                } else if pane == Pane::Search {
+                    None
+                } else {
+                    super::pane_frame_tests::card_of(&app, &buf, &painted)
+                };
+            if own.is_none() && pane != Pane::Search {
+                problems.push(format!("{face}: no card painted"));
+                continue;
+            }
+            // Beside the pane, only the scrim and the chrome that stays
+            // live over it: `≡`, the lamp, and the pane's own footer chips.
+            let chips: Vec<Action> = crate::footer::of(&app)
+                .hints
+                .iter()
+                .filter_map(|h| h.click)
+                .collect();
             let mut bad = 0;
             for y in 0..rows {
                 for x in 0..cols {
                     let hit = targets.hit(x, y).map(|h| h.action);
-                    let mine = targets.covered_at(x, y, Z_OVERLAY);
-                    let ok =
-                        mine || matches!(hit, Some(Action::PaneClose | Action::MenuOpen { .. }));
+                    let ok = match own {
+                        Some(r) if r.contains(ratatui::layout::Position::new(x, y)) => {
+                            hit.is_some_and(|a| a != Action::PaneClose)
+                        }
+                        // The prompt's own cells, on the status row only.
+                        _ if pane == Pane::Search
+                            && y == status_y
+                            && hit == Some(Action::Absorb) =>
+                        {
+                            true
+                        }
+                        _ => match hit {
+                            Some(Action::PaneClose | Action::MenuOpen { .. }) => true,
+                            Some(Action::HintsToggle) => y >= status_y,
+                            Some(a) => y == rows - 1 && footer && chips.contains(&a),
+                            None => false,
+                        },
+                    };
                     if !ok && bad < 3 {
                         problems.push(format!("{face}: ({x},{y}) answers {hit:?}"));
                         bad += 1;
@@ -5340,5 +5452,346 @@ mod tests {
             cont.starts_with(' ') && !cont.trim().is_empty(),
             "wrapped value continues under the value column: {cont:?}"
         );
+    }
+}
+
+/// The panes' own frames: where they sit, and what their borders offer.
+#[cfg(test)]
+mod pane_frame_tests {
+    use super::*;
+    use crate::app::update;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+
+    fn paint(app: &App) -> (Buffer, Painted) {
+        let mut painted = Painted::default();
+        let mut t = Terminal::new(TestBackend::new(app.cols, app.rows)).unwrap();
+        t.draw(|f| draw_full(f, app, &mut painted, &mut HashMap::new()))
+            .unwrap();
+        (t.backend().buffer().clone(), painted)
+    }
+
+    fn row_text(buf: &Buffer, y: u16, from: u16, to: u16) -> Vec<(u16, String)> {
+        (from..to)
+            .map(|x| (x, buf[(x, y)].symbol().to_string()))
+            .collect()
+    }
+
+    /// The panes drawn as a card: a rectangle with a border, inside the
+    /// frame. The lightbox and the notes pane own the whole frame, the
+    /// menu is a popup with its own rule, and the search prompt IS the
+    /// status row.
+    pub(super) const fn is_card(p: Pane) -> bool {
+        !matches!(p, Pane::Lightbox | Pane::Notes | Pane::Menu | Pane::Search)
+    }
+
+    /// The card's rectangle, read off the PAINT rather than the targets —
+    /// so a pane that registered more than it drew cannot pass by
+    /// defining its own extent. Top and right edge from its `×`, bottom
+    /// and left edge from the `└` its foot starts with. The folder dialog
+    /// has no `└`; its geometry is `Home::picker_view`, the one derivation.
+    pub(super) fn card_of(app: &App, buf: &Buffer, painted: &Painted) -> Option<Rect> {
+        if let Some(h) = app
+            .home()
+            .filter(|h| h.mode == crate::home::HomeMode::Picker)
+        {
+            let ((x, y, w, hh), _, _) = h.picker_view(app.cols, app.pane_rows());
+            return Some(Rect::new(x, y, w, hh));
+        }
+        let close = painted
+            .targets
+            .as_slice()
+            .iter()
+            .filter(|t| t.zone.w == 3 && t.zone.h == 1 && t.z == Z_OVERLAY)
+            .find(|t| buf[(t.zone.x + 1, t.zone.y)].symbol() == "×")?;
+        let (top, right) = (close.zone.y, close.zone.x + 3);
+        let (left, bottom) = (top + 1..app.rows).find_map(|y| {
+            (0..right)
+                .find(|&x| buf[(x, y)].symbol() == "└")
+                .map(|x| (x, y))
+        })?;
+        Some(Rect::new(left, top, right - left, bottom - top + 1))
+    }
+
+    fn sizes() -> Vec<(u16, u16, bool)> {
+        let mut v = Vec::new();
+        for cols in [12, 20, 34, 40, 59, 60, 80, 100, 200] {
+            for rows in [3, 4, 5, 6, 7, 8, 9, 12, 14, 15, 16, 17, 18, 20, 24, 40] {
+                for hints in [true, false] {
+                    v.push((cols, rows, hints));
+                }
+            }
+        }
+        v
+    }
+
+    /// **A pane never covers the status row or the footer.** Those rows
+    /// carry `≡` and the lamp, which stay live while a pane is up. Help
+    /// at 80×24 used to put its bottom border ON the status row (leaving
+    /// `⌂ README.m└ type to filter … ───eme · q quit ≡`), and at 60×14 help
+    /// and the outline covered the whole screen, `≡` and lamp included.
+    ///
+    /// At every size where the pane is drawn, `≡` is painted and answers a
+    /// click with the menu, the lamp (when the footer shows) answers with
+    /// itself, and no pane surface reaches either row. Where the pane
+    /// cannot fit, the documented exception holds instead: the "needs
+    /// room" card owns the frame and offers its own way out.
+    #[test]
+    fn no_pane_covers_the_status_row_or_the_footer_at_any_size() {
+        let mut problems = Vec::new();
+        for (cols, rows, hints) in sizes() {
+            for (pane, face, mut app) in crate::footer::tests::every_pane_face() {
+                if !is_card(pane) {
+                    continue;
+                }
+                app.hints = hints;
+                app.on_resize(cols, rows);
+                let face = format!("{face} at {cols}x{rows} hints={hints}");
+                let (buf, painted) = paint(&app);
+                if let Some((name, _)) = app.blocked_pane() {
+                    let top: String = row_text(&buf, 0, 0, cols)
+                        .into_iter()
+                        .map(|(_, s)| s)
+                        .collect();
+                    if !top.starts_with(&name[..name.len().min(usize::from(cols))]) {
+                        problems.push(format!("{face}: blocked, but no card: {top:?}"));
+                    }
+                    continue;
+                }
+                let footer = App::show_hints(rows, hints);
+                let status_y = rows - 1 - u16::from(footer);
+                if app.pane_rows() == rows {
+                    // The documented exception: a pane that cannot show
+                    // its choices above the chrome takes the frame rather
+                    // than give them up — only ever in a short window.
+                    if status_y >= 6 {
+                        problems.push(format!("{face}: took the chrome rows"));
+                    }
+                    continue;
+                }
+                let launcher = (cols - 1, status_y);
+                if buf[launcher].symbol() != "≡" {
+                    problems.push(format!("{face}: no ≡ at {launcher:?}"));
+                }
+                match painted
+                    .targets
+                    .hit(launcher.0, launcher.1)
+                    .map(|h| h.action)
+                {
+                    Some(Action::MenuOpen { .. }) => {}
+                    other => problems.push(format!("{face}: ≡ answers {other:?}")),
+                }
+                if footer {
+                    match painted.targets.hit(0, rows - 1).map(|h| h.action) {
+                        Some(Action::HintsToggle) => {}
+                        other => problems.push(format!("{face}: the lamp answers {other:?}")),
+                    }
+                }
+                for t in painted.targets.as_slice() {
+                    if t.action == Action::Absorb
+                        && t.z >= Z_OVERLAY
+                        && t.zone.y + t.zone.h > status_y
+                    {
+                        problems.push(format!("{face}: the pane reaches row {status_y}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "{} problems:\n{}",
+            problems.len(),
+            problems[..problems.len().min(40)].join("\n")
+        );
+    }
+
+    /// **Every key a pane's frame names is a button that does what the key
+    /// does.** The info card's border said `I close` and a click on it did
+    /// nothing; the other borders said `↵ jump`, `esc close` and `↑↓
+    /// scroll` as text. Each key token on a card's top or bottom row (and
+    /// on the notes pane's title and foot) must be covered by a target,
+    /// and that target must be the action the pane's own hint table gives
+    /// that key — the table the honesty test presses through the real
+    /// dispatcher. A key painted with no button, or a button doing
+    /// something else, fails.
+    #[test]
+    fn every_key_named_on_a_pane_frame_is_a_button_for_it() {
+        let mut problems = Vec::new();
+        let mut checked = 0;
+        for (cols, rows) in [(60, 20), (80, 24), (100, 40), (40, 12), (34, 9)] {
+            for (pane, face, mut app) in crate::footer::tests::every_pane_face() {
+                if matches!(pane, Pane::Menu | Pane::Search | Pane::Lightbox) {
+                    continue;
+                }
+                app.on_resize(cols, rows);
+                let face = format!("{face} at {cols}x{rows}");
+                if app.blocked_pane().is_some() {
+                    continue;
+                }
+                let (buf, painted) = paint(&app);
+                // Key → the action its button must perform.
+                let mut want: HashMap<String, Action> = HashMap::new();
+                for h in crate::footer::of(&app).hints {
+                    let Some(a) = h.click else { continue };
+                    if h.key == "↑/↓" {
+                        want.insert("↑".into(), crate::keys::upward(a).unwrap());
+                        want.insert("↓".into(), a);
+                    } else {
+                        want.insert(h.key.into(), a);
+                    }
+                    if h.key == "enter" {
+                        want.insert("⏎".into(), a);
+                    }
+                }
+                let (area, lines) = if pane == Pane::Notes {
+                    let full = Rect::new(0, 0, cols, rows);
+                    let a = if cols >= 30 && rows >= 8 {
+                        Rect::new(2, 1, cols - 4, rows - 2)
+                    } else {
+                        full
+                    };
+                    // The draft's foot names `Ctrl-J`, which inserts a line.
+                    want.insert(
+                        "Ctrl-J".into(),
+                        Action::NoteInput(crate::action::NoteKey::Newline),
+                    );
+                    (a, vec![a.y, a.bottom() - 1])
+                } else {
+                    let Some(card) = card_of(&app, &buf, &painted) else {
+                        problems.push(format!("{face}: no card found"));
+                        continue;
+                    };
+                    (card, vec![card.y, card.bottom() - 1])
+                };
+                // Every way a key has been spelled on a frame, so an old
+                // spelling coming back without a button is caught too.
+                let keys: Vec<String> = want
+                    .keys()
+                    .cloned()
+                    .chain(
+                        ["↵", "I", "Esc", "Enter", "esc", "enter", "↑", "↓", "Ctrl-J"]
+                            .map(String::from),
+                    )
+                    .collect();
+                for y in lines {
+                    let cells = row_text(&buf, y, area.x, area.right());
+                    // Tokens: runs of cells between spaces, rules and dots.
+                    let mut tokens: Vec<(u16, String)> = Vec::new();
+                    let mut cur: Option<(u16, String)> = None;
+                    for (x, s) in cells {
+                        let sep = s == " " || s == "─" || s == "·" || s == "/" || s.is_empty();
+                        if sep {
+                            tokens.extend(cur.take());
+                        } else {
+                            cur.get_or_insert((x, String::new())).1.push_str(&s);
+                        }
+                    }
+                    tokens.extend(cur.take());
+                    for (x, tok) in tokens {
+                        let tok = tok.trim_matches(['[', ']', '└', '┌']).to_string();
+                        if !keys.contains(&tok) {
+                            continue;
+                        }
+                        checked += 1;
+                        let hit = painted.targets.hit(x, y).map(|h| h.action);
+                        let expected = want.get(&tok).copied();
+                        if expected.is_none() || hit != expected {
+                            problems.push(format!(
+                                "{face}: `{tok}` at ({x},{y}) answers {hit:?}, its key does {expected:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 50, "the frames must be walked, got {checked}");
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// **The margin outline never cuts a heading silently.** It clipped
+    /// at the gutter's cell budget, so "Reading what an agent just wrote"
+    /// read "Reading what an ag" at any width, while the popup outline
+    /// says `…`. Every margin row is the whole heading or ends in `…`.
+    #[test]
+    fn the_margin_outline_cuts_with_an_ellipsis() {
+        let src = "# Carrel\n\nbody\n\n## Reading what an agent just wrote\n\nbody\n\n\
+                   ### Diffs, and the pager that git starts for you\n\nbody\n";
+        let labels = [
+            "Carrel",
+            "Reading what an agent just wrote",
+            "Diffs, and the pager that git starts for you",
+        ];
+        let mut seen = 0;
+        for cols in [140, 160, 200] {
+            let mut app = App::new("t.md".into(), carrel_core::Document::parse(src), cols, 20);
+            app.outline_margin = true;
+            app.on_resize(cols, 20);
+            let g = app.gutter_w();
+            assert!(g > 0, "no gutter at {cols}");
+            let (buf, _) = paint(&app);
+            for y in 0..20 {
+                let row: String = (crate::app::PAD_LEFT + 1..crate::app::PAD_LEFT + g - 1)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect();
+                let row = row.trim();
+                let Some(first) = row.chars().next() else {
+                    continue;
+                };
+                if !labels.iter().any(|l| l.starts_with(first)) {
+                    continue;
+                }
+                seen += 1;
+                assert!(
+                    labels.contains(&row) || row.ends_with('…'),
+                    "{cols} columns: margin row {row:?} is cut without an ellipsis"
+                );
+            }
+        }
+        assert!(seen >= 6, "the margin rows must be read, saw {seen}");
+    }
+
+    /// **A filtering pane's input row holds still while its matches
+    /// change** — the home folder dialog's rule. The outline was centred
+    /// by its match count, so typing `inst` moved its title from row 2 to
+    /// row 10 under the reader's eyes.
+    #[test]
+    fn a_filtering_pane_keeps_its_title_row_while_matches_change() {
+        use std::fmt::Write as _;
+        let mut src = String::new();
+        for i in 0..30 {
+            let _ = write!(src, "# Heading {i}\n\nbody\n\n");
+        }
+        src.push_str("# Install\n\nbody\n");
+        for (cols, rows) in [(100, 40), (80, 24), (60, 20)] {
+            for opener in [Action::OutlineToggle, Action::HelpToggle] {
+                let mut app = App::new(
+                    "t.md".into(),
+                    carrel_core::Document::parse(&src),
+                    cols,
+                    rows,
+                );
+                update(&mut app, opener);
+                let title_y = |app: &App| {
+                    let (buf, painted) = paint(app);
+                    card_of(app, &buf, &painted).map(|c| c.y)
+                };
+                let before = title_y(&app);
+                assert!(before.is_some(), "{opener:?} at {cols}x{rows}: no card");
+                for c in "inst".chars() {
+                    let key = if opener == Action::OutlineToggle {
+                        Action::OutlineKey(crate::action::SearchKey::Char(c))
+                    } else {
+                        Action::HelpKey(crate::action::SearchKey::Char(c))
+                    };
+                    update(&mut app, key);
+                    assert_eq!(
+                        title_y(&app),
+                        before,
+                        "{opener:?} at {cols}x{rows}: the title moved typing {c:?}"
+                    );
+                }
+            }
+        }
     }
 }

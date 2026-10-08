@@ -625,7 +625,7 @@ fn the_library_dialog_registers_rows_buttons_and_close() {
     // The dialog's own chrome absorbs: the input row is inside the box and
     // on no row or button.
     let home = app.home().unwrap();
-    let ((bx, by, _, _), _, _) = home.picker_view(80, 24);
+    let ((bx, by, _, _), _, _) = home.picker_view(80, app.pane_rows());
     assert_eq!(
         painted.targets.hit(bx + 2, by + 1).map(|h| h.action),
         Some(Action::Absorb),
