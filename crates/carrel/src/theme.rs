@@ -1002,6 +1002,18 @@ pub fn lamp() -> Style {
     tinted(Style::default().fg(active().sel))
 }
 
+/// A margin mark cut into a bar: the bar's own style, reversed, so the cell
+/// is the bar's colour with the mark's glyph knocked out of it. This is how
+/// one margin cell carries two states — a bookmark dot on a changed block, a
+/// fold marker in a one-cell margin, the code cursor on a changed block —
+/// without either being lost. `REVERSED` rather than a palette colour for the
+/// same reason as [`selection`]: it reads in every palette and survives
+/// `NO_COLOR`, where a colour difference alone would vanish.
+#[must_use]
+pub fn bar_cut(bar: Style) -> Style {
+    bar.add_modifier(Modifier::REVERSED)
+}
+
 /// A footer button's face. The status bar's own surface, so a chip on the
 /// bottom row reads as a piece of the chrome lifted off the page rather than
 /// as a new colour — and so it costs no new slot in seventeen palettes. The

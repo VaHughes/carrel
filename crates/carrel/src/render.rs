@@ -1386,7 +1386,7 @@ fn block_area(app: &App, block: BlockIdx, full: Rect) -> Rect {
     Rect::new(x, full.y, w, full.height)
 }
 
-/// Margin marks: a bookmark dot, and the block cursor's bar.
+/// A block's margin marks, and a code block's copy chip.
 ///
 /// Decoration, never in the text — the standing rule the fold `▸` and the
 /// table `│` separators both follow.
@@ -1399,45 +1399,7 @@ fn paint_block_cursor(
     y: u16,
     targets: &mut Targets,
 ) {
-    // `PAD_LEFT` is 2, so there is always a screen column to the left of the
-    // text area to put the bar in — and a code block BLEEDS to the full
-    // width, meaning `area.x == full.x` for exactly the blocks this marks.
-    // Guarding on `area.x > full.x` drew nothing at all (caught in a pty,
-    // not by a frame test).
-    // A bookmarked block gets a dot on its first row; the focused code block
-    // gets a bar down its side. Both live in the margin `PAD_LEFT` leaves.
-    // No margin, no margin marks — but the copy chip sits on the block's own
-    // gap row and needs no margin at all. Returning here took the chip with
-    // it in any window too narrow to keep a side margin.
-    let margin = area.x > 0;
-    if margin
-        && skip == 0
-        && y < area.bottom()
-        && app.marks.contains(&app.doc.node_for_block(block).doc.start)
-    {
-        frame
-            .buffer_mut()
-            .set_stringn(area.x - 1, y, "▪", 1, crate::theme::lamp());
-    }
-    // A block the last reload changed or added gets a thin bar down its
-    // side, so "what did the agent just do to this file" is answered by
-    // looking. The bookmark dot, painted above, keeps the first row's cell.
-    if margin && app.changed.binary_search(&block).is_ok() && app.code_focus != Some(block) {
-        let rows_here = app
-            .layout
-            .content_height(&app.doc, block)
-            .saturating_sub(skip);
-        let marked = skip == 0 && app.marks.contains(&app.doc.node_for_block(block).doc.start);
-        for r in u16::from(marked)..u16::try_from(rows_here).unwrap_or(u16::MAX) {
-            let yy = y.saturating_add(r);
-            if yy >= area.bottom() {
-                break;
-            }
-            frame
-                .buffer_mut()
-                .set_stringn(area.x - 1, yy, "▎", 1, crate::theme::lamp());
-        }
-    }
+    paint_margin_marks(frame, app, block, area, skip, y, targets);
     if app.code_focus != Some(block) {
         // Every code block says it can be copied, not only the one the
         // block cursor is on: `y` is a key, and a reader who does not know
@@ -1469,22 +1431,10 @@ fn paint_block_cursor(
         }
         return;
     }
-    // `content_height`, not `height`: the trailing gap belongs to the block
-    // but is not part of it, and a bar running into the spacing row reads as
-    // if the block were three lines long when it is one.
     let rows_here = app
         .layout
         .content_height(&app.doc, block)
         .saturating_sub(skip);
-    for r in 0..u16::try_from(rows_here).unwrap_or(u16::MAX) {
-        let yy = y.saturating_add(r);
-        if yy >= area.bottom() || !margin {
-            break;
-        }
-        frame
-            .buffer_mut()
-            .set_stringn(area.x - 1, yy, "┃", 1, crate::theme::marker());
-    }
     // The copy chip: one button on the block's trailing gap row, which the
     // layout guarantees and nothing paints — decoration never covers text.
     // Same action as `y`, for the hand already on the pointer.
@@ -1504,6 +1454,122 @@ fn paint_block_cursor(
                 Z_CHROME,
             );
         }
+    }
+}
+
+/// The fold marker a block's first row wears, and the byte a click on it
+/// folds: `▸` on a folded heading, `▸`/`▾` on a `<details>` summary.
+fn fold_mark(app: &App, block: BlockIdx) -> Option<(&'static str, u32)> {
+    let node = app.doc.node_for_block(block);
+    // One summary per block is the shape that exists.
+    if let Some((i, region)) = app
+        .doc
+        .details
+        .iter()
+        .enumerate()
+        .find(|(_, r)| node.doc.contains(&r.summary.start))
+    {
+        let folded = app.folded_details.contains(&(i as u32));
+        return Some((if folded { "▸" } else { "▾" }, region.summary.start));
+    }
+    (matches!(node.kind, NodeKind::Heading { .. }) && app.folded.contains(&node.id))
+        .then_some(("▸", node.doc.start))
+}
+
+/// The marks in the margin left of a block, laid out together so that none
+/// of them costs another.
+///
+/// Four marks compete for at most two cells per row: the **state column**
+/// next to the text (`x - 1`) and the **fold column** beyond it (`x - 2`).
+///
+/// - A **bar** runs down the state column on every content row: the change
+///   bar `▎` (the last reload touched this block) or the code cursor `┃`.
+/// - A **point mark** sits on the first row: the bookmark dot `▪` in the
+///   state column, and the fold marker in the fold column.
+/// - Where a point mark and a bar need the same cell, the mark is cut into
+///   the bar ([`theme::bar_cut`]): the glyph says which mark, the reversed
+///   cell says the bar runs through it. The code cursor on a changed block
+///   is its `┃` cut the same way. Nothing is painted over anything else.
+/// - In a one-cell margin there is no fold column, so the fold marker moves
+///   into the state column — unless a bookmark needs that cell. The bookmark
+///   wins it because nothing else says a block is bookmarked, while the fold
+///   state still shows as the trailing `…` (or as the open body below a
+///   summary), and a click on the heading row folds just as the marker does.
+/// - With no margin at all nothing is painted: the fold marker used to land
+///   on the heading's first letter, and its target over the text.
+///
+/// A fold target is registered exactly where a fold marker is painted.
+fn paint_margin_marks(
+    frame: &mut Frame,
+    app: &App,
+    block: BlockIdx,
+    area: Rect,
+    skip: u32,
+    y: u16,
+    targets: &mut Targets,
+) {
+    let m = area.x;
+    if m == 0 || y >= area.bottom() {
+        return;
+    }
+    let state_x = m - 1;
+    let node = app.doc.node_for_block(block);
+    let first = skip == 0;
+    let changed = app.changed.binary_search(&block).is_ok();
+    let focused = app.code_focus == Some(block);
+    let bookmarked = first && app.marks.contains(&node.doc.start);
+    let fold = if first { fold_mark(app, block) } else { None };
+    // The bar this block's state column carries, and its style.
+    let bar = match (focused, changed) {
+        (true, true) => Some(("┃", theme::bar_cut(theme::lamp()))),
+        (true, false) => Some(("┃", theme::marker())),
+        (false, true) => Some(("▎", theme::lamp())),
+        (false, false) => None,
+    };
+    // The style a point mark takes when it lands on the bar's cell: cut into
+    // the change bar's colour when there is a change, else the cursor's.
+    let cut = |own: Style| match (changed, focused) {
+        (true, _) => theme::bar_cut(theme::lamp()),
+        (false, true) => theme::bar_cut(theme::marker()),
+        (false, false) => own,
+    };
+    // `content_height`, not `height`: the trailing gap belongs to the block
+    // but is not part of it, and a bar running into the spacing row reads as
+    // if the block were three lines long when it is one.
+    let rows_here = app
+        .layout
+        .content_height(&app.doc, block)
+        .saturating_sub(skip);
+    let buf = frame.buffer_mut();
+    if let Some((glyph, style)) = bar {
+        for r in 0..u16::try_from(rows_here).unwrap_or(u16::MAX) {
+            let yy = y.saturating_add(r);
+            if yy >= area.bottom() {
+                break;
+            }
+            buf.set_stringn(state_x, yy, glyph, 1, style);
+        }
+    }
+    // The fold marker's cell: its own column when there is one.
+    let fold_x = match fold {
+        Some(_) if m >= 2 => Some(m - 2),
+        Some(_) if !bookmarked => Some(state_x),
+        _ => None,
+    };
+    if bookmarked {
+        buf.set_stringn(state_x, y, "▪", 1, cut(theme::lamp()));
+    }
+    if let (Some((glyph, at)), Some(fx)) = (fold, fold_x) {
+        let style = if fx == state_x {
+            cut(theme::dim())
+        } else {
+            theme::dim()
+        };
+        buf.set_stringn(fx, y, glyph, 1, style);
+        // A folded heading's marker is the only way back into the section
+        // that LOOKS like one: the words it hides are not painted. (A click
+        // on the heading row folds too — the two must agree.)
+        targets.push(Action::FoldAt(at), Zone::new(fx, y, 1, 1), Z_CHROME);
     }
 }
 
@@ -1714,7 +1780,7 @@ fn paint_rows(
         // ellipsis. Decoration only — neither is in the text, so search and
         // selection never see them. A `<details>` summary wears the same.
         if skip == 0 && y > first_y {
-            paint_fold_markers(frame, app, block, area, first_y, &mut painted.targets);
+            paint_fold_ellipsis(frame, app, block, area, first_y);
         }
         // Spotlight (`S`): a block that does not hold the viewport's centre
         // row falls into shadow. Applied AFTER the block paints, over every
@@ -1738,30 +1804,13 @@ fn paint_rows(
     }
 }
 
-/// The fold-state markers on a heading or `<details>` summary row: `▸ …`
-/// when folded away, `▾` alone when open. Decoration only — none of it is
+/// The trailing `…` on a folded heading or `<details>` summary row. Its
+/// margin marker is [`paint_margin_marks`]'s. Decoration only — none of it is
 /// in the text, so search and selection never see any of it.
-fn paint_fold_markers(
-    frame: &mut Frame,
-    app: &App,
-    block: BlockIdx,
-    area: Rect,
-    first_y: u16,
-    targets: &mut Targets,
-) {
+fn paint_fold_ellipsis(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect, first_y: u16) {
     let node = app.doc.node_for_block(block);
     let buf = frame.buffer_mut();
     if matches!(node.kind, NodeKind::Heading { .. }) && app.folded.contains(&node.id) {
-        let mx = area.x.saturating_sub(2);
-        buf.set_stringn(mx, first_y, "▸", 1, theme::dim());
-        // A folded heading's marker is the only way back into the section by
-        // pointer: the words it hides are not painted, and the heading row
-        // itself is what folded them.
-        targets.push(
-            Action::FoldAt(node.doc.start),
-            Zone::new(mx, first_y, 1, 1),
-            Z_CHROME,
-        );
         let text = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
         let after = area
             .x
@@ -1776,16 +1825,7 @@ fn paint_fold_markers(
         if !node.doc.contains(&region.summary.start) {
             continue;
         }
-        let folded = app.folded_details.contains(&(i as u32));
-        let marker = if folded { "▸" } else { "▾" };
-        let mx = area.x.saturating_sub(2);
-        buf.set_stringn(mx, first_y, marker, 1, theme::dim());
-        targets.push(
-            Action::FoldAt(region.summary.start),
-            Zone::new(mx, first_y, 1, 1),
-            Z_CHROME,
-        );
-        if folded {
+        if app.folded_details.contains(&(i as u32)) {
             // The ellipsis trails the summary text itself, which may sit
             // after other stripped text in the same block.
             let before = &app.doc.text[node.doc.start as usize..region.summary.start as usize];
