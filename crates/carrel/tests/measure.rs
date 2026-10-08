@@ -1414,7 +1414,7 @@ fn a_wide_table_never_paints_over_the_margin_outline() {
     let src = format!(
         "# One\n\n## Two\n\n## Three\n\n| {} |\n|{}|\n| {} |\n",
         cells.join(" | "),
-        vec!["---"; 12].join("|"),
+        ["---"; 12].join("|"),
         cells.join(" | "),
     );
     for cols in [150, 160, 200, 240] {
