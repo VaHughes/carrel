@@ -10,6 +10,8 @@ URL:            https://github.com/VaHughes/carrel
 Source0:        %{url}/archive/v%{version}/carrel-%{version}.tar.gz
 BuildRequires:  cargo
 BuildRequires:  rust >= 1.95
+# The live-resize pty test run by the check section is driven by a Python script.
+BuildRequires:  python3
 
 %description
 Carrel is a free and open-source terminal markdown reader: search that

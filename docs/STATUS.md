@@ -4,37 +4,22 @@ Last updated: 2026-10-08
 
 ## Current state
 
-- **Latest release: v2026.9.23**, published to crates.io (both crates), GitHub
-  (six Unix targets and shell installer), the Homebrew tap, and Fedora COPR
-  (F43/F44, x86_64 and aarch64). COPR build 11025585 succeeded in all four
-  chroots, and each public repository's metadata contains the new binary package.
-  The release includes image lightbox, marginalia, word-level diffs, horizontal table
-  scrolling, the beginner slate, library browsing and filterable help.
-- A fresh **unlocked `cargo install carrel --version 2026.9.23` succeeds**, confirming
-  the exact `merman` sibling pins fix registry installs. The rendered crate README's
-  links and images all resolve.
+- **Latest release: v2026.10.8** (2026-10-08), published to crates.io (both crates),
+  GitHub (six Unix targets and shell installer), the Homebrew tap, and Fedora COPR
+  (build 11094487, F43/F44, x86_64 and aarch64). It carries everything built since
+  2026.9.23: small-terminal layouts, hyphenation and the tags page, the 25-item
+  reader-beside-an-agent slate, and the known-defects work below — including the fix
+  for a crash on closing the terminal that was in every release since 2026.9.1.
+- Release verification (2026-10-08): all public artifact checksums match; an unlocked
+  `cargo install carrel --version 2026.10.8` builds; every link on the rendered crate
+  page resolves; the shell installer succeeds under a scratch home without touching the
+  real shell files; the musl archive passes `check-packaging.sh` and its binary enters
+  and leaves the alternate screen and exits cleanly, with no core dump, when its tmux
+  server is killed; `carrel-bin` builds with `makepkg -f` (eight files); `.SRCINFO`
+  regenerates identically; the Homebrew formula's four sums match the release's.
 - All five local gates passed on 2026-10-08: **1,173 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
-- Release verification: all public artifact checksums match; the shell installer
-  succeeds under a scratch home without changing real shell files; the musl archive
-  passes packaging checks and runs; the refreshed Arch binary recipe builds.
-- **Small-terminal improvements are complete and unreleased** (`06327b3`,
-  `1baa4c7`, `89e8847`): adaptive layouts, compact settings and pane wheels, visible
-  search feedback, distinguishable navigation entries, hidden-action guards, and
-  live resize coverage for both event loops. All four follow-up items are complete.
-- **Hyphenation and tags are complete and unreleased** (2026-09-30) — the last two open
-  feature lines on the README roadmap.
-- **The reader-beside-an-agent slate is complete and unreleased** (2026-09-30):
-  twenty-five additions for someone reading what an agent writes — see the first
-  entry under *Recently completed*. Reviewed by three independent agents before
-  pushing.
-- **The known-defects list is cleared and unreleased** (2026-10-08), with what three
-  rounds of independent review found around it — two of them serious and already
-  shipped: closing a terminal crashed carrel (every release since 2026.9.1), and piped
-  input showed an empty page (`main` since 2026-09-30, never released). Together with
-  the three items above, this is what the next release carries; **the crash fix is
-  reason enough to release soon.**
 - **Decisions made 2026-10-08:** a click outside an open pane closes it and does nothing
   else, the status-row chips included; `≡` always works, replacing whatever pane is up;
   a key that opens a pane replaces one that takes no typed text; a note's trailing
@@ -50,7 +35,7 @@ Last updated: 2026-10-08
 
 ## Recently completed
 
-- Unreleased (2026-10-08) — **the known-defects list, cleared, and what three rounds
+- 2026.10.8 (implemented 2026-10-08) — **the known-defects list, cleared, and what three rounds
   of review found around it.** Fixed:
   - *Crash on close (since 2026.9.1):* closing a terminal aborted carrel with a core dump —
     `ratatui::restore` reports failure with `eprintln!`, which panics on the dead
@@ -77,7 +62,7 @@ Last updated: 2026-10-08
     giving way and word cuts; margin marks sharing cells (`theme::bar_cut`); menus offer
     only rows that can act; a note draft is never dropped by leaving; footnote marks in
     code spans.
-- Unreleased (2026-09-30) — **for the reader beside an agent: 25 additions**.
+- 2026.10.8 (implemented 2026-09-30) — **for the reader beside an agent: 25 additions**.
   *Arriving:* `carrel --latest`, `FILE:42` / `FILE#heading`, "did you mean" for a
   mistyped option or file. *Seeing what changed:* a reload marks changed blocks
   (`c` steps through them), a status chip when another document is written, a
@@ -91,7 +76,7 @@ Last updated: 2026-10-08
   opens. *Also:* tags on the frontmatter card are buttons and `#` works inside a
   document, help rows run what they describe, collapsed sections are remembered
   per document. New pure modules `cli.rs`, `status.rs`, `peek.rs` (rule-6 listed).
-- Unreleased (2026-09-30) — **defects that slate turned up**. Four older ones found
+- 2026.10.8 (implemented 2026-09-30) — **defects that slate turned up**. Four older ones found
   while building it: `#L42` and a search hit's line meant visual row 42, not line
   42 of the file; `[[wikilinks]]` never resolved for a document named on the
   command line; four help descriptions lost their last letter; and a click's
@@ -120,7 +105,7 @@ Last updated: 2026-10-08
   the sibling watch walks the document's folder tree (it rests 25× as long as a
   walk takes, so a large tree is checked rarely rather than expensively).
 
-- Unreleased (2026-09-30) — **hyphenation at narrow measures**. Below 70 cells of
+- 2026.10.8 (implemented 2026-09-30) — **hyphenation at narrow measures**. Below 70 cells of
   text, a long word that misses a row end is divided by TeX's American English
   patterns (`carrel-core/src/hyphen/`, no dependency; identical to an independent
   implementation over 48k words). The hyphen is a flag on the row and a painted dim
@@ -128,12 +113,12 @@ Last updated: 2026-10-08
   English only, decided per document (`lang:` in frontmatter, else a function-word
   test calibrated against thirteen other languages); `hyphenate = false` or the
   settings pane turns it off. +12% on the height pass at 40 columns, nothing at 80.
-- Unreleased (2026-09-30) — **tags**. `#` on the home screen reads every document's
+- 2026.10.8 (implemented 2026-09-30) — **tags**. `#` on the home screen reads every document's
   frontmatter tags on a background thread and opens them as a generated page: a
   section per tag, a link per document, collapsed into a tag list when long. It is
   kept as a desk, so `Backspace` from a document opened there returns to the page as
   it was left. No index on disk.
-- Unreleased (2026-09-30) — **three older defects, found by the tests written for the
+- 2026.10.8 (implemented 2026-09-30) — **three older defects, found by the tests written for the
   above and by an independent review of the diff**. (1) Every opener but the first
   built a plain layout of its own — wrong math heights and the columns table mode
   reset until the next resize; all four now end in `relayout()`. (2) Link
@@ -144,7 +129,7 @@ Last updated: 2026-10-08
   screens inspected for hyphenation at 30–40 columns and for the tags page (expand,
   open, back) on a 1,834-document tree.
 
-- Unreleased follow-up (2026-09-29) — **search tails, navigation, and resize safety**.
+- 2026.10.8 follow-up (implemented 2026-09-29) — **search tails, navigation, and resize safety**.
   Reader and home searches reserve room for counts and keep the query tail visible.
   Selected outline/bookmark/link entries wrap; clipped paths retain their suffix,
   with grapheme-safe elision. A shared feasibility guard prevents hidden choices,
@@ -157,7 +142,7 @@ Last updated: 2026-10-08
   selection copying, note persistence, and terminal restoration tested through both
   direct-open and home-screen event loops. Python 3 is required for the resize driver.
 
-- Unreleased follow-up (2026-09-29) — **complete settings entries and pane wheels**.
+- 2026.10.8 follow-up (implemented 2026-09-29) — **complete settings entries and pane wheels**.
   Long labels and values wrap instead of colliding; the selected entry fits as a
   whole, with navigation buttons and a compact footer. In short panes the config
   path gives way to entries. Wheel events use the keyboard's existing arrow
@@ -166,7 +151,7 @@ Last updated: 2026-10-08
   Verification: 858 tests and all five gates passed, along with all-target checks;
   debug binary rebuilt and settings inspected in real 24×6 and 12×6 PTYs.
 
-- Unreleased (2026-09-29) — **small-terminal layouts**. Reading margins and chrome
+- 2026.10.8 (implemented 2026-09-29) — **small-terminal layouts**. Reading margins and chrome
   adapt without overwriting preferences (40×6 now has five reading rows instead of
   one); the menu launcher remains visible. Compact panes use the window, help wraps,
   settings selections stay visible, information cards wrap and scroll, and close

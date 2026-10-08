@@ -1500,6 +1500,17 @@ fn the_home_icon_leaves_the_reader_for_the_file_list() {
 
 #[test]
 fn live_resize_preserves_search_selection_notes_and_menu_input() {
+    // The resize driver is Python. A packaging build root may not have it —
+    // COPR's did not, and the 2026.10.8 build failed `%check` on this test
+    // alone — so skip loudly, like the `script` tests do, rather than fail.
+    if !Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("SKIP: python3 not available — live resize pty smoke not run");
+        return;
+    }
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/resize_pty.py");
     for mode in ["--reader", "--home"] {
         let scratch = tempfile::tempdir().unwrap();
