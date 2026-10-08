@@ -27,6 +27,25 @@ use ratatui_image::protocol::StatefulProtocol;
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 
+/// `eprintln!`, minus the panic.
+///
+/// `eprintln!` panics when stderr cannot be written — and the one time carrel
+/// has something to say after the TUI is the time the terminal may have just
+/// gone away. Release builds abort on panic, so a message nobody could read
+/// became a core dump. There is no one to tell that the telling failed.
+macro_rules! say {
+    ($($t:tt)*) => {{
+        let _ = writeln!(std::io::stderr(), $($t)*);
+    }};
+}
+
+/// [`say!`] without the newline: `eprint!`, minus the panic.
+macro_rules! say_bare {
+    ($($t:tt)*) => {{
+        let _ = write!(std::io::stderr(), $($t)*);
+    }};
+}
+
 const USAGE: &str = "\
 carrel — a quiet place to read your markdown
 
@@ -218,8 +237,8 @@ fn main() -> ExitCode {
         None => args.len(),
     };
     if let Some(complaint) = flag_complaint(&args[..operands_from]) {
-        eprintln!("carrel: {complaint}");
-        eprint!("{USAGE}");
+        say!("carrel: {complaint}");
+        say_bare!("{USAGE}");
         return ExitCode::FAILURE;
     }
     // Everything after a leading `--` is a name, whatever it looks like:
@@ -230,7 +249,7 @@ fn main() -> ExitCode {
             [file] => open(file, None),
             [file, pattern] => open(file, Some(pattern)),
             _ => {
-                eprint!("{USAGE}");
+                say_bare!("{USAGE}");
                 ExitCode::FAILURE
             }
         };
@@ -250,7 +269,7 @@ fn main() -> ExitCode {
                 match run_welcome() {
                     Ok(_) => ExitCode::SUCCESS,
                     Err(e) => {
-                        eprintln!("carrel: {e}");
+                        say!("carrel: {e}");
                         ExitCode::FAILURE
                     }
                 }
@@ -293,7 +312,7 @@ fn main() -> ExitCode {
         [file] => open(file, None),
         [file, pattern] => open(file, Some(pattern)),
         _ => {
-            eprint!("{USAGE}");
+            say_bare!("{USAGE}");
             ExitCode::FAILURE
         }
     }
@@ -306,7 +325,7 @@ fn main() -> ExitCode {
 /// wrong output and exited 0, with nothing to notice.
 fn width_arg(w: &str) -> Result<u16, ExitCode> {
     w.parse::<u16>().map_err(|_| {
-        eprintln!("carrel: {w:?} is not a width — expected a column count like 72");
+        say!("carrel: {w:?} is not a width — expected a column count like 72");
         ExitCode::FAILURE
     })
 }
@@ -369,7 +388,7 @@ fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
             emit(&carrel::ansi::render(&doc, width))
         }
         Err(e) => {
-            eprintln!("carrel: {e}");
+            say!("carrel: {e}");
             ExitCode::FAILURE
         }
     }
@@ -383,13 +402,13 @@ fn print_tasks(path: &Path) -> ExitCode {
             let doc = carrel_core::Document::parse(&src);
             let report = carrel::plain::task_report(&doc);
             if report.is_empty() {
-                eprintln!("carrel: no task lists in {}", path.display());
+                say!("carrel: no task lists in {}", path.display());
                 return ExitCode::FAILURE;
             }
             emit(&report)
         }
         Err(e) => {
-            eprintln!("carrel: cannot read {}: {e}", path.display());
+            say!("carrel: cannot read {}: {e}", path.display());
             ExitCode::FAILURE
         }
     }
@@ -417,7 +436,7 @@ fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
     if std::io::stdin().is_terminal() {
         debug_assert!(forced);
         let _ = forced;
-        eprintln!("carrel: stdin is a terminal; pipe a document in or pass a file");
+        say!("carrel: stdin is a terminal; pipe a document in or pass a file");
         return ExitCode::FAILURE;
     }
     // A pattern means the non-interactive report, exactly as it does for
@@ -433,7 +452,7 @@ fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
                 if found { code } else { ExitCode::FAILURE }
             }
             Err(e) => {
-                eprintln!("carrel: {e}");
+                say!("carrel: {e}");
                 ExitCode::FAILURE
             }
         };
@@ -737,7 +756,7 @@ fn print_plain_stdin(width: u16) -> ExitCode {
             emit(&carrel::plain::render(&doc, width))
         }
         Err(e) => {
-            eprintln!("carrel: {e}");
+            say!("carrel: {e}");
             ExitCode::FAILURE
         }
     }
@@ -779,7 +798,7 @@ fn open_latest(explicit: Option<&Path>) -> ExitCode {
     if let Some(dir) = explicit
         && !dir.is_dir()
     {
-        eprintln!("carrel: {} is not a folder", dir.display());
+        say!("carrel: {} is not a folder", dir.display());
         return ExitCode::FAILURE;
     }
     // Here, or the folder named — never the folder saved for the file
@@ -790,7 +809,7 @@ fn open_latest(explicit: Option<&Path>) -> ExitCode {
     let root = explicit.map_or_else(|| cwd.clone(), |p| cwd.join(p));
     let (entries, _) = scan::walk_blocking(&root);
     let Some(newest) = carrel::cli::latest(&entries) else {
-        eprintln!("carrel: no markdown documents under {}", root.display());
+        say!("carrel: no markdown documents under {}", root.display());
         return ExitCode::FAILURE;
     };
     // As a path, never through a string: a name that is not UTF-8 is still
@@ -818,7 +837,7 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
     match run_home(root, note) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("carrel: {e}");
+            say!("carrel: {e}");
             ExitCode::FAILURE
         }
     }
@@ -838,14 +857,14 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
     let src = match carrel::app::read_document(path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("{}", carrel::app::explain_open_error(path, &e));
+            say!("{}", carrel::app::explain_open_error(path, &e));
             // A name one slip away from a file that is there. Said, never
             // acted on: opening a different file than the one named would
             // be carrel deciding what you meant.
             if e.kind() == std::io::ErrorKind::NotFound
                 && let Some(near) = carrel::cli::suggest_file(path)
             {
-                eprintln!("carrel: did you mean {}?", near.display());
+                say!("carrel: did you mean {}?", near.display());
             }
             return ExitCode::FAILURE;
         }
@@ -878,7 +897,7 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
         // explicit root, so browsing here never overwrites the saved one.
         Ok(Some(root)) => open_home(Some(&root)),
         Err(e) => {
-            eprintln!("carrel: {e}");
+            say!("carrel: {e}");
             ExitCode::FAILURE
         }
     }
@@ -3240,7 +3259,7 @@ fn emit(s: &str) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("carrel: {e}");
+            say!("carrel: {e}");
             ExitCode::FAILURE
         }
     }
@@ -3253,7 +3272,7 @@ fn print_plain(path: &Path, width: u16) -> ExitCode {
             emit(&carrel::plain::render(&doc, width))
         }
         Err(e) => {
-            eprintln!("carrel: {}: {e}", path.display());
+            say!("carrel: {}: {e}", path.display());
             ExitCode::FAILURE
         }
     }
