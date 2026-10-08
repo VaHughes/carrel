@@ -1255,120 +1255,6 @@ fn paint_math(
     )
 }
 
-/// Paint a frontmatter block as a card, returning the next free row.
-///
-/// The `╭ │ ╰` rule is DECORATION and is not in the text — the same standing
-/// the table `│` separators have. It sits in the two-cell gutter the node's
-/// `indent` already reserved at parse, so values wrap inside the card rather
-/// than under the rule.
-#[allow(clippy::too_many_arguments)]
-fn paint_metadata_card(
-    frame: &mut Frame,
-    app: &App,
-    area: Rect,
-    block: BlockIdx,
-    key_col: u16,
-    skip: u32,
-    mut y: u16,
-    targets: &mut Targets,
-) -> u16 {
-    let node = app.doc.node_for_block(block);
-    let body = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
-    let text_lines: Vec<&str> = body.lines().collect();
-    // Each tag is a button: the tags page, open at that tag. Where a tag is
-    // depends on how this line was painted, so its zone is recorded here.
-    let tag_spans = crate::tags::spans(body);
-    let last = text_lines.len().saturating_sub(1);
-    let avail = usize::from(area.width.saturating_sub(node.indent));
-    let text_x = area.x + node.indent;
-
-    for (i, line) in text_lines
-        .iter()
-        .enumerate()
-        .skip(usize::try_from(skip).unwrap_or(usize::MAX))
-    {
-        if y >= area.bottom() {
-            break;
-        }
-        let rule = if i == 0 {
-            '╭'
-        } else if i == last {
-            '╰'
-        } else {
-            '│'
-        };
-        let buf = frame.buffer_mut();
-        buf.set_stringn(area.x, y, rule.to_string(), 1, crate::theme::dim());
-        // `lines()` borrows from `body`, so this is the line's own offset.
-        let line_at = line.as_ptr() as usize - body.as_ptr() as usize;
-        // Where byte `o` of this line was painted, by the same two layouts
-        // the match below uses.
-        let key_line = (!line.starts_with([' ', '\t', '#', '-']))
-            .then(|| line.find(':').or_else(|| line.find('=')))
-            .flatten();
-        let cell_of = |o: usize| -> Option<u16> {
-            match key_line {
-                Some(sep) => {
-                    let key_w = display_width(line[..sep].trim_end());
-                    let val_x = text_x
-                        .saturating_add(key_w)
-                        .saturating_add(key_col.saturating_sub(key_w) + 1);
-                    let raw = &line[sep + 1..];
-                    let lead = sep + 1 + (raw.len() - raw.trim_start().len());
-                    (o >= lead).then(|| val_x.saturating_add(display_width(&line[lead..o])))
-                }
-                None => Some(text_x.saturating_add(display_width(&line[..o]))),
-            }
-        };
-        for (range, _) in tag_spans
-            .iter()
-            .filter(|(r, _)| r.start >= line_at && r.end <= line_at + line.len())
-        {
-            let (from, to) = (range.start - line_at, range.end - line_at);
-            let Some(x) = cell_of(from) else { continue };
-            let w = display_width(&line[from..to]).min(area.right().saturating_sub(x));
-            if x < area.right() && w > 0 {
-                targets.push(
-                    Action::TagOpen(node.doc.start + u32::try_from(range.start).unwrap_or(0)),
-                    Zone::new(x, y, w, 1),
-                    Z_DOC,
-                );
-            }
-        }
-        match line.split_once(':').or_else(|| line.split_once('=')) {
-            // Only a flush line is a key line; an indented one is a nested
-            // value, a list item, or a block scalar, and prints raw.
-            Some((key, val)) if !line.starts_with([' ', '\t', '#', '-']) => {
-                let key = key.trim_end();
-                let key_w = display_width(key);
-                buf.set_stringn(text_x, y, key, avail, crate::theme::meta_key());
-                let val_x = text_x
-                    .saturating_add(key_w)
-                    .saturating_add(key_col.saturating_sub(key_w) + 1);
-                if val_x < area.right() {
-                    buf.set_stringn(
-                        val_x,
-                        y,
-                        val.trim_start(),
-                        usize::from(area.right() - val_x),
-                        crate::theme::meta_value(),
-                    );
-                }
-            }
-            _ => {
-                buf.set_stringn(text_x, y, *line, avail, crate::theme::meta_value());
-            }
-        }
-        y += 1;
-    }
-
-    // Consume the block's remaining layout rows, spacing included.
-    let painted = u32::try_from(text_lines.len()).unwrap_or(u32::MAX);
-    let trailing = app.layout.height(block).saturating_sub(painted.max(skip));
-    y.saturating_add(u16::try_from(trailing).unwrap_or(u16::MAX))
-        .min(area.bottom())
-}
-
 /// Where a block's own column starts, and how wide it is, inside the full
 /// text area.
 ///
@@ -1644,26 +1530,6 @@ fn paint_rows(
             continue;
         }
 
-        // Frontmatter paints as a card: a left rule in the gutter the node's
-        // `indent` already reserved, the key padded to `key_col`, then the
-        // value. The `╭ │ ╰` glyphs are DECORATION and are not in the text —
-        // the same standing the table `│` separators have.
-        if let NodeKind::Metadata { key_col } = app.doc.node_for_block(block).kind {
-            y = paint_metadata_card(
-                frame,
-                app,
-                area,
-                block,
-                key_col,
-                skip,
-                y,
-                &mut painted.targets,
-            );
-            skip = 0;
-            block = BlockIdx(block.0 + 1);
-            continue;
-        }
-
         // A ready image paints once, as a widget into the visible slice of
         // its block — not row by row. Partially scrolled blocks render a
         // top-anchored crop into the intersection: the documented v1
@@ -1834,6 +1700,9 @@ fn paint_row(
         NodeKind::AlertLabel { kind } => theme::alert(*kind).add_modifier(Modifier::BOLD),
         // An image rendering as alt text: loading, failed, or remote.
         NodeKind::Image { .. } => theme::dim(),
+        // Frontmatter: values in the card's muted ink; keys are styled over
+        // it after the text paints (stage 3d).
+        NodeKind::Metadata { .. } => theme::meta_value(),
         // A table's header is its first logical line.
         NodeKind::Table { .. } => {
             let text = app.doc.block_text(block);
@@ -2050,6 +1919,15 @@ fn paint_row(
         {
             buf.set_stringn(x, y, "-", 1, theme::dim());
         }
+    }
+
+    // 3d. The frontmatter card. Its rows are ordinary rows — the value column
+    //     was aligned at parse and wrapped values hang under it in the core —
+    //     so what is painted here is only what is not in the text: the rule
+    //     in the gutter `indent` reserved, the key's weight, and the tags'
+    //     buttons, each placed through `cols_for_doc_range` on THIS row.
+    if let NodeKind::Metadata { .. } = node.kind {
+        paint_card_row(frame, app, node, row, area, y, targets);
     }
 
     // 3a. Table column separators: a dim │ in the middle of each 2-cell gap,
@@ -2273,6 +2151,90 @@ fn paint_row(
             theme::match_normal()
         };
         buf.set_style(Rect::new(x0, y, w, 1), style);
+    }
+}
+
+/// The frontmatter card's decoration on one of its rows.
+///
+/// The `╭ │ ╰` rule is DECORATION and is not in the text — the same standing
+/// the table `│` separators have — painted in the two-cell gutter the node's
+/// `indent` reserved at parse. Everything else here restyles or registers
+/// cells the row already painted from the text, so a click, a search hit and
+/// a tag button all land on the same cells.
+fn paint_card_row(
+    frame: &mut Frame,
+    app: &App,
+    node: &carrel_core::Node,
+    row: &Row,
+    area: Rect,
+    y: u16,
+    targets: &mut Targets,
+) {
+    let start = node.doc.start as usize;
+    let body = &app.doc.text[start..node.doc.end as usize];
+    let first = matches!(
+        row.kind,
+        RowKind::Text {
+            first_in_block: true,
+            ..
+        }
+    );
+    // The last row is the one that reaches the body's last visible byte; a
+    // trailing newline is no row of its own.
+    let last = row.doc.end as usize >= start + body.trim_end().len();
+    let rule = if first {
+        '╭'
+    } else if last {
+        '╰'
+    } else {
+        '│'
+    };
+    let rx = area.x + node.indent.saturating_sub(2);
+    let buf = frame.buffer_mut();
+    if rx < area.right() {
+        buf.set_stringn(rx, y, rule.to_string(), 1, theme::dim());
+    }
+
+    let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+    // Paint `r` (body-relative) over this row's share of it.
+    let cells = |r: std::ops::Range<usize>| -> Option<Rect> {
+        let doc = (start + r.start) as u32..(start + r.end) as u32;
+        let clamped = doc.start.max(row.doc.start)..doc.end.min(row.doc.end);
+        if clamped.start >= clamped.end {
+            return None;
+        }
+        let (c0, c1) = cols_for_doc_range(row_text, row.doc.start, row.indent, &clamped);
+        let x = area.x.saturating_add(c0);
+        let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x));
+        (w > 0).then(|| Rect::new(x, y, w, 1))
+    };
+
+    // The key, found on the logical line this row belongs to — a long key
+    // can itself wrap, and its continuation is still key.
+    let at = row.doc.start as usize - start;
+    let line_start = body[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = body[line_start..]
+        .find('\n')
+        .map_or(body.len(), |i| line_start + i);
+    if let Some(m) = carrel_core::meta_split(&body[line_start..line_end]) {
+        if let Some(rect) = cells(line_start..line_start + m.key_end) {
+            frame.buffer_mut().set_style(rect, theme::meta_key());
+        }
+        if let Some(rect) = cells(line_start + m.key_end..line_start + m.sep_end) {
+            frame.buffer_mut().set_style(rect, theme::dim());
+        }
+    }
+
+    // Each tag is a button: the tags page, open at that tag. A tag a narrow
+    // row divides is a button on both of its rows.
+    for (range, _) in crate::tags::spans(body) {
+        if let Some(rect) = cells(range.clone()) {
+            targets.push(
+                Action::TagOpen(node.doc.start + u32::try_from(range.start).unwrap_or(0)),
+                Zone::new(rect.x, rect.y, rect.width, 1),
+                Z_DOC,
+            );
+        }
     }
 }
 

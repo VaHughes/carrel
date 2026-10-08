@@ -29,6 +29,10 @@
 //!   contiguous range. Nothing table-shaped happens here. [`wrap_range`] lays
 //!   out a single cell for the frontend's card view (Q15, answered and
 //!   shipped 2026-08-11).
+//! - **Frontmatter cards** are aligned at parse like tables — the value
+//!   column is padding in space 2 — and carry `Slice::meta`, which hangs a
+//!   wrapped value under that column, or stacks the key over its value when
+//!   the window is too narrow for one.
 //! - **Images, mermaid art and math** wrap their alt/source text like anything
 //!   else; their real heights are a frontend override, because they depend on
 //!   cell size and decoded dimensions this crate never sees.
@@ -217,6 +221,7 @@ pub fn wrap_chunk<F: FnMut(Row)>(
         width,
         indent: node.indent,
         code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
+        meta: meta_key_col(&node.kind),
         soft: soft_breaks(doc, block, hyphenation),
     };
     wrap_slice(&text[r], &at, w, first, &mut sink)
@@ -251,6 +256,7 @@ pub fn wrap_range<F: FnMut(Row)>(
         width,
         indent,
         code: false,
+        meta: None,
         soft: None,
     };
     wrap_slice(text, &at, w, first, &mut sink)
@@ -321,6 +327,7 @@ pub fn wrap_with<F: FnMut(Row)>(
             width,
             indent: node.indent,
             code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
+            meta: meta_key_col(&node.kind),
             soft: soft_breaks(doc, block, hyphenation),
         };
         rows = rows.saturating_add(wrap_slice(
@@ -357,9 +364,71 @@ struct Slice<'a> {
     /// Code blocks reserve [`CONTINUATION_COLS`] on continuation rows for a
     /// marker; prose reserves nothing.
     code: bool,
+    /// `Some(key_col)` for a frontmatter card: a key line's continuation
+    /// rows hang under its value column. See [`meta_hang`].
+    meta: Option<u16>,
     /// `Some` when this slice's words may be divided: the block's style
     /// runs, which say which of them may not. See [`soft_breaks`].
     soft: Option<&'a [Inline]>,
+}
+
+/// The `key_col` of a frontmatter card, or `None` for every other kind.
+fn meta_key_col(kind: &crate::document::NodeKind) -> Option<u16> {
+    match kind {
+        crate::document::NodeKind::Metadata { key_col } => Some(*key_col),
+        _ => None,
+    }
+}
+
+/// The narrowest value column a frontmatter card keeps beside its keys.
+/// Twelve cells hold an ISO date with room to spare.
+const MIN_VALUE_COLS: u16 = 12;
+
+/// How one frontmatter line fits: where its continuation rows hang, and —
+/// when the window is too narrow for a value column — whether its value
+/// starts on a row of its own.
+///
+/// A key line's value was aligned at parse (the padding is in the text), so
+/// its value column is the card's shared one — `key_col`, the separator, a
+/// space — and a wrapped value continues under it, the way a code line
+/// continues under its own indentation. A key wider than the cap hangs at the
+/// shared column too, not under its own later value. Any other line — a list
+/// item, a block scalar, a comment — hangs under its leading blanks.
+///
+/// When the value column would get fewer cells than the key column takes, or
+/// fewer than [`MIN_VALUE_COLS`], the hang is dropped: at that width a value
+/// column is a one-word strip that breaks a date in two.
+/// A key line that then does not fit on one row STACKS — the key alone on
+/// its first row, the value from the card's edge below it — by giving the
+/// first row only the key's own width. Without that the first value word
+/// sat beside the key and the rest fell under it, a shape that reads as two
+/// different keys.
+fn meta_fit(line: &str, key_col: u16, at: &Slice, w: &WidthFn) -> LineFit {
+    let measure = |s: &str| {
+        s.graphemes(true)
+            .fold(0u16, |acc, g| acc.saturating_add(w(g)))
+    };
+    let avail = at.width.saturating_sub(at.indent);
+    let split = crate::document::meta_split(line).filter(|m| !line[m.value..].trim().is_empty());
+    let hang = match split {
+        Some(m) => {
+            let shared = key_col
+                .saturating_add(measure(&line[m.key_end..m.sep_end]))
+                .saturating_add(1);
+            shared.min(measure(&line[..m.value]))
+        }
+        None => leading_width(line, w),
+    };
+    if avail.saturating_sub(hang) >= hang.max(MIN_VALUE_COLS) {
+        return LineFit::new(at.width, at.indent, hang, 0);
+    }
+    let mut fit = LineFit::new(at.width, at.indent, 0, 0);
+    if let Some(m) = split
+        && measure(line.trim_end()) > fit.first_avail
+    {
+        fit.first_avail = measure(&line[..m.sep_end]).clamp(1, fit.first_avail);
+    }
+    fit
 }
 
 /// Widths and indents for one logical line.
@@ -450,8 +519,10 @@ fn wrap_slice<F: FnMut(Row)>(
     // final line without one is still yielded. The pattern is the full UAX #14
     // mandatory set, not just '\n' — see `MANDATORY_BREAKS`.
     for line in text.split_inclusive(MANDATORY_BREAKS) {
-        let lead = leading_width(line, w);
-        let fit = LineFit::new(at.width, at.indent, lead, reserve);
+        let fit = match at.meta {
+            Some(key_col) => meta_fit(line, key_col, at, w),
+            None => LineFit::new(at.width, at.indent, leading_width(line, w), reserve),
+        };
         // Split against the NARROWER budget so a unit can never overflow the
         // row it lands on. Only tokens wider than `cont_avail` are affected,
         // and those break a few cells earlier on the first row than strictly
@@ -534,6 +605,7 @@ pub(crate) fn wrap_text_soft<F: FnMut(Row)>(
             width,
             indent,
             code: false,
+            meta: None,
             soft: soft.then_some(&[][..]),
         };
         rows = rows.saturating_add(wrap_slice(
@@ -631,6 +703,52 @@ mod tests {
             out.push(text[r.doc.start as usize..r.doc.end as usize].to_string());
         });
         out
+    }
+
+    /// A frontmatter card's rows as `(indent, text)`, the indent relative to
+    /// the card's own.
+    fn card_rows(src: &str, width: u16) -> Vec<(u16, String)> {
+        let doc = Document::parse(src);
+        let base = doc.node_for_block(BlockIdx(0)).indent;
+        let mut out = Vec::new();
+        wrap(&doc, BlockIdx(0), width, &cluster_width, |r| {
+            out.push((
+                r.indent - base,
+                doc.text[r.doc.start as usize..r.doc.end as usize]
+                    .trim_end()
+                    .to_string(),
+            ));
+        });
+        out
+    }
+
+    #[test]
+    fn a_wrapped_frontmatter_value_hangs_under_the_value_column() {
+        let rows = card_rows("---\ntitle: one two three four five\nid: x\n---\n", 24);
+        assert_eq!(
+            rows,
+            [
+                (0, "title: one two three".to_string()),
+                (7, "four five".to_string()),
+                (0, "id:    x".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn too_narrow_for_a_value_column_the_key_stacks_over_its_value() {
+        // 12 cells inside the card: a 7-cell value column would leave 5.
+        let rows = card_rows("---\ntitle: one two three four\nid: x\n---\n", 14);
+        assert_eq!(
+            rows,
+            [
+                (0, "title:".to_string()),
+                (0, "one two".to_string()),
+                (0, "three four".to_string()),
+                (0, "id:    x".to_string()),
+            ],
+            "a line that fits stays on one row; one that does not stacks"
+        );
     }
 
     /// Stands in for the frontend's hyphen, so a test can tell a division
@@ -848,6 +966,7 @@ mod tests {
             width,
             indent: 0,
             code,
+            meta: None,
             soft: None,
         };
         let mut first = true;

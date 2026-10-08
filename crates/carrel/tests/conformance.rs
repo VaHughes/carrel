@@ -43,7 +43,10 @@ fn has_kind(prefix: &str) -> bool {
 fn frontmatter_is_a_metadata_block_and_its_fences_are_gone() {
     assert!(has_kind("Metadata"), "kinds: {:?}", kinds());
     let out = plain();
-    assert!(out.contains("title: Conformance"), "{out}");
+    // Values align in one column, padded at parse like table cells: the
+    // widest key here is `nested`, so `title:` takes one space more.
+    assert!(out.contains("title:  Conformance"), "{out}");
+    assert!(out.contains("tags:   markdown, carrel"), "{out}");
     assert!(
         out.contains("- one"),
         "a nested list line survives raw:\n{out}"

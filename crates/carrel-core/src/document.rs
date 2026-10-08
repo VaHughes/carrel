@@ -328,10 +328,13 @@ pub enum NodeKind {
     DefDetails,
     /// A YAML (`---`) or TOML (`+++`) frontmatter block.
     ///
-    /// The doc text is the **raw body**, so the metadata is searchable and no
-    /// byte is discarded. Splitting it into keys and values is the frontend's
-    /// paint-time job, exactly like the table `│` separators — and deliberately
-    /// NOT a YAML parse, because a *reader* must never fail on exotic YAML.
+    /// The doc text is the **body with its values aligned**: every byte of
+    /// the source body is there, so the metadata is searchable, and the
+    /// blanks after each key's separator are padded to one value column at
+    /// parse, exactly like table cells (see [`meta_split`] for which lines
+    /// are keys — deliberately NOT a YAML parse, because a *reader* must
+    /// never fail on exotic YAML). The reflow layer hangs a wrapped value
+    /// under that column; only the card's rule is the frontend's to draw.
     Metadata {
         /// Max-content display width of the key column, capped at 16 cells.
         /// **Width-independent** — a property of the text alone, so it has the
@@ -1166,6 +1169,9 @@ struct Builder<'a> {
     /// `Some` while a table is being buffered. `push()` records instead of
     /// appending, and `End(Table)` replays with alignment padding.
     table: Option<TableRec>,
+    /// `Some` while a frontmatter body is being buffered: its text events,
+    /// replayed with the value column aligned by `flush_metadata`.
+    meta: Option<Vec<(String, Range<usize>)>>,
     /// Carries tag state across the `Event::Html` lines of one HTML block.
     html: HtmlStrip,
     /// The `<details>` regions being accumulated, if any — a STACK, because
@@ -1212,6 +1218,7 @@ impl<'a> Builder<'a> {
             current_link: None,
             in_image: false,
             table: None,
+            meta: None,
             html: HtmlStrip::default(),
             pending_details: Vec::new(),
             details: Vec::new(),
@@ -1328,20 +1335,71 @@ impl<'a> Builder<'a> {
 
     /// Max-content display width of a frontmatter key column, capped at 16.
     ///
-    /// Deliberately **not** a YAML parse: split each line at its first `:` (or
-    /// `=` for TOML). A line that does not split — a nested map, a list item, a
-    /// block scalar, a comment — contributes nothing, because it renders as a
-    /// raw continuation line under its parent. A *reader* must never fail on
-    /// exotic YAML; the worst outcome here is an unaligned line, not a lost
-    /// document.
+    /// Deliberately **not** a YAML parse: see [`meta_split`]. A line that does
+    /// not split — a nested map, a list item, a block scalar, a comment —
+    /// contributes nothing, because it renders as a raw continuation line
+    /// under its parent. A *reader* must never fail on exotic YAML; the worst
+    /// outcome here is an unaligned line, not a lost document.
     fn meta_key_col(body: &str) -> u16 {
         body.lines()
-            .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
-            .filter_map(|l| l.split_once(':').or_else(|| l.split_once('=')))
-            .map(|(k, _)| display_width(k.trim_end()))
+            .filter_map(|l| meta_split(l).map(|m| display_width(&l[..m.key_end])))
             .max()
             .unwrap_or(0)
             .min(16)
+    }
+
+    /// Replay a buffered frontmatter body with its values aligned.
+    ///
+    /// The value column is **space-2 padding**, exactly like table cells: the
+    /// blanks after each key's separator are replaced by enough spaces that
+    /// every value starts in one column. Width-independent — `key_col` is a
+    /// property of the text — so this is construction, not layout. Before
+    /// this, the padding was added at PAINT, so the painted card disagreed
+    /// with the text the layout wrapped and the pointer resolved through:
+    /// a click on a value landed on another character, and every row a long
+    /// value wrapped onto was counted and painted blank.
+    ///
+    /// Only a body that is a verbatim copy of its source is aligned; anything
+    /// else is pushed as it came, unaligned but whole.
+    fn flush_metadata(&mut self, pieces: Vec<(String, Range<usize>)>) -> u16 {
+        let body: String = pieces.iter().map(|(t, _)| t.as_str()).collect();
+        let key_col = Self::meta_key_col(&body);
+        let verbatim = pieces.windows(2).all(|w| w[0].1.end == w[1].1.start)
+            && pieces.iter().all(|(t, r)| t.len() == r.len());
+        let Some(base) = pieces.first().map(|(_, r)| r.start).filter(|_| verbatim) else {
+            for (t, r) in pieces {
+                self.push_linkified(&t, r);
+            }
+            return key_col;
+        };
+        let mut at = base;
+        for line in body.split_inclusive('\n') {
+            let src = |r: Range<usize>| at + r.start..at + r.end;
+            match meta_split(line).filter(|m| !line[m.value..].trim().is_empty()) {
+                Some(m) => {
+                    let target = key_col
+                        .saturating_add(display_width(&line[m.key_end..m.sep_end]))
+                        .saturating_add(1);
+                    let pad = usize::from(
+                        target
+                            .saturating_sub(display_width(&line[..m.sep_end]))
+                            .max(1),
+                    );
+                    self.push_linkified(&line[..m.sep_end], src(0..m.sep_end));
+                    let blanks = &line[m.sep_end..m.value];
+                    if blanks.len() == pad && blanks.bytes().all(|b| b == b' ') {
+                        self.push(blanks, src(m.sep_end..m.value), ProvKind::Verbatim);
+                    } else {
+                        let spaces = " ".repeat(pad);
+                        self.push(&spaces, src(m.sep_end..m.value), ProvKind::Substituted);
+                    }
+                    self.push_linkified(&line[m.value..], src(m.value..line.len()));
+                }
+                None => self.push_linkified(line, src(0..line.len())),
+            }
+            at += line.len();
+        }
+        key_col
     }
 
     fn opts() -> Options {
@@ -1826,15 +1884,13 @@ impl<'a> Builder<'a> {
                     // values inside the card instead of under its rule.
                     self.indent = self.indent.saturating_add(2);
                     self.open_block(NodeKind::Metadata { key_col: 0 }, &src);
+                    self.meta = Some(Vec::new());
                 }
                 Event::End(TagEnd::MetadataBlock(_)) => {
-                    // Compute before taking the mutable borrow of `open`:
-                    // `self.text` and `self.open` cannot both be borrowed.
-                    if let Some(start) = self.open.as_ref().map(|o| o.doc_start) {
-                        let key_col = Self::meta_key_col(&self.text[start as usize..]);
-                        if let Some(o) = self.open.as_mut() {
-                            o.kind = NodeKind::Metadata { key_col };
-                        }
+                    let pieces = self.meta.take().unwrap_or_default();
+                    let key_col = self.flush_metadata(pieces);
+                    if let Some(o) = self.open.as_mut() {
+                        o.kind = NodeKind::Metadata { key_col };
                     }
                     self.close_block(src.end);
                     self.indent = self.indent.saturating_sub(2);
@@ -2002,6 +2058,11 @@ impl<'a> Builder<'a> {
                     self.push(&rendered, src, ProvKind::Substituted);
                     self.style = prev;
                 }
+                Event::Text(t) if self.meta.is_some() => {
+                    if let Some(m) = self.meta.as_mut() {
+                        m.push((t.to_string(), src));
+                    }
+                }
                 Event::Text(t) => self.push_linkified(&t, src),
                 Event::Code(t) => {
                     // Backticks are delimiters, so the src range is longer than
@@ -2132,6 +2193,57 @@ impl<'a> Builder<'a> {
             anchors: self.anchors.into_boxed_slice(),
         }
     }
+}
+
+/// Where one frontmatter line divides into key, separator and value.
+///
+/// Byte offsets into the line. Returned by [`meta_split`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetaLine {
+    /// End of the key, its trailing whitespace excluded.
+    pub key_end: usize,
+    /// Just past the separator (`:` or `=`).
+    pub sep_end: usize,
+    /// Where the value starts, past the blanks that follow the separator.
+    /// At the line's end (or its newline) when there is no value.
+    pub value: usize,
+}
+
+/// How a frontmatter line splits into key and value, or `None` when it is
+/// not a key line.
+///
+/// Deliberately **not** a YAML parse — a reader must never fail on exotic
+/// YAML. A key line is flush left (an indented line is a nested value, a
+/// `-` line a list item, a `#` line a comment) and is split at its FIRST
+/// `:` or `=`, so a TOML `url = "https://…"` splits at the `=`. A `:` must be
+/// followed by a blank or the line's end, as in YAML, where `a:b` is a
+/// scalar and not a mapping; a TOML `=` needs nothing after it.
+///
+/// The one predicate the parser's alignment, the reflow layer's hanging
+/// indent and the frontend's key styling all share, so they cannot disagree
+/// about which lines are keys.
+#[must_use]
+pub fn meta_split(line: &str) -> Option<MetaLine> {
+    if line.starts_with([' ', '\t', '#', '-']) {
+        return None;
+    }
+    let sep = line.find([':', '='])?;
+    let after = &line[sep + 1..];
+    if line.as_bytes()[sep] == b':'
+        && !(after.is_empty() || after.starts_with([' ', '\t', '\n', '\r']))
+    {
+        return None;
+    }
+    let key_end = line[..sep].trim_end().len();
+    if key_end == 0 {
+        return None;
+    }
+    let blanks = after.len() - after.trim_start_matches([' ', '\t']).len();
+    Some(MetaLine {
+        key_end,
+        sep_end: sep + 1,
+        value: sep + 1 + blanks,
+    })
 }
 
 /// Expand tabs to the next multiple of [`TAB_STOP`], advancing `col`.
@@ -3076,6 +3188,45 @@ mod tests {
             panic!("expected a metadata block");
         };
         assert_eq!(key_col, 10, "`longer_key` is 10 cells wide");
+    }
+
+    /// The value column is in the TEXT, like table padding, so the layout
+    /// that counts a card's rows and the paint that draws them see the same
+    /// characters. Every value byte still maps back to its own source byte.
+    #[test]
+    fn frontmatter_values_are_aligned_in_the_text_and_map_back_to_source() {
+        let src = "---\na: 1\nlonger_key:\t2\ntags:\nkey:   three\n---\n";
+        let doc = Document::parse(src);
+        assert_eq!(
+            doc.block_text(BlockIdx(0)),
+            "a:          1\nlonger_key: 2\ntags:\nkey:        three\n",
+            "values in one column; a key with no value gains no padding"
+        );
+        for value in ["1", "2", "three"] {
+            let d = doc.text.find(value).unwrap() as u32;
+            assert_eq!(
+                &src[doc.to_src(DocByte(d)).0 as usize..][..value.len()],
+                value,
+                "{value} maps back to its own source"
+            );
+        }
+    }
+
+    #[test]
+    fn a_frontmatter_key_line_is_flush_left_and_split_at_its_first_separator() {
+        fn m(l: &str) -> Option<(&str, &str)> {
+            meta_split(l).map(|m| (&l[..m.key_end], &l[m.value..]))
+        }
+        assert_eq!(m("title: x"), Some(("title", "x")));
+        assert_eq!(m("tags:"), Some(("tags", "")));
+        assert_eq!(m("url = \"https://x\""), Some(("url", "\"https://x\"")));
+        assert_eq!(m("time: 12:30"), Some(("time", "12:30")));
+        assert_eq!(m("a=1"), Some(("a", "1")));
+        assert_eq!(m("https://example.com"), None, "a YAML `:` needs a blank");
+        assert_eq!(m("  - item"), None, "a nested line");
+        assert_eq!(m("- item"), None, "a list item");
+        assert_eq!(m("# comment: x"), None, "a comment");
+        assert_eq!(m(": x"), None, "no key");
     }
 
     #[test]
