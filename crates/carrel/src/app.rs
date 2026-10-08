@@ -5856,11 +5856,13 @@ fn copy_selection(app: &mut App) {
         app.note = Some("selection too large to copy".into());
         return;
     }
-    let Some(text) = app.doc.text.get(sel.start as usize..sel.end as usize) else {
+    // Through `copy_text`, not a raw slice: the frontmatter card pastes in
+    // the author's spelling, not its alignment padding.
+    let Some(text) = app.doc.copy_text(sel.clone()) else {
         return;
     };
     app.note = Some(format!("copied {} characters", text.chars().count()));
-    app.clipboard = Some(text.to_string());
+    app.clipboard = Some(text);
 }
 
 impl App {
@@ -5953,7 +5955,9 @@ fn copy_quote(app: &mut App) -> Outcome {
         app.note = Some("select some text first".into());
         return Outcome::Redraw;
     };
-    let Some(text) = app.doc.text.get(sel.start as usize..sel.end as usize) else {
+    // Through `copy_text`, not a raw slice: the frontmatter card pastes in
+    // the author's spelling, not its alignment padding.
+    let Some(text) = app.doc.copy_text(sel.clone()) else {
         return Outcome::Idle;
     };
     let mut out = String::new();
@@ -7430,6 +7434,64 @@ mod tests {
         assert!(copied.contains("fn main()"), "{copied:?}");
         assert!(copied.contains("body();"));
         assert!(!copied.contains("intro"), "only the code block");
+    }
+
+    /// The frontmatter card's value column is padding in the TEXT, so the
+    /// layout, paint, search and the pointer all agree on it — but it is not
+    /// what the author wrote, and a paste must be. Every copy of card text
+    /// gives the blanks back in their source spelling, tabs included, while
+    /// the selection itself stays a doc range.
+    #[test]
+    fn copying_from_the_frontmatter_card_copies_what_the_author_wrote() {
+        let src = "---\ntitle: Edge cases\nlonger_key:\tx\n---\n\nbody\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 60, 20);
+        let at = a.doc.text.find("Edge").unwrap() as u32;
+        assert!(
+            a.doc.text.contains("title:      Edge"),
+            "the card is aligned: {:?}",
+            a.doc.text
+        );
+        update(&mut a, Action::SelectBlock(at));
+        let sel = a.selection.clone().unwrap();
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(
+            a.clipboard.take().as_deref(),
+            Some("title: Edge cases\nlonger_key:\tx\n")
+        );
+        assert_eq!(a.selection, Some(sel), "the selection is still doc bytes");
+
+        // A drag that starts inside the padding takes no more of it than the
+        // author wrote; one across it takes exactly what they wrote.
+        let title = a.doc.text.find("title").unwrap() as u32;
+        update(&mut a, Action::SelectAnchor((title, title + 1)));
+        update(&mut a, Action::SelectDrag((at + 3, at + 4)));
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(a.clipboard.take().as_deref(), Some("title: Edge"));
+        update(&mut a, Action::SelectAnchor((at - 3, at - 2)));
+        update(&mut a, Action::SelectDrag((at + 3, at + 4)));
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(a.clipboard.take().as_deref(), Some(" Edge"));
+
+        // Copy-as-quote goes through the same door.
+        update(&mut a, Action::SelectBlock(at));
+        update(&mut a, Action::CopyQuote);
+        let quote = a.clipboard.take().unwrap();
+        assert!(quote.starts_with("> title: Edge cases\n"), "{quote:?}");
+    }
+
+    /// Table padding is the opposite decision, and stays it: it has no
+    /// source spelling (the source is `|` syntax), and the aligned grid is
+    /// the useful paste — wave-B §2 records it.
+    #[test]
+    fn copying_a_table_still_copies_the_aligned_grid() {
+        let src = "| a | b |\n|---|---|\n| longer | x |\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 60, 20);
+        let at = a.doc.text.find("longer").unwrap() as u32;
+        update(&mut a, Action::SelectBlock(at));
+        update(&mut a, Action::SelectRelease);
+        let copied = a.clipboard.take().unwrap();
+        let block = a.doc.block_text(a.doc.block_at_doc(DocByte(at)));
+        assert_eq!(copied, block, "the table copies its display text");
     }
 
     #[test]
