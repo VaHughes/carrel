@@ -39,6 +39,16 @@ const CHROME_W: u16 = 4;
 /// The gap between the label column and the accelerator column.
 const GAP: u16 = 2;
 
+/// The accelerator a row may print: `keys` — unless the open menu takes
+/// that key itself. `q` closes a menu (as it closes every carrel pane), so
+/// the `Close` row that printed it taught a key that, pressed where it was
+/// read, closed the menu instead of the file. A key that is inert in the
+/// menu is fine: an accelerator column is the key that does it once the
+/// menu is gone. A key that does something ELSE is not printed.
+fn printable(key: &'static str) -> &'static str {
+    if keys::menu_takes(key) { "" } else { key }
+}
+
 /// One row of a menu.
 ///
 /// `action: None` is a **gap** — the blank line CUA specifies between groups
@@ -59,7 +69,7 @@ impl Item {
     fn new(label: &'static str, action: Action) -> Self {
         Self {
             label,
-            accel: keys::accel(action).map_or("", keys::first),
+            accel: printable(keys::accel(action).map_or("", keys::first)),
             action: Some(action),
             enabled: true,
         }
@@ -73,7 +83,7 @@ impl Item {
     fn like(label: &'static str, keyed: Action, action: Action) -> Self {
         Self {
             label,
-            accel: keys::accel(keyed).map_or("", keys::first),
+            accel: printable(keys::accel(keyed).map_or("", keys::first)),
             action: Some(action),
             enabled: true,
         }
@@ -98,10 +108,10 @@ impl Item {
     /// A row with a literal accelerator, for the one binding that differs
     /// between the reader and the home screen.
     #[must_use]
-    const fn spelled(label: &'static str, accel: &'static str, action: Action) -> Self {
+    fn spelled(label: &'static str, accel: &'static str, action: Action) -> Self {
         Self {
             label,
-            accel,
+            accel: printable(accel),
             action: Some(action),
             enabled: true,
         }
@@ -282,7 +292,7 @@ impl Menu {
 #[must_use]
 pub fn global(app: &App) -> Vec<Item> {
     if app.is_home() {
-        return vec![
+        let mut items = vec![
             Item::new("Filter names", Action::HomeFilterMode),
             Item::new("Search in files", Action::HomeSearchMode),
             Item::new("Tags", Action::HomeTags),
@@ -299,6 +309,8 @@ pub fn global(app: &App) -> Vec<Item> {
             // so the home menu says what the home screen does.
             Item::spelled("Quit", "q", Action::Quit),
         ];
+        items.retain(|i| i.action != Some(Action::HomeTags) || app.tags_readable());
+        return items;
     }
     let mut items = vec![
         // The click-first reader's way back out of a link they followed.
@@ -348,6 +360,14 @@ pub fn global(app: &App) -> Vec<Item> {
     if !app.changed.is_empty() {
         items.insert(1, Item::new("Next change", Action::ChangeStep(1)));
     }
+    // A row that can only refuse is not offered: `Images…` on a document
+    // with no images answered "No image here". The same rule as `Next
+    // change` above, and for the same reason.
+    items.retain(|i| match i.action {
+        Some(Action::ImageOpen(_)) => !crate::images::image_blocks(&app.doc).is_empty(),
+        Some(Action::HomeTags) => app.tags_readable(),
+        _ => true,
+    });
     items
 }
 
@@ -363,8 +383,14 @@ enum Under {
     /// A link, and whether its destination is external — a URL is copied,
     /// never opened, so there is only one thing to offer for one.
     Link(LinkId, bool),
-    /// A code block, and whether it has a rendered form to flip to.
-    Code(bool),
+    /// A code block (`code`) or a math block, and whether it has a
+    /// rendered form to flip to. Math is not code: `Copy code block` and
+    /// `Next code block` go by the block cursor, which math never takes,
+    /// so on math they copied and stepped from some OTHER block.
+    Code {
+        code: bool,
+        rendered: bool,
+    },
     Table(carrel_core::BlockIdx),
     /// A `[^name]` reference, which has a definition to jump to.
     Footnote,
@@ -390,10 +416,14 @@ fn under(app: &App, byte: u32) -> Under {
     }
     match &node.kind {
         NodeKind::Heading { .. } => Under::Heading,
-        NodeKind::CodeBlock { lang } => {
-            Under::Code(lang.as_deref() == Some("mermaid") && app.diagram_art.contains_key(&block))
-        }
-        NodeKind::Math => Under::Code(true),
+        NodeKind::CodeBlock { lang } => Under::Code {
+            code: true,
+            rendered: lang.as_deref() == Some("mermaid") && app.diagram_art.contains_key(&block),
+        },
+        NodeKind::Math => Under::Code {
+            code: false,
+            rendered: true,
+        },
         NodeKind::Table { .. } => Under::Table(block),
         _ if on_footnote_ref(app, byte) => Under::Footnote,
         _ if node.prefix.as_ref().and_then(|p| p.task).is_some() => Under::Task,
@@ -424,8 +454,14 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
                 Action::FoldAt(byte),
             ),
             Item::new("Collapse all", Action::FoldAll),
-            Item::new("Expand all", Action::UnfoldAll),
-        ],
+        ]
+        .into_iter()
+        // Nothing to expand is nothing to offer.
+        .chain(
+            (!app.folded.is_empty() || !app.folded_details.is_empty())
+                .then(|| Item::new("Expand all", Action::UnfoldAll)),
+        )
+        .collect(),
         Under::Link(id, external) => {
             let mut v = Vec::new();
             // An external destination is copied and never opened — carrel
@@ -438,15 +474,22 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
                 ));
             }
             v.push(Item::plain("Copy link", Action::LinkCopy));
-            v.push(Item::new("What links here", Action::BacklinksToggle));
+            // A piped document has no folder for anything to link from.
+            if app.file.is_some() {
+                v.push(Item::new("What links here", Action::BacklinksToggle));
+            }
             v.push(Item::new("What this points at", Action::ForwardToggle));
             v
         }
-        Under::Code(rendered) => {
-            let mut v = vec![
-                Item::new("Copy code block", Action::YankBlock),
-                Item::new("Next code block", Action::CodeStep(1)),
-            ];
+        Under::Code { code, rendered } => {
+            let mut v = Vec::new();
+            if code {
+                v.push(Item::new("Copy code block", Action::YankBlock));
+                // `MenuOpen` aimed the block cursor here before asking.
+                if app.next_code_block(1).is_some() {
+                    v.push(Item::new("Next code block", Action::CodeStep(1)));
+                }
+            }
             if rendered {
                 v.push(Item::new("Drawn ↔ text", Action::RenderedToggle));
             }
@@ -531,8 +574,14 @@ fn push_tail(app: &App, byte: u32, items: &mut Vec<Item>) {
     ));
     items.push(Item::new("Notes and highlights…", Action::NotesToggle));
     items.push(Item::new("Search…", Action::SearchOpen(Direction::Forward)));
-    items.push(Item::new("Outline…", Action::OutlineToggle));
-    items.push(Item::new("Bookmarks…", Action::MarkListToggle));
+    // Each list only where it has something in it: both refused, with a
+    // note, from a row the menu had just offered.
+    if !app.headings().is_empty() {
+        items.push(Item::new("Outline…", Action::OutlineToggle));
+    }
+    if !app.marks.is_empty() {
+        items.push(Item::new("Bookmarks…", Action::MarkListToggle));
+    }
 }
 
 #[cfg(test)]
@@ -657,8 +706,12 @@ mod tests {
         let mut checked = 0;
         for item in global(&a).iter().chain(&context(&a, 0)) {
             if item.accel.is_empty() {
+                // Unprinted only where there is no key, or where the open
+                // menu takes it for something else (`printable`).
                 assert!(
-                    item.action.is_none() || keys::accel(item.action.unwrap()).is_none(),
+                    item.action.is_none()
+                        || keys::accel(item.action.unwrap())
+                            .is_none_or(|k| keys::menu_takes(keys::first(k))),
                     "{}: has a key but does not print it",
                     item.label
                 );
@@ -706,9 +759,72 @@ mod tests {
         assert!(labels(at("in")).contains(&"Open link"));
     }
 
+    /// **A key printed in a menu row never does something else while that
+    /// menu is up.** The reader's `Close` row printed `q` — and `q` with a
+    /// menu open closes the MENU (the rule every carrel pane follows), so
+    /// the row taught a key that, pressed where it was read, did not close
+    /// the file. The home menu's `Quit` printed `q` the same way. A row's
+    /// key may be inert in the menu (it acts once the menu is gone, which
+    /// is what an accelerator column means); it may not act differently.
+    #[test]
+    fn no_menu_prints_a_key_the_menu_itself_takes() {
+        let mut a = app(concat!(
+            "# Heading\n\nplain prose, a [local](notes.md), a [url](https://e.com),\n",
+            "and a footnote[^n].\n\n- [ ] a task\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n",
+            "```rust\nlet x = 1;\n```\n\n```sh\nls\n```\n\n[^n]: the definition\n"
+        ));
+        a.file = Some(std::path::PathBuf::from("t.md"));
+        crate::app::update(&mut a, Action::MarkToggle);
+        let mut menus = vec![global(&a)];
+        a.home_stash = None;
+        for byte in 0..u32::try_from(a.doc.text.len()).unwrap() {
+            menus.push(context(&a, byte));
+        }
+        menus.push(global(&App::new_home(
+            std::path::PathBuf::from("."),
+            vec![],
+            80,
+            24,
+        )));
+        let mut printed = 0;
+        for item in menus.iter().flatten() {
+            if item.accel.is_empty() {
+                continue;
+            }
+            printed += 1;
+            assert!(
+                !keys::menu_takes(item.accel),
+                "the row {:?} prints `{}`, which the open menu takes for itself",
+                item.label,
+                item.accel
+            );
+        }
+        assert!(printed > 10, "the accelerators must be read, got {printed}");
+    }
+
+    /// Math is not a code block: the code rows go by the block cursor,
+    /// which math never takes, so on math they copied — and stepped from —
+    /// whichever code block the view was nearest.
+    #[test]
+    fn math_offers_its_drawing_and_not_the_code_rows() {
+        let a = app("```rust\nlet x = 1;\n```\n\n$$ x^2 $$\n");
+        let at = u32::try_from(a.doc.text.find("x^2").unwrap_or(0)).unwrap();
+        let at = a
+            .doc
+            .node_for_block(a.doc.block_at_doc(DocByte(at)))
+            .doc
+            .start;
+        let labels: Vec<_> = context(&a, at).iter().map(|i| i.label).collect();
+        assert!(labels.contains(&"Drawn ↔ text"), "{labels:?}");
+        assert!(!labels.contains(&"Copy code block"), "{labels:?}");
+        assert!(!labels.contains(&"Next code block"), "{labels:?}");
+    }
+
     #[test]
     fn every_context_menu_ends_with_the_same_tail() {
-        let a = app("# H\n\ntext\n\n| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let mut a = app("# H\n\ntext\n\n| a | b |\n| - | - |\n| 1 | 2 |\n");
+        // With a bookmark to list: `Bookmarks…` is offered only then.
+        crate::app::update(&mut a, Action::MarkToggle);
         for byte in [0u32, 5, 12] {
             let items = context(&a, byte);
             let tail: Vec<&'static str> = items.iter().rev().take(3).map(|i| i.label).collect();
@@ -904,6 +1020,85 @@ mod tests {
         }
     }
 
+    /// **No menu offers a row that can do nothing in this document.** The
+    /// `≡` menu offered `Images…` on a document with no images, and picking
+    /// it said "No image here". Every pickable row of every menu — the
+    /// global one, and the context menu at every byte — is picked through
+    /// the real path (`MenuOpen`, then `MenuPick`) on a fresh reader, and
+    /// must not answer with one of the notes `update` uses to refuse.
+    /// Walked over a bare document (no file, no headings, no images, no
+    /// marks) and a rich one, so a row that is right in one is checked in
+    /// the other.
+    #[test]
+    fn no_menu_row_is_offered_where_it_can_do_nothing() {
+        use crate::app::update;
+        const REFUSALS: &[&str] = &[
+            "No image here",
+            "no headings in this document",
+            "no bookmarks — press m to set one",
+            "there is no folder here to read tags from",
+            "no documents here to read tags from",
+            "a document read from a pipe has no folder to link from",
+            "no code block that way",
+            "no code block here to copy",
+            "no task lists in this document",
+            "no footnotes in this document",
+            "no section here to collapse",
+            "nothing has changed since this was opened",
+            "nothing to follow",
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("rich.md");
+        let bare = "Just prose here, nothing else.\n\nAnother paragraph of it.\n";
+        let rich = concat!(
+            "# Heading\n\nplain prose, a [local](notes.md), a [url](https://e.com),\n",
+            "and a footnote[^n].\n\n![alt](pic.png)\n\n- [ ] a task\n\n",
+            "| a | b |\n| - | - |\n| 1 | 2 |\n\n",
+            "```rust\nlet x = 1;\n```\n\n$$ x^2 $$\n\n```sh\nls\n```\n\n[^n]: the definition\n"
+        );
+        std::fs::write(&file, rich).unwrap();
+        let fresh = |src: &str| {
+            let mut a = app(src);
+            if src == rich {
+                a.file = Some(file.clone());
+                update(&mut a, Action::MarkToggle);
+            }
+            a.note = None;
+            a
+        };
+        let mut problems = Vec::new();
+        let mut picked = 0;
+        for src in [bare, rich] {
+            let len = u32::try_from(fresh(src).doc.text.len()).unwrap();
+            for byte in std::iter::once(None).chain((0..len).map(Some)) {
+                let open = Action::MenuOpen { at: (1, 1), byte };
+                let mut a = fresh(src);
+                update(&mut a, open);
+                let rows = a.menu.as_ref().unwrap().items.clone();
+                for (i, row) in rows.iter().enumerate() {
+                    if !row.pickable() {
+                        continue;
+                    }
+                    let mut a = fresh(src);
+                    update(&mut a, open);
+                    update(&mut a, Action::MenuPick(u32::try_from(i).unwrap()));
+                    picked += 1;
+                    if let Some(note) = a.note.as_deref()
+                        && REFUSALS.contains(&note)
+                    {
+                        let what = if src == bare { "bare" } else { "rich" };
+                        let line = format!("{what} {byte:?}: {:?} says {note:?}", row.label);
+                        if !problems.contains(&line) {
+                            problems.push(line);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(picked > 500, "the menus must be walked, picked {picked}");
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
     /// Every menu row must be one the classifier claims is menu-reachable,
     /// under exactly the label it prints.
     ///
@@ -919,6 +1114,10 @@ mod tests {
             "and a footnote[^n].\n\n- [ ] a task\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n",
             "```rust\nlet x = 1;\n```\n\n$$ x^2 $$\n\n[^n]: the definition\n"
         ));
+        // A file and a bookmark, so the rows offered only with one of them
+        // (`What links here`, `Bookmarks…`) are in the corpus.
+        a.file = Some(std::path::PathBuf::from("t.md"));
+        crate::app::update(&mut a, Action::MarkToggle);
         let mut menus = vec![global(&a)];
         for byte in 0..u32::try_from(a.doc.text.len()).unwrap() {
             menus.push(context(&a, byte));

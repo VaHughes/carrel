@@ -85,6 +85,10 @@ pub const PICKER_ROWS: u16 = 12;
 /// would walk the input row up and down under the cursor. Anchoring the top
 /// instead of the middle is what lets the height follow the matches at all,
 /// so a two-match list is a small box rather than a mostly-empty one.
+///
+/// `screen_rows` is the height a pane may use — [`crate::app::App::pane_rows_of`],
+/// which keeps the status row and the footer (`≡`, the lamp) clear — not
+/// the terminal's. Paint and every inverse must pass the same.
 #[must_use]
 pub const fn picker_geometry(cols: u16, screen_rows: u16, entries: u16) -> (u16, u16, u16, u16) {
     let width = if cols < 60 || screen_rows < 16 {

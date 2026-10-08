@@ -95,18 +95,33 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
             .buffer_mut()
             .set_stringn(area.x, y, &blank, usize::from(area.width), theme::status());
     }
-    let title = if app.notes.draft.is_some() {
-        "Note · Enter save · Esc cancel"
+    // The title names the keys, and each one it names is a button for it
+    // (`render::paint_hint_run`, over the footer's own tables): a draft's
+    // `enter save · esc cancel`, the list's `esc close`.
+    let drafting = app.notes.draft.is_some();
+    let (title, hints): (&str, Vec<_>) = if drafting {
+        (
+            "Note · ",
+            crate::keys::HINT_NOTE_DRAFT
+                .iter()
+                .filter(|h| h.click.is_some())
+                .copied()
+                .collect(),
+        )
     } else {
-        "Notes · ? unresolved · Esc close"
+        (
+            "Notes · ? unresolved · ",
+            crate::keys::HINT_NOTES
+                .iter()
+                .filter(|h| h.key == "esc")
+                .copied()
+                .collect(),
+        )
     };
-    frame.buffer_mut().set_stringn(
-        area.x,
-        area.y,
-        title,
-        usize::from(area.width),
-        theme::status(),
-    );
+    let mut tx = area.x;
+    let buf = frame.buffer_mut();
+    crate::render::put(buf, &mut tx, area.y, area.right(), title, theme::status());
+    crate::render::paint_hint_run(buf, targets, &mut tx, area.y, area.right(), &hints, Z);
     if area.height < 5 || area.width < 12 {
         if area.height > 1 {
             frame.buffer_mut().set_stringn(
@@ -192,15 +207,17 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
             "[cancel]",
             Action::NoteInput(NoteKey::Cancel),
         );
-        if bx < area.right() {
-            frame.buffer_mut().set_stringn(
-                bx,
-                foot,
-                "Ctrl-J newline",
-                usize::from(area.right() - bx),
-                theme::dim(),
-            );
-        }
+        // A key named on the pane is a button for it, here as on every
+        // pane's border.
+        button(
+            frame,
+            targets,
+            &mut bx,
+            foot,
+            area.right(),
+            "Ctrl-J newline",
+            Action::NoteInput(NoteKey::Newline),
+        );
     } else {
         let selected = app.notes.pane.unwrap_or(0);
         let slots = usize::from(message_top.saturating_sub(area.y + 1)) / 2;

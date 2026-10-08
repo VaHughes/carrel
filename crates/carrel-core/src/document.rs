@@ -900,8 +900,8 @@ impl Document {
     /// Every footnote reference occurrence, in reading order: `(name, byte)`.
     ///
     /// References are the literal `[^name]` runs a reader sees. Candidates
-    /// inside code blocks are skipped — a code sample that mentions `[^x]`
-    /// is prose about footnotes, not one.
+    /// inside code — fenced blocks and inline spans alike — are skipped: a
+    /// sample that mentions `[^x]` is prose about footnotes, not one.
     #[must_use]
     pub fn footnote_refs(&self) -> Vec<(Box<str>, u32)> {
         let mut out = Vec::new();
@@ -919,7 +919,14 @@ impl Document {
                 let at = i as u32;
                 i = end + 1;
                 let node = self.node_for_block(self.block_at_doc(DocByte(at)));
-                if !name.is_empty() && !matches!(node.kind, NodeKind::CodeBlock { .. }) {
+                // Code is code, fenced or spanned: `[^x]` in backticks is
+                // prose about footnotes, not one.
+                let in_span = node
+                    .inlines
+                    .iter()
+                    .any(|r| r.doc.contains(&at) && r.style.contains(Style::CODE));
+                if !name.is_empty() && !in_span && !matches!(node.kind, NodeKind::CodeBlock { .. })
+                {
                     out.push((name.into(), at));
                 }
                 continue;
@@ -3515,6 +3522,23 @@ mod tests {
     }
 
     // --- footnote references and definitions pair up ---
+
+    /// `[^x]` inside a code span is code, not a reference — the same rule
+    /// a fenced block already had. A document whose only `[^x]` was in
+    /// backticks reported "footnotes: 1 refs" on its info card, and the
+    /// menu offered "Go to the footnote text" over the code.
+    #[test]
+    fn a_footnote_mark_in_a_code_span_is_not_a_reference() {
+        let src = "write `[^x]` for a note, and here is one[^y].\n\n\
+                   ```\n[^z]\n```\n\n[^y]: the note\n";
+        let doc = Document::parse(src);
+        let names: Vec<_> = doc
+            .footnote_refs()
+            .into_iter()
+            .map(|(n, _)| n.to_string())
+            .collect();
+        assert_eq!(names, vec!["y".to_string()]);
+    }
 
     #[test]
     fn footnote_references_and_definitions_are_findable() {
