@@ -554,6 +554,68 @@ impl Document {
         }
     }
 
+    /// What a copy of `r` puts on the clipboard: `text[r]`, except that the
+    /// frontmatter card's alignment padding goes back to the blanks the
+    /// author wrote. `None` when `r` is not a slice of the text.
+    ///
+    /// The value column is space-2 padding so that layout, paint, search and
+    /// the pointer all agree on it — and `r` stays a doc range for exactly
+    /// that reason — but `title:      Edge` is not what anyone wrote, and a
+    /// paste lands in a YAML file or a prompt. Unlike table padding, this
+    /// padding REPLACED source bytes, and its provenance records exactly
+    /// which, so the author's spelling is recoverable without guessing.
+    /// Table padding is deliberately left as it is: it has no source (the
+    /// source is `|` syntax), and the aligned grid is the useful paste.
+    ///
+    /// A copy that begins or ends inside a run of padding takes no more of
+    /// the author's blanks than it selected.
+    #[must_use]
+    pub fn copy_text(&self, r: Range<u32>) -> Option<String> {
+        let text = self.text.get(r.start as usize..r.end as usize)?;
+        let mut out = String::with_capacity(text.len());
+        let mut at = r.start;
+        let first = self.prov.partition_point(|p| p.doc.end <= r.start);
+        for p in &self.prov[first..] {
+            if p.doc.start >= r.end {
+                break;
+            }
+            let Some(blanks) = self.meta_padding(p) else {
+                continue;
+            };
+            let (s, e) = (p.doc.start.max(r.start), p.doc.end.min(r.end));
+            out.push_str(&self.text[at as usize..s as usize]);
+            let n = ((e - s) as usize).min(blanks.len());
+            out.push_str(if s == p.doc.start && e == p.doc.end {
+                blanks
+            } else if s == p.doc.start {
+                &blanks[..n]
+            } else {
+                &blanks[blanks.len() - n..]
+            });
+            at = e;
+        }
+        out.push_str(&self.text[at as usize..r.end as usize]);
+        Some(out)
+    }
+
+    /// The source blanks a run of frontmatter alignment padding replaced,
+    /// or `None` when `p` is anything else. Padding is a `Substituted` run of
+    /// spaces over a source run of blanks (possibly empty: TOML's `a=1`),
+    /// inside a metadata block — entity decoding and smart punctuation are
+    /// never all-blank on both sides, and table padding is `Synthetic`.
+    fn meta_padding(&self, p: &Prov) -> Option<&str> {
+        if p.kind != ProvKind::Substituted {
+            return None;
+        }
+        let shown = &self.text[p.doc.start as usize..p.doc.end as usize];
+        let src = self.source.get(p.src.start as usize..p.src.end as usize)?;
+        if !shown.bytes().all(|b| b == b' ') || !src.bytes().all(|b| b == b' ' || b == b'\t') {
+            return None;
+        }
+        let b = self.block_at_doc(DocByte(p.doc.start));
+        matches!(self.node_for_block(b).kind, NodeKind::Metadata { .. }).then_some(src)
+    }
+
     /// The first doc offset whose source is at or after `src`. O(P).
     ///
     /// The inverse of [`Self::to_src`], for "take me to this place in the
@@ -1471,8 +1533,52 @@ impl<'a> Builder<'a> {
             | Options::ENABLE_DEFINITION_LIST
             | Options::ENABLE_SUPERSCRIPT
             | Options::ENABLE_SUBSCRIPT
-            | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-            | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
+    }
+
+    /// The events of the whole document, offsets into the whole source.
+    ///
+    /// Frontmatter exists only at the very start of a document, after an
+    /// optional byte-order mark — but pulldown-cmark's metadata options accept
+    /// a `---` … `---` block at ANY block start, so with them on, a changelog
+    /// section fenced by two thematic breaks became a frontmatter card. So
+    /// the document is parsed in two pieces: the frontmatter alone with the
+    /// metadata options on (pulldown-cmark still decides what a block is, so
+    /// CRLF, the `...` closer and the blank-first-line rule are all its own),
+    /// then everything after it with them OFF, where a fence is what
+    /// the `CommonMark` spec says it is. The second parse begins at a line start with
+    /// nothing open, which is exactly the state the single parse would have
+    /// been in there. Both parsers see a slice; their ranges are shifted
+    /// back into the whole source, so provenance stays exact.
+    ///
+    /// The BOM is skipped for the body too: it is not text, and left in, it
+    /// is the first character of the first line, which stops that line from
+    /// opening a heading, a fence or a list.
+    fn events(src: &str) -> impl Iterator<Item = (Event<'_>, Range<usize>)> {
+        let bom = if src.starts_with('\u{feff}') { 3 } else { 0 };
+        let mut front = Vec::new();
+        let mut body = bom;
+        if let Some(cand) = frontmatter_candidate(&src[bom..]) {
+            let opts = Self::opts()
+                | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+                | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS;
+            let mut probe = Parser::new_ext(&src[bom..bom + cand], opts).into_offset_iter();
+            if let Some((ev @ Event::Start(Tag::MetadataBlock(_)), r)) = probe.next() {
+                front.push((ev, r.start + bom..r.end + bom));
+                for (ev, r) in probe {
+                    let end = matches!(ev, Event::End(TagEnd::MetadataBlock(_)));
+                    front.push((ev, r.start + bom..r.end + bom));
+                    if end {
+                        body = r.end + bom;
+                        break;
+                    }
+                }
+            }
+        }
+        front.into_iter().chain(
+            Parser::new_ext(&src[body..], Self::opts())
+                .into_offset_iter()
+                .map(move |(ev, r)| (ev, r.start + body..r.end + body)),
+        )
     }
 
     /// Append display text and record its provenance.
@@ -1803,7 +1909,6 @@ impl<'a> Builder<'a> {
     // the reasoning into an unreadable alternation.
     #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     fn run(mut self) -> Document {
-        let parser = Parser::new_ext(self.source, Self::opts());
         // Adjacent `Text` events over contiguous source are ONE text run, and
         // have to be seen as one: pulldown-cmark splits at a delimiter run it
         // then declines to use, so `x^2^` arrives as `Text("x^2") Text("^")`.
@@ -1815,7 +1920,7 @@ impl<'a> Builder<'a> {
         // events by definition, and the merged run keeps its `Verbatim`
         // standing only when the byte lengths still correspond, which `push`
         // already checks.
-        let mut events = parser.into_offset_iter().peekable();
+        let mut events = Self::events(self.source).peekable();
         while let Some((ev, src)) = events.next() {
             let (ev, src) = match ev {
                 Event::Text(first) => {
@@ -2317,6 +2422,43 @@ pub struct MetaLine {
 
 /// Display width of `s` laid out from column 0 with its tabs expanded — the
 /// width it will have in [`Document::text`].
+/// Where a frontmatter block that opens `src` could end: the end of the
+/// first line after the opener that is a closing fence, by pulldown-cmark's
+/// own rule (`scan_closing_metadata_block`: exactly three fence characters,
+/// or `...` for YAML, then spaces, then a line end). `None` when `src` does
+/// not open with a fence line at all. Only a CANDIDATE — the parser run over
+/// `src[..end]` decides whether it is frontmatter, so this need only never
+/// stop before pulldown-cmark's closer, which matching its rule ensures.
+fn frontmatter_candidate(src: &str) -> Option<usize> {
+    let b = src.as_bytes();
+    let fence = match b.get(..3)? {
+        b"---" => b'-',
+        b"+++" => b'+',
+        _ => return None,
+    };
+    let closes = |line: &[u8]| {
+        let three = |c: u8| line.len() >= 3 && line[..3].iter().all(|&x| x == c);
+        let n = if three(fence) || (fence == b'-' && three(b'.')) {
+            3
+        } else {
+            return false;
+        };
+        let rest = &line[n..];
+        let rest = &rest[rest.iter().take_while(|&&c| c == b' ').count()..];
+        rest.is_empty() || rest[0] == b'\r'
+    };
+    let mut at = src.find('\n')? + 1;
+    while at < b.len() {
+        let end = src[at..].find('\n').map_or(b.len(), |n| at + n + 1);
+        let line = b[at..end].strip_suffix(b"\n").unwrap_or(&b[at..end]);
+        if closes(line) {
+            return Some(end);
+        }
+        at = end;
+    }
+    None
+}
+
 fn expanded_width(s: &str) -> u16 {
     let mut col = 0;
     let _ = expand_tabs(s, &mut col);
@@ -3654,6 +3796,143 @@ mod tests {
             doc.node_for_block(BlockIdx(0)).kind,
             NodeKind::Metadata { .. }
         ));
+    }
+
+    /// `copy_text` restores the card's padding and nothing else: a TOML
+    /// `a=1` had no blanks to restore, and a decoded entity or smart quote
+    /// in prose is display text a paste should keep.
+    #[test]
+    fn copy_text_restores_card_padding_and_nothing_else() {
+        let src = "+++\na=1\nlonger = 2\n+++\n\nTom &amp; \"Jerry\"   x\n";
+        let doc = Document::parse(src);
+        let all = 0..doc.text.len() as u32;
+        let copied = doc.copy_text(all).unwrap();
+        assert!(copied.starts_with("a=1\nlonger = 2\n"), "{copied:?}");
+        assert!(doc.text.starts_with("a=      1\n"), "{:?}", doc.text);
+        assert!(copied.contains("Tom & \u{201c}Jerry\u{201d}"), "{copied:?}");
+        assert_eq!(doc.copy_text(0..doc.text.len() as u32 + 1), None);
+    }
+
+    /// Every block, as `(kind tag, text)`, for comparing whole parses.
+    fn blocks(doc: &Document) -> Vec<(String, String)> {
+        (0..doc.block_count())
+            .map(|b| {
+                let kind = format!("{:?}", doc.node_for_block(BlockIdx(b as u32)).kind);
+                let tag = kind.split([' ', '{', '(']).next().unwrap_or("").to_string();
+                (tag, doc.block_text(BlockIdx(b as u32)).to_string())
+            })
+            .collect()
+    }
+
+    fn metadata_blocks(doc: &Document) -> usize {
+        (0..doc.block_count())
+            .filter(|&b| {
+                matches!(
+                    doc.node_for_block(BlockIdx(b as u32)).kind,
+                    NodeKind::Metadata { .. }
+                )
+            })
+            .count()
+    }
+
+    /// Frontmatter exists only at the very start of a document. pulldown-cmark
+    /// accepts a metadata block at ANY block start, so a `---` … `---` section
+    /// in the middle of a changelog became a frontmatter card — and then had
+    /// its prose padded into a value column. It is a thematic break, a
+    /// heading, paragraphs, and another break, exactly as `CommonMark` says.
+    #[test]
+    fn a_fenced_section_in_the_middle_is_markdown_not_frontmatter() {
+        let mid = "---\n## Section\n\nAnother: line.\n\n---\n";
+        let doc = Document::parse(&format!("# T\n\nIntro.\n\n{mid}\nEnd.\n"));
+        assert_eq!(metadata_blocks(&doc), 0, "{:?}", blocks(&doc));
+        let kinds: Vec<_> = blocks(&doc).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(
+            kinds,
+            [
+                "Heading",
+                "Paragraph",
+                "Rule",
+                "Heading",
+                "Paragraph",
+                "Rule",
+                "Paragraph"
+            ]
+        );
+        assert!(doc.text.contains("Another: line."), "{:?}", doc.text);
+
+        // The same section after REAL frontmatter: the first block is the
+        // card, the rest is markdown — and every byte still maps home.
+        let src = format!("---\na: 1\n---\n\nIntro.\n\n{mid}\nEnd.\n");
+        let doc = Document::parse(&src);
+        assert_eq!(metadata_blocks(&doc), 1, "{:?}", blocks(&doc));
+        assert!(matches!(
+            doc.node_for_block(BlockIdx(0)).kind,
+            NodeKind::Metadata { .. }
+        ));
+        for word in ["Intro.", "Section", "Another: line.", "End."] {
+            let d = doc.text.find(word).unwrap() as u32;
+            assert_eq!(
+                &src[doc.to_src(DocByte(d)).0 as usize..][..word.len()],
+                word,
+                "{word} maps back to its own source"
+            );
+        }
+
+        // TOML and quoted fences are no different.
+        for src in [
+            "Text.\n\n+++\na = 1\n+++\n",
+            "> ---\n> a: b\n> ---\n",
+            "- item\n\n  ---\n  a: b\n  ---\n",
+        ] {
+            assert_eq!(metadata_blocks(&Document::parse(src)), 0, "{src:?}");
+        }
+    }
+
+    /// The start of a document is the start of the file after an optional
+    /// byte-order mark, and the YAML closer may be `...`.
+    #[test]
+    fn frontmatter_after_a_bom_with_a_dot_closer_or_alone_is_still_frontmatter() {
+        for src in [
+            "\u{feff}---\ntitle: Hi\n---\n\nbody\n",
+            "---\ntitle: Hi\n...\n\nbody\n",
+            "---\ntitle: Hi\n---\n",
+            "---\ntitle: Hi\n---",
+            "---\r\ntitle: Hi\r\n---\r\n",
+        ] {
+            let doc = Document::parse(src);
+            assert!(
+                matches!(
+                    doc.node_for_block(BlockIdx(0)).kind,
+                    NodeKind::Metadata { .. }
+                ),
+                "{src:?}: {:?}",
+                blocks(&doc)
+            );
+            let d = doc.text.find("Hi").unwrap() as u32;
+            assert_eq!(&src[doc.to_src(DocByte(d)).0 as usize..][..2], "Hi");
+            if let Some(d) = doc.text.find("body") {
+                assert_eq!(
+                    &src[doc.to_src(DocByte(d as u32)).0 as usize..][..4],
+                    "body"
+                );
+            }
+        }
+        // The BOM is no text in front of the first line, with or without
+        // frontmatter: it used to be painted into a heading's title, and
+        // to stop `# Title` from being a heading at all.
+        let src = "\u{feff}# Title\n\nbody\n";
+        let doc = Document::parse(src);
+        assert_eq!(blocks(&doc)[0], ("Heading".into(), "Title".into()));
+        let d = doc.text.find("body").unwrap() as u32;
+        assert_eq!(&src[doc.to_src(DocByte(d)).0 as usize..][..4], "body");
+        // What is not frontmatter at the start stays what it was.
+        for src in [
+            "---\n\ntitle: Hi\n---\n",
+            "----\ntitle: Hi\n----\n",
+            " ---\na: b\n---\n",
+        ] {
+            assert_eq!(metadata_blocks(&Document::parse(src)), 0, "{src:?}");
+        }
     }
 
     // --- definition lists (Q16, 2026-08-15) ---
