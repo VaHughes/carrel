@@ -10,7 +10,7 @@ license=('MIT OR Apache-2.0')
 depends=('gcc-libs')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('448c906485dad84bfde7fe1a2f35f85f9c36ea568ef902e6b38a2a9fde772f78')
+sha256sums=('cb30f64b27db494054b1e6b0807546cd96a5519e4f58d3fb1e5a2c3eba215f1f')
 
 prepare() {
   cd "$pkgname-$pkgver"
