@@ -149,7 +149,7 @@ Key facts that are easy to get wrong:
 
 | Module | What it is |
 |---|---|
-| `main.rs` | Entry, `USAGE`, `key_action` (the ONE key dispatcher, called by both loops), the event loop (`run_loop`, shared by the file, piped and `--tutorial` entries), `paint` (every frame inside a DEC 2026 synchronized update plus the OSC 8 post-draw pass), mtime `Reloader`, rescan timer, signal handling. |
+| `main.rs` | Entry, `USAGE`, `key_action` (the ONE key dispatcher, called by both loops), the event loop (`run_loop`, shared by the file, piped and `--tutorial` entries), `paint` (every frame inside a DEC 2026 synchronized update plus the OSC 8 post-draw pass), mtime `Reloader`, rescan timer, signal handling, `init_terminal` and the hang-up watch. |
 | `app.rs` | The state machine — `App`, `update()`, folding, bookmarks, links, `reveal_byte`, `adapt` (the single funnel every parse goes through for diff detection), `text_size`/`text_x`/`text_y`, the settings rows (`settings_rows`, derived per call, never stored), and `WELCOME` (`welcome.md`, embedded with `include_str!` and opened pathless like a pipe). |
 | `action.rs` | The shared `Action` intent enum and the per-frame click-target registry (`Targets`). |
 | `keys.rs` | Vim motion set with a count register, plus the beginner bindings — which by rule only ever claim keys that were **already unbound**, so the vim set is never diminished. Help tables and footer hint tables with drift guards. |
@@ -271,7 +271,28 @@ Key facts:
   a resize. The release of a click on a button is nothing, however many words are still
   selected; treated as a selection's end, it overwrote what the button had just copied.
 - **Hover lights the topmost target, and only where it shows** (`Targets::hoverable`,
-  `Targets::shows`). A pane's `Absorb` is an answer — nothing — not something to look past.
+  `Targets::shows`). A pane's `Absorb`, and the `PaneClose` scrim behind it, are answers —
+  nothing to light — not something to look past (`Action::is_backdrop`).
+- **One modal pane at a time, and `App::pane()` is the one answer to which.** Keys
+  (`key_action`), paint (`render::paint_pane`), the footer, menus, the wheel and hit-testing
+  all ask it, so the pane on top is the pane that owns the keys. `Pane::opened_by(Action)`
+  is exhaustive: an opener of another pane *replaces* a pane that takes no typed text
+  (`Pane::switches`) and is refused by one that does (help and outline filters, the search
+  prompt, the folder dialog, a note draft — which nothing ever discards). While a pane is
+  up, the painter lays a full-frame `PaneClose` target at `Z_SCRIM`, between the chrome and
+  the pane (layers: doc 0, chrome 1, scrim 2, overlay 3, menu 4), so a click anywhere outside
+  it closes it and does nothing else; the pane's own footer chips, the `≡` (which opens the
+  menu in the pane's place) and the lamp sit above it. Panes never cover the status row or
+  footer (`App::pane_rows`), except where one genuinely cannot show its choices above them
+  (`App::pane_fits`). A key named on a pane's border is painted from the same hint tables as
+  the footer, so the hint-honesty test covers it.
+- **A dead terminal must end the reader quietly.** `init_terminal` replaces
+  `ratatui::init`, whose panic hook and `restore()` report a failed restore with
+  `eprintln!` — which panics on the very terminal that failed, and `panic = "abort"`
+  made that a core dump every time a window was closed. Restores are `try_restore`,
+  stderr messages go through `say!`, and `TerminalGuard::watch_for_hangup` checks
+  `isatty(stdout)` every 500 ms because crossterm 0.29's `try_read` retries an EOF/`EIO`
+  read forever inside `event::poll` when no SIGHUP arrives.
 - **Notes go to the screen that paints them** — `App::set_note` routes between `App::note`
   and `Home::note`.
 - **OSC 8 is a post-draw pass** (ratatui/crossterm have no hyperlink support); it reads the

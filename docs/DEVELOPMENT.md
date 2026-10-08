@@ -76,11 +76,18 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   and check the output both enters (`ESC[?1049h`) and leaves (`ESC[?1049l`) the alternate
   screen. A detached pty reports 0x0 unless you set `stty` size. `TestBackend` will never
   tell you the loop spins at EOF; `carrel` refuses the TUI unless stdin and stdout are terminals.
+  **`script` writes the whole command into its typescript's first line**, so a capture must
+  drop it (`captured()` in `tests/pty.rs`) — the piped tests passed on that echo for a week
+  while nothing piped was shown. Look for words, not phrases: ratatui skips unchanged blank
+  cells with a cursor move, so `two arrived` on screen is `two`, a move, `arrived` in bytes.
+- **Every core dump raises a desktop notification on the maintainer's machine.** Drive only
+  a build that has the hang-up fix; never build an old revision just to compare.
 - **Live resize regression:** `tests/pty.rs` launches the stdlib-only Python 3
   driver `tests/support/resize_pty.py` under `timeout`. It sends real `SIGWINCH`
   events and checks reconstructed screens, OSC 52 copying, saved note contents,
-  immediate input during shrink, and terminal restoration. Python 3 and `timeout`
-  are required for this test (available on the Ubuntu CI runner).
+  immediate input during shrink, and terminal restoration. It skips loudly without
+  `python3`; the COPR spec carries `BuildRequires: python3` so it runs there too (its
+  absence failed the first 2026.10.8 COPR build).
 - **Installer smokes** additionally override `HOME`. The dist shell installer writes four
   dotfiles (`~/.bashrc`, `~/.profile`, `~/.zshrc`, `~/.config/fish/conf.d/carrel.env.fish`);
   grep all four for the scratch path before and after.
@@ -174,7 +181,9 @@ Gotchas:
 - **Relative links in the README break on crates.io** (resolved against `repository` +
   `path_in_vcs`). Use absolute URLs; the rendered readme is baked at publish time.
 - `copr-cli status` on a running build blocks past a ten-minute tool timeout; poll in bounded
-  batches. `copr-cli` may need a venv (`python3 -m venv … && pip install copr-cli`).
+  batches. `uvx --from copr-cli copr-cli buildscm … --nowait` works here; poll
+  `api_3/build/<id>` for its state. Never write a literal `%macro` in a spec comment — rpm
+  expands macros in comments.
 - The x86_64-apple-darwin release job once failed with `dist: command not found` and passed
   on rerun; if it recurs, pin the installer step.
 - The README demo is a committed VHS script (`contrib/demo.tape`), not a recording. VHS
