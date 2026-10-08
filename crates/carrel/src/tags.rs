@@ -29,20 +29,18 @@
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
 use std::collections::HashMap;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::SystemTime;
+
+use carrel_core::MetaFormat;
 
 use crate::scan::Entry;
 
 /// The first read. A frontmatter block almost always ends inside it, and a
 /// file that does not open with a fence is dismissed from its first bytes.
+/// A longer block is read on to `scan::FRONTMATTER_MAX`.
 const HEAD_BYTES: usize = 8 * 1024;
-/// How far to keep reading for a closing fence before deciding the opening
-/// `---` was a rule, not frontmatter. A truncated block must not be parsed:
-/// half a tag list is a wrong answer that looks like a right one.
-const FRONTMATTER_MAX: u64 = 64 * 1024;
 /// Tags kept per document. A list longer than this is data, not labeling.
 const MAX_TAGS_PER_FILE: usize = 32;
 /// Characters kept per tag.
@@ -158,59 +156,15 @@ pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
 
 /// The tags a file's frontmatter declares. Empty when it has no frontmatter,
 /// no tags, or cannot be read.
+///
+/// Frontmatter is found by the reader's own rule
+/// ([`carrel_core::frontmatter`]), through [`crate::scan::read_front`], so
+/// this can never index tags from a block the reader shows as a rule and a
+/// paragraph, nor read a block in the wrong dialect.
 #[must_use]
 pub fn tags_of(path: &Path) -> Vec<String> {
-    // Regular files only. The walk lists whatever is named `*.md`, and a
-    // FIFO blocks whoever opens it until someone writes — which would hold
-    // this thread, and the request it serves, forever.
-    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
-        return Vec::new();
-    }
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    let mut buf = vec![0u8; HEAD_BYTES];
-    let Ok(n) = f.read(&mut buf) else {
-        return Vec::new();
-    };
-    buf.truncate(n);
-    // Dismiss the common case before decoding anything.
-    let start = buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&buf);
-    if !(start.starts_with(b"---") || start.starts_with(b"+++")) {
-        return Vec::new();
-    }
-    if frontmatter(&String::from_utf8_lossy(&buf)).is_none() && n == HEAD_BYTES {
-        // No closing fence yet and the buffer was full: keep reading, to a
-        // bound, rather than parse a block we have only part of.
-        let _ = f
-            .take(FRONTMATTER_MAX - HEAD_BYTES as u64)
-            .read_to_end(&mut buf);
-    }
-    let head = String::from_utf8_lossy(&buf);
-    frontmatter(&head).map_or_else(Vec::new, |(body, toml)| parse_tags(body, toml))
-}
-
-/// The body of a leading frontmatter block and whether it is TOML, or `None`
-/// when the text does not open with a CLOSED one.
-fn frontmatter(text: &str) -> Option<(&str, bool)> {
-    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
-    let (first, rest) = text.split_once('\n')?;
-    let fence = first.trim_end();
-    let toml = match fence {
-        "---" => false,
-        "+++" => true,
-        _ => return None,
-    };
-    let mut at = 0usize;
-    for line in rest.split_inclusive('\n') {
-        let t = line.trim_end();
-        // YAML may also close a document with `...`.
-        if t == fence || (!toml && t == "...") {
-            return Some((&rest[..at], toml));
-        }
-        at += line.len();
-    }
-    None
+    crate::scan::read_front(path, HEAD_BYTES)
+        .map_or_else(Vec::new, |(head, fm)| parse_tags(&head[fm.body], fm.format))
 }
 
 /// The tags in a frontmatter body.
@@ -227,21 +181,16 @@ fn frontmatter(text: &str) -> Option<(&str, bool)> {
 /// tags = ["rust", "web dev"]   TOML
 /// ```
 #[must_use]
-pub fn parse_tags(body: &str, toml: bool) -> Vec<String> {
+pub fn parse_tags(body: &str, format: MetaFormat) -> Vec<String> {
     let lines: Vec<&str> = body.lines().collect();
     let mut out: Vec<String> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        // Top-level keys only: an indented `tags:` belongs to something else.
-        if line.starts_with([' ', '\t']) {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(if toml { '=' } else { ':' }) else {
+        // Key lines by the core's one predicate, so a tag is read only from
+        // a line the card shows as a key: top-level (an indented `tags:`
+        // belongs to something else), split at the block's own separator.
+        let Some(value) = tags_value(line, format) else {
             continue;
         };
-        let key = key.trim();
-        if !(key.eq_ignore_ascii_case("tags") || key.eq_ignore_ascii_case("tag")) {
-            continue;
-        }
         let value = uncomment(value).trim();
         if let Some(open) = value.strip_prefix('[') {
             // A flow list may run over several lines; gather to its `]`.
@@ -280,29 +229,17 @@ pub fn parse_tags(body: &str, toml: bool) -> Vec<String> {
     out
 }
 
-/// The tags of a frontmatter body of either kind. A metadata card holds the
-/// body without its fences, so which kind it is has to be found by trying.
-#[must_use]
-pub fn parse_any(body: &str) -> Vec<String> {
-    let yaml = parse_tags(body, false);
-    if yaml.is_empty() {
-        parse_tags(body, true)
-    } else {
-        yaml
-    }
-}
-
 /// Where each tag is written in a frontmatter body: `(byte range, tag)`, in
 /// order. For making the tags on a metadata card clickable.
 ///
-/// The tags come from [`parse_any`], so this can never disagree with the
+/// The tags come from [`parse_tags`], so this can never disagree with the
 /// tags page about what a tag is; their positions are then found by looking
 /// for each one's text in the lines that belong to the `tags` key. Longest
 /// first, so `rust` does not claim the middle of `rustlang`, and only at a
 /// word edge, so it does not claim the start of it either.
 #[must_use]
-pub fn spans(body: &str) -> Vec<(std::ops::Range<usize>, String)> {
-    let tags = parse_any(body);
+pub fn spans(body: &str, format: MetaFormat) -> Vec<(std::ops::Range<usize>, String)> {
+    let tags = parse_tags(body, format);
     if tags.is_empty() {
         return Vec::new();
     }
@@ -313,15 +250,10 @@ pub fn spans(body: &str) -> Vec<(std::ops::Range<usize>, String)> {
     let mut inside = false;
     let mut at = 0usize;
     for line in body.split_inclusive('\n') {
-        let top_level = !line.starts_with([' ', '\t', '-', ']', '#']) && !line.trim().is_empty();
-        let key = line
-            .split_once([':', '='])
-            .map(|(k, _)| k.trim())
-            .filter(|_| top_level);
-        let from = match key {
-            Some(k) if k.eq_ignore_ascii_case("tags") || k.eq_ignore_ascii_case("tag") => {
+        let from = match carrel_core::meta_split(line, format) {
+            Some(m) if is_tags_key(&line[..m.key_end]) => {
                 inside = true;
-                line.find([':', '=']).unwrap_or(0) + 1
+                m.sep_end
             }
             Some(_) => {
                 inside = false;
@@ -364,6 +296,29 @@ pub fn spans(body: &str) -> Vec<(std::ops::Range<usize>, String)> {
     }
     out.sort_by_key(|(r, _)| r.start);
     out
+}
+
+/// The value of `line` when it is a `tags` (or `tag`) key line, by
+/// [`carrel_core::meta_split`] — the predicate the card styles keys with.
+fn tags_value(line: &str, format: MetaFormat) -> Option<&str> {
+    let m = carrel_core::meta_split(line, format)?;
+    is_tags_key(&line[..m.key_end]).then(|| &line[m.value..])
+}
+
+/// `tags` or `tag`, in any case, quoted or not.
+fn is_tags_key(key: &str) -> bool {
+    let key = unquote_key(key);
+    key.eq_ignore_ascii_case("tags") || key.eq_ignore_ascii_case("tag")
+}
+
+/// A key without the quotes YAML and TOML both allow around it.
+pub(crate) fn unquote_key(key: &str) -> &str {
+    for q in ['"', '\''] {
+        if let Some(k) = key.strip_prefix(q).and_then(|k| k.strip_suffix(q)) {
+            return k;
+        }
+    }
+    key
 }
 
 /// Find `tag` in `text` at or after `from`, where each space in the tag
@@ -609,7 +564,7 @@ mod tests {
     use std::time::Duration;
 
     fn yaml(body: &str) -> Vec<String> {
-        parse_tags(body, false)
+        parse_tags(body, MetaFormat::Yaml)
     }
 
     #[test]
@@ -621,7 +576,7 @@ mod tests {
         assert_eq!(yaml("tags:\n- rust\n- web dev\n"), want, "flush block list");
         assert_eq!(yaml("tags: rust, web dev\n"), want, "comma scalar");
         assert_eq!(
-            parse_tags("tags = [\"rust\", \"web dev\"]\n", true),
+            parse_tags("tags = [\"rust\", \"web dev\"]\n", MetaFormat::Toml),
             want,
             "TOML"
         );
@@ -763,6 +718,11 @@ mod tests {
         );
     }
 
+    /// The core's finder, as `(body, is TOML)`.
+    fn frontmatter(text: &str) -> Option<(&str, bool)> {
+        carrel_core::frontmatter(text).map(|f| (&text[f.body], f.format == MetaFormat::Toml))
+    }
+
     #[test]
     fn frontmatter_must_open_the_file_and_be_closed() {
         assert_eq!(
@@ -792,6 +752,96 @@ mod tests {
             path,
             mtime: SystemTime::UNIX_EPOCH,
         }
+    }
+
+    /// Openings that are, and are not, frontmatter. The same list as the
+    /// core's `the_frontmatter_finder_agrees_with_the_parse`.
+    const TRICKY: &[&str] = &[
+        "---\ntags: [a]\ntitle: T\n---\n",
+        "---\n\ntags: [a]\ntitle: T\n---\n",
+        "---\n---\n",
+        "---\n---\ntags: [a]\n---\n",
+        "---\ntags: [a]\ntitle: T\n---\t\n",
+        "---\t\ntags: [a]\ntitle: T\n---\n",
+        "--- \ntags: [a]\ntitle: T\n---\n",
+        "---\ntags: [a]\ntitle: T\n---  \n",
+        "\u{feff}---\ntags: [a]\ntitle: T\n---\n",
+        "---\ntags: [a]\ntitle: T\n...\n",
+        "+++\ntags: [a]\ntitle: T\n...\n",
+        "+++\ntags = [\"a\"]\ntitle = \"T\"\n+++\n",
+        "+++\ntags: [a]\ntitle: T\n+++\n",
+        "---\ntags = [a]\ntitle = T\n---\n",
+        "+++\ntags = [\"a\"]\n---\n+++\n",
+        "---\r\ntags: [a]\r\ntitle: T\r\n---\r\n",
+        " ---\ntags: [a]\ntitle: T\n---\n",
+        "----\ntags: [a]\ntitle: T\n----\n",
+        "---\ntags: [a]\ntitle: T\n",
+        "---\ntags: [a]\ntitle: T\n---",
+        "---\ntags:[a]\ntitle:T\n---\n",
+        "---\n  tags: [a]\n  title: T\n---\n",
+        "---\n# a comment\ntags: [a]\n---\n",
+        "---\nmeta:\n  title: Nested\ntags:\n\t- a\n---\n# Heading\n",
+        "---\ntags: [a]\n---\n\n---\ntags: [b]\ntitle: Later\n---\n",
+        "# Title\n\n---\ntags: [a]\ntitle: T\n---\n",
+        "\n---\ntags: [a]\ntitle: T\n---\n",
+        "---\n\"tags\": [q]\n'title': Quoted key\n---\n",
+        "+++\n\"tags\" = [\"q\"]\ntitle=\"Tight\"\n+++\n",
+        "---",
+        "",
+    ];
+
+    /// The tag scan, the title scan and the card's tag buttons read
+    /// frontmatter exactly where the reader shows a card, and read from it
+    /// exactly what the card holds: no tags or title from a block the
+    /// reader shows as a rule and a paragraph, none missed from one it
+    /// shows as a card, and the card's own dialect rather than a guess.
+    #[test]
+    fn the_tag_and_title_scans_agree_with_the_reader() {
+        use carrel_core::{BlockIdx, Document, NodeKind};
+        let d = tempfile::tempdir().unwrap();
+        let mut cards = 0;
+        for (i, &src) in TRICKY.iter().enumerate() {
+            let path = write(d.path(), &format!("{i}.md"), src).path;
+            let doc = Document::parse(src);
+            let card = (doc.block_count() > 0)
+                .then(|| doc.node_for_block(BlockIdx(0)))
+                .and_then(|n| match n.kind {
+                    NodeKind::Metadata { format, .. } => Some((n, format)),
+                    _ => None,
+                });
+            let (tags, title) = card.map_or((Vec::new(), None), |(n, format)| {
+                cards += 1;
+                let shown = doc.block_text(BlockIdx(0));
+                let source = doc.copy_text(n.doc.clone()).unwrap();
+                let tags = parse_tags(&source, format);
+                let buttons: Vec<String> =
+                    spans(shown, format).into_iter().map(|(_, t)| t).collect();
+                let mut sorted = tags.clone();
+                sorted.sort();
+                let mut buttons = buttons;
+                buttons.sort();
+                assert_eq!(buttons, sorted, "the card's buttons: {src:?}");
+                (tags, crate::scan::frontmatter_title(&source, format))
+            });
+            assert_eq!(tags_of(&path), tags, "tags: {src:?}");
+            let scanned = crate::scan::title_of(&path);
+            match title {
+                Some(t) => assert_eq!(scanned, Some(t), "title: {src:?}"),
+                // No card title: whatever the scan finds must be a heading
+                // the reader shows, never a frontmatter value.
+                None => assert!(
+                    scanned.as_ref().is_none_or(|s| {
+                        (0..doc.block_count()).any(|b| {
+                            let b = BlockIdx(b as u32);
+                            matches!(doc.node_for_block(b).kind, NodeKind::Heading { .. })
+                                && doc.block_text(b) == s
+                        })
+                    }),
+                    "title {scanned:?}: {src:?}"
+                ),
+            }
+        }
+        assert!((8..TRICKY.len() - 8).contains(&cards), "{cards}");
     }
 
     #[test]
@@ -992,12 +1042,13 @@ mod tests {
 
     #[test]
     fn each_tag_is_found_where_it_is_written() {
-        let at = |body: &str| -> Vec<(String, String)> {
-            spans(body)
+        let at_in = |body: &str, format| -> Vec<(String, String)> {
+            spans(body, format)
                 .into_iter()
                 .map(|(r, tag)| (body[r].to_string(), tag))
                 .collect()
         };
+        let at = |body: &str| at_in(body, MetaFormat::Yaml);
         let pair = |a: &str| (a.to_string(), a.to_string());
         assert_eq!(
             at("title: About tags\ntags: [rust, web dev]\ndate: rust\n"),
@@ -1010,7 +1061,7 @@ mod tests {
             "the short one does not claim part of the long one"
         );
         assert_eq!(
-            at("tags = [\"notes\", \"#inbox\"]\n"),
+            at_in("tags = [\"notes\", \"#inbox\"]\n", MetaFormat::Toml),
             [pair("notes"), pair("inbox")],
             "TOML, and a tag written with its hash is the name after it"
         );
@@ -1030,7 +1081,7 @@ mod tests {
         );
         let body = "tags: # about rust\n  - rust\n";
         assert_eq!(
-            spans(body)[0].0.start,
+            spans(body, MetaFormat::Yaml)[0].0.start,
             body.rfind("rust").unwrap(),
             "not the comment"
         );

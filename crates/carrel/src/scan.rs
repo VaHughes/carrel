@@ -275,52 +275,111 @@ pub fn save_cache_in(dir: &Path, root: &Path, entries: &[Entry]) {
 }
 
 /// The document's own title: `title:` from frontmatter, else the first `#`
-/// heading, else nothing.
+/// heading after it, else nothing.
 ///
 /// **Reads only the head of the file.** A home screen paints fourteen rows;
 /// reading 110k files to fill them is not affordable, so this takes the first
-/// [`TITLE_BYTES`] and stops. Callers cache by `(path, mtime)`.
+/// [`TITLE_BYTES`] and stops — unless a frontmatter block runs past them
+/// (see [`read_head`]). Callers cache by `(path, mtime)`.
+///
+/// Frontmatter is found by the reader's own rule, and the title is read from
+/// a line the reader's card shows as the `title` key — so a `---` rule
+/// followed by `title:` prose, or a nested `title:`, is no title.
 #[must_use]
 pub fn title_of(path: &Path) -> Option<String> {
+    let (head, fm) = read_head(path, TITLE_BYTES, true)?;
+    if let Some(t) = fm
+        .as_ref()
+        .and_then(|fm| frontmatter_title(&head[fm.body.clone()], fm.format))
+    {
+        return Some(t);
+    }
+    let bom = if head.starts_with('\u{feff}') { 3 } else { 0 };
+    let from = fm.map_or(bom, |f| f.end);
+    head[from..].lines().find_map(|line| {
+        let h = line.trim().strip_prefix("# ")?.trim();
+        (!h.is_empty()).then(|| h.chars().take(120).collect())
+    })
+}
+
+/// The `title` a frontmatter body declares, quotes trimmed and capped at
+/// 120 characters — `None` when it declares none, or an empty one. Key
+/// lines are [`carrel_core::meta_split`]'s, at the block's own separator.
+#[must_use]
+pub fn frontmatter_title(body: &str, format: carrel_core::MetaFormat) -> Option<String> {
+    body.lines().find_map(|line| {
+        let m = carrel_core::meta_split(line, format)?;
+        if crate::tags::unquote_key(&line[..m.key_end]) != "title" {
+            return None;
+        }
+        let v = line[m.value..].trim().trim_matches(['"', '\'']).trim();
+        (!v.is_empty()).then(|| v.chars().take(120).collect())
+    })
+}
+
+/// The frontmatter block that opens a regular file, and the text it was
+/// found in (`body` and `end` index that text) — `None` when the file has
+/// none, is not a regular file, or cannot be read. See [`read_head`].
+#[must_use]
+pub fn read_front(path: &Path, first: usize) -> Option<(String, carrel_core::Frontmatter)> {
+    let (text, fm) = read_head(path, first, false)?;
+    Some((text, fm?))
+}
+
+/// The first `first` bytes of a regular file as text, and the frontmatter
+/// block that opens it — found by [`carrel_core::frontmatter`], the rule the
+/// reader itself parses with, so a scan cannot disagree with the card.
+///
+/// When the head opens with a fence but holds no closing one and the read
+/// was cut short, the read continues to [`FRONTMATTER_MAX`] rather than give
+/// up on a long block — and a block still unclosed there is no frontmatter:
+/// half a tag list is a wrong answer that looks like a right one.
+///
+/// A file that does not open with a fence is dismissed from its first bytes;
+/// its text is decoded only when `unfenced` asks for it, since the tag scan
+/// reads thousands of such files and wants nothing from them.
+///
+/// `None` for anything that is not a regular file — a FIFO named `notes.md`
+/// blocks whoever opens it until someone writes — or cannot be read.
+fn read_head(
+    path: &Path,
+    first: usize,
+    unfenced: bool,
+) -> Option<(String, Option<carrel_core::Frontmatter>)> {
     use std::io::Read as _;
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
     let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; TITLE_BYTES];
+    // One read: a short file costs one syscall, where `read_to_end` would
+    // spend a second finding its end.
+    let mut buf = vec![0u8; first];
     let n = f.read(&mut buf).ok()?;
     buf.truncate(n);
-    let head = String::from_utf8_lossy(&buf);
-
-    let mut in_front = false;
-    for (i, line) in head.lines().enumerate() {
-        let t = line.trim();
-        if i == 0 && (t == "---" || t == "+++") {
-            in_front = true;
-            continue;
-        }
-        if in_front {
-            if t == "---" || t == "+++" {
-                in_front = false;
-                continue;
-            }
-            if let Some(v) = t
-                .strip_prefix("title:")
-                .or_else(|| t.strip_prefix("title ="))
-            {
-                let v = v.trim().trim_matches(['"', '\'']).trim();
-                if !v.is_empty() {
-                    return Some(v.chars().take(120).collect());
-                }
-            }
-            continue;
-        }
-        if let Some(h) = t.strip_prefix("# ") {
-            let h = h.trim();
-            if !h.is_empty() {
-                return Some(h.chars().take(120).collect());
-            }
-        }
+    let start = buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&buf);
+    if !(start.starts_with(b"---") || start.starts_with(b"+++")) {
+        let text = if unfenced {
+            String::from_utf8_lossy(&buf).into_owned()
+        } else {
+            String::new()
+        };
+        return Some((text, None));
     }
-    None
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    let mut fm = carrel_core::frontmatter(&text);
+    if fm.is_none() && n == first {
+        let _ = f
+            .take(FRONTMATTER_MAX.saturating_sub(first as u64))
+            .read_to_end(&mut buf);
+        text = String::from_utf8_lossy(&buf).into_owned();
+        fm = carrel_core::frontmatter(&text);
+    }
+    Some((text, fm))
 }
+
+/// How far [`read_head`] keeps reading for a closing fence before deciding
+/// the opening `---` was a rule, not frontmatter.
+pub const FRONTMATTER_MAX: u64 = 64 * 1024;
 
 /// The first [`HEAD_BYTES`] of a file as text, for the home screen's preview.
 ///

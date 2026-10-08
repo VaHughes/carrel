@@ -3624,11 +3624,11 @@ fn request_tags(app: &mut App, focus: Option<String>) -> Outcome {
 fn tag_at(app: &App, byte: u32) -> Option<String> {
     let block = app.doc.block_at_doc(DocByte(byte));
     let node = app.doc.node_for_block(block);
-    if !matches!(node.kind, NodeKind::Metadata { .. }) {
+    let NodeKind::Metadata { format, .. } = node.kind else {
         return None;
-    }
+    };
     let at = (byte.checked_sub(node.doc.start)?) as usize;
-    crate::tags::spans(app.doc.block_text(block))
+    crate::tags::spans(app.doc.block_text(block), format)
         .into_iter()
         .find(|(r, _)| r.contains(&at))
         .map(|(_, tag)| tag)

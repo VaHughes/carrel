@@ -2304,7 +2304,7 @@ fn paint_card_row(
 
     // Each tag is a button: the tags page, open at that tag. A tag a narrow
     // row divides is a button on both of its rows.
-    for (range, _) in crate::tags::spans(body) {
+    for (range, _) in crate::tags::spans(body, format) {
         if let Some(rect) = cells(range.clone()) {
             targets.push(
                 Action::TagOpen(node.doc.start + u32::try_from(range.start).unwrap_or(0)),

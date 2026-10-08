@@ -376,18 +376,22 @@ fn english_share(doc: &Document) -> (u32, u32, u32) {
 /// YAML parse — a reader must never fail on exotic YAML — so this reads the
 /// one line it is looking for and nothing else.
 fn declared_english(doc: &Document) -> Option<bool> {
-    let node = doc
-        .layout_order
-        .first()
-        .map(|id| &doc.nodes[id.get()])
-        .filter(|n| matches!(n.kind, NodeKind::Metadata { .. }))?;
+    let node = doc.layout_order.first().map(|id| &doc.nodes[id.get()])?;
+    let NodeKind::Metadata { format, .. } = node.kind else {
+        return None;
+    };
     let body = &doc.text[node.doc.start as usize..node.doc.end as usize];
+    // Key lines through the core's one predicate, at the card's OWN
+    // separator — what the card styles as a key is what is read as one.
     body.lines().find_map(|line| {
-        let (key, value) = line.split_once([':', '='])?;
-        if !matches!(key.trim(), "lang" | "language") {
+        let m = crate::document::meta_split(line, format)?;
+        if !matches!(&line[..m.key_end], "lang" | "language") {
             return None;
         }
-        let value = value.trim().trim_matches(['"', '\'']).to_ascii_lowercase();
+        let value = line[m.value..]
+            .trim()
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase();
         let tag = value.split(['-', '_']).next().unwrap_or_default();
         Some(matches!(tag, "en" | "eng" | "english"))
     })
@@ -664,6 +668,15 @@ mod tests {
     fn a_declared_language_wins_in_both_directions() {
         let de = format!("---\nlang: de\n---\n\n{ENGLISH_PROSE}");
         assert_eq!(hyphenation_for(&Document::parse(&de)), Hyphenation::Off);
+        // The card's own separator, through the core's one predicate: a
+        // YAML key `lang=en` is not `lang`, and a TOML key `lang: x` is not
+        // either — before, each was split at whichever character came first.
+        let yaml_key = format!("---\nlang=en: x\n---\n\n{ENGLISH_PROSE}");
+        assert_eq!(declared_english(&Document::parse(&yaml_key)), None);
+        let toml_key = "+++\nlanguage: x = \"de\"\n+++\n\nShort.";
+        assert_eq!(declared_english(&Document::parse(toml_key)), None);
+        let toml = "+++\nlang=\"de\"\n+++\n\nShort.";
+        assert_eq!(declared_english(&Document::parse(toml)), Some(false));
         let en = "---\ntitle: Notes\nlang: en-GB\n---\n\nShort.";
         assert_eq!(hyphenation_for(&Document::parse(en)), Hyphenation::English);
         let toml = "+++\nlanguage = \"English\"\n+++\n\nShort.";

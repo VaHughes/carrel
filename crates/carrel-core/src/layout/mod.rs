@@ -221,7 +221,7 @@ pub fn wrap_chunk<F: FnMut(Row)>(
         width,
         indent: node.indent,
         code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
-        meta: meta_key_col(&node.kind),
+        meta: meta_value_col(&node.kind),
         soft: soft_breaks(doc, block, hyphenation),
     };
     wrap_slice(&text[r], &at, w, first, &mut sink)
@@ -327,7 +327,7 @@ pub fn wrap_with<F: FnMut(Row)>(
             width,
             indent: node.indent,
             code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
-            meta: meta_key_col(&node.kind),
+            meta: meta_value_col(&node.kind),
             soft: soft_breaks(doc, block, hyphenation),
         };
         rows = rows.saturating_add(wrap_slice(
@@ -364,7 +364,7 @@ struct Slice<'a> {
     /// Code blocks reserve [`CONTINUATION_COLS`] on continuation rows for a
     /// marker; prose reserves nothing.
     code: bool,
-    /// `Some((key_col, format))` for a frontmatter card: a key line's
+    /// `Some((value_col, format))` for a frontmatter card: a key line's
     /// continuation rows hang under its value column. See [`meta_fit`].
     meta: Option<(u16, crate::document::MetaFormat)>,
     /// `Some` when this slice's words may be divided: the block's style
@@ -372,11 +372,11 @@ struct Slice<'a> {
     soft: Option<&'a [Inline]>,
 }
 
-/// The `key_col` and dialect of a frontmatter card, or `None` for every
+/// The `value_col` and dialect of a frontmatter card, or `None` for every
 /// other kind.
-fn meta_key_col(kind: &crate::document::NodeKind) -> Option<(u16, crate::document::MetaFormat)> {
+fn meta_value_col(kind: &crate::document::NodeKind) -> Option<(u16, crate::document::MetaFormat)> {
     match kind {
-        crate::document::NodeKind::Metadata { key_col, format } => Some((*key_col, *format)),
+        crate::document::NodeKind::Metadata { value_col, format } => Some((*value_col, *format)),
         _ => None,
     }
 }
@@ -390,8 +390,9 @@ const MIN_VALUE_COLS: u16 = 12;
 /// starts on a row of its own.
 ///
 /// A key line's value was aligned at parse (the padding is in the text), so
-/// its value column is the card's shared one — `key_col`, the separator, a
-/// space — and a wrapped value continues under it, the way a code line
+/// its value column is the card's shared one — `value_col`, the column the
+/// parse padded every value to — and a wrapped value continues under it, the
+/// way a code line
 /// continues under its own indentation. A key wider than the cap hangs at the
 /// shared column too, not under its own later value. Any other line — a list
 /// item, a block scalar, a comment — hangs under its leading blanks.
@@ -405,14 +406,14 @@ const MIN_VALUE_COLS: u16 = 12;
 /// sat beside the key and the rest fell under it, a shape that reads as two
 /// different keys.
 ///
-/// `key_col` and the padding were measured at parse with the core's widths;
+/// `value_col` and the padding were measured at parse with the core's widths;
 /// this measures with `w`. They agree for every frontend that exists (the
 /// terminal injects `cluster_width`), and taking the smaller of the shared
 /// column and the line's own value column means a frontend that disagreed
 /// could only pull a continuation row left of its value, never past it.
 fn meta_fit(
     line: &str,
-    (key_col, format): (u16, crate::document::MetaFormat),
+    (value_col, format): (u16, crate::document::MetaFormat),
     at: &Slice,
     w: &WidthFn,
 ) -> LineFit {
@@ -424,12 +425,7 @@ fn meta_fit(
     let split =
         crate::document::meta_split(line, format).filter(|m| !line[m.value..].trim().is_empty());
     let hang = match split {
-        Some(m) => {
-            let shared = key_col
-                .saturating_add(measure(&line[m.key_end..m.sep_end]))
-                .saturating_add(1);
-            shared.min(measure(&line[..m.value]))
-        }
+        Some(m) => value_col.min(measure(&line[..m.value])),
         None => leading_width(line, w),
     };
     if avail.saturating_sub(hang) >= hang.max(MIN_VALUE_COLS) {
@@ -744,6 +740,22 @@ mod tests {
                 (0, "title: one two three".to_string()),
                 (7, "four five".to_string()),
                 (0, "id:    x".to_string()),
+            ]
+        );
+    }
+
+    /// A line whose separator sits closer to its key still hangs its wrapped
+    /// value under the card's ONE value column — where the parse put every
+    /// value, and so where `longer`'s value is painted.
+    #[test]
+    fn a_wrapped_value_hangs_under_the_card_column_whatever_its_gap() {
+        let rows = card_rows("+++\nlonger = x\na=one two three four five six\n+++\n", 24);
+        assert_eq!(
+            rows,
+            [
+                (0, "longer = x".to_string()),
+                (0, "a=       one two three".to_string()),
+                (9, "four five six".to_string()),
             ]
         );
     }

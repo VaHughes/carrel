@@ -105,14 +105,23 @@ Key facts that are easy to get wrong:
   row is one contiguous doc range. The `│` separators are paint-time decoration. The synthetic
   `\t` between cells marks a cell boundary; the card view finds cells through `Table::cell_starts`.
 - **The frontmatter card is aligned at parse too.** The blanks after each key's separator are
-  padded so every value starts in one column (`key_col` + separator + a space), and the reflow
-  layer hangs a wrapped value under that column — or, too narrow for one, stacks the key over
-  its value. The card's rows are ordinary rows painted by `paint_row`; only the `╭ │ ╰` rule is
-  decoration (`╶` for a one-row card). `meta_split` is the one "which lines are keys" predicate
-  that parse, layout and paint share, and it takes the block's `MetaFormat`: YAML splits at
-  `:`, TOML at `=`, never at the other's. Alignment is decided per line, so a CRLF file — whose
-  `\r`s pulldown-cmark drops — still aligns, with exact provenance. (The padding used to be
-  added at paint, so the painted card disagreed with the layout that counted its rows.)
+  padded so every value starts in ONE column (`value_col`: the widest key + gap + separator,
+  the key capped at 16 cells, plus a space), and the reflow layer hangs a wrapped value under
+  that column — or, too narrow for one, stacks the key over its value. The card's rows are
+  ordinary rows painted by `paint_row`; only the `╭ │ ╰` rule is decoration (`╶` for a
+  one-row card). `meta_split` is the one "which lines are keys" predicate that parse, layout,
+  paint, the hyphenation language check and the frontend's tag and title scans share, and it
+  takes the block's `MetaFormat`: YAML splits at `:`, TOML at `=`, never at the other's.
+  Alignment is decided per line, so a CRLF file — whose `\r`s pulldown-cmark drops — still
+  aligns, with exact provenance. (The padding used to be added at paint, so the painted card
+  disagreed with the layout that counted its rows.) The body is shown **raw** — no
+  sub/superscript, entities or smart punctuation — so its text differs from its source only by
+  that padding and expanded tabs, each a run of its own; `Document::copy_text` gives both back.
+- **Whether a file HAS frontmatter is `carrel_core::frontmatter(src)`**, the function the
+  parser itself takes its frontmatter events from: only at the very start (after a BOM), as
+  pulldown-cmark decides it, parsing nothing past the closing fence. The tag scan, the home
+  list's titles and anything else reading frontmatter without a `Document` go through it
+  (`scan::read_front`), so a scan cannot index a block the reader shows as a rule.
 - **Tabs are expanded at parse, not at layout** — a tab's width depends on its column, which the
   per-cluster `WidthFn` cannot express.
 - **`Event::Text` is not always a source substring** (entity decoding, smart punctuation change
@@ -148,7 +157,7 @@ Key facts that are easy to get wrong:
 | `render.rs` | Paints rows into the `Buffer`; never uses `Paragraph`/`Wrap`. Highlights by `Buffer::set_style` over a rect, never by splitting spans. `declare_wide_cells` works around ratatui#2651. |
 | `theme.rs` | The only file with a color. 17 palettes plus `omarchy` (derived from the desktop's `colors.toml`, `omarchy.rs`). |
 | `home.rs`, `scan.rs`, `grep.rs`, `fuzzy.rs` | The home screen: streamed `.gitignore`-aware scan (`ignore` crate, `require_git(false)`), cached index, 2 s rescan while listed, directory picker with path completion and remembered places, fuzzy filter, multi-file content search, frontmatter titles. |
-| `tags.rs` | Frontmatter tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads the head of every scanned entry — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and `render` writes a section per tag with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. No UI dependencies. |
+| `tags.rs` | Frontmatter tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads the head of every scanned entry, finds its frontmatter by the core's own rule (`carrel_core::frontmatter`) and its key lines by `meta_split` — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and `render` writes a section per tag with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. No UI dependencies. |
 | `menu.rs`, `footer.rs`, `breadcrumb.rs`, `status.rs` | Pure selectors for the right-click/`≡` menus, the lamplight hint row, the sticky heading band, and the reader's status row (the trail at its left, the chips at its right, and what each drops when the row is short). |
 | `peek.rs` | The footnote peek: its text and its box geometry. Not a pane — it owns no keyboard, and whatever the reader does next closes it and then happens. A resize closes it (it is drawn at the cell its mark was clicked at); auto-read waits while it is open. |
 | `cli.rs` | What the command line meant where that takes judgment: `FILE:LINE` / `FILE#section` (a path that exists is never split), the nearest option or file to a mistyped one, the newest document, and a pasted or dropped path in whatever form the terminal handed it over. |

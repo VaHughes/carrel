@@ -40,6 +40,9 @@ use crate::position::{BlockIdx, DocByte, NodeId, SrcByte};
 
 /// Tab stop, in display cells.
 const TAB_STOP: u16 = 4;
+/// The widest a frontmatter key counts for when the card's value column is
+/// chosen. A longer key keeps one blank after its own separator.
+const META_KEY_CAP: u16 = 16;
 
 /// Inline style flags. A bitset so runs coalesce cheaply.
 ///
@@ -338,10 +341,13 @@ pub enum NodeKind {
     /// never fail on exotic YAML). The reflow layer hangs a wrapped value
     /// under that column; only the card's rule is the frontend's to draw.
     Metadata {
-        /// Max-content display width of the key column, capped at 16 cells.
-        /// **Width-independent** — a property of the text alone, so it has the
-        /// same standing here as `Table::cols` and `Node::indent`.
-        key_col: u16,
+        /// The display column every value starts in: the widest
+        /// `key + gap + separator`, the key capped at 16 cells, plus one
+        /// blank. The parse padded every value to it, the reflow layer hangs
+        /// a wrapped value under it. **Width-independent** — a property of
+        /// the text alone, so it has the same standing here as `Table::cols`
+        /// and `Node::indent`.
+        value_col: u16,
         /// Which dialect the fence declared — and so which separator
         /// [`meta_split`] divides its lines at.
         format: MetaFormat,
@@ -555,20 +561,24 @@ impl Document {
     }
 
     /// What a copy of `r` puts on the clipboard: `text[r]`, except that the
-    /// frontmatter card's alignment padding goes back to the blanks the
-    /// author wrote. `None` when `r` is not a slice of the text.
+    /// frontmatter card gives back the author's spelling. `None` when `r` is
+    /// not a slice of the text.
     ///
-    /// The value column is space-2 padding so that layout, paint, search and
-    /// the pointer all agree on it — and `r` stays a doc range for exactly
-    /// that reason — but `title:      Edge` is not what anyone wrote, and a
-    /// paste lands in a YAML file or a prompt. Unlike table padding, this
-    /// padding REPLACED source bytes, and its provenance records exactly
-    /// which, so the author's spelling is recoverable without guessing.
+    /// The card body is shown raw (see `push_meta_verbatim`), so only two
+    /// things in its text differ from its source: the value column's
+    /// alignment padding and expanded tabs. Both are space-2 so that layout,
+    /// paint, search and the pointer all agree on them — and `r` stays a doc
+    /// range for exactly that reason — but `title:      Edge` is not what
+    /// anyone wrote, and a paste lands in a YAML file or a prompt. Each is a
+    /// run of spaces that REPLACED a run of source blanks, and its
+    /// provenance records exactly which, so the author's spelling is
+    /// recoverable without guessing; every other card byte is verbatim.
     /// Table padding is deliberately left as it is: it has no source (the
     /// source is `|` syntax), and the aligned grid is the useful paste.
     ///
     /// A copy that begins or ends inside a run of padding takes no more of
-    /// the author's blanks than it selected.
+    /// the author's blanks than it selected; one that touches any part of an
+    /// expanded tab takes the tab.
     #[must_use]
     pub fn copy_text(&self, r: Range<u32>) -> Option<String> {
         let text = self.text.get(r.start as usize..r.end as usize)?;
@@ -598,11 +608,12 @@ impl Document {
         Some(out)
     }
 
-    /// The source blanks a run of frontmatter alignment padding replaced,
-    /// or `None` when `p` is anything else. Padding is a `Substituted` run of
-    /// spaces over a source run of blanks (possibly empty: TOML's `a=1`),
-    /// inside a metadata block — entity decoding and smart punctuation are
-    /// never all-blank on both sides, and table padding is `Synthetic`.
+    /// The source blanks a run of frontmatter card spaces replaced — the
+    /// value column's padding, or one expanded tab — or `None` when `p` is
+    /// anything else. Either is a `Substituted` run of spaces over a source
+    /// run of blanks (possibly empty: TOML's `a=1`), inside a metadata
+    /// block. Nothing else in a card is substituted, and table padding is
+    /// `Synthetic`.
     fn meta_padding(&self, p: &Prov) -> Option<&str> {
         if p.kind != ProvKind::Substituted {
             return None;
@@ -1400,7 +1411,14 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Max-content display width of a frontmatter key column, capped at 16.
+    /// The column every value of a frontmatter card starts in: the widest
+    /// `key + gap + separator` of its key lines, plus one blank — the key
+    /// part capped at [`META_KEY_CAP`] cells, so one very long key keeps its
+    /// own single blank rather than pushing every value across the card.
+    ///
+    /// ONE column for the whole card. It used to be the widest key plus
+    /// each line's OWN gap and separator, so `a=1` beside `longer = 2`, or
+    /// `a : 1` beside `bb: 2`, put their values a column apart.
     ///
     /// Deliberately **not** a YAML parse: see [`meta_split`]. A line that does
     /// not split — a nested map, a list item, a block scalar, a comment —
@@ -1408,22 +1426,26 @@ impl<'a> Builder<'a> {
     /// under its parent. A *reader* must never fail on exotic YAML; the worst
     /// outcome here is an unaligned line, not a lost document.
     ///
-    /// Measured as the TEXT will hold the key — tabs expanded, which
+    /// Measured as the TEXT will hold the line — tabs expanded, which
     /// [`Self::push`] does to every metadata line from column 0 — because
     /// that is what the reflow layer measures when it hangs a wrapped value.
-    fn meta_key_col(body: &str, format: MetaFormat) -> u16 {
+    fn meta_value_col(body: &str, format: MetaFormat) -> u16 {
         body.lines()
-            .filter_map(|l| meta_split(l, format).map(|m| expanded_width(&l[..m.key_end])))
+            .filter_map(|l| {
+                let m = meta_split(l, format)?;
+                let key = expanded_width(&l[..m.key_end]);
+                let sep = expanded_width(&l[..m.sep_end]).saturating_sub(key);
+                Some(key.min(META_KEY_CAP).saturating_add(sep).saturating_add(1))
+            })
             .max()
             .unwrap_or(0)
-            .min(16)
     }
 
     /// Replay a buffered frontmatter body with its values aligned.
     ///
     /// The value column is **space-2 padding**, exactly like table cells: the
     /// blanks after each key's separator are replaced by enough spaces that
-    /// every value starts in one column. Width-independent — `key_col` is a
+    /// every value starts in one column. Width-independent — `value_col` is a
     /// property of the text — so this is construction, not layout. Before
     /// this, the padding was added at PAINT, so the painted card disagreed
     /// with the text the layout wrapped and the pointer resolved through:
@@ -1447,7 +1469,7 @@ impl<'a> Builder<'a> {
     /// never past its value.
     fn flush_metadata(&mut self, pieces: &[(String, Range<usize>)], format: MetaFormat) -> u16 {
         let body: String = pieces.iter().map(|(t, _)| t.as_str()).collect();
-        let key_col = Self::meta_key_col(&body, format);
+        let value_col = Self::meta_value_col(&body, format);
         // For each body byte: the piece it came from, and its source byte
         // when that piece is a verbatim copy of its source.
         let mut map: Vec<(usize, Option<usize>)> = Vec::with_capacity(body.len());
@@ -1463,14 +1485,8 @@ impl<'a> Builder<'a> {
                 .and_then(|m| Some((m, exact_src(&map, off + m.sep_end..off + m.value)?)));
             match split {
                 Some((m, blanks_src)) => {
-                    let target = key_col
-                        .saturating_add(
-                            expanded_width(&line[..m.sep_end])
-                                .saturating_sub(expanded_width(&line[..m.key_end])),
-                        )
-                        .saturating_add(1);
                     let pad = usize::from(
-                        target
+                        value_col
                             .saturating_sub(expanded_width(&line[..m.sep_end]))
                             .max(1),
                     );
@@ -1488,7 +1504,7 @@ impl<'a> Builder<'a> {
             }
             off = end;
         }
-        key_col
+        value_col
     }
 
     /// Push `body[r]` of a frontmatter body, split wherever its provenance
@@ -1509,7 +1525,7 @@ impl<'a> Builder<'a> {
                 while to < range.end && map[to].1 == Some(start + (to - from)) {
                     to += 1;
                 }
-                self.push_linkified(&body[from..to], start..start + (to - from));
+                self.push_meta_verbatim(&body[from..to], start);
             } else {
                 while to < range.end && map[to] == (piece, None) {
                     to += 1;
@@ -1519,6 +1535,49 @@ impl<'a> Builder<'a> {
             }
             from = to;
         }
+    }
+
+    /// Push a verbatim run of a frontmatter body that starts at source byte
+    /// `start`, keeping every byte's provenance exact.
+    ///
+    /// The card body is YAML or TOML, not markdown, so it is shown RAW:
+    /// no `^…^`/`~…~` scripts (`~` is YAML's null and the start of a home
+    /// path), no entities, no smart punctuation. Only two things differ from
+    /// the source — the value column's padding (`flush_metadata`) and tab
+    /// expansion — so each tab is pushed as a run of its own: its blanks
+    /// then map back to exactly that tab, which is what lets
+    /// [`Document::copy_text`] give it back. A bare `www.` URL is still a
+    /// link; that changes no byte of the text.
+    fn push_meta_verbatim(&mut self, t: &str, start: usize) {
+        let mut cursor = 0;
+        for (range, url) in extended_autolinks(t) {
+            self.push_meta_plain(&t[cursor..range.start], start + cursor);
+            let id = LinkId(self.links.len() as u32);
+            self.links.push(url.into_boxed_str());
+            self.wiki.push(false);
+            let prev = (self.current_link, self.style);
+            self.current_link = Some(id);
+            self.style = self.style.insert(Style::LINK);
+            self.push_meta_plain(&t[range.clone()], start + range.start);
+            (self.current_link, self.style) = prev;
+            cursor = range.end;
+        }
+        self.push_meta_plain(&t[cursor..], start + cursor);
+    }
+
+    /// [`Self::push_meta_verbatim`] without the links: split at every tab.
+    fn push_meta_plain(&mut self, t: &str, start: usize) {
+        let mut from = 0;
+        for (i, _) in t.match_indices('\t') {
+            self.push(&t[from..i], start + from..start + i, ProvKind::Verbatim);
+            self.push("\t", start + i..start + i + 1, ProvKind::Verbatim);
+            from = i + 1;
+        }
+        self.push(
+            &t[from..],
+            start + from..start + t.len(),
+            ProvKind::Verbatim,
+        );
     }
 
     fn opts() -> Options {
@@ -1554,26 +1613,11 @@ impl<'a> Builder<'a> {
     /// is the first character of the first line, which stops that line from
     /// opening a heading, a fence or a list.
     fn events(src: &str) -> impl Iterator<Item = (Event<'_>, Range<usize>)> {
-        let bom = if src.starts_with('\u{feff}') { 3 } else { 0 };
-        let mut front = Vec::new();
-        let mut body = bom;
-        if let Some(cand) = frontmatter_candidate(&src[bom..]) {
-            let opts = Self::opts()
-                | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-                | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS;
-            let mut probe = Parser::new_ext(&src[bom..bom + cand], opts).into_offset_iter();
-            if let Some((ev @ Event::Start(Tag::MetadataBlock(_)), r)) = probe.next() {
-                front.push((ev, r.start + bom..r.end + bom));
-                for (ev, r) in probe {
-                    let end = matches!(ev, Event::End(TagEnd::MetadataBlock(_)));
-                    front.push((ev, r.start + bom..r.end + bom));
-                    if end {
-                        body = r.end + bom;
-                        break;
-                    }
-                }
-            }
-        }
+        let front = front_events(src).unwrap_or_default();
+        let body = front.last().map_or_else(
+            || if src.starts_with('\u{feff}') { 3 } else { 0 },
+            |(_, r)| r.end,
+        );
         front.into_iter().chain(
             Parser::new_ext(&src[body..], Self::opts())
                 .into_offset_iter()
@@ -2071,7 +2115,7 @@ impl<'a> Builder<'a> {
                 }
 
                 // Frontmatter. The body is pushed verbatim like any other text;
-                // `key_col` is computed at close from the lines actually
+                // `value_col` is computed at close from the lines actually
                 // captured, because the width is a property of the whole block.
                 Event::Start(Tag::MetadataBlock(kind)) => {
                     // Reserve the card's gutter in the MODEL, not at paint:
@@ -2082,7 +2126,13 @@ impl<'a> Builder<'a> {
                         MetadataBlockKind::YamlStyle => MetaFormat::Yaml,
                         MetadataBlockKind::PlusesStyle => MetaFormat::Toml,
                     };
-                    self.open_block(NodeKind::Metadata { key_col: 0, format }, &src);
+                    self.open_block(
+                        NodeKind::Metadata {
+                            value_col: 0,
+                            format,
+                        },
+                        &src,
+                    );
                     self.meta = Some(Vec::new());
                 }
                 Event::End(TagEnd::MetadataBlock(kind)) => {
@@ -2091,9 +2141,9 @@ impl<'a> Builder<'a> {
                         MetadataBlockKind::YamlStyle => MetaFormat::Yaml,
                         MetadataBlockKind::PlusesStyle => MetaFormat::Toml,
                     };
-                    let key_col = self.flush_metadata(&pieces, format);
+                    let value_col = self.flush_metadata(&pieces, format);
                     if let Some(o) = self.open.as_mut() {
-                        o.kind = NodeKind::Metadata { key_col, format };
+                        o.kind = NodeKind::Metadata { value_col, format };
                     }
                     self.close_block(src.end);
                     self.indent = self.indent.saturating_sub(2);
@@ -2420,8 +2470,82 @@ pub struct MetaLine {
     pub value: usize,
 }
 
-/// Display width of `s` laid out from column 0 with its tabs expanded — the
-/// width it will have in [`Document::text`].
+/// A frontmatter block at the start of a source, found by [`frontmatter`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Frontmatter {
+    /// Which dialect the fence declared.
+    pub format: MetaFormat,
+    /// The body between the fences, as source bytes: from the line after the
+    /// opening fence to the start of the closing one. Exactly what the
+    /// reader's card displays, before alignment.
+    pub body: Range<usize>,
+    /// Just past the closing fence itself (its line break not included) —
+    /// where the reader starts parsing markdown.
+    pub end: usize,
+}
+
+/// The frontmatter block that opens `src`, if it has one — by the rule
+/// [`Document::parse`] uses, because it IS the rule `Document::parse` uses:
+/// the parser's frontmatter events come from this same function.
+///
+/// Frontmatter exists only at the very start of a source, after an optional
+/// byte-order mark, and pulldown-cmark decides what a block is (so CRLF, the
+/// `...` closer, the blank-first-line rule and an empty block are all its
+/// own). Cheap: nothing past the closing fence is parsed, and a source that
+/// does not open with `---` or `+++` is dismissed from its first bytes. For
+/// anything that reads frontmatter without building a [`Document`] — a
+/// folder of files scanned for tags or titles — so that it cannot find a
+/// block the reader shows as a rule and a paragraph, or miss one it shows
+/// as a card.
+///
+/// `src` may be a file's HEAD: a block whose closing fence lies past the
+/// end of what was read is `None`, never half a block.
+#[must_use]
+pub fn frontmatter(src: &str) -> Option<Frontmatter> {
+    let front = front_events(src)?;
+    let (Event::Start(Tag::MetadataBlock(kind)), open) = &front.first()? else {
+        return None;
+    };
+    let format = match kind {
+        MetadataBlockKind::YamlStyle => MetaFormat::Yaml,
+        MetadataBlockKind::PlusesStyle => MetaFormat::Toml,
+    };
+    let end = front.last()?.1.end;
+    let start = open.start + src[open.start..].find('\n')? + 1;
+    let block = &src[..end];
+    let block = block.strip_suffix('\n').unwrap_or(block);
+    let close = block.rfind('\n').map_or(start, |i| i + 1).max(start);
+    Some(Frontmatter {
+        format,
+        body: start..close,
+        end,
+    })
+}
+
+/// The events of the frontmatter block that opens `src`, offsets into
+/// `src`, from its `Start` to its `End` — or `None` when it opens with none.
+/// See [`Document`]'s `events` for why the frontmatter is parsed alone.
+fn front_events(src: &str) -> Option<Vec<(Event<'_>, Range<usize>)>> {
+    let bom = if src.starts_with('\u{feff}') { 3 } else { 0 };
+    let cand = frontmatter_candidate(&src[bom..])?;
+    let opts = Builder::opts()
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS;
+    let mut probe = Parser::new_ext(&src[bom..bom + cand], opts).into_offset_iter();
+    let (ev @ Event::Start(Tag::MetadataBlock(_)), r) = probe.next()? else {
+        return None;
+    };
+    let mut front = vec![(ev, r.start + bom..r.end + bom)];
+    for (ev, r) in probe {
+        let end = matches!(ev, Event::End(TagEnd::MetadataBlock(_)));
+        front.push((ev, r.start + bom..r.end + bom));
+        if end {
+            return Some(front);
+        }
+    }
+    None
+}
+
 /// Where a frontmatter block that opens `src` could end: the end of the
 /// first line after the opener that is a closing fence, by pulldown-cmark's
 /// own rule (`scan_closing_metadata_block`: exactly three fence characters,
@@ -2459,6 +2583,8 @@ fn frontmatter_candidate(src: &str) -> Option<usize> {
     None
 }
 
+/// Display width of `s` laid out from column 0 with its tabs expanded — the
+/// width it will have in [`Document::text`].
 fn expanded_width(s: &str) -> u16 {
     let mut col = 0;
     let _ = expand_tabs(s, &mut col);
@@ -3669,12 +3795,20 @@ mod tests {
     }
 
     #[test]
-    fn frontmatter_key_col_is_the_widest_key_capped_at_sixteen() {
-        let doc = Document::parse("---\na: 1\nlonger_key: 2\n---\n");
-        let NodeKind::Metadata { key_col, .. } = doc.node_for_block(BlockIdx(0)).kind else {
-            panic!("expected a metadata block");
+    fn frontmatter_value_col_follows_the_widest_key_capped_at_sixteen() {
+        let col = |src: &str| {
+            let doc = Document::parse(src);
+            let NodeKind::Metadata { value_col, .. } = doc.node_for_block(BlockIdx(0)).kind else {
+                panic!("expected a metadata block");
+            };
+            value_col
         };
-        assert_eq!(key_col, 10, "`longer_key` is 10 cells wide");
+        assert_eq!(col("---\na: 1\nlonger_key: 2\n---\n"), 12, "`longer_key: `");
+        assert_eq!(
+            col("---\na: 1\nthis_key_is_much_longer_than_sixteen: 2\n---\n"),
+            18,
+            "sixteen cells of key, its colon and a blank"
+        );
     }
 
     /// The value column is in the TEXT, like table padding, so the layout
@@ -3808,9 +3942,169 @@ mod tests {
         let all = 0..doc.text.len() as u32;
         let copied = doc.copy_text(all).unwrap();
         assert!(copied.starts_with("a=1\nlonger = 2\n"), "{copied:?}");
-        assert!(doc.text.starts_with("a=      1\n"), "{:?}", doc.text);
+        assert!(
+            doc.text.starts_with("a=       1\nlonger = 2\n"),
+            "{:?}",
+            doc.text
+        );
         assert!(copied.contains("Tom & \u{201c}Jerry\u{201d}"), "{copied:?}");
         assert_eq!(doc.copy_text(0..doc.text.len() as u32 + 1), None);
+    }
+
+    /// The card body is not markdown, so nothing in it is decoded: the only
+    /// differences between its text and its source are the value column's
+    /// padding and expanded tabs — and a copy gives back both. Every tab,
+    /// wherever it sits: in a value, in a key, before a TOML `=`, as the
+    /// indentation of a nested line, in a CRLF file.
+    #[test]
+    fn copying_the_card_gives_back_every_byte_the_author_wrote() {
+        for src in [
+            "---\na: x\ty\nbb: 2\n---\n",
+            "---\na\tb: 1\ncc: 2\n---\n",
+            "+++\na\t= 1\nbb = 2\n+++\n",
+            "---\ntags:\n\t- a\n\t- b\nk:\tv\n---\n",
+            "---\r\na:\tx\ty\r\nbb: 2\r\n---\r\n",
+            "---\nf: H~2~O x^2^ ~/a~ www.example.com &amp; \"q\" -- e\n---\n",
+        ] {
+            let doc = Document::parse(src);
+            let card = doc.node_for_block(BlockIdx(0));
+            assert!(matches!(card.kind, NodeKind::Metadata { .. }), "{src:?}");
+            let body = src.replace("\r\n", "\n");
+            let body = &body[4..body.len() - 4];
+            assert_eq!(
+                doc.copy_text(card.doc.clone()).as_deref(),
+                Some(body),
+                "{src:?} shows {:?}",
+                doc.block_text(BlockIdx(0))
+            );
+        }
+    }
+
+    /// A copy that begins or ends inside an expanded tab takes the tab —
+    /// it is one character, and part of it was selected — and nothing past
+    /// the ends of the selection.
+    #[test]
+    fn a_partial_copy_of_the_card_is_exact_at_both_ends() {
+        let doc = Document::parse("---\na: x\ty z\nbb: 2\n---\n");
+        let x = doc.text.find('x').unwrap() as u32;
+        let y = doc.text.find('y').unwrap() as u32;
+        assert_eq!(doc.copy_text(y..y + 1).as_deref(), Some("y"));
+        assert_eq!(doc.copy_text(x..x + 2).as_deref(), Some("x\t"));
+        assert_eq!(doc.copy_text(y - 1..y + 1).as_deref(), Some("\ty"));
+        assert_eq!(doc.copy_text(x..y + 2).as_deref(), Some("x\ty "));
+    }
+
+    /// Openings that are, and are not, frontmatter — the cases a scan of its
+    /// own got wrong. Mirrored in the frontend's tag and title scan tests,
+    /// which must agree with the reader about every one of them.
+    const TRICKY_FRONTMATTER: &[&str] = &[
+        "---\ntags: [a]\ntitle: T\n---\n",
+        "---\n\ntags: [a]\ntitle: T\n---\n",
+        "---\n---\n",
+        "---\n---\ntags: [a]\n---\n",
+        "---\ntags: [a]\ntitle: T\n---\t\n",
+        "---\t\ntags: [a]\ntitle: T\n---\n",
+        "--- \ntags: [a]\ntitle: T\n---\n",
+        "---\ntags: [a]\ntitle: T\n---  \n",
+        "\u{feff}---\ntags: [a]\ntitle: T\n---\n",
+        "---\ntags: [a]\ntitle: T\n...\n",
+        "+++\ntags: [a]\ntitle: T\n...\n",
+        "+++\ntags = [\"a\"]\ntitle = \"T\"\n+++\n",
+        "+++\ntags: [a]\ntitle: T\n+++\n",
+        "---\ntags = [a]\ntitle = T\n---\n",
+        "+++\ntags = [\"a\"]\n---\n+++\n",
+        "---\r\ntags: [a]\r\ntitle: T\r\n---\r\n",
+        " ---\ntags: [a]\ntitle: T\n---\n",
+        "----\ntags: [a]\ntitle: T\n----\n",
+        "---\ntags: [a]\ntitle: T\n",
+        "---\ntags: [a]\ntitle: T\n---",
+        "---\ntags:[a]\ntitle:T\n---\n",
+        "---\n  tags: [a]\n  title: T\n---\n",
+        "---\n# a comment\ntags: [a]\n---\n",
+        "---\nmeta:\n  title: Nested\ntags:\n\t- a\n---\n# Heading\n",
+        "---\ntags: [a]\n---\n\n---\ntags: [b]\ntitle: Later\n---\n",
+        "# Title\n\n---\ntags: [a]\ntitle: T\n---\n",
+        "\n---\ntags: [a]\ntitle: T\n---\n",
+        "---",
+        "",
+    ];
+
+    /// [`frontmatter`] is the parser's own rule: it finds a block exactly
+    /// where `Document::parse` shows a card, and its body is exactly the
+    /// card's source.
+    #[test]
+    fn the_frontmatter_finder_agrees_with_the_parse() {
+        let mut cards = 0;
+        for &src in TRICKY_FRONTMATTER {
+            let doc = Document::parse(src);
+            let card = (doc.block_count() > 0)
+                .then(|| doc.node_for_block(BlockIdx(0)))
+                .filter(|n| matches!(n.kind, NodeKind::Metadata { .. }));
+            let found = frontmatter(src);
+            assert_eq!(found.is_some(), card.is_some(), "{src:?}");
+            cards += usize::from(card.is_some());
+            let (Some(fm), Some(card)) = (found, card) else {
+                continue;
+            };
+            let NodeKind::Metadata { format, .. } = card.kind else {
+                unreachable!()
+            };
+            assert_eq!(fm.format, format, "{src:?}");
+            assert_eq!(
+                doc.copy_text(card.doc.clone()).as_deref(),
+                Some(src[fm.body].replace("\r\n", "\n").as_str()),
+                "{src:?}"
+            );
+        }
+        // Not vacuous: both answers occur, and often.
+        assert!(
+            (8..TRICKY_FRONTMATTER.len() - 8).contains(&cards),
+            "{cards}"
+        );
+        let fm = frontmatter("\u{feff}---\na: 1\n---\nbody").unwrap();
+        assert_eq!(
+            (fm.body, fm.end),
+            (7..12, 15),
+            "the end is the fence's, not its newline"
+        );
+        assert_eq!(
+            frontmatter("---\na: 1\n---").map(|f| (f.body, f.end)),
+            Some((4..9, 12))
+        );
+    }
+
+    /// The card shows its body raw: `~` and `^` are YAML (`~` is null, and
+    /// paths start with it), not sub- and superscript delimiters.
+    #[test]
+    fn the_card_body_is_shown_raw() {
+        let doc = Document::parse("---\nf: H~2~O x^2^ ~/a~\n---\n");
+        assert_eq!(doc.block_text(BlockIdx(0)), "f: H~2~O x^2^ ~/a~\n");
+    }
+
+    /// Every line of a card puts its value in ONE column, whatever gap each
+    /// line leaves before its separator — the column is the widest
+    /// `key + gap + separator`, the key part capped at sixteen cells as before.
+    #[test]
+    fn a_card_has_one_value_column_whatever_the_gap_before_the_separator() {
+        for src in [
+            "+++\na=1\nlonger = 2\n+++\n",
+            "---\na : 1\nbb: 2\n---\n",
+            "+++\na\t= 1\nbb = 2\n+++\n",
+            "---\na  :  x\nlonger_key: y\n---\n",
+            "---\nthis_key_is_much_longer_than_sixteen: x\na: y\nbb : z\n---\n",
+        ] {
+            let doc = Document::parse(src);
+            let mut cols = value_cols(&doc);
+            if src.contains("sixteen") {
+                // The key past the cap keeps one blank after its own colon.
+                assert_eq!(cols.remove(0), 38, "{:?}", doc.text);
+            }
+            assert!(
+                cols.len() >= 2 && cols.iter().all(|&c| c == cols[0]),
+                "{src:?} -> {:?}",
+                doc.block_text(BlockIdx(0))
+            );
+        }
     }
 
     /// Every block, as `(kind tag, text)`, for comparing whole parses.
