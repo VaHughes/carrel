@@ -4004,6 +4004,22 @@ mod tests {
         }
     }
 
+    /// Every copy from a CRLF file ends its lines with `\n` — the card
+    /// exactly like the prose and the code beside it. That is a decision,
+    /// not a lapse: the display text is LF throughout (pulldown-cmark folds
+    /// the line ending), a clipboard is pasted into a shell or an editor
+    /// that wants LF, and a card that alone gave back `\r\n` would make one
+    /// drag across it paste with mixed line endings.
+    #[test]
+    fn a_crlf_file_copies_with_lf_everywhere() {
+        let src = "---\r\na: 1\r\nbb: 2\r\n---\r\n\r\none\r\ntwo\r\n\r\n```\r\nc1\r\nc2\r\n```\r\n";
+        let doc = Document::parse(src);
+        let all = doc.copy_text(0..doc.text.len() as u32).unwrap();
+        assert!(!all.contains('\r'), "{all:?}");
+        assert!(all.starts_with("a: 1\nbb: 2\n"), "{all:?}");
+        assert!(all.contains("c1\nc2"), "{all:?}");
+    }
+
     /// A copy that begins or ends inside an expanded tab takes the tab —
     /// it is one character, and part of it was selected — and nothing past
     /// the ends of the selection.

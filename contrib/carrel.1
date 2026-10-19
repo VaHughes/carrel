@@ -189,8 +189,17 @@ Esc cancels, Ctrl-J inserts a newline. Pasting into the editor inserts text.
 .TP
 .B V
 Open notes and highlights. Arrows select, Enter jumps, a edits, Delete removes,
-and E exports quote-and-note Markdown to the state directory. Clickable buttons
-provide the same actions. Missing or ambiguous quotes stay in the list as unresolved.
+and E exports quote-and-note Markdown. Clickable buttons
+provide the same actions. Missing or ambiguous quotes stay in the list, marked
+.BR ? ,
+and the title counts them.
+An export is written to
+.I $XDG_STATE_HOME/carrel/exports/<name>-notes-<hash>.md
+(normally under
+.IR ~/.local/state ),
+never beside the document; carrel shows the exact path, and the path
+is sent to the terminal clipboard (OSC 52).
+For a piped document the Markdown itself goes to the clipboard.
 .TP
 .B M
 Go to the next attached note or highlight, wrapping at the end.

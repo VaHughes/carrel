@@ -99,9 +99,9 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
     // (`render::paint_hint_run`, over the footer's own tables): a draft's
     // `enter save · esc cancel`, the list's `esc close`.
     let drafting = app.notes.draft.is_some();
-    let (title, hints): (&str, Vec<_>) = if drafting {
+    let (title, hints): (String, Vec<_>) = if drafting {
         (
-            "Note · ",
+            "Note · ".into(),
             crate::keys::HINT_NOTE_DRAFT
                 .iter()
                 .filter(|h| h.click.is_some())
@@ -110,7 +110,7 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
         )
     } else {
         (
-            "Notes · ? unresolved · ",
+            app.notes.title(),
             crate::keys::HINT_NOTES
                 .iter()
                 .filter(|h| h.key == "esc")
@@ -120,7 +120,7 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
     };
     let mut tx = area.x;
     let buf = frame.buffer_mut();
-    crate::render::put(buf, &mut tx, area.y, area.right(), title, theme::status());
+    crate::render::put(buf, &mut tx, area.y, area.right(), &title, theme::status());
     crate::render::paint_hint_run(buf, targets, &mut tx, area.y, area.right(), &hints, Z);
     if area.height < 5 || area.width < 12 {
         if area.height > 1 {

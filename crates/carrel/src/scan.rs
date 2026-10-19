@@ -294,10 +294,31 @@ pub fn title_of(path: &Path) -> Option<String> {
     {
         return Some(t);
     }
-    let bom = if head.starts_with('\u{feff}') { 3 } else { 0 };
-    let from = fm.map_or(bom, |f| f.end);
-    head[from..].lines().find_map(|line| {
-        let h = line.trim().strip_prefix("# ")?.trim();
+    first_heading(&head, fm.is_none() && head.len() + 3 >= TITLE_BYTES)
+}
+
+/// The first top-level `#` heading in `head`, found by parsing it the way
+/// the reader does — so a `# x` inside a fenced or indented code block, or
+/// inside a quote, is never a title, and a setext heading is one. `cut`
+/// says the read stopped mid-file: the last, partial line is dropped
+/// rather than read as half a heading.
+fn first_heading(head: &str, cut: bool) -> Option<String> {
+    use carrel_core::{BlockIdx, Document, NodeKind};
+    let head = match head.rfind('\n') {
+        Some(at) if cut => &head[..=at],
+        _ => head,
+    };
+    let doc = Document::parse(head);
+    (0..doc.block_count()).find_map(|b| {
+        let b = BlockIdx(b as u32);
+        let node = doc.node_for_block(b);
+        if !matches!(node.kind, NodeKind::Heading { level: 1 })
+            || node.quote_depth > 0
+            || node.indent > 0
+        {
+            return None;
+        }
+        let h = doc.block_text(b).trim();
         (!h.is_empty()).then(|| h.chars().take(120).collect())
     })
 }
@@ -453,6 +474,37 @@ mod title_tests {
             title_of(&write(d.path(), "e.md", "+++\ntitle = \"Toml\"\n+++\n")),
             Some("Toml".into())
         );
+    }
+
+    /// The title is a heading the reader shows, so nothing inside code is
+    /// one: not a fenced block of either kind or any fence length, not an
+    /// indented block, not a fence left open to the end of the head — and
+    /// not a heading cut in half where the read stopped.
+    #[test]
+    fn a_hash_line_inside_code_is_not_a_title() {
+        let d = tempfile::tempdir().unwrap();
+        for (i, src) in [
+            "```sh\n    # not this\n# nor this\n```\n\n# Real\n",
+            "~~~\n# tilde fenced\n~~~\n# Real\n",
+            "````\n```\n# inner\n```\n# still code\n````\n\n# Real\n",
+            "para\n\n    # indented code\n\n# Real\n",
+            "---\ntags: [x]\n---\n```\n# fenced after frontmatter\n```\n# Real\n",
+            "> # a quote's heading\n\n# Real\n",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let p = write(d.path(), &format!("{i}.md"), src);
+            assert_eq!(title_of(&p), Some("Real".into()), "{src:?}");
+        }
+        let open = write(d.path(), "open.md", "```\n# never closed\n");
+        assert_eq!(title_of(&open), None);
+        // A setext heading is a level-one heading too.
+        let setext = write(d.path(), "setext.md", "Underlined\n==========\n");
+        assert_eq!(title_of(&setext), Some("Underlined".into()));
+        // A heading straddling the end of the read is not half a title.
+        let cut = format!("{}\n# Straddling the cut\n", "x".repeat(TITLE_BYTES - 10));
+        assert_eq!(title_of(&write(d.path(), "cut.md", &cut)), None);
     }
 
     #[test]
