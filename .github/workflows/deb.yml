@@ -1,0 +1,107 @@
+# Attach Debian packages to a GitHub Release that `release.yml` has finished.
+#
+# The .deb is a REPACK of dist's static musl archives (scripts/build-deb.sh,
+# metadata in crates/carrel/Cargo.toml), so it carries the exact binary the
+# shell installer ships, and needs no Depends.
+#
+# Why a separate workflow, and not a dist custom publish job
+# (`publish-jobs = ["./publish-deb"]`): release.yml is hand-edited and dist
+# must not regenerate it (dist-workspace.toml's `allow-dirty`), so a dist hook
+# would have been one more hand edit to port on every dist upgrade — and the
+# stanza dist generates for a custom publish job sets job-level permissions to
+# `id-token`/`packages` only, which leaves the called workflow WITHOUT
+# `contents: write`, so its `gh release upload` would fail with a 403. Checked
+# against dist 0.32.0's own generator output. This file is not dist's, so no
+# regeneration can touch it.
+#
+# Why `workflow_run` and not `release: published`: release.yml creates the
+# release with GITHUB_TOKEN, and GitHub creates no workflow run for events
+# caused by GITHUB_TOKEN, so `release: published` would never fire.
+# `workflow_run` does, and it always runs this file as it is on the default
+# branch, never a fork's copy.
+#
+# `workflow_dispatch` re-runs it by hand for a release that already exists —
+# a retry, or the first release this workflow did not exist for.
+
+name: deb
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to package, e.g. v2026.10.8"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    # Only a release that actually published: release.yml also runs on pull
+    # requests, where it builds but creates nothing.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ["self-hosted", "linux", "x64", "ghostmachine", "build"]
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # For a tag push, a workflow_run's head_branch is the tag name.
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+      # Pinned like the toolchain: a cargo-deb upgrade changes the package.
+      CARGO_DEB_VERSION: "3.8.0"
+    steps:
+      # A release tag and nothing else. A Release run from a branch push
+      # would have no release to attach to.
+      - name: Tag is a release tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG"; exit 1; }
+
+      # The tree must be the TAGGED tree: the version on the .deb comes from
+      # its Cargo.toml, and build-deb.sh refuses an archive whose man page
+      # names a different version.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.TAG }}
+
+      - name: Toolchain (pinned)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08
+        with:
+          toolchain: "1.97"
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --version "$CARGO_DEB_VERSION" --locked
+
+      - name: Fetch the musl archives and check them against their own sums
+        run: |
+          mkdir -p dl
+          for t in x86_64 aarch64; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dl --clobber \
+              --pattern "carrel-$t-unknown-linux-musl.tar.xz" \
+              --pattern "carrel-$t-unknown-linux-musl.tar.xz.sha256"
+          done
+          (cd dl && sha256sum -c ./*.sha256)
+
+      - name: Build the packages
+        run: |
+          for t in x86_64 aarch64; do
+            ./scripts/build-deb.sh "dl/carrel-$t-unknown-linux-musl.tar.xz" debs
+          done
+          # Same `HASH *NAME` form dist writes for the archives.
+          (cd debs && for f in *.deb; do sha256sum --binary "$f" > "$f.sha256"; done)
+          ls -l debs
+
+      # The archives were checked by the recipe gate; check the packages too,
+      # before anything is uploaded.
+      - name: Check the packages against the recipe
+        run: |
+          for f in debs/*.deb; do ./scripts/check-packaging.sh "$f"; done
+
+      - name: Attach to the release
+        run: gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber debs/*.deb debs/*.deb.sha256
