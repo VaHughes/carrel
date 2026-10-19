@@ -18,6 +18,13 @@
 #   check-packaging.sh ARCHIVE.tar.xz   verify against a REAL artifact. Run
 #                                       this before publishing a binary
 #                                       package (RELEASING.md step 8).
+#   check-packaging.sh PACKAGE.deb      verify a built .deb (scripts/
+#                                       build-deb.sh) against its metadata.
+#                                       deb.yml runs it before uploading.
+#
+# The .deb is the same kind of recipe as `carrel-bin` — a repack of the
+# release archive — so its asset list (`[package.metadata.deb]` in
+# crates/carrel/Cargo.toml) is checked against the same archive contents.
 #
 # NOTE: dist FLATTENS every `include` entry to the archive root, so
 # `contrib/carrel.1` arrives as `carrel.1`. Recipes must use the flat names.
@@ -27,7 +34,14 @@ cd "$(dirname "$0")/.."
 
 RECIPE=contrib/packaging/PKGBUILD-carrel-bin
 DIST=dist-workspace.toml
+DEBMETA=crates/carrel/Cargo.toml
 fail=0
+
+deb=
+if [ $# -ge 1 ] && [[ $1 == *.deb ]]; then
+  deb=$1
+  shift
+fi
 
 note() { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=1; }
 ok() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -71,6 +85,101 @@ while IFS= read -r f; do
     note "$f — the recipe installs it, the archive will not contain it"
   fi
 done <<<"$wanted"
+
+# --- the .deb's assets, against the same archive contents ---
+#
+# Each asset is `["target/release/NAME", "DEST", "MODE"]`, where NAME is the
+# flat archive name; build-deb.sh makes `carrel.1.gz` from `carrel.1`.
+echo
+echo ".deb assets against the same archive contents"
+deb_assets=$(sed -n '/^\[package\.metadata\.deb\]/,/^\[/p' "$DEBMETA" \
+  | grep -oE '^ *\["target/release/[^"]+", *"[^"]+", *"[0-7]+"\]' \
+  | sed -E 's/^ *\["target\/release\/([^"]+)", *"([^"]+)", *"([0-7]+)"\]/\1 \2 \3/')
+if [ -z "$deb_assets" ]; then
+  note "$DEBMETA has no [package.metadata.deb] target/release/ assets — did its shape change?"
+else
+  while read -r src _ _; do
+    f=${src%.1.gz}
+    [ "$f" != "$src" ] && f=$f.1
+    if printf '%s\n' "$present" | grep -qxF "$f"; then
+      ok "$f"
+    else
+      note "$f — the .deb packs it, the archive will not contain it"
+    fi
+  done <<<"$deb_assets"
+fi
+
+# --- a built .deb, against its metadata ---
+if [ -n "$deb" ]; then
+  echo
+  echo "$(basename "$deb") against $DEBMETA"
+  t=$(mktemp -d)
+  trap 'rm -rf "$t"' EXIT
+  # dpkg-deb where it exists (every Debian/Ubuntu runner); `ar` elsewhere.
+  if command -v dpkg-deb >/dev/null; then
+    dpkg-deb --ctrl-tarfile "$deb" >"$t/control.tar" 2>/dev/null \
+      && dpkg-deb --fsys-tarfile "$deb" >"$t/data.tar" 2>/dev/null
+  else
+    members=$(ar t "$deb" 2>/dev/null) \
+      && ar p "$deb" "$(grep '^control\.tar' <<<"$members")" >"$t/control.tar" \
+      && ar p "$deb" "$(grep '^data\.tar' <<<"$members")" >"$t/data.tar"
+  fi || {
+    note "cannot read $deb"
+    exit 1
+  }
+  cmember=$(tar tf "$t/control.tar" | grep -E '^(\./)?control$' | head -1)
+  control=$(tar xOf "$t/control.tar" "$cmember" 2>/dev/null)
+  field() { sed -n "s/^$1: *//p" <<<"$control" | head -1; }
+
+  ws_ver=$(awk '/^\[workspace\.package\]/{f=1; next} /^\[/{f=0}
+                f && /^version = /{gsub(/["[:space:]]/, "", $3); print $3; exit}' Cargo.toml)
+  [ "$(field Package)" = carrel ] && ok "Package: carrel" || note "Package is '$(field Package)', not carrel"
+  [ "$(field Version)" = "$ws_ver-1" ] && ok "Version: $ws_ver-1" \
+    || note "Version is '$(field Version)', Cargo.toml says $ws_ver (expected $ws_ver-1)"
+  arch=$(field Architecture)
+  case $arch in
+  amd64 | arm64) ok "Architecture: $arch" ;;
+  *) note "Architecture is '$arch' — the musl archives make amd64 and arm64 only" ;;
+  esac
+  # The binary is static musl. A dependency here means a dynamic binary got
+  # packaged, which would install and then fail to start on an older libc.
+  if [ -z "$(field Depends)" ]; then ok "no Depends (static binary)"; else note "Depends: $(field Depends) — a static binary needs none"; fi
+
+  # Q21: carrel must never make itself the default markdown handler. A
+  # maintainer script is the only place a .deb could do that (xdg-mime, a
+  # mimeapps.list write); the desktop database is refreshed by
+  # desktop-file-utils' own dpkg trigger without one.
+  scripts=$(tar tf "$t/control.tar" | grep -E '(pre|post)(inst|rm)$|config$' || true)
+  if [ -z "$scripts" ]; then ok "no maintainer scripts"; else note "maintainer scripts present: $scripts"; fi
+
+  listing=$(tar --numeric-owner -tvf "$t/data.tar")
+  if grep -qE 'mimeapps\.list|/etc/' <<<"$listing"; then
+    note "the package writes under /etc or ships a mimeapps.list"
+  fi
+
+  while read -r src dest mode; do
+    [[ $dest == */ ]] && dest=$dest$(basename "$src")
+    perm=$(awk -v p="./$dest" '$NF == p {print $1, $2}' <<<"$listing")
+    want=$( [ "$mode" = 755 ] && echo '-rwxr-xr-x' || echo '-rw-r--r--')
+    if [ -z "$perm" ]; then
+      note "$dest — in the metadata, not in the package"
+    elif [ "$perm" != "$want 0/0" ]; then
+      note "$dest is $perm, wanted $want 0/0"
+    else
+      ok "$dest"
+    fi
+  done <<<"$deb_assets"
+
+  # Debian policy 12.1: man pages `gzip -9n`. The -n is what keeps the build
+  # reproducible: no FNAME flag (bit 3 of byte 3), no MTIME (bytes 4-7); the
+  # -9 is XFL = 2 (byte 8).
+  man=$(tar xOf "$t/data.tar" ./usr/share/man/man1/carrel.1.gz 2>/dev/null | od -An -tu1 -N9 | tr -s ' ')
+  if [ "$man" = " 31 139 8 0 0 0 0 0 2" ]; then
+    ok "carrel.1.gz is gzip -9 with no name and no timestamp"
+  else
+    note "carrel.1.gz header is '$man' — expected gzip -9n output"
+  fi
+fi
 
 # The source recipes build from the git tarball, so they see the whole repo;
 # the only thing to check is that the paths they name still exist.

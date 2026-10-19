@@ -99,6 +99,14 @@ sudo dnf copr enable vahughes/carrel
 sudo dnf install carrel
 ```
 
+**Debian and Ubuntu** (amd64 and arm64): download the `.deb` for your machine from the
+[releases page](https://github.com/VaHughes/carrel/releases), then install it with apt. It has
+no dependencies. There is no apt repository yet, so updates mean downloading the next one.
+
+```bash
+sudo apt install ./carrel_*_amd64.deb   # or _arm64.deb
+```
+
 **Cargo** (any platform with a Rust toolchain), or prebuilt via
 [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall):
 
@@ -498,7 +506,8 @@ The module map, the decisions already made, and the pinned dependencies are in
 - [x] A file list that says when and how far, sorts three ways, previews the highlighted
       document on a wide window, and opens a pasted path
 - [x] A help sheet whose rows are buttons; collapsed sections remembered per document
-- [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs, `.deb`
+- [x] Packaging: `.deb` for Debian and Ubuntu, amd64 and arm64
+- [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 
 ## Contributing

@@ -41,6 +41,46 @@ tempfile.workspace = true
 [lints]
 workspace = true
 
+# The .deb, built by `scripts/build-deb.sh` from a dist RELEASE ARCHIVE, never
+# from a fresh compile: the package carries the same static musl binary the
+# shell installer and `carrel-bin` ship, byte for byte. So every source below
+# is a FLAT archive name under `target/release/` — the script unpacks the
+# archive there (cargo-deb rewrites `target/release/` to
+# `target/<triple>/release/` under `--target`), exactly as dist flattened
+# `include`. `check-packaging.sh` reads this list against that `include` list,
+# the same way it reads `PKGBUILD-carrel-bin`. A plain `cargo deb` from the
+# repo will NOT work, on purpose; see contrib/packaging/README.md.
+[package.metadata.deb]
+maintainer = "Joshua Hughes <hughes238@gmail.com>"
+copyright  = "Joshua Hughes"
+# The musl binary is static: no libc6 floor, so one .deb installs on every
+# Debian and Ubuntu still supported. The gnu build would need a `libc6 (>=
+# 2.35)` floor from the Ubuntu 22.04 release container, for nothing gained.
+depends  = ""
+section  = "text"
+priority = "optional"
+extended-description = """\
+carrel is a markdown reader for the terminal, not an editor. Search survives \
+reflow and resize, tables too wide for the window turn into cards, and \
+diagrams, math and images render in place. It reads files, directories and \
+piped input, and works with the mouse as well as the keyboard."""
+# Sources are relative to this crate. The desktop entry carries a MimeType
+# line but nothing here registers carrel as the DEFAULT handler — no
+# maintainer scripts at all; desktop-file-utils' dpkg trigger updates the
+# cache, and the user's own choice stays theirs (Q21).
+assets = [
+  ["target/release/carrel", "usr/bin/", "755"],
+  ["target/release/carrel.1.gz", "usr/share/man/man1/carrel.1.gz", "644"],
+  ["target/release/carrel.bash", "usr/share/bash-completion/completions/carrel", "644"],
+  ["target/release/carrel.zsh", "usr/share/zsh/vendor-completions/_carrel", "644"],
+  ["target/release/carrel.fish", "usr/share/fish/vendor_completions.d/carrel.fish", "644"],
+  ["target/release/carrel.desktop", "usr/share/applications/carrel.desktop", "644"],
+  # cargo-deb writes a DEP-5 `copyright` naming the licence; the MIT terms
+  # also require the notice itself to travel with every copy.
+  ["target/release/LICENSE-MIT", "usr/share/doc/carrel/LICENSE-MIT", "644"],
+  ["target/release/LICENSE-APACHE", "usr/share/doc/carrel/LICENSE-APACHE", "644"],
+]
+
 [dev-dependencies.criterion]
 workspace = true
 

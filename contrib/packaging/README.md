@@ -151,8 +151,68 @@ out byte-identical, which is the result you want and not a reason to skip the st
 - **`carrel.spec`** — Fedora COPR. The project already exists (F43 and F44, x86_64 and
   aarch64); each release is the `buildscm` command above, **not** `copr-cli build` — see
   point 1. The same spec seeds an openSUSE OBS home project later.
+- **`.deb`** (Debian, Ubuntu) — built and attached by CI, no manual step; see below.
 
 The full launch order lives in RELEASING.md in the private notes repo.
+
+## `.deb` — Debian and Ubuntu
+
+Every release gets `carrel_<VERSION>-1_amd64.deb` and `carrel_<VERSION>-1_arm64.deb`,
+each with a `.sha256` beside it. Users install with `sudo apt install ./carrel_*.deb`.
+There is no apt repository, so there are no automatic updates.
+
+**What it is:** a repack of the static **musl** release archive, the same model as
+`carrel-bin`. The binary inside is the archive's binary, byte for byte, which is why the
+package has no `Depends` at all and one file installs on every supported Debian and Ubuntu.
+The gnu archives would need a `libc6 (>= 2.35)` floor from the Ubuntu 22.04 release
+container and would gain nothing for it.
+
+- **Recipe:** `[package.metadata.deb]` in `crates/carrel/Cargo.toml`, read by
+  [cargo-deb](https://crates.io/crates/cargo-deb) (pinned in `deb.yml`). Its asset
+  sources are the flat archive names under `target/release/`. `scripts/build-deb.sh
+  ARCHIVE [OUTDIR]` unpacks the archive there, in a private `CARGO_TARGET_DIR`, and runs
+  `cargo deb --no-build`. **A plain `cargo deb` in the repo does not work, on purpose:**
+  the package is never built from a fresh compile.
+- **Paths:** `/usr/bin/carrel`, `/usr/share/man/man1/carrel.1.gz` (`gzip -9n`, done by
+  the script, because cargo-deb skips compressing anything under the target directory),
+  `/usr/share/bash-completion/completions/carrel`,
+  `/usr/share/zsh/vendor-completions/_carrel` (Debian's zsh path, not `site-functions`),
+  `/usr/share/fish/vendor_completions.d/carrel.fish`,
+  `/usr/share/applications/carrel.desktop`, plus the licence texts and a generated DEP-5
+  `copyright` under `/usr/share/doc/carrel/`.
+- **Version:** `<Cargo.toml version>-1`. CalVer sorts correctly under dpkg
+  (`2026.10.8-1` > `2026.9.23-1`, `2027.1.1-1` > `2026.12.31-1`), so there is no epoch.
+  Neither Debian nor Ubuntu has a package named `carrel` (checked 2026-10-19), so nothing
+  is declared to conflict with. If a distro package ever appears, theirs will likely be
+  `<version>-1` too: decide then, and never add an epoch, which can never be removed.
+- **Q21:** no maintainer scripts at all. The desktop entry's `MimeType=` makes carrel
+  *available* for markdown, and desktop-file-utils' own dpkg trigger refreshes the cache;
+  nothing makes it the default. `check-packaging.sh` fails a package that has a
+  maintainer script or writes under `/etc`.
+- **Reproducible:** the same archive gives the same `.deb`, byte for byte.
+  `SOURCE_DATE_EPOCH` defaults to the binary's mtime in the archive.
+
+**Why its own workflow, `deb.yml`, and not a dist custom publish job.** release.yml is
+hand-edited (see above), so a dist hook would be one more edit to port at every dist
+upgrade. Worse, the stanza dist 0.32 generates for a custom publish job sets the job's
+permissions to `id-token` and `packages` only, which leaves the called workflow without
+`contents: write`, so its `gh release upload` would fail. `deb.yml` triggers on
+`workflow_run` of `Release`. **`release: published` would never fire**, because
+release.yml creates the release with `GITHUB_TOKEN` and GitHub starts no workflow for
+events caused by that token.
+
+`deb.yml` checks out the **tag**, downloads both musl archives, checks them against their
+`.sha256`, builds, runs `check-packaging.sh` on each `.deb`, then uploads with `--clobber`.
+To re-run it, or to package a release that already exists: Actions → deb → Run workflow
+with the tag. That only works for a tag whose tree has `scripts/build-deb.sh`. For an
+older release, build the packages locally with the script and upload them by hand.
+
+Check a built package without dpkg (`ar` is enough) or with it:
+
+```bash
+./scripts/build-deb.sh carrel-x86_64-unknown-linux-musl.tar.xz /tmp/debs
+./scripts/check-packaging.sh /tmp/debs/carrel_*_amd64.deb
+```
 
 
 ## Ghostmachine release execution
