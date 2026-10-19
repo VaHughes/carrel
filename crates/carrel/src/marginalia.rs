@@ -200,10 +200,47 @@ pub fn save_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Resul
     write_atomic(&path, &output)
 }
 
+/// Where [`export_in`] writes: `exports/<stem>-notes-<8 hex>.md` under the
+/// state directory.
+///
+/// Never beside the document. A reader must not leave files in someone's
+/// repository unasked — an untracked `.md` there shows up in `git status`,
+/// in carrel's own home list, and in whatever the agent next to it reads —
+/// and the document's directory may be read-only, or a piped document may
+/// have none. The state directory is carrel's own and always the same
+/// place, so the export goes there and the caller reports the exact path.
+///
+/// The name leads with the document's stem so a person browsing the
+/// directory can find it; the hash is the sidecar's own, cut to 8 hex, so
+/// two `README.md`s in different directories never overwrite each other's
+/// export. Control characters in the stem become `_` and it is capped, so a
+/// hostile file name cannot smuggle an escape into the note that prints it.
+fn export_path(dir: &Path, file: &Path) -> io::Result<PathBuf> {
+    let (sidecar, _) = identity(dir, file)?;
+    let hash = sidecar
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map_or("", |s| &s[..s.len().min(8)])
+        .to_string();
+    let stem: String = file
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_control() { '_' } else { c })
+        .take(48)
+        .collect();
+    let stem = if stem.trim().is_empty() {
+        "document".into()
+    } else {
+        stem
+    };
+    Ok(dir.join("exports").join(format!("{stem}-notes-{hash}.md")))
+}
+
 /// Write a portable Markdown export inside the injected state directory.
 pub fn export_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Result<PathBuf> {
-    let (sidecar, _) = identity(dir, file)?;
-    let path = sidecar.with_extension("md");
+    let path = export_path(dir, file)?;
     std::fs::create_dir_all(
         path.parent()
             .ok_or_else(|| invalid("missing export directory"))?,
@@ -325,7 +362,10 @@ mod tests {
         let a = Annotation::new("word", 0..4, "a note".into()).unwrap();
         let state = temp.path().join("state");
         let export = export_in(&state, &file, std::slice::from_ref(&a)).unwrap();
-        assert!(export.starts_with(&state));
+        assert_eq!(export.parent(), Some(state.join("exports").as_path()));
+        let name = export.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("source-notes-"), "{name}");
+        assert_eq!(export.extension().and_then(|e| e.to_str()), Some("md"));
         assert_eq!(
             std::fs::read_to_string(&export).unwrap(),
             export_markdown(&file, &[a])
@@ -334,6 +374,37 @@ mod tests {
         std::fs::remove_file(&export).unwrap();
         std::fs::create_dir(&export).unwrap();
         assert!(export_in(&state, &file, &[]).is_err());
+    }
+
+    /// An export is named after its document so a person can find it, and
+    /// still keyed to the full path so two `README.md`s never overwrite
+    /// each other's. A hostile file name cannot put a control character or
+    /// an unbounded run into the name.
+    #[test]
+    fn exports_are_named_for_their_document_and_never_collide() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("state");
+        let a = Annotation::new("word", 0..4, "note".into()).unwrap();
+        let mut paths = Vec::new();
+        for dir in ["one", "two"] {
+            std::fs::create_dir(temp.path().join(dir)).unwrap();
+            let file = temp.path().join(dir).join("README.md");
+            std::fs::write(&file, "word").unwrap();
+            paths.push(export_in(&state, &file, std::slice::from_ref(&a)).unwrap());
+        }
+        assert_ne!(paths[0], paths[1]);
+        for p in &paths {
+            let name = p.file_name().unwrap().to_str().unwrap();
+            assert!(name.starts_with("README-notes-"), "{name}");
+        }
+        let hostile = temp
+            .path()
+            .join(format!("a\tb\n\u{1b}[31m{}.md", "x".repeat(200)));
+        std::fs::write(&hostile, "word").unwrap();
+        let p = export_in(&state, &hostile, std::slice::from_ref(&a)).unwrap();
+        let name = p.file_name().unwrap().to_str().unwrap();
+        assert!(!name.chars().any(char::is_control), "{name:?}");
+        assert!(name.chars().count() < 100, "{name:?}");
     }
 
     #[cfg(unix)]

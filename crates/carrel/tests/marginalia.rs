@@ -228,16 +228,32 @@ fn export_reports_success_and_failure_without_losing_entries() {
     input(&mut app, "My thought\nSecond line");
     update(&mut app, Action::NoteInput(NoteKey::Save));
     let entries = app.notes.entries.clone();
+    app.clipboard = None;
     update(&mut app, Action::NotesExport);
-    let export = std::fs::read_dir(dir.path().join("state/marginalia"))
+    let export = std::fs::read_dir(dir.path().join("state/exports"))
         .unwrap()
         .map(|e| e.unwrap().path())
         .find(|p| p.extension().is_some_and(|ext| ext == "md"))
         .unwrap();
-    let markdown = std::fs::read_to_string(export).unwrap();
+    let markdown = std::fs::read_to_string(&export).unwrap();
     assert!(markdown.contains("> café quote"));
     assert!(markdown.contains("My thought\nSecond line"));
-    assert!(app.note.as_deref().unwrap().contains("Notes exported"));
+    // The exact path, in the note and on the clipboard: the next thing
+    // anyone does with an export is open, attach or move it.
+    let shown = export.display().to_string();
+    let note = app.note.clone().unwrap();
+    assert!(note.contains("Notes exported"), "{note}");
+    assert!(note.contains(&shown), "{note}");
+    assert_eq!(app.clipboard.as_deref(), Some(shown.as_str()));
+    // Nothing lands beside the document.
+    for entry in std::fs::read_dir(dir.path()).unwrap() {
+        let name = entry.unwrap().file_name();
+        assert!(
+            ["reading.md", "state", "config"].contains(&name.to_str().unwrap()),
+            "{name:?}"
+        );
+    }
+    app.clipboard = None;
     let blocked = dir.path().join("blocked");
     std::fs::write(&blocked, "not a directory").unwrap();
     app.state_dir = Some(blocked);
@@ -248,6 +264,7 @@ fn export_reports_success_and_failure_without_losing_entries() {
             .unwrap()
             .contains("Could not export notes")
     );
+    assert_eq!(app.clipboard, None, "a failed export copies nothing");
     assert_eq!(app.notes.entries, entries);
     assert_eq!(
         std::fs::read_to_string(app.file.as_ref().unwrap()).unwrap(),
@@ -350,6 +367,52 @@ fn notes_overlay_has_clickable_controls_and_owns_empty_space_at_all_sizes() {
         assert_eq!(app.notes.draft.as_ref().unwrap().text, "A visible draft");
         assert!(painted.targets.hit(0, 0).is_some(), "{width} × {height}");
     }
+}
+
+/// The pane's title row, as painted.
+fn notes_title(app: &App) -> String {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 20)).unwrap();
+    let mut painted = carrel::render::Painted::default();
+    terminal
+        .draw(|frame| {
+            carrel::render::draw_full(
+                frame,
+                app,
+                &mut painted,
+                &mut std::collections::HashMap::new(),
+            );
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    (0..70).map(|x| buf[(x, 1)].symbol()).collect::<String>()
+}
+
+/// The title says in words what the list holds and what a `?` row means;
+/// it does not print a bare `?` as if it were a key to press.
+#[test]
+fn the_notes_title_counts_notes_and_explains_the_lost_ones() {
+    let (_dir, mut app) = reader();
+    update(&mut app, Action::NotesToggle);
+    let empty = notes_title(&app);
+    assert!(
+        empty.trim_start().starts_with("Notes · esc close"),
+        "{empty:?}"
+    );
+    app.notes.pane = None;
+    select(&mut app, "café quote");
+    update(&mut app, Action::HighlightAdd);
+    select(&mut app, "Another paragraph");
+    update(&mut app, Action::HighlightAdd);
+    update(&mut app, Action::NotesToggle);
+    let found = notes_title(&app);
+    assert!(found.contains("Notes · 2 notes · esc close"), "{found:?}");
+    assert!(!found.contains('?'), "{found:?}");
+    app.reload_from("# Reading\n\nAnother paragraph.\n");
+    let lost = notes_title(&app);
+    assert!(
+        lost.contains("Notes · 2 notes · 1 quote not found (marked ?) · esc close"),
+        "{lost:?}"
+    );
 }
 
 #[test]

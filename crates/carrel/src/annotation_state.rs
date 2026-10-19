@@ -1,4 +1,5 @@
 //! Reader annotations and their modal state. No terminal types or source writes.
+use std::fmt::Write as _;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -19,6 +20,27 @@ pub struct Notes {
     pub draft: Option<Draft>,
     /// A failed read must never turn into permission to overwrite the sidecar.
     pub load_error: Option<String>,
+}
+
+impl Notes {
+    /// The list pane's title, in words: how many notes there are and how
+    /// many have lost their place in the document, naming the `?` those
+    /// rows are marked with — a legend, never a bare `?` that reads as a
+    /// key to press.
+    #[must_use]
+    pub fn title(&self) -> String {
+        let n = self.entries.len();
+        if n == 0 {
+            return "Notes · ".into();
+        }
+        let mut title = format!("Notes · {n} note{} · ", if n == 1 { "" } else { "s" });
+        let lost = self.entries.iter().filter(|a| a.range.is_none()).count();
+        if lost > 0 {
+            let quotes = if lost == 1 { "quote" } else { "quotes" };
+            let _ = write!(title, "{lost} {quotes} not found (marked ?) · ");
+        }
+        title
+    }
 }
 
 #[derive(Debug)]
@@ -210,9 +232,24 @@ fn export(app: &mut App) {
         return;
     }
     if let (Some(dir), Some(file)) = (app.state_dir.as_deref(), app.file.as_deref()) {
+        // The export lives in carrel's state directory, never beside the
+        // document (see `marginalia::export_path`), so the note names the
+        // whole path and the path goes to the clipboard: opening, attaching
+        // or moving the file all start by pasting it. The markdown itself
+        // is one click away under `copy all`.
         match marginalia::export_in(dir, file, &app.notes.entries) {
-            Ok(path) => app.note = Some(format!("Notes exported to {}", path.display())),
-            Err(error) => app.note = Some(format!("Could not export notes: {error}")),
+            Ok(path) => {
+                let shown = path.display().to_string();
+                app.note = Some(format!(
+                    "Notes exported to {shown} (path sent to the terminal clipboard)"
+                ));
+                app.clipboard = Some(shown);
+            }
+            Err(error) => {
+                app.note = Some(format!(
+                    "Could not export notes: {error}. Copy all puts them on the clipboard instead."
+                ));
+            }
         }
     } else {
         let text = marginalia::export_markdown(std::path::Path::new(&app.path), &app.notes.entries);

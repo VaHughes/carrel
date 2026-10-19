@@ -271,8 +271,10 @@ Pasted text stays text, including newlines.
 `$XDG_STATE_HOME/carrel/marginalia/` (normally `~/.local/state/carrel/marginalia/`),
 never in the source document. They survive resizing and use the saved quote and
 surrounding text to find their place after an edit. Missing or ambiguous quotes
-remain available as unresolved notes. **Export** (`E` in the list) writes a
-quote-and-note Markdown file alongside the saved notes and reports its path.
+stay in the list marked `?`, and the list's title counts them. **Export** (`E` in
+the list) writes a quote-and-note Markdown file to
+`$XDG_STATE_HOME/carrel/exports/<name>-notes-<hash>.md`, never beside the document,
+then shows the exact path and sends it to the terminal clipboard.
 For piped documents, notes last for the session and export through the terminal
 clipboard (OSC 52).
 
