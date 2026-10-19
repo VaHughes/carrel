@@ -508,3 +508,69 @@ fn tail_elision_preserves_graphemes_and_stays_within_its_columns() {
     assert_eq!(tail_text("prefix-e\u{301}", 2), "…e\u{301}");
     assert_eq!(tail_text("prefix-👩‍💻", 3), "…👩‍💻");
 }
+
+/// A pane's bottom border drops whole hints when it runs out of room — the
+/// footer's rule — keeping the close hint longest, rather than clipping the
+/// row mid-word. At 30x6 the help sheet used to lose `esc close` off its
+/// border while `↑/↓ scroll` survived. No hint is ever painted cut short.
+#[test]
+fn a_narrow_pane_border_drops_whole_hints_and_keeps_the_close_hint_longest() {
+    let mut checked = 0;
+    for open in [
+        Action::HelpToggle,
+        Action::OutlineToggle,
+        Action::MarkListToggle,
+        Action::ForwardToggle,
+        Action::InfoToggle,
+        Action::SettingsToggle,
+    ] {
+        for (cols, rows) in [(30, 6), (24, 8), (36, 10), (18, 6), (80, 24)] {
+            let mut app = app(cols, rows);
+            app.marks.push(0);
+            update(&mut app, open);
+            let hints = carrel::footer::of(&app).hints;
+            let (buf, _) = frame(&app);
+            let Some(border) = (0..rows)
+                .map(|y| (0..cols).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .find(|l| l.contains("└ "))
+            else {
+                continue; // too small for a card: the compact panel has no border row
+            };
+            checked += 1;
+            let whole = |h: &carrel::keys::Hint| format!("{} {}", h.key, h.label);
+            for h in hints {
+                let key_shown = border.contains(&format!("{} ", h.key))
+                    || border.trim_end_matches(['─', ' ']).ends_with(h.key)
+                    || (h.key == "↑/↓" && border.contains('↑'));
+                assert!(
+                    !key_shown || border.contains(&whole(h)),
+                    "{open:?} at {cols}x{rows}: `{}` cut short in {border:?}",
+                    whole(h)
+                );
+            }
+            if let Some(close) = hints.last().filter(|h| h.key == "esc") {
+                let any = hints.iter().any(|h| border.contains(&whole(h)));
+                assert!(
+                    !any || border.contains(&whole(close)),
+                    "{open:?} at {cols}x{rows}: the close hint went first in {border:?}"
+                );
+            }
+        }
+    }
+    assert!(checked > 10, "only {checked} borders were looked at");
+}
+
+#[test]
+fn the_help_sheet_at_30x6_still_says_how_to_close_it() {
+    let mut app = app(30, 6);
+    update(&mut app, Action::HelpToggle);
+    let (buf, _) = frame(&app);
+    assert!(
+        (0..6).any(|y| {
+            let l: String = (0..30).map(|x| buf[(x, y)].symbol()).collect();
+            l.contains("└ ") && l.contains("esc close")
+        }),
+        "{}",
+        text(&buf)
+    );
+}
