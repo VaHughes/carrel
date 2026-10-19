@@ -163,5 +163,40 @@ fn bench_highlight(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_wrap, bench_search, bench_highlight);
+/// The open path: markdown to `Document`. Prose with no `#` in it must cost
+/// what it did before inline tags existed; the tagged corpus is the same
+/// prose with a `#tag` every sixth word, the most a real note carries.
+fn bench_parse(c: &mut Criterion) {
+    const MB: usize = 1 << 20;
+    let plain = corpus_ascii(MB);
+    let tagged: String = plain
+        .split(' ')
+        .enumerate()
+        .map(|(i, w)| {
+            if i % 6 == 0 && !w.is_empty() {
+                format!("#{w}")
+            } else {
+                w.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut g = c.benchmark_group("parse");
+    g.throughput(Throughput::Bytes(plain.len() as u64));
+    g.bench_function("ascii_1mb", |b| {
+        b.iter(|| Document::parse(&plain).text.len());
+    });
+    g.bench_function("ascii_1mb_tagged", |b| {
+        b.iter(|| Document::parse(&tagged).text.len());
+    });
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_wrap,
+    bench_search,
+    bench_highlight,
+    bench_parse
+);
 criterion_main!(benches);

@@ -303,6 +303,30 @@ fn a_line_without_whitespace_parses_in_linear_time() {
     );
 }
 
+/// The same guard with a `#` in every piece: the inline-tag pass looks at a
+/// split run's source for an entity that decoded to `#`, and every piece of
+/// a split run carries the whole line's source range.
+#[test]
+fn a_split_line_full_of_hashes_parses_in_linear_time() {
+    use std::time::Instant;
+
+    let small = "a^1^#t".repeat(16_384);
+    let large = "a^1^#t".repeat(65_536);
+    let time = |src: &str| {
+        let t = Instant::now();
+        let doc = Document::parse(src);
+        assert!(!doc.text.is_empty());
+        t.elapsed().as_secs_f64()
+    };
+    time(&small);
+    let (a, b) = (time(&small), time(&large));
+    assert!(
+        b < a * 12.0,
+        "4x the line took {:.1}x the time ({a:.4}s -> {b:.4}s).",
+        b / a
+    );
+}
+
 // --- source lines ---
 
 /// `notes.md:42` means the forty-second line of the FILE. Display rows are

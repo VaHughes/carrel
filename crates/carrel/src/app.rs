@@ -1350,12 +1350,12 @@ impl App {
 
     /// Open the tags page AT a tag: its section expanded and at the top.
     /// The page's sections are in [`crate::tags::groups`]' order, so the
-    /// n-th group is the n-th second-level heading.
+    /// n-th group is the n-th heading below the page's title.
     fn focus_tag(&mut self, index: &crate::tags::Index, tag: &str) {
-        let wanted = tag.to_lowercase();
+        let wanted = crate::tags::key(tag);
         let Some(n) = crate::tags::groups(index)
             .iter()
-            .position(|g| g.name.to_lowercase() == wanted)
+            .position(|g| crate::tags::key(&g.name) == wanted)
         else {
             // The document the tag was clicked in is not one of the ones
             // listed (it is ignored, or outside the folder), and nothing
@@ -1368,12 +1368,14 @@ impl App {
             .doc
             .nodes
             .iter()
-            .filter(|n| matches!(n.kind, NodeKind::Heading { level: 2 }))
+            .filter(|n| matches!(n.kind, NodeKind::Heading { level } if level >= 2))
             .nth(n)
             .map(|n| (n.id, n.doc.start))
         else {
             return;
         };
+        // Its own fold only: `reveal_byte` below opens the parents a nested
+        // tag's heading sits inside, as it does for every jump.
         if self.folded.remove(&id) {
             self.relayout();
         }
@@ -3698,8 +3700,12 @@ fn request_tags(app: &mut App, focus: Option<String>) -> Outcome {
     Outcome::Redraw
 }
 
-/// The tag written at `byte` of the open document's metadata card.
+/// The tag written at `byte`: an inline `#tag` in the body, or one on the
+/// open document's metadata card.
 fn tag_at(app: &App, byte: u32) -> Option<String> {
+    if let Some(tag) = app.doc.tag_at(byte) {
+        return Some(tag.to_string());
+    }
     let block = app.doc.block_at_doc(DocByte(byte));
     let node = app.doc.node_for_block(block);
     let NodeKind::Metadata { format, .. } = node.kind else {
@@ -3730,7 +3736,7 @@ fn open_ready_tags(app: &mut App) -> Outcome {
     if index.tagged.is_empty() {
         // A dead end says why, and what would change it.
         app.set_note(format!(
-            "no tags — none of the {} here has `tags:` in its frontmatter",
+            "no tags — none of the {} here has `tags:` in its frontmatter or a #tag in its text",
             if index.read == 1 {
                 "1 document".to_string()
             } else {

@@ -267,6 +267,185 @@ fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
     out
 }
 
+/// The longest inline tag name, in characters. A longer `#run` is not a tag:
+/// nobody labels a note with a sentence, and a bound keeps a hostile one
+/// from becoming a button the width of the screen.
+pub const MAX_TAG_CHARS: usize = 64;
+
+/// Block kinds whose text may hold an inline `#tag`.
+///
+/// **Exhaustive on purpose**, like `hyphen::divisible_kind`: a new kind must
+/// be classified deliberately. Prose, headings and table cells are text the
+/// author wrote to be read; code, math and the frontmatter card are not
+/// prose (a `#` in a card is a YAML comment, and the card's tags are its own
+/// buttons), an alert label and an image's alt text are not the author's
+/// running text.
+const fn taggable_kind(kind: &NodeKind) -> bool {
+    match kind {
+        NodeKind::Paragraph
+        | NodeKind::Item
+        | NodeKind::DefDetails
+        | NodeKind::DefTerm
+        | NodeKind::Heading { .. }
+        | NodeKind::Table { .. } => true,
+        NodeKind::Root
+        | NodeKind::List { .. }
+        | NodeKind::BlockQuote
+        | NodeKind::CodeBlock { .. }
+        | NodeKind::AlertLabel { .. }
+        | NodeKind::Math
+        | NodeKind::Metadata { .. }
+        | NodeKind::Image { .. }
+        | NodeKind::Rule => false,
+    }
+}
+
+/// Is `name` (the text after a `#`) a tag?
+///
+/// Obsidian's rule, which is the one people write to: at least one letter,
+/// so `#42` stays an issue number. Two refusals of carrel's own, each
+/// failing toward plain text:
+///
+/// - **A hex color is not a tag.** Obsidian makes `#1e1e2e` a tag; in a note
+///   about a theme that is a page of colors posing as labels. A name is a
+///   color when it is 3, 4, 6 or 8 hex digits and also holds a decimal digit
+///   (`#0af`, `#1e1e2e`), is 6 or 8 long (`#ffffff`, `#deadbeef`), or is one
+///   repeated letter (`#fff`). `#bad`, `#cafe` and `#face` stay tags: they
+///   are words as often as colors, and a word is what a tag is.
+/// - **A name may not start with `/`** — `#/usr` is a path, not a nesting.
+fn is_tag_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && name.chars().any(char::is_alphabetic)
+        && name.chars().count() <= MAX_TAG_CHARS
+        && !looks_like_color(name)
+}
+
+fn looks_like_color(name: &str) -> bool {
+    let b = name.as_bytes();
+    matches!(b.len(), 3 | 4 | 6 | 8)
+        && b.iter().all(u8::is_ascii_hexdigit)
+        && (b.iter().any(u8::is_ascii_digit)
+            || b.len() >= 6
+            || b.iter().all(|c| c.eq_ignore_ascii_case(&b[0])))
+}
+
+/// Inline `#tags` in finished display text, as doc ranges (the `#`
+/// included), in order.
+///
+/// Run over the WHOLE text after the parse rather than event by event,
+/// because a text run may arrive split — `x^2^` came as two events, and an
+/// entity or a smart quote splits a run the same way — so a pass that saw
+/// one event at a time would cut `#foo\_bar` at the escape. The display text
+/// is one contiguous string per block; nothing can split it.
+///
+/// A tag is a `#` that:
+///
+/// 1. sits in a [`taggable_kind`] block — never in a code block;
+/// 2. opens its block's text or follows whitespace, so `C#`, `F#`, a URL's
+///    `/#fragment` and the second `#` of `##` are not tags;
+/// 3. is not inside a code span, math, or a link — a link's text is already
+///    a button, and a tag inside it would be a button inside a button;
+/// 4. was a `#` the author typed: not `\#` and not `&#35;` (`inert`, the doc
+///    bytes the parse recorded as escaped or decoded);
+/// 5. is followed by a name: letters, digits, `_`, `-` and `/`, judged per
+///    grapheme so a combining accent stays with its letter. The name ends at
+///    anything else — `#tag.` and `#tag,` are `tag` — or where a code span,
+///    math or a link begins. A trailing `/` is not part of it. See
+///    [`is_tag_name`] for what a name must hold.
+///
+/// A heading needs a space after its `#`s, so `#heading` with none is a
+/// paragraph to `CommonMark` and a tag here — exactly Obsidian's reading.
+///
+/// Costs one `memchr` over text with no `#` in it.
+fn find_inline_tags(
+    text: &str,
+    nodes: &[Node],
+    order: &[NodeId],
+    inert: &[u32],
+) -> Vec<Range<u32>> {
+    /// Bytes past the `#` a name could reach: [`MAX_TAG_CHARS`] of the
+    /// widest UTF-8 character, and one more. A name the window cuts short
+    /// therefore still holds more than [`MAX_TAG_CHARS`] characters, and is
+    /// refused for its length like any other over-long one.
+    const WINDOW: u32 = 4 * MAX_TAG_CHARS as u32 + 4;
+    let mut out = Vec::new();
+    let mut b = 0usize;
+    for (i, _) in text.match_indices('#') {
+        let at = i as u32;
+        while b < order.len() && nodes[order[b].0 as usize].doc.end <= at {
+            b += 1;
+        }
+        let Some(node) = order.get(b).map(|id| &nodes[id.0 as usize]) else {
+            break;
+        };
+        if at < node.doc.start || !taggable_kind(&node.kind) {
+            continue;
+        }
+        if at != node.doc.start
+            && !text[..i]
+                .chars()
+                .next_back()
+                .is_none_or(char::is_whitespace)
+        {
+            continue;
+        }
+        if inert.binary_search(&at).is_ok() {
+            continue;
+        }
+        let excluded = |r: &Inline| {
+            r.link.is_some()
+                || r.style.contains(Style::CODE)
+                || r.style.contains(Style::MATH)
+                || r.style.contains(Style::LINK)
+        };
+        // Look no further than the longest name could reach, so a paragraph
+        // of a hundred thousand `#a` costs a hundred thousand short looks
+        // and not a hundred thousand walks to its end.
+        let window = (at + 1 + WINDOW).min(node.doc.end);
+        let from = node.inlines.partition_point(|r| r.doc.end <= at);
+        let mut limit = window;
+        if let Some(r) = node.inlines[from..]
+            .iter()
+            .take_while(|r| r.doc.start < window)
+            .find(|r| excluded(r))
+        {
+            if r.doc.start <= at {
+                continue;
+            }
+            limit = r.doc.start;
+        }
+        let mut end = limit as usize;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let rest = &text[i + 1..end];
+        // ASCII names, the common case, by byte. A non-ASCII byte right after
+        // the run may be a combining mark belonging to its last letter, so
+        // then the whole name is judged by grapheme instead.
+        let ascii = rest
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'/'))
+            .count();
+        let len = if rest.as_bytes().get(ascii).is_none_or(u8::is_ascii) {
+            ascii
+        } else {
+            rest.graphemes(true)
+                .take_while(|g| {
+                    let c = g.chars().next().unwrap_or(' ');
+                    c.is_alphanumeric() || matches!(c, '_' | '-' | '/')
+                })
+                .map(str::len)
+                .sum()
+        };
+        let name = rest[..len].trim_end_matches('/');
+        if is_tag_name(name) {
+            out.push(at..at + 1 + name.len() as u32);
+        }
+    }
+    out
+}
+
 /// A styled run over [`Document::text`].
 #[derive(Clone, Debug)]
 pub struct Inline {
@@ -535,6 +714,12 @@ pub struct Document {
     /// doc byte each sits at. The tags themselves are stripped; this is what
     /// keeps a `#x` link to one working.
     pub anchors: Box<[(Box<str>, u32)]>,
+    /// Inline `#tags` in the body: the doc range of each, its `#` included,
+    /// in order and never overlapping. The text is untouched — a tag is
+    /// read and searched as the `#word` it was written as; this only says
+    /// where the frontend may make one a button. See `find_inline_tags`
+    /// for what counts.
+    pub tags: Box<[Range<u32>]>,
 }
 
 impl Document {
@@ -542,6 +727,33 @@ impl Document {
     #[must_use]
     pub fn parse(source: &str) -> Self {
         Builder::new(source).run()
+    }
+
+    /// The name of an inline tag: the text after its `#`.
+    #[must_use]
+    pub fn tag_name(&self, tag: &Range<u32>) -> &str {
+        self.text
+            .get(tag.start as usize + 1..tag.end as usize)
+            .unwrap_or_default()
+    }
+
+    /// The inline tag covering doc byte `at`, by bisection.
+    #[must_use]
+    pub fn tag_at(&self, at: u32) -> Option<&str> {
+        let i = self.tags.partition_point(|r| r.end <= at);
+        self.tags
+            .get(i)
+            .filter(|r| r.start <= at)
+            .map(|r| self.tag_name(r))
+    }
+
+    /// The inline tags that overlap `range`, by bisection — what a frontend
+    /// painting one row asks for.
+    #[must_use]
+    pub fn tags_in(&self, range: Range<u32>) -> &[Range<u32>] {
+        let from = self.tags.partition_point(|r| r.end <= range.start);
+        let to = from + self.tags[from..].partition_point(|r| r.start < range.end);
+        &self.tags[from..to]
     }
 
     /// Map a doc-space offset back to a source offset. O(log P).
@@ -1268,6 +1480,13 @@ struct Builder<'a> {
     /// Finished regions, in document order.
     details: Vec<DetailsRegion>,
     anchors: Vec<(Box<str>, u32)>,
+    /// Doc bytes of every `#` in the text that the author did NOT type as a
+    /// bare `#` — an escaped `\#` or a decoded `&#35;` — so no tag opens
+    /// there. In order, because `push` appends in order.
+    inert_hashes: Vec<u32>,
+    /// The last source range searched for an entity that decodes to `#`,
+    /// and the answer — see `mark_inert_hashes`.
+    entity_src: Option<(Range<usize>, bool)>,
     /// Enclosing GFM alerts, innermost last (alerts can nest, in principle).
     alerts: Vec<AlertKind>,
     /// The column each enclosing quote's bar sits at, outermost first.
@@ -1308,6 +1527,8 @@ impl<'a> Builder<'a> {
             pending_details: Vec::new(),
             details: Vec::new(),
             anchors: Vec::new(),
+            inert_hashes: Vec::new(),
+            entity_src: None,
             alerts: Vec::new(),
             quote_cols: Vec::new(),
             footnote: None,
@@ -1728,6 +1949,10 @@ impl<'a> Builder<'a> {
             ProvKind::Substituted
         };
 
+        if kind != ProvKind::Synthetic {
+            self.mark_inert_hashes(s, &src, kind, start);
+        }
+
         self.prov.push(Prov {
             doc: start..end,
             src: src.start as u32..src.end as u32,
@@ -1742,6 +1967,48 @@ impl<'a> Builder<'a> {
                 style: self.style,
                 link: self.current_link,
             });
+        }
+    }
+
+    /// Record the `#`s in a pushed run that the author did not type bare.
+    ///
+    /// pulldown-cmark drops an escape's backslash and starts a new event at
+    /// the character it escaped, so `\#` is a run opening with `#` whose
+    /// source byte before it is `\`. A decoded entity (`&#35;`, `&num;`)
+    /// leaves the run's text and source differing; when the source holds
+    /// one, every `#` in the run is refused rather than guessed at — a
+    /// split run's source range is the whole event's, so which `#` came
+    /// from the entity is not recoverable, and a missed tag is better than
+    /// an invented one.
+    fn mark_inert_hashes(&mut self, s: &str, src: &Range<usize>, kind: ProvKind, start: u32) {
+        // Both tests are cheap where they fail, which is nearly always: one
+        // byte, and a search of a substituted run's source. Only a run that
+        // passes one has its `#`s looked for at all.
+        let bytes = self.source.as_bytes();
+        let escaped =
+            s.starts_with('#') && src.start > 0 && bytes.get(src.start - 1) == Some(&b'\\');
+        // A run split by an autolink or a script hands every piece the
+        // whole event's source range, so the answer is kept per range: a
+        // line of ten thousand `x^2^` must cost one search, not ten
+        // thousand searches of the whole line.
+        let entity = kind != ProvKind::Verbatim
+            && s.contains('#')
+            && match &self.entity_src {
+                Some((r, known)) if *r == *src => *known,
+                _ => {
+                    let known = self
+                        .source
+                        .get(src.clone())
+                        .is_some_and(|t| t.contains("&#") || t.contains("&num;"));
+                    self.entity_src = Some((src.clone(), known));
+                    known
+                }
+            };
+        if entity {
+            let found = s.match_indices('#').map(|(j, _)| start + j as u32);
+            self.inert_hashes.extend(found);
+        } else if escaped {
+            self.inert_hashes.push(start);
         }
     }
 
@@ -2449,6 +2716,12 @@ impl<'a> Builder<'a> {
         self.flush_table(self.source.len());
         self.close_block(self.source.len());
 
+        let tags = find_inline_tags(
+            &self.text,
+            &self.nodes,
+            &self.layout_order,
+            &self.inert_hashes,
+        );
         Document {
             source: Arc::from(self.source),
             text: self.text,
@@ -2459,6 +2732,7 @@ impl<'a> Builder<'a> {
             prov: self.prov.into_boxed_slice(),
             details: self.details.into_boxed_slice(),
             anchors: self.anchors.into_boxed_slice(),
+            tags: tags.into_boxed_slice(),
         }
     }
 }
@@ -4426,5 +4700,216 @@ mod tests {
         let n = doc.node_for_block(BlockIdx(0));
         let count = n.inlines.iter().filter(|i| i.link.is_some()).count();
         assert_eq!(count, 2, "one explicit, one autolinked -- not three");
+    }
+
+    // --- inline tags ---
+
+    fn tag_names(src: &str) -> Vec<String> {
+        let d = Document::parse(src);
+        d.tags.iter().map(|r| d.tag_name(r).to_string()).collect()
+    }
+
+    #[test]
+    fn an_inline_tag_is_a_hash_and_a_name_after_whitespace() {
+        assert_eq!(
+            tag_names("a note #rust and #web-dev\n"),
+            ["rust", "web-dev"]
+        );
+        assert_eq!(tag_names("#first word\n"), ["first"], "opening the block");
+        assert_eq!(tag_names("line one\\\n#after_break\n"), ["after_break"]);
+        let d = Document::parse("see #rust\n");
+        let r = d.tags[0].clone();
+        assert_eq!(&d.text[r.start as usize..r.end as usize], "#rust");
+        assert_eq!(d.tag_at(r.start), Some("rust"));
+        assert_eq!(d.tag_at(r.end - 1), Some("rust"));
+        assert_eq!(d.tag_at(r.end), None);
+        assert_eq!(d.tag_at(0), None);
+    }
+
+    #[test]
+    fn hashes_that_are_not_tags() {
+        for src in [
+            "I write C# and F# daily\n",
+            "fixed in issue #42 and #1999\n",
+            "a ## b\n",
+            "##double\n",
+            "#!/bin/sh in prose\n",
+            "url https://example.com/#frag and x.com/#y\n",
+            "a # b\n",
+            "a #. b\n",
+            "a #/usr/bin b\n",
+            "colors #fff #FFF #0af #1e1e2e #ffffff #deadbeef #12345678\n",
+            "escaped \\#notatag here\n",
+            "entity &#35;notatag and &num;nor\n",
+            "code `#notatag` span\n",
+            "math $#x$ here\n",
+            "[a #linktext](https://e.com) and [[#wiki]]\n",
+            "www.example.com/#frag\n",
+            "<https://e.com/#auto>\n",
+        ] {
+            assert_eq!(tag_names(src), Vec::<String>::new(), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn no_tag_is_read_from_code_or_the_frontmatter_card() {
+        assert!(tag_names("```\n#include <stdio.h>\n#tag\n```\n").is_empty());
+        assert!(tag_names("    #indented code\n").is_empty());
+        assert!(tag_names("---\ntitle: x # #comment\n---\n").is_empty());
+        assert!(tag_names("$$\n#x\n$$\n").is_empty());
+    }
+
+    #[test]
+    fn a_heading_needs_its_space_and_a_tag_does_not_have_one() {
+        // `#x` at a line start is a paragraph to CommonMark: a tag. `# x`
+        // is a heading, whose text holds no `#`.
+        assert_eq!(tag_names("#notheading\n\n# Heading\n"), ["notheading"]);
+        assert_eq!(
+            tag_names("- # heading in item\n- #tagged item\n"),
+            ["tagged"]
+        );
+        assert_eq!(
+            tag_names("## Notes #todo\n"),
+            ["todo"],
+            "a tag in a heading"
+        );
+        assert_eq!(
+            tag_names("| a | #cell |\n|---|---|\n| #row | b |\n"),
+            ["cell", "row"]
+        );
+    }
+
+    #[test]
+    fn a_name_ends_at_punctuation_and_keeps_its_unicode() {
+        assert_eq!(
+            tag_names("end #tag. next #tag2, (#paren) #slash/\n"),
+            ["tag", "tag2", "slash"]
+        );
+        assert_eq!(tag_names("見て #日本語 です\n"), ["日本語"]);
+        assert_eq!(tag_names("#café ok\n"), ["café"]);
+        assert_eq!(
+            tag_names("#cafe\u{301} decomposed\n"),
+            ["cafe\u{301}"],
+            "the accent stays"
+        );
+        assert_eq!(
+            tag_names("#party🎉 #🎉\n"),
+            ["party"],
+            "an emoji is not a name"
+        );
+        assert_eq!(tag_names("#project/alpha/v2\n"), ["project/alpha/v2"]);
+        assert_eq!(
+            tag_names("words #bad #cafe #face\n"),
+            ["bad", "cafe", "face"]
+        );
+        // Inside a word, the hash is the word's.
+        assert!(tag_names("見て#日本語\n").is_empty());
+    }
+
+    #[test]
+    fn a_tag_split_across_text_events_is_still_one_tag() {
+        // An escape splits the run inside the name; smart punctuation, a
+        // script and an autolink split it ahead of the name.
+        assert_eq!(tag_names("a #foo\\_bar b\n"), ["foo_bar"]);
+        assert_eq!(tag_names("don't #stop\n"), ["stop"]);
+        assert_eq!(tag_names("x^2^ #math-free\n"), ["math-free"]);
+        assert_eq!(tag_names("www.example.com #after\n"), ["after"]);
+        assert_eq!(tag_names("Tom &amp; Jerry #cartoon\n"), ["cartoon"]);
+    }
+
+    #[test]
+    fn a_name_ends_where_code_or_a_link_begins() {
+        assert_eq!(tag_names("#tag`code` x\n"), ["tag"]);
+        assert_eq!(tag_names("#tag[link](u) x\n"), ["tag"]);
+        assert_eq!(tag_names("**#bold** *#em*\n"), ["bold", "em"]);
+    }
+
+    #[test]
+    fn an_overlong_name_is_not_a_tag_at_all() {
+        let ok = "a".repeat(MAX_TAG_CHARS);
+        let long = "a".repeat(MAX_TAG_CHARS + 1);
+        assert_eq!(tag_names(&format!("#{ok} x\n")), std::slice::from_ref(&ok));
+        assert!(tag_names(&format!("#{long} x\n")).is_empty());
+        let wide = "日".repeat(MAX_TAG_CHARS + 30);
+        assert!(
+            tag_names(&format!("#{wide} x\n")).is_empty(),
+            "not its first 64"
+        );
+        let way = "a".repeat(10_000);
+        assert!(tag_names(&format!("#{way}\n")).is_empty());
+    }
+
+    #[test]
+    fn a_hostile_document_of_tags_parses_in_linear_time() {
+        let src = "#a *b* ".repeat(100_000);
+        let t = std::time::Instant::now();
+        let d = Document::parse(&src);
+        assert_eq!(d.tags.len(), 100_000);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
+        );
+        let mid = d.tags[50_000].clone();
+        assert_eq!(d.tags_in(mid.clone()), [mid]);
+        assert_eq!(d.tags_in(0..d.text.len() as u32).len(), 100_000);
+    }
+
+    /// What the tag pass costs, against the parse it is part of. Wall-clock
+    /// benches swing by 2x on a loaded machine; the minimum of many runs of
+    /// both, interleaved in one process, does not. Run with
+    /// `cargo test --release -p carrel-core tag_pass_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn tag_pass_cost() {
+        let words = [
+            "the", "quick", "brown", "fox", "markdown", "reader", "terminal",
+        ];
+        let mut plain = String::new();
+        let mut tagged = String::new();
+        let mut i = 0usize;
+        while plain.len() < 1 << 20 {
+            for _ in 0..60 {
+                let w = words[i % words.len()];
+                plain.push_str(w);
+                plain.push(' ');
+                if i.is_multiple_of(6) {
+                    tagged.push('#');
+                }
+                tagged.push_str(w);
+                tagged.push(' ');
+                i += 1;
+            }
+            plain.push_str("\n\n");
+            tagged.push_str("\n\n");
+        }
+        for (name, src) in [("plain", &plain), ("tagged", &tagged)] {
+            let doc = Document::parse(src);
+            let (mut parse, mut pass) = (u128::MAX, u128::MAX);
+            for _ in 0..30 {
+                let t = std::time::Instant::now();
+                std::hint::black_box(Document::parse(src));
+                parse = parse.min(t.elapsed().as_micros());
+                let t = std::time::Instant::now();
+                std::hint::black_box(find_inline_tags(
+                    &doc.text,
+                    &doc.nodes,
+                    &doc.layout_order,
+                    &[],
+                ));
+                pass = pass.min(t.elapsed().as_micros());
+            }
+            println!(
+                "{name}: parse {parse} µs/MB, of which the tag pass {pass} µs ({} tags)",
+                doc.tags.len()
+            );
+        }
+    }
+
+    #[test]
+    fn tags_do_not_change_the_text() {
+        let d = Document::parse("Notes on #rust and #web/dev.\n");
+        assert_eq!(d.text, "Notes on #rust and #web/dev.\n");
+        assert!(!crate::search(&d, "#rust", false).is_empty());
     }
 }

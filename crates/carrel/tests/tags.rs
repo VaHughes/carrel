@@ -615,3 +615,148 @@ fn the_release_of_a_click_on_a_tag_does_not_withdraw_the_request() {
     assert_eq!(app.tags, Request::Wanted);
     assert_eq!(app.note.as_deref(), Some("reading tags…"));
 }
+
+// --- inline tags ---
+
+const INLINE: &str = "# Note\n\nWritten in C# for issue #42, about #rust and #project/alpha.\n\n\
+See [the #linked docs](https://e.com) and `#code`.\n\n## Later #todo\n";
+
+fn inline_reader(dir: &Path, rows: u16) -> App {
+    let path = dir.join("inline.md");
+    std::fs::write(&path, INLINE).unwrap();
+    let mut app = App::new("inline.md".into(), Document::parse(INLINE), 70, rows);
+    app.file = Some(path);
+    app.library_root = Some(dir.to_path_buf());
+    app.on_resize(70, rows);
+    app
+}
+
+/// The words the painted `TagOpen` targets cover, in paint order.
+fn tag_buttons(app: &App) -> Vec<String> {
+    let mut term = Terminal::new(TestBackend::new(70, 40)).unwrap();
+    let mut painted = carrel::render::Painted::default();
+    term.draw(|f| {
+        carrel::render::draw_full(f, app, &mut painted, &mut std::collections::HashMap::new());
+    })
+    .unwrap();
+    let buf = term.backend().buffer().clone();
+    painted
+        .targets
+        .as_slice()
+        .iter()
+        .filter(|t| matches!(t.action, Action::TagOpen(_)))
+        .map(|t| {
+            (t.zone.x..t.zone.x + t.zone.w)
+                .map(|x| buf[(x, t.zone.y)].symbol())
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn an_inline_tag_is_a_button_on_its_own_word_and_nothing_else_is() {
+    let d = tempfile::tempdir().unwrap();
+    let app = inline_reader(d.path(), 40);
+    let mut words = tag_buttons(&app);
+    words.sort();
+    assert_eq!(
+        words,
+        ["#project/alpha", "#rust", "#todo"],
+        "not C#, not #42, not the link's text, not the code span"
+    );
+}
+
+#[test]
+fn clicking_a_nested_inline_tag_opens_the_page_inside_its_parent() {
+    let d = tempfile::tempdir().unwrap();
+    // A page long enough to open collapsed: thirty notes under `rust` and
+    // `topicN`, and two under `project/alpha` beside one under `project`.
+    let (_, mut index) = vault(d.path(), 30);
+    let tagged = |name: &str, tags: &[&str]| Tagged {
+        path: d.path().join(name),
+        mtime: SystemTime::UNIX_EPOCH,
+        tags: tags.iter().map(ToString::to_string).collect(),
+        title: None,
+    };
+    index.tagged.push(tagged("a.md", &["project/alpha"]));
+    index.tagged.push(tagged("b.md", &["project/alpha"]));
+    index.tagged.push(tagged("c.md", &["project"]));
+    let mut app = inline_reader(d.path(), 16);
+    let at = u32::try_from(app.doc.text.find("#project").unwrap()).unwrap();
+
+    assert_eq!(update(&mut app, Action::TagOpen(at + 3)), Outcome::Redraw);
+    assert_eq!(app.tags_focus.as_deref(), Some("project/alpha"));
+    deliver(&mut app, index);
+    assert_eq!(app.path, "tags");
+    // The section is last on the page, so the view stops at the page's end
+    // rather than putting it at the very top; it must be on screen.
+    let top = (0..app.doc.block_count())
+        .map(|b| carrel_core::BlockIdx(b as u32))
+        .find(|&b| app.doc.block_text(b) == "project/alpha (2)")
+        .unwrap_or_else(|| panic!("the nested section: {:?}", headings(&app, 3)));
+    let row = app.layout.row_start(top);
+    assert!(
+        (app.view.scroll_row..app.view.scroll_row + u32::from(app.text_h())).contains(&row),
+        "row {row} is off screen at {}",
+        app.view.scroll_row
+    );
+    assert_eq!(headings(&app, 3), ["project/alpha (2)"]);
+    assert!(
+        headings(&app, 2).contains(&"project (3)".to_string()),
+        "the parent counts its child's documents: {:?}",
+        headings(&app, 2)
+    );
+    // Neither the section nor the parent it sits in is folded away.
+    let path = app.doc.section_path(app.doc.node_for_block(top).doc.start);
+    assert_eq!(path.len(), 3, "the title, project, project/alpha");
+    for id in path {
+        assert!(!app.folded.contains(&id), "{id:?} is folded");
+    }
+    assert!(!app.folded.is_empty(), "the other tags stay collapsed");
+}
+
+#[test]
+fn the_real_scan_reads_inline_tags_and_skips_files_without_them() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.md"), INLINE).unwrap();
+    std::fs::write(d.path().join("b.md"), "# Only headings\n\n## And C#\n").unwrap();
+    let rx = carrel::tags::spawn(carrel::tags::Source::Walk(d.path().to_path_buf()), false, 1);
+    let mut found = Vec::new();
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            carrel::tags::Msg::Found(t, _) => found.push(t),
+            carrel::tags::Msg::Done { read, .. } => {
+                assert_eq!(read, 2);
+                break;
+            }
+        }
+    }
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].tags, ["rust", "project/alpha", "todo"]);
+}
+
+#[test]
+fn a_tag_written_with_a_doubled_slash_finds_its_section() {
+    let d = tempfile::tempdir().unwrap();
+    let src = "Filed under #Project//Alpha today.\n";
+    let path = d.path().join("doubled.md");
+    std::fs::write(&path, src).unwrap();
+    let mut app = App::new("doubled.md".into(), Document::parse(src), 70, 20);
+    app.file = Some(path);
+    app.library_root = Some(d.path().to_path_buf());
+    let (_, mut index) = vault(d.path(), 3);
+    index.tagged.push(Tagged {
+        path: d.path().join("a.md"),
+        mtime: SystemTime::UNIX_EPOCH,
+        tags: vec!["project/alpha".into()],
+        title: None,
+    });
+    let at = u32::try_from(app.doc.text.find("#Project").unwrap()).unwrap();
+    update(&mut app, Action::TagOpen(at));
+    deliver(&mut app, index);
+    assert_eq!(app.path, "tags");
+    assert_eq!(
+        app.note, None,
+        "found, not \"no listed document is tagged\""
+    );
+}

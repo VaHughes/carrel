@@ -71,7 +71,7 @@ Carrel targets what terminal markdown readers mostly haven't shipped:
 | **A comfortable line length** | Prose caps at 90 columns and centres, instead of stretching a paragraph across a 200-column terminal. Tables, code and diagrams still use the whole width. |
 | **A pager for what your tools print** | `git show \| carrel` reads a diff as a document — a section per file, collapsible, searchable. `git config core.pager carrel` and every git command that pages goes through it. |
 | **Made for the pane beside an agent** | `carrel --latest` opens what was just written; a reload marks what changed; a right-click copies `PLAN.md:42` or a signed quote to paste back. See [Reading what an agent just wrote](#reading-what-an-agent-just-wrote). |
-| **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename — and walk the tree from the path row above the list, a segment at a time. `#` answers what the folder is *about*: every frontmatter tag, with its documents under it. |
+| **A file-discovery home screen** | Open `carrel` and see what's around you to read, instead of needing a filename — and walk the tree from the path row above the list, a segment at a time. `#` answers what the folder is *about*: every tag — frontmatter or inline `#tag`, nested `project/alpha` under `project` — with its documents under it. |
 | **Clickable links** | Click a link, wherever it is painted: a markdown file beside it opens in the reader, and a URL is copied to your clipboard to paste where you want it. In a terminal that supports it, a link is a real hyperlink too; elsewhere it is plain text. Carrel never fetches a URL and never launches a program to open one. |
 | **Correct emoji and wide characters** | Width is measured per visible character, not per code point, so emoji and CJK text line up instead of drifting. |
 | **Complete markdown** | CommonMark + GFM, footnotes, tables, definition lists, frontmatter, and LaTeX math as terminal box art. Every claim here is [a test](https://github.com/VaHughes/carrel/blob/main/crates/carrel/tests/conformance.rs). |
@@ -205,7 +205,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 | **A link** | Click it. A markdown file beside it opens in the reader; a URL is copied to your clipboard. Point at it and the status row says where it goes. A link whose file, heading or note is not there is dim and struck through. |
 | **The status row** | `‹` and `›` go back and forward along the documents you have been through, and the trail names them — `README.md › PLAN.md › notes.md` — each one a button back to itself. |
 | **A footnote mark** | Click a `[^mark]` to read its footnote in place, without leaving the sentence. |
-| **A tag** | On a document's frontmatter card: the tags page, open at that tag. |
+| **A tag** | On a document's frontmatter card, or a `#tag` in its text: the tags page, open at that tag. |
 | **A code block** | `copy`, on the row under it. |
 | **A row of the help sheet** | `h` lists what carrel does beside the key that does it. Click a row and it does it. |
 | **A heading, or a `▸` / `▾` in the margin** | Collapses or expands that section, or that `<details>` block. |
@@ -467,6 +467,8 @@ The module map, the decisions already made, and the pinned dependencies are in
       background and opens them as a page: a section per tag with a link per document,
       collapsed into a list of tags when it is long, and `Backspace` returns to it from a
       document opened there. No index on disk, so nothing to go stale
+- [x] Inline `#tags` read the way Obsidian reads them, clickable in the text, and nested
+      tags (`project/alpha`) grouped under their parents on the tags page
 - [x] A bookmark list overlay (`"`) — every bookmark with its context line, Enter jumps,
       Ctrl-O comes back
 - [x] Forward links (`l`) — what this note points at, the mirror of backlinks `L`

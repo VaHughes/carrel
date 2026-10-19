@@ -396,7 +396,9 @@ the sentence.
 or the box's button goes to the footnote itself; anything else closes it.
 .TP
 .B tag
-A tag on a document's frontmatter card opens the tags page at that tag.
+A tag on a document's frontmatter card, or a
+.B #tag
+in its text, opens the tags page at that tag.
 .TP
 .B copy
 Under every code block: copy that block.
@@ -613,8 +615,8 @@ Change the order of the list: newest first, by name (which keeps a folder's
 documents together), or most recently read first. Remembered.
 .TP
 .B #
-Tags. Reads the frontmatter of every document in the folder and opens what
-it finds as a page: a section per tag, most used first, and under each a
+Tags. Reads every document in the folder and opens the tags it finds as a
+page: a section per tag, most used first, and under each a
 link to every document that carries it, newest first. A long page opens
 collapsed into the list of tags \(em click one, or press
 .BR za ,
@@ -629,7 +631,29 @@ in a YAML block, or of
 in a TOML one, written as a list or as words; two spellings that differ only
 in case are one tag. A
 .B #word
-in the body of a document is not read as a tag. With
+in the text is a tag too, as Obsidian reads one: after a space or at the
+start of a line, made of letters, digits,
+.BR _ ,
+.B \-
+and
+.BR / ,
+with at least one letter. So
+.BR "# Heading" ,
+.BR "issue #42" ,
+.BR C# ,
+a link's
+.BR /#fragment ,
+a hex color such as
+.BR #1e1e2e ,
+anything in code and
+.B \e#escaped
+are not tags. A tag with a
+.B /
+nests:
+.B project/alpha
+is a section inside
+.BR project ,
+whose count includes it. With
 .B titles
 on, documents are listed by title.
 .TP

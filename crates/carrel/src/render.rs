@@ -2133,6 +2133,25 @@ fn paint_row(
         }
     }
 
+    // 3c'. Inline `#tags` are buttons: the tags page, open at that tag — the
+    //      same as a tag on the frontmatter card. The core found them once
+    //      at parse; this is a bisection, not a scan. Painted in the link
+    //      ink so a reader sees there is something to click.
+    {
+        let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+        for tag in app.doc.tags_in(row.doc.clone()) {
+            let clamped = tag.start.max(row.doc.start)..tag.end.min(row.doc.end);
+            let (c0, c1) = cols_for_doc_range(row_text, row.doc.start, row.indent, &clamped);
+            let x0 = area.x + c0;
+            let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x0));
+            if w > 0 {
+                let rect = Rect::new(x0, y, w, 1);
+                frame.buffer_mut().set_style(rect, theme::tag());
+                targets.push(Action::TagOpen(tag.start), Zone::new(x0, y, w, 1), Z_DOC);
+            }
+        }
+    }
+
     // Saved highlights sit below selection and search styles, in doc space.
     for (index, entry) in app.notes.entries.iter().enumerate() {
         if let Some(range) = &entry.range {
