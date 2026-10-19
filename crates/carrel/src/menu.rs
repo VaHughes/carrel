@@ -431,15 +431,12 @@ fn under(app: &App, byte: u32) -> Under {
     }
 }
 
-/// Is `byte` inside a `[^name]` reference run?
+/// Is `byte` inside a `[^name]` reference run that has footnote text?
 ///
-/// The reference is literal text — `footnote_refs` reports where each one
-/// starts, and its painted width is `[^` + the name + `]`.
+/// A mark with no definition is not a button (decided 2026-09-30), so it
+/// is not a menu row either: it reads as plain text.
 fn on_footnote_ref(app: &App, byte: u32) -> bool {
-    app.doc.footnote_refs().into_iter().any(|(name, at)| {
-        let end = at.saturating_add(u32::try_from(name.len() + 3).unwrap_or(u32::MAX));
-        (at..end).contains(&byte)
-    })
+    matches!(crate::app::footnote_at(&app.doc, byte), Some((_, Some(_))))
 }
 
 /// The menu for the doc byte under the pointer: a contextual head, a blank
@@ -522,7 +519,13 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
                 },
             ]
         }
-        Under::Footnote => vec![Item::new("Go to the footnote text", Action::FootnoteJump)],
+        // The reference under the pointer, not the one `%` would pick from
+        // the top of the view; `%` is still the key that does this.
+        Under::Footnote => vec![Item::like(
+            "Go to the footnote text",
+            Action::FootnoteJump,
+            Action::FootnoteJumpAt(byte),
+        )],
         Under::Task => vec![Item::new("Next task", Action::TaskStep(1))],
         Under::Text => {
             let mut v = Vec::new();
@@ -964,7 +967,7 @@ mod tests {
             A::NotesExport => Pane,
             A::TableScroll { .. } => Doc,
             A::TableToggle => Menu("Cards ↔ columns"),
-            A::FootnoteJump => Menu("Go to the footnote text"),
+            A::FootnoteJumpAt(_) => Menu("Go to the footnote text"),
             A::TaskStep(_) => Menu("Next task"),
             A::MarkToggle => Menu("Bookmark here"),
             A::MarkListToggle => Menu("Bookmarks…"),
@@ -985,6 +988,11 @@ mod tests {
             // or from the menu row — so the toggle itself has no pointer
             // route, and does not need one.
             A::FoldToggle => KeyboardOnly,
+            // `%` goes to the footnote of the reference at the TOP OF THE
+            // VIEW, or back from a definition. A pointer names the reference
+            // it means — a click on the mark shows its text, the menu row
+            // sends `FootnoteJumpAt` — and `Back` is the way home.
+            A::FootnoteJump => KeyboardOnly,
             // Widen / narrow the reading measure: a row of the settings
             // pane, which is where every persisted preference is clickable.
             A::MeasureStep(_) => Pane,
@@ -1003,10 +1011,17 @@ mod tests {
             A::WelcomeOpen => Chrome,
             A::SettingsMove(_) | A::SettingsAdjust(_) | A::SettingsPickAt(_) => Pane,
             A::MarkNext => KeyboardOnly, // `Bookmarks…` lists them
-            A::BacklinksMove(_) | A::ForwardMove(_) | A::MarkListMove(_) | A::OutlineMove(_) => {
-                KeyboardOnly // a click lands on the row; nothing steps toward it
-            }
-            A::BacklinksOpen | A::ForwardOpen | A::MarkListJump => KeyboardOnly,
+            // The three list panes' `↑/↓ move` and `enter open`/`go` are
+            // buttons, on the footer and on the pane's own bottom border
+            // (`paint_hint_run`; the `↑` through `keys::upward`). A click on a
+            // row is still the direct way; these are there because the frame
+            // names the keys, and a key named on screen answers a click.
+            A::BacklinksMove(_) | A::ForwardMove(_) | A::MarkListMove(_) => Chrome,
+            A::BacklinksOpen | A::ForwardOpen | A::MarkListJump => Chrome,
+            // The outline's hints are `type to filter`, `enter go` and `esc
+            // close` — no `↑/↓`, and `upward` has no arm for it — so its
+            // cursor has no button: a click lands on the row instead.
+            A::OutlineMove(_) => KeyboardOnly,
             A::HomeNormalMode | A::PickerCancel => KeyboardOnly, // Esc, and a click outside
 
             // --- not intents at all ---

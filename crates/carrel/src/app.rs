@@ -171,6 +171,7 @@ impl Pane {
             | A::SelectBlock(_)
             | A::RenderedToggle
             | A::FootnoteJump
+            | A::FootnoteJumpAt(_)
             | A::PeekGo
             | A::BacklinksMove(_)
             | A::BacklinksOpen
@@ -3541,19 +3542,10 @@ fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
     if app.is_home() {
         return Outcome::Idle;
     }
-    let Some((name, _)) = app.doc.footnote_refs().into_iter().find(|(name, start)| {
-        let end = start.saturating_add(u32::try_from(name.len() + 3).unwrap_or(u32::MAX));
-        (*start..end).contains(&byte)
-    }) else {
+    let Some((name, def)) = footnote_at(&app.doc, byte) else {
         return Outcome::Idle; // a mark from a frame the document outlived
     };
-    let Some(def) = app
-        .doc
-        .footnote_defs()
-        .into_iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, at)| at)
-    else {
+    let Some(def) = def else {
         app.note = Some(format!("[^{name}] has no footnote text in this document"));
         return Outcome::Redraw;
     };
@@ -5032,6 +5024,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         // Backlinks: who points here. Opening starts a query; the event
         // loop streams rows in. Toggling closes it.
         Action::FootnoteJump => footnote_jump(app, h),
+        Action::FootnoteJumpAt(byte) => footnote_jump_at(app, byte, h),
 
         Action::BacklinksToggle => {
             if app.backlinks.is_some() {
@@ -5578,6 +5571,43 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 /// definition, back to its first reference; above everything, to the first
 /// reference in the document. Either way a history entry is pushed, so
 /// `Ctrl-O` returns — a jump is a link follow in spirit.
+/// The `[^name]` reference containing doc byte `byte`, and where its
+/// definition starts — `None` for a mark with no footnote text.
+///
+/// A reference is literal text: `footnote_refs` reports where each starts,
+/// and its painted width is `[^` + the name + `]`. Two references to one
+/// name share one definition.
+pub(crate) fn footnote_at(
+    doc: &carrel_core::Document,
+    byte: u32,
+) -> Option<(Box<str>, Option<u32>)> {
+    let (name, _) = doc.footnote_refs().into_iter().find(|(name, start)| {
+        let end = start.saturating_add(u32::try_from(name.len() + 3).unwrap_or(u32::MAX));
+        (*start..end).contains(&byte)
+    })?;
+    let def = doc
+        .footnote_defs()
+        .into_iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, at)| at);
+    Some((name, def))
+}
+
+/// The context menu's "Go to the footnote text": the definition of the
+/// reference the pointer was on. `%` asks the top of the view which
+/// reference it means; a pointer has already said.
+fn footnote_jump_at(app: &mut App, byte: u32, h: u16) -> Outcome {
+    let Some((_, Some(def))) = footnote_at(&app.doc, byte) else {
+        // A menu built for a parse the document outlived (a reload between
+        // the right-click and the pick), or a mark with no text — which the
+        // menu never offers.
+        return Outcome::Idle;
+    };
+    app.push_here();
+    app.reveal_byte(def, h, crate::action::Where::Top);
+    Outcome::Redraw
+}
+
 fn footnote_jump(app: &mut App, h: u16) -> Outcome {
     let byte = app
         .doc
@@ -8099,6 +8129,126 @@ mod tests {
         assert_eq!(a.view.anchor, def1, "back at the definition");
         update(&mut a, Action::Back);
         assert_eq!(a.view.anchor, 0, "back at the very start");
+    }
+
+    /// Three references, a fourth that repeats the first, and their
+    /// definitions under a heading of their own, with room after them.
+    fn three_refs_src() -> String {
+        let mut s = String::new();
+        let filler = |s: &mut String, tag: &str, n: usize| {
+            for i in 0..n {
+                let _ = write!(s, "{tag} filler paragraph {i}\n\n");
+            }
+        };
+        s.push_str("alpha[^a] opens.\n\n");
+        filler(&mut s, "early", 20);
+        s.push_str("beta[^b] in the middle.\n\n");
+        filler(&mut s, "between", 3);
+        s.push_str("gamma[^c] further on, and alpha again[^a].\n\n");
+        filler(&mut s, "late", 40);
+        s.push_str("# Notes\n\n[^a]: note a\n\n[^b]: note b\n\n[^c]: note c\n\n");
+        filler(&mut s, "after", 60);
+        s
+    }
+
+    /// Pick the context menu's "Go to the footnote text" for the reference
+    /// at `byte`, through the real path: `MenuOpen`, then `MenuPick`.
+    fn pick_footnote_row(a: &mut App, byte: u32) {
+        update(
+            a,
+            Action::MenuOpen {
+                at: (5, 5),
+                byte: Some(byte),
+            },
+        );
+        let i = a
+            .menu
+            .as_ref()
+            .expect("a menu opened")
+            .items
+            .iter()
+            .position(|it| it.label == "Go to the footnote text")
+            .expect("the reference offers the row");
+        update(a, Action::MenuPick(u32::try_from(i).unwrap()));
+    }
+
+    /// **The context menu goes to the footnote that was clicked**, not the
+    /// one governing the top of the view. With `[^b]` the nearest reference
+    /// above the view, a right-click on `[^c]` (visible further down) must
+    /// land on `[^c]`'s definition — it landed on `[^b]`'s.
+    #[test]
+    fn the_context_menu_jumps_to_the_clicked_footnote() {
+        let src = three_refs_src();
+        let mut a = App::new("f.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(std::path::PathBuf::from("f.md"));
+        let refs = a.doc.footnote_refs();
+        let defs = a.doc.footnote_defs();
+        let def = |name: &str| defs.iter().find(|(n, _)| &**n == name).unwrap().1;
+        let (b, c) = (refs[1].1, refs[2].1);
+        assert_eq!((&*refs[1].0, &*refs[2].0), ("b", "c"));
+        // A filler paragraph between `[^b]` and `[^c]` is the top of the view.
+        let between =
+            u32::try_from(a.doc.text.find("between filler paragraph 1").unwrap()).unwrap();
+        a.reveal_byte(between, a.text_h(), crate::action::Where::Top);
+        let start = a.view.anchor;
+        assert!(
+            b < start && start < c,
+            "[^b] above the view, [^c] below its top"
+        );
+        pick_footnote_row(&mut a, c + 1);
+        assert_eq!(a.view.anchor, def("c"), "landed on [^c]'s definition");
+        // Back returns to where the reader was, exactly.
+        update(&mut a, Action::Back);
+        assert_eq!(a.view.anchor, start, "Back returns to the view it left");
+    }
+
+    /// Two references to one footnote both lead to it; and a definition in a
+    /// folded section is unfolded on the way, never left unreachable.
+    #[test]
+    fn the_context_menu_jump_shares_definitions_and_opens_folds() {
+        let src = three_refs_src();
+        let mut a = App::new("f.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(std::path::PathBuf::from("f.md"));
+        let refs = a.doc.footnote_refs();
+        let def_a = a.doc.footnote_defs()[0].1;
+        let again = refs[3].1;
+        assert_eq!(&*refs[3].0, "a", "the fourth reference repeats [^a]");
+        // Fold the Notes section the definitions live in.
+        let notes = u32::try_from(a.doc.text.find("Notes").unwrap()).unwrap();
+        update(&mut a, Action::FoldAt(notes));
+        assert!(!a.folded.is_empty(), "the Notes section folded");
+        a.reveal_byte(again, a.text_h(), crate::action::Where::Middle);
+        pick_footnote_row(&mut a, again);
+        assert_eq!(a.view.anchor, def_a, "the repeat lands on [^a] too");
+        assert!(a.folded.is_empty(), "the fold opened to show it");
+    }
+
+    /// A mark with no definition is not a button (2026-09-30), so the
+    /// context menu does not offer to go to text that does not exist.
+    #[test]
+    fn a_footnote_with_no_text_offers_no_jump() {
+        let mut a = App::new(
+            "f.md".into(),
+            Document::parse("a dangling[^x] mark\n\n"),
+            60,
+            20,
+        );
+        let x = u32::try_from(a.doc.text.find("[^x]").unwrap()).unwrap();
+        update(
+            &mut a,
+            Action::MenuOpen {
+                at: (5, 5),
+                byte: Some(x + 1),
+            },
+        );
+        let menu = a.menu.as_ref().expect("a menu opened");
+        assert!(
+            menu.items
+                .iter()
+                .all(|it| it.label != "Go to the footnote text"),
+            "{:?}",
+            menu.items.iter().map(|it| it.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]

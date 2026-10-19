@@ -5606,6 +5606,58 @@ mod pane_frame_tests {
         );
     }
 
+    /// **What `menu::reach` says about the list panes' cursors is true.**
+    /// It classes the marks, backlinks and forward panes' move (both
+    /// directions) and open actions as `Chrome` — painted buttons — and the
+    /// outline's move as keyboard-only. Each pane is painted and its frame's
+    /// registered targets read back: the three must carry all three
+    /// buttons, and the outline must carry none for its cursor.
+    #[test]
+    fn the_list_panes_cursor_buttons_are_what_reach_says() {
+        use crate::app::Pane;
+        let mut checked = 0;
+        for (pane, face, mut app) in crate::footer::tests::every_pane_face() {
+            let want: &[Action] = match pane {
+                Pane::Marks => &[
+                    Action::MarkListMove(1),
+                    Action::MarkListMove(-1),
+                    Action::MarkListJump,
+                ],
+                Pane::Backlinks => &[
+                    Action::BacklinksMove(1),
+                    Action::BacklinksMove(-1),
+                    Action::BacklinksOpen,
+                ],
+                Pane::Forward => &[
+                    Action::ForwardMove(1),
+                    Action::ForwardMove(-1),
+                    Action::ForwardOpen,
+                ],
+                Pane::Outline => &[],
+                _ => continue,
+            };
+            app.on_resize(80, 24);
+            let (_, painted) = paint(&app);
+            let got: Vec<Action> = painted
+                .targets
+                .as_slice()
+                .iter()
+                .map(|t| t.action)
+                .collect();
+            for a in want {
+                assert!(got.contains(a), "{face}: no button sends {a:?}");
+            }
+            if pane == Pane::Outline {
+                assert!(
+                    !got.iter().any(|a| matches!(a, Action::OutlineMove(_))),
+                    "{face}: the outline's cursor has a button now; reclassify it"
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked >= 4, "the faces were walked, checked {checked}");
+    }
+
     /// **Every key a pane's frame names is a button that does what the key
     /// does.** The info card's border said `I close` and a click on it did
     /// nothing; the other borders said `↵ jump`, `esc close` and `↑↓

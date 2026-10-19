@@ -183,6 +183,11 @@ pub enum Action {
     /// from inside a definition, back to its first reference. Pushes a
     /// history entry either way, so `Ctrl-O` returns.
     FootnoteJump,
+    /// The context menu's "Go to the footnote text": go to the definition of
+    /// the reference containing this doc byte — the one the pointer was on,
+    /// not the one governing the top of the view, which is what `%` answers.
+    /// Pushes a history entry, so `Back` returns.
+    FootnoteJumpAt(u32),
     /// A click on a footnote mark: show its text where the mark is. `at` is
     /// the cell, `byte` a doc byte inside the `[^name]`.
     FootnotePeek {

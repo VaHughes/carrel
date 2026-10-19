@@ -678,6 +678,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::LinkOpen(_)
         | A::LinkCopy
         | A::FoldAt(_)
+        | A::FootnoteJumpAt(_)
         | A::BacklinksOpenAt(_)
         | A::ForwardOpenAt(_)
         | A::MarkListJumpAt(_)
