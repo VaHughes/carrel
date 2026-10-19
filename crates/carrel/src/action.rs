@@ -196,6 +196,9 @@ pub enum Action {
     },
     /// From an open peek, go to the footnote itself — `Enter`, or its button.
     PeekGo,
+    /// The wheel over an open peek: scroll a footnote longer than its box
+    /// by this many rows.
+    PeekScroll(i32),
     /// Open or close the backlinks pane.
     BacklinksToggle,
     /// Move the backlinks cursor.

@@ -716,6 +716,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         | A::BackTo(_)
         | A::FootnotePeek { .. }
         | A::PeekGo
+        | A::PeekScroll(_)
         | A::TaskOpen
         | A::YankBlockAt(_)
         | A::CopyRef(_)

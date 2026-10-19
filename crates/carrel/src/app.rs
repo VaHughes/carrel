@@ -173,6 +173,7 @@ impl Pane {
             | A::FootnoteJump
             | A::FootnoteJumpAt(_)
             | A::PeekGo
+            | A::PeekScroll(_)
             | A::BacklinksMove(_)
             | A::BacklinksOpen
             | A::BacklinksOpenAt(_)
@@ -3511,6 +3512,13 @@ fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
                 return Some(Outcome::Redraw);
             }
             Action::Dismiss => return Some(Outcome::Redraw),
+            // The wheel over the box reads on in it; the box stays.
+            Action::PeekScroll(delta) => {
+                let mut peek = peek;
+                peek.scroll(&app.doc, delta, app.cols, app.rows);
+                app.peek = Some(peek);
+                return Some(Outcome::Redraw);
+            }
             // Auto-read waits. The box is drawn where its mark was, and a
             // page that scrolled on under it left the box describing a mark
             // that was no longer on screen — besides which, the reader is
@@ -3547,13 +3555,12 @@ fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
         app.note = Some(format!("[^{name}] has no footnote text in this document"));
         return Outcome::Redraw;
     };
-    let block = app.doc.block_at_doc(DocByte(def));
-    app.peek = Some(crate::peek::Peek {
+    app.peek = Some(crate::peek::Peek::new(
+        &app.doc,
         at,
         def,
-        label: format!("[^{name}]"),
-        text: app.doc.block_text(block).trim().to_string(),
-    });
+        format!("[^{name}]"),
+    ));
     Outcome::Redraw
 }
 

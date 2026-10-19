@@ -2737,6 +2737,26 @@ fn pane_wheel(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
     }
 }
 
+/// The wheel over an open peek reads on in the footnote. Anywhere else it
+/// scrolls the page — and, being something the reader did, closes the
+/// peek. The box is a target only where it was painted.
+fn peek_wheel(
+    m: MouseEvent,
+    app: &App,
+    targets: &Targets,
+    ptr: &mut Pointer,
+) -> Option<carrel::action::Action> {
+    use carrel::action::Action;
+    if app.peek.is_none() || !targets.covered_at(m.column, m.row, carrel::render::Z_MENU) {
+        return None;
+    }
+    match m.kind {
+        MouseEventKind::ScrollDown => Some(Action::PeekScroll(ptr.wheel.notch(true))),
+        MouseEventKind::ScrollUp => Some(Action::PeekScroll(-ptr.wheel.notch(false))),
+        _ => None,
+    }
+}
+
 /// Pointer events for the reader.
 ///
 /// Desktop scrollbar semantics, because anything else feels jarring:
@@ -2779,7 +2799,7 @@ fn mouse_action(
     if let Some(action) = beside_pane(m, app, targets) {
         return (action != carrel::action::Action::Absorb).then_some(action);
     }
-    if let Some(action) = pane_wheel(m, app) {
+    if let Some(action) = pane_wheel(m, app).or_else(|| peek_wheel(m, app, targets, ptr)) {
         return Some(action);
     }
     if matches!(m.kind, MouseEventKind::Down(MouseButton::Right)) {
@@ -3503,6 +3523,59 @@ mod tests {
                 assert_eq!(result, Some(expected), "home={home}, pane={open:?}");
             }
         }
+    }
+
+    /// The wheel over a peek scrolls the footnote in it; anywhere else it
+    /// scrolls the page, as it always did.
+    #[test]
+    fn the_wheel_over_a_peek_scrolls_the_footnote_and_beside_it_the_page() {
+        use carrel::action::{Action, Span, Zone};
+        let mut app = App::new(
+            "t.md".into(),
+            carrel_core::Document::parse("Body[^n].\n\n[^n]: one\n\n    two\n"),
+            60,
+            20,
+        );
+        let byte = u32::try_from(app.doc.text.find("[^n]").unwrap()).unwrap();
+        update(&mut app, Action::FootnotePeek { at: (4, 0), byte });
+        assert!(app.peek.is_some());
+        let mut targets = Targets::new();
+        targets.push(
+            Action::Absorb,
+            Zone::new(4, 1, 30, 6),
+            carrel::render::Z_MENU,
+        );
+        let mut pointer = Pointer::default();
+        let inside = mouse_action(
+            mouse(MouseEventKind::ScrollDown, 10, 3),
+            &app,
+            &targets,
+            &mut pointer,
+        );
+        assert!(
+            matches!(inside, Some(Action::PeekScroll(n)) if n > 0),
+            "{inside:?}"
+        );
+        let inside = mouse_action(
+            mouse(MouseEventKind::ScrollUp, 10, 3),
+            &app,
+            &targets,
+            &mut pointer,
+        );
+        assert!(
+            matches!(inside, Some(Action::PeekScroll(n)) if n < 0),
+            "{inside:?}"
+        );
+        let beside = mouse_action(
+            mouse(MouseEventKind::ScrollDown, 50, 15),
+            &app,
+            &targets,
+            &mut Pointer::default(),
+        );
+        assert!(
+            matches!(beside, Some(Action::Scroll(Span::Line, _))),
+            "{beside:?}"
+        );
     }
 
     /// The scrollbar is as tall as the text, not as tall as the terminal.
