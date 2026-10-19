@@ -535,6 +535,10 @@ pub struct Document {
     /// doc byte each sits at. The tags themselves are stripped; this is what
     /// keeps a `#x` link to one working.
     pub anchors: Box<[(Box<str>, u32)]>,
+    /// Every footnote definition's whole extent in doc space, in document
+    /// order — first block's start to last block's end. Private:
+    /// [`Document::footnote_def_range`] is the API.
+    footnote_spans: Box<[Range<u32>]>,
 }
 
 impl Document {
@@ -986,6 +990,21 @@ impl Document {
             })
             .collect()
     }
+
+    /// The whole of the footnote definition whose text starts at `start` —
+    /// the byte [`Document::footnote_defs`] reports — every paragraph, list,
+    /// quote and code block in it, as one doc range.
+    ///
+    /// Recorded at parse from the definition's own start and end events, so
+    /// where a footnote stops is pulldown-cmark's answer rather than a guess
+    /// from indentation. `None` for a byte no definition starts at.
+    #[must_use]
+    pub fn footnote_def_range(&self, start: u32) -> Option<Range<u32>> {
+        self.footnote_spans
+            .iter()
+            .find(|r| r.start == start)
+            .cloned()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1268,6 +1287,11 @@ struct Builder<'a> {
     /// Finished regions, in document order.
     details: Vec<DetailsRegion>,
     anchors: Vec<(Box<str>, u32)>,
+    /// The first block index of the footnote definition being built, if any.
+    footnote_first: Option<u32>,
+    /// Finished definitions as block-index ranges, converted to doc ranges
+    /// once every block has closed.
+    footnote_blocks: Vec<Range<u32>>,
     /// Enclosing GFM alerts, innermost last (alerts can nest, in principle).
     alerts: Vec<AlertKind>,
     /// The column each enclosing quote's bar sits at, outermost first.
@@ -1308,6 +1332,8 @@ impl<'a> Builder<'a> {
             pending_details: Vec::new(),
             details: Vec::new(),
             anchors: Vec::new(),
+            footnote_first: None,
+            footnote_blocks: Vec::new(),
             alerts: Vec::new(),
             quote_cols: Vec::new(),
             footnote: None,
@@ -2067,11 +2093,20 @@ impl<'a> Builder<'a> {
                     self.indent = self.indent.saturating_add(w);
                     self.item_indent.push(w);
                     self.footnote = Some(label);
+                    // Every leaf closes on its own End event, so the blocks
+                    // pushed from here to the definition's End are its own.
+                    self.footnote_first = Some(self.layout_order.len() as u32);
                 }
                 Event::End(TagEnd::FootnoteDefinition) => {
                     let w = self.item_indent.pop().unwrap_or(0);
                     self.indent = self.indent.saturating_sub(w);
                     self.footnote = None;
+                    let end = self.layout_order.len() as u32;
+                    if let Some(first) = self.footnote_first.take()
+                        && first < end
+                    {
+                        self.footnote_blocks.push(first..end);
+                    }
                 }
 
                 // --- leaf blocks ---
@@ -2449,7 +2484,18 @@ impl<'a> Builder<'a> {
         self.flush_table(self.source.len());
         self.close_block(self.source.len());
 
+        let block_doc = |b: u32| {
+            self.layout_order
+                .get(b as usize)
+                .map(|id| self.nodes[id.get()].doc.clone())
+        };
+        let footnote_spans = self
+            .footnote_blocks
+            .iter()
+            .filter_map(|r| Some(block_doc(r.start)?.start..block_doc(r.end - 1)?.end))
+            .collect();
         Document {
+            footnote_spans,
             source: Arc::from(self.source),
             text: self.text,
             nodes: self.nodes.into_boxed_slice(),
@@ -3664,6 +3710,44 @@ mod tests {
             .map(|(n, _)| n.to_string())
             .collect();
         assert_eq!(names, vec!["y".to_string()]);
+    }
+
+    /// A footnote is everything indented under its label, not its first
+    /// paragraph — and it stops where the next thing that is not it starts.
+    #[test]
+    fn a_footnote_definition_spans_every_block_in_it() {
+        let src = "Body[^a] and[^b].\n\n\
+                   [^a]: First paragraph.\n\n    \
+                   Second paragraph.\n\n    \
+                   - one\n    - two\n\n    \
+                   > quoted\n\n    \
+                   ```\n    code line\n    ```\n\n\
+                   Not the footnote.\n\n\
+                   [^b]: Other.\n";
+        let doc = Document::parse(src);
+        let defs = doc.footnote_defs();
+        assert_eq!(defs.len(), 2, "{defs:?}");
+        let r = doc.footnote_def_range(defs[0].1).expect("recorded");
+        let inside = &doc.text[r.start as usize..r.end as usize];
+        for part in [
+            "First paragraph.",
+            "Second paragraph.",
+            "one",
+            "two",
+            "quoted",
+            "code line",
+        ] {
+            assert!(inside.contains(part), "{part:?} missing from {inside:?}");
+        }
+        assert!(!inside.contains("Not the footnote"), "{inside:?}");
+        assert!(!inside.contains("Other"), "{inside:?}");
+        let r = doc.footnote_def_range(defs[1].1).expect("recorded");
+        assert_eq!(&doc.text[r.start as usize..r.end as usize], "Other.");
+        assert_eq!(
+            doc.footnote_def_range(0),
+            None,
+            "no definition starts there"
+        );
     }
 
     #[test]

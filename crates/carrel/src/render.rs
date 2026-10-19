@@ -22,6 +22,7 @@ use std::fmt::Write as _;
 
 use carrel_core::{BlockIdx, NodeKind, Row, RowKind, cols_for_doc_range, display_width};
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
@@ -1920,49 +1921,9 @@ fn paint_row(
             }
         }
 
-        // 3. Text. Code blocks split by semantic syntax tokens; everything
-        //    else splits by inline style runs. The two never coexist on one
-        //    node — code blocks have empty `inlines`, prose has empty `tokens`.
-        let code_block = matches!(node.kind, NodeKind::CodeBlock { .. });
-        let code_base = theme::token(carrel_core::TokenKind::Plain);
-        // Lazy: the first paint of a code block computes its tokens.
-        let tokens = if code_block {
-            app.doc.tokens(block)
-        } else {
-            &[]
-        };
-        let mut x = area.x + row.indent;
-        let mut at = row.doc.start;
-        while at < row.doc.end && x < area.right() {
-            let (style, end) = if code_block {
-                run_at(tokens, at, row.doc.end, code_base, |t| theme::token(t.kind))
-            } else {
-                run_at(&node.inlines, at, row.doc.end, base, |i| {
-                    let style = base.patch(theme::inline(i.style));
-                    // A link that leads nowhere says so before it is clicked.
-                    if i.link.is_some_and(|id| app.dead_links.contains(&id)) {
-                        style.patch(theme::dead_link())
-                    } else {
-                        style
-                    }
-                })
-            };
-            let s = &app.doc.text[at as usize..end as usize];
-            // Table cells are separated by a synthetic '\t' — a cell boundary
-            // in the text, not a tab to expand. `set_stringn` SKIPS control
-            // characters, so leaving it would butt two cells together
-            // ("resizeNo shipping"); a space is what it paints as. The `│`
-            // rules are decoration drawn elsewhere, and the card view finds
-            // cells through `NodeKind::Table::cell_starts`, not through this.
-            let s: &str = &if s.contains('\t') {
-                Cow::Owned(s.replace('\t', " "))
-            } else {
-                Cow::Borrowed(s)
-            };
-            let (nx, _) = buf.set_stringn(x, y, s, (area.right() - x) as usize, style);
-            x = nx;
-            at = end;
-        }
+        // 3. Text — shared with the footnote peek, which paints the same
+        //    rows into its own box.
+        let x = paint_text(buf, app, block, row, area, y, base);
 
         // 3'. The hyphen of a word divided to fill this row. Decoration, like
         //     the bullet: it is in no text, so search, selection and copy
@@ -2105,33 +2066,8 @@ fn paint_row(
     }
 
     // 3c. Footnote marks on this row are buttons: a click shows the
-    //     footnote's text in place. Found once per document, so this is a
-    //     bisection and not a scan.
-    {
-        let from = app
-            .footnote_marks
-            .partition_point(|(at, len)| at.saturating_add(*len) <= row.doc.start);
-        let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
-        for &(at, len) in app.footnote_marks[from..]
-            .iter()
-            .take_while(|(at, _)| *at < row.doc.end)
-        {
-            let clamped = at.max(row.doc.start)..at.saturating_add(len).min(row.doc.end);
-            let (c0, c1) = cols_for_doc_range(row_text, row.doc.start, row.indent, &clamped);
-            let x0 = area.x + c0;
-            let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x0));
-            if w > 0 {
-                targets.push(
-                    Action::FootnotePeek {
-                        at: (x0, y),
-                        byte: clamped.start,
-                    },
-                    Zone::new(x0, y, w, 1),
-                    Z_DOC,
-                );
-            }
-        }
-    }
+    //     footnote's text in place.
+    push_footnote_marks(app, row, area, y, targets, Z_DOC);
 
     // Saved highlights sit below selection and search styles, in doc space.
     for (index, entry) in app.notes.entries.iter().enumerate() {
@@ -2179,23 +2115,113 @@ fn paint_row(
     }
 
     // 4. Highlights LAST — repaint style over cell rects. Never split spans.
+    paint_matches(frame.buffer_mut(), app, row, area, y);
+}
+
+/// Stage 3 of a row: its text, from `Document::text`, in its style runs —
+/// syntax tokens for code, inline runs for everything else. Returns the
+/// column after the last cell painted. `area.x + row.indent` is where the
+/// text starts and nothing is painted at or past `area.right()`.
+#[allow(clippy::too_many_arguments)]
+fn paint_text(
+    buf: &mut Buffer,
+    app: &App,
+    block: BlockIdx,
+    row: &Row,
+    area: Rect,
+    y: u16,
+    base: Style,
+) -> u16 {
+    let node = app.doc.node_for_block(block);
+    // 3. Text. Code blocks split by semantic syntax tokens; everything
+    //    else splits by inline style runs. The two never coexist on one
+    //    node — code blocks have empty `inlines`, prose has empty `tokens`.
+    let code_block = matches!(node.kind, NodeKind::CodeBlock { .. });
+    let code_base = theme::token(carrel_core::TokenKind::Plain);
+    // Lazy: the first paint of a code block computes its tokens.
+    let tokens = if code_block {
+        app.doc.tokens(block)
+    } else {
+        &[]
+    };
+    let mut x = area.x + row.indent;
+    let mut at = row.doc.start;
+    while at < row.doc.end && x < area.right() {
+        let (style, end) = if code_block {
+            run_at(tokens, at, row.doc.end, code_base, |t| theme::token(t.kind))
+        } else {
+            run_at(&node.inlines, at, row.doc.end, base, |i| {
+                let style = base.patch(theme::inline(i.style));
+                // A link that leads nowhere says so before it is clicked.
+                if i.link.is_some_and(|id| app.dead_links.contains(&id)) {
+                    style.patch(theme::dead_link())
+                } else {
+                    style
+                }
+            })
+        };
+        let s = &app.doc.text[at as usize..end as usize];
+        // Table cells are separated by a synthetic '\t' — a cell boundary
+        // in the text, not a tab to expand. `set_stringn` SKIPS control
+        // characters, so leaving it would butt two cells together
+        // ("resizeNo shipping"); a space is what it paints as. The `│`
+        // rules are decoration drawn elsewhere, and the card view finds
+        // cells through `NodeKind::Table::cell_starts`, not through this.
+        let s: &str = &if s.contains('\t') {
+            Cow::Owned(s.replace('\t', " "))
+        } else {
+            Cow::Borrowed(s)
+        };
+        let (nx, _) = buf.set_stringn(x, y, s, (area.right() - x) as usize, style);
+        x = nx;
+        at = end;
+    }
+
+    x
+}
+
+/// Stage 3c of a row: each footnote mark on it is a button that shows the
+/// footnote in place. Found once per document, so this is a bisection and
+/// not a scan. `z` is the layer the row is painted on — the document's, or
+/// the peek box's for a mark inside a footnote.
+fn push_footnote_marks(app: &App, row: &Row, area: Rect, y: u16, targets: &mut Targets, z: u8) {
+    let from = app
+        .footnote_marks
+        .partition_point(|(at, len)| at.saturating_add(*len) <= row.doc.start);
+    let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+    for &(at, len) in app.footnote_marks[from..]
+        .iter()
+        .take_while(|(at, _)| *at < row.doc.end)
+    {
+        let clamped = at.max(row.doc.start)..at.saturating_add(len).min(row.doc.end);
+        let (c0, c1) = cols_for_doc_range(row_text, row.doc.start, row.indent, &clamped);
+        let x0 = area.x + c0;
+        let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x0));
+        if w > 0 {
+            targets.push(
+                Action::FootnotePeek {
+                    at: (x0, y),
+                    byte: clamped.start,
+                },
+                Zone::new(x0, y, w, 1),
+                z,
+            );
+        }
+    }
+}
+
+/// Stage 4 of a row: the search hits on it, restyled over the cells their
+/// bytes painted — never by splitting spans.
+fn paint_matches(buf: &mut Buffer, app: &App, row: &Row, area: Rect, y: u16) {
     let Some(m) = app.matches.as_ref() else {
         return;
     };
     let text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
-    let hits: Vec<(usize, u16, u16)> = m
-        .intersecting(&row.doc)
-        .filter_map(|(i, r)| {
-            let clamped = r.start.max(row.doc.start)..r.end.min(row.doc.end);
-            let (c0, c1) = cols_for_doc_range(text, row.doc.start, row.indent, &clamped);
-            (c1 > c0).then_some((i, c0, c1))
-        })
-        .collect();
-
-    let buf = frame.buffer_mut();
-    for (i, c0, c1) in hits {
+    for (i, r) in m.intersecting(&row.doc) {
+        let clamped = r.start.max(row.doc.start)..r.end.min(row.doc.end);
+        let (c0, c1) = cols_for_doc_range(text, row.doc.start, row.indent, &clamped);
         let x0 = area.x + c0;
-        let w = (c1 - c0).min(area.right().saturating_sub(x0));
+        let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x0));
         if w == 0 {
             continue;
         }
@@ -2665,80 +2691,187 @@ fn paint_launcher(
     x.saturating_sub(1)
 }
 
-/// An open footnote peek: the footnote's text in a box by its mark.
+/// An open footnote peek: the whole footnote in a box by its mark.
 ///
 /// The menu's border vocabulary and the menu's layer — it is drawn over the
 /// document and owns its rectangle, so a click on the text inside it does
-/// not reach the text behind it.
+/// not reach the text behind it. Its rows are the footnote's own rows of
+/// `Document::text`, painted by the reader's own stages: style runs, links
+/// and footnote marks as buttons, search hits. Everything else in it is
+/// decoration — borders, label, markers, bars, the "more" count.
 fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(peek) = &app.peek else { return };
     let area = frame.area();
-    let z = peek.zone(area.width, area.height);
+    let z = peek.zone(&app.doc, area.width, area.height);
     if z.w < 8 || z.h < 4 {
         return; // no room to say anything; the next action closes it
     }
     targets.push(Action::Absorb, z, Z_MENU);
-    let buf = frame.buffer_mut();
     let inner = usize::from(z.w - 2);
-    let bar = "\u{2500}".repeat(inner);
-    buf.set_stringn(
-        z.x,
-        z.y,
-        format!("\u{256d}{bar}\u{256e}"),
-        usize::from(z.w),
-        theme::status(),
-    );
-    // A label longer than the box keeps its closing bracket: cut in the
-    // middle of the name, it ran into the corner and read as broken.
-    let room = inner.saturating_sub(3);
-    let label = if carrel_core::display_width(&peek.label) as usize > room {
-        let mut kept = String::new();
-        for c in peek.label.chars() {
-            if carrel_core::display_width(&kept) as usize
-                + carrel_core::display_width(c.encode_utf8(&mut [0; 4])) as usize
-                + 2
-                > room
-            {
-                break;
+    {
+        let buf = frame.buffer_mut();
+        let bar = "\u{2500}".repeat(inner);
+        buf.set_stringn(
+            z.x,
+            z.y,
+            format!("\u{256d}{bar}\u{256e}"),
+            usize::from(z.w),
+            theme::status(),
+        );
+        // A label longer than the box keeps its closing bracket: cut in the
+        // middle of the name, it ran into the corner and read as broken.
+        let room = inner.saturating_sub(3);
+        let label = if carrel_core::display_width(&peek.label) as usize > room {
+            let mut kept = String::new();
+            for c in peek.label.chars() {
+                if carrel_core::display_width(&kept) as usize
+                    + carrel_core::display_width(c.encode_utf8(&mut [0; 4])) as usize
+                    + 2
+                    > room
+                {
+                    break;
+                }
+                kept.push(c);
             }
-            kept.push(c);
-        }
-        format!("{kept}\u{2026}]")
-    } else {
-        peek.label.clone()
-    };
-    buf.set_stringn(z.x + 2, z.y, format!(" {label} "), inner - 1, theme::dim());
-    let last = z.y + z.h - 1;
-    buf.set_stringn(
-        z.x,
-        last,
-        format!("\u{2570}{bar}\u{256f}"),
-        usize::from(z.w),
-        theme::status(),
-    );
-    let rows = usize::from(z.h - 3);
-    let lines = peek.lines(z.w, area.height);
-    for dy in 0..z.h - 2 {
-        let y = z.y + 1 + dy;
-        buf.set_stringn(z.x, y, "\u{2502}", 1, theme::status());
-        buf.set_stringn(z.x + z.w - 1, y, "\u{2502}", 1, theme::status());
-        buf.set_stringn(z.x + 1, y, " ".repeat(inner), inner, theme::status());
-        if let Some(line) = lines
-            .get(usize::from(dy))
-            .filter(|_| usize::from(dy) < rows)
-        {
-            buf.set_stringn(z.x + 2, y, line, inner.saturating_sub(2), theme::status());
+            format!("{kept}\u{2026}]")
+        } else {
+            peek.label.clone()
+        };
+        buf.set_stringn(z.x + 2, z.y, format!(" {label} "), inner - 1, theme::dim());
+        let last = z.y + z.h - 1;
+        buf.set_stringn(
+            z.x,
+            last,
+            format!("\u{2570}{bar}\u{256f}"),
+            usize::from(z.w),
+            theme::status(),
+        );
+        for y in z.y + 1..last {
+            buf.set_stringn(z.x, y, "\u{2502}", 1, theme::status());
+            buf.set_stringn(z.x + z.w - 1, y, "\u{2502}", 1, theme::status());
+            buf.set_stringn(z.x + 1, y, " ".repeat(inner), inner, theme::status());
         }
     }
-    // The long way round, on the box's last inner row.
+    let view = peek.view(&app.doc, area.width, area.height);
+    // The text column: a cell of air inside each border, above the button
+    // row.
+    let text = Rect::new(z.x + 2, z.y + 1, z.w - 4, z.h - 3);
+    let inset = peek.inset(&app.doc);
+    let first = peek.first_block(&app.doc);
+    for (dy, line) in view.lines.iter().enumerate() {
+        let Some(row) = &line.row else { continue };
+        let y = text.y + u16::try_from(dy).unwrap_or(u16::MAX);
+        if y >= text.bottom() {
+            break;
+        }
+        // The definition's own inset comes off every row: the footnote
+        // starts at the box's edge, and what is nested in it keeps its
+        // nesting.
+        let mut row = row.clone();
+        row.indent = row.indent.saturating_sub(inset);
+        paint_peek_row(frame, app, &row, first, inset, text, y, targets);
+    }
+    // The long way round, on the box's last inner row — and beside it, how
+    // much of the footnote the box is not showing.
+    let y = z.y + z.h - 2;
     let label = "[ go to it ]";
     let w = u16::try_from(label.len()).unwrap_or(u16::MAX);
+    let mut room = text.width;
     if w + 4 <= z.w {
         let x = z.x + z.w - 2 - w;
-        let y = last - 1;
-        buf.set_stringn(x, y, label, usize::from(w), theme::button());
+        frame
+            .buffer_mut()
+            .set_stringn(x, y, label, usize::from(w), theme::button());
         targets.push(Action::PeekGo, Zone::new(x, y, w, 1), Z_MENU);
+        room = room.saturating_sub(w + 1);
     }
+    if let Some(more) = crate::peek::more(&view) {
+        frame
+            .buffer_mut()
+            .set_stringn(text.x, y, more, usize::from(room), theme::dim());
+    }
+}
+
+/// One row of a footnote inside the peek box, already shifted by the
+/// definition's inset: `area.x + row.indent` is where its text starts.
+#[allow(clippy::too_many_arguments)]
+fn paint_peek_row(
+    frame: &mut Frame,
+    app: &App,
+    row: &Row,
+    first: BlockIdx,
+    inset: u16,
+    area: Rect,
+    y: u16,
+    targets: &mut Targets,
+) {
+    let node = app.doc.node_for_block(row.block);
+    let buf = frame.buffer_mut();
+    // Quote bars inside the footnote; a quote around the whole definition
+    // is the page's context, not the footnote's.
+    let bar = node.alert.map_or_else(theme::quote_bar, theme::alert);
+    for &col in node.quote_cols.iter().filter(|&&c| c >= inset) {
+        let x = area.x + (col - inset);
+        if x < area.right() {
+            buf.set_stringn(x, y, "\u{2502}", 1, bar);
+        }
+    }
+    if let RowKind::Text {
+        first_in_block,
+        continued,
+        ..
+    } = row.kind
+    {
+        // A marker inside the footnote paints into the room its row left
+        // for it. The first block's marker is the `[^name]: ` label, which
+        // is on the border already.
+        if first_in_block
+            && row.block != first
+            && let Some(p) = node.prefix.as_ref()
+        {
+            let x = area.x + row.indent.saturating_sub(p.width);
+            if x < area.right() {
+                buf.set_stringn(x, y, &*p.text, usize::from(p.width), theme::marker());
+            }
+        }
+        if continued && matches!(node.kind, NodeKind::CodeBlock { .. }) {
+            let x = area.x + row.indent.saturating_sub(carrel_core::CONTINUATION_COLS);
+            if x < area.right() {
+                buf.set_stringn(x, y, "\u{21b3} ", 2, theme::dim());
+            }
+        }
+    }
+    let base = match &node.kind {
+        NodeKind::Heading { level } => theme::heading(*level),
+        NodeKind::AlertLabel { kind } => theme::alert(*kind).add_modifier(Modifier::BOLD),
+        NodeKind::Image { .. } => theme::dim(),
+        _ => Style::default(),
+    };
+    paint_text(buf, app, row.block, row, area, y, base);
+    // The buttons on the row, on the box's layer and pushed after its
+    // `Absorb`, so they are what a click inside the box finds.
+    let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+    for inline in node.inlines.iter().filter(|i| i.link.is_some()) {
+        let clamped = inline.doc.start.max(row.doc.start)..inline.doc.end.min(row.doc.end);
+        if clamped.start >= clamped.end {
+            continue;
+        }
+        let (c0, c1) = cols_for_doc_range(row_text, row.doc.start, row.indent, &clamped);
+        let x0 = area.x + c0;
+        let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x0));
+        if let (Some(id), true) = (inline.link, w > 0) {
+            targets.push(Action::LinkOpen(id.0), Zone::new(x0, y, w, 1), Z_MENU);
+        }
+    }
+    if matches!(node.kind, NodeKind::Image { .. }) {
+        targets.push(
+            Action::ImageOpen(Some(row.block)),
+            Zone::new(area.x, y, area.width, 1),
+            Z_MENU,
+        );
+    }
+    push_footnote_marks(app, row, area, y, targets, Z_MENU);
+    paint_matches(frame.buffer_mut(), app, row, area, y);
 }
 
 /// An open menu: a box anchored where the pointer was.
