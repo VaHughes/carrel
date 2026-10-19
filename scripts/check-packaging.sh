@@ -211,6 +211,30 @@ else
   ok "every README link and image is absolute"
 fi
 
+# --- in-workspace dependencies are exact pins ---
+#
+# CalVer puts the year in the semver MAJOR, so a caret requirement such as
+# `carrel-core = "2026.10.8"` accepts every 2026 core. An unlocked
+# `cargo install carrel --version 2026.9.23` then resolved carrel-core
+# 2026.10.8 and failed to compile — the merman sibling trap again, on our own
+# crate. The two crates release in lockstep, so the frontend must name exactly
+# the core it was built against.
+echo
+echo "in-workspace dependencies against Cargo.toml"
+pins=$(grep -hE '^carrel-core[[:space:]]*=.*path' crates/*/Cargo.toml)
+if [ -z "$pins" ]; then
+  note "no carrel-core path dependency found — did its shape change?"
+fi
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  req=$(printf '%s\n' "$line" | sed -nE 's/.*version[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p')
+  if [ "$req" = "=$ws_ver" ]; then
+    ok "carrel-core = \"$req\""
+  else
+    note "carrel-core requires \"$req\"; want \"=$ws_ver\" (exact — CalVer makes a caret span the year)"
+  fi
+done <<<"$pins"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "Packaging recipes match what ships, and the README reads right off the repo."
