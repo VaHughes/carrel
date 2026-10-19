@@ -1991,10 +1991,14 @@ fn paint_row(
     //     longer aligned on body rows at all (one column per row, under the
     //     gutter), so this pass runs only on the legend — with a `·` instead
     //     of a `│`, since there is no cell content on either side of it.
+    //     The legend wraps like prose, so a card separator is found by BYTE:
+    //     the middle of the three synthetic spaces before each header cell,
+    //     painted only on the row that holds both that gap and the cell
+    //     after it. Counting columns from the line start, as the column view
+    //     does, is only right on the first row — the bug that left every
+    //     wrapped legend row without its separators.
     if let NodeKind::Table { cols, cell_starts } = &node.kind
-        && let RowKind::Text {
-            continued: false, ..
-        } = row.kind
+        && let RowKind::Text { continued, .. } = row.kind
     {
         let ncols = cols.len();
         let header_end = cell_starts.get(ncols).copied().unwrap_or(node.doc.end);
@@ -2002,8 +2006,35 @@ fn paint_row(
         // cannot drift apart: a row is body once it starts at or past the
         // first body cell.
         let is_body = row.doc.start >= header_end;
-        if !cards || !is_body {
-            let sep = if cards { "·" } else { "│" };
+        if cards && !is_body {
+            let text = app.doc.text.as_bytes();
+            let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+            let buf = frame.buffer_mut();
+            for &next in cell_starts.iter().take(ncols).skip(1) {
+                // A missing header cell starts at the line end with no gap
+                // before it; only a real three-space gap gets a separator.
+                let gap = next.saturating_sub(3);
+                if next < 3 || !text[gap as usize..next as usize].iter().all(|&b| b == b' ') {
+                    continue;
+                }
+                let mid = gap + 1;
+                // Both sides on this row: never a dangling `·` at a break.
+                if mid < row.doc.start || next >= row.doc.end {
+                    continue;
+                }
+                let (x0, _) = carrel_core::cols_for_doc_range(
+                    row_text,
+                    row.doc.start,
+                    row.indent,
+                    &(mid..mid + 1),
+                );
+                let x = area.x.saturating_add(x0);
+                if x < area.right() {
+                    buf.set_stringn(x, y, "·", 1, theme::quote_bar());
+                }
+            }
+        } else if !cards && !continued {
+            let sep = "│";
             let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
             let row_w = carrel_core::display_width(row_text);
             let buf = frame.buffer_mut();
@@ -2949,16 +2980,35 @@ fn paint_pane_foot(
         put(buf, &mut x, y, right, lead, theme::status());
         put(buf, &mut x, y, right, " · ", theme::status());
     }
-    paint_hint_run(
-        buf,
-        targets,
-        &mut x,
-        y,
-        right,
-        crate::footer::of(app).hints,
-        Z_OVERLAY,
-    );
+    let room = usize::from(right.saturating_sub(x).saturating_sub(1));
+    let hints = pane_foot_hints(crate::footer::of(app).hints, room);
+    paint_hint_run(buf, targets, &mut x, y, right, &hints, Z_OVERLAY);
     put(buf, &mut x, y, right, " ", theme::status());
+}
+
+/// The hints a pane's border has room for: whole hints, dropped right to
+/// left as the footer drops them, with a trailing close hint (`esc …`)
+/// pinned so it goes last — it is the one a reader stuck in a pane needs.
+/// When even that does not fit, nothing: the border's `×` still closes,
+/// and a clipped `esc clo` would only say less than nothing.
+fn pane_foot_hints(hints: &[crate::keys::Hint], room: usize) -> Vec<crate::keys::Hint> {
+    use carrel_core::display_width;
+    let width = |run: &[crate::keys::Hint]| -> usize {
+        run.iter()
+            .map(|h| usize::from(display_width(h.key)) + 1 + usize::from(display_width(h.label)))
+            .sum::<usize>()
+            + 3 * run.len().saturating_sub(1)
+    };
+    let mut run = hints.to_vec();
+    let pinned = run.last().is_some_and(|h| h.key == "esc");
+    while !run.is_empty() && width(&run) > room {
+        if pinned && run.len() > 1 {
+            run.remove(run.len() - 2);
+        } else {
+            run.pop();
+        }
+    }
+    run
 }
 
 /// Advance-and-paint for the footer's segments: writes `s` at `*x`, clipped

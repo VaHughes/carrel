@@ -1852,6 +1852,21 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Is the open block a paragraph that received no text — raw HTML that
+    /// stripped to nothing? Markdown cannot otherwise make one: an image
+    /// sets `image`, every other inline pushes text. A footnote definition's
+    /// first block carries the label as its prefix and must keep its row; an
+    /// item is never a `Paragraph`, so its marker always keeps its row.
+    fn open_is_blank_paragraph(&self) -> bool {
+        self.open.as_ref().is_some_and(|o| {
+            o.kind == NodeKind::Paragraph
+                && o.doc_start as usize == self.text.len()
+                && o.prefix.is_none()
+                && o.image.is_none()
+                && o.inlines.is_empty()
+        })
+    }
+
     fn open_is_item(&self) -> bool {
         self.open.as_ref().is_some_and(|o| o.kind == NodeKind::Item)
     }
@@ -2084,7 +2099,11 @@ impl<'a> Builder<'a> {
                     }
                 }
                 Event::End(TagEnd::Paragraph) => {
-                    if !self.open_is_item() {
+                    if self.open_is_blank_paragraph() {
+                        // Only inline HTML that stripped to nothing
+                        // (`<a name="top"></a>`): no block, as below.
+                        self.open = None;
+                    } else if !self.open_is_item() {
                         self.close_block(src.end);
                     }
                 }
@@ -2099,7 +2118,16 @@ impl<'a> Builder<'a> {
                     }
                 }
                 Event::End(TagEnd::HtmlBlock) => {
-                    if !self.open_is_item() {
+                    if self.open_is_blank_paragraph() {
+                        // Stripped to nothing — a centring `<div>`, a
+                        // comment, an anchor. Not a block: no rows, and no
+                        // separator in `text`. Nothing has been pushed since
+                        // it opened, so dropping it leaves no trace; anchors
+                        // and fold marks recorded inside it already point at
+                        // `text.len()`, which is now where the next block
+                        // starts.
+                        self.open = None;
+                    } else if !self.open_is_item() {
                         self.close_block(src.end);
                     }
                 }
@@ -2376,6 +2404,17 @@ impl<'a> Builder<'a> {
                     }
                     while out.ends_with("\n\n") {
                         out.pop();
+                    }
+                    // Whitespace alone at a block's start is no content
+                    // either (`<p>   </p>`): it would mint a blank row.
+                    if out.trim().is_empty()
+                        && self
+                            .open
+                            .as_ref()
+                            .is_some_and(|o| o.doc_start as usize == self.text.len())
+                    {
+                        leading += out.len();
+                        out.clear();
                     }
                     let kept = out.len();
                     // Read where this chunk lands BEFORE pushing it, rather
@@ -3422,6 +3461,40 @@ mod tests {
             !doc.text.contains('<'),
             "tags must be stripped: {:?}",
             doc.text
+        );
+    }
+
+    /// A README's centring wrapper — `<div align="center">` on a line of its
+    /// own — strips to nothing. It used to become an empty paragraph: two
+    /// blank rows (itself and its gap) above the document's first real line.
+    /// A tag-only, comment-only or whitespace-only HTML block is no block at
+    /// all, so it takes no rows and leaves no separator in the text.
+    #[test]
+    fn an_html_block_that_strips_to_nothing_is_no_block() {
+        for src in [
+            "<div align=\"center\">\n\n# T\n\n</div>\n",
+            "<!-- a note -->\n\n# T\n",
+            "<p>   </p>\n\n# T\n",
+            "<br>\n\n# T\n",
+            "<a name=\"top\"></a>\n\n# T\n",
+            "> <div>\n\n# T\n",
+        ] {
+            let doc = Document::parse(src);
+            assert_eq!(doc.block_count(), 1, "{src:?}: {:?}", doc.text);
+            assert!(doc.text.starts_with('T'), "{src:?}: {:?}", doc.text);
+            assert_covered(src);
+        }
+        // A fragment anchor in an empty block still resolves — to the block
+        // that follows it, which is where the reader wants to land.
+        let doc = Document::parse("x\n\n<a name=\"top\"></a>\n\n# T\n");
+        let at = doc.anchors.iter().find(|(n, _)| &**n == "top").unwrap().1;
+        assert_eq!(&doc.text[at as usize..], "T\n");
+        // The ones that are not HTML keep their row: an empty item paints
+        // its marker, and a footnote's label still needs a block to sit on.
+        assert_eq!(Document::parse("-\n\nx\n").block_count(), 2);
+        assert_eq!(
+            Document::parse("x[^1]\n\n[^1]: <div></div>\n").block_count(),
+            2
         );
     }
 

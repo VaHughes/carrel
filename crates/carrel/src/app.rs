@@ -2085,9 +2085,7 @@ impl App {
     /// neighbour of a row that no longer exists.
     fn after_fold_change(&mut self) {
         self.relayout();
-        let b = self
-            .doc
-            .block_at_doc(carrel_core::DocByte(self.view.anchor));
+        let b = crate::view::anchor_block(&self.doc, self.view.anchor);
         if self.layout.height(b) == 0 {
             let anchor = self.view.anchor;
             if let Some(&id) = self
@@ -8013,7 +8011,11 @@ mod tests {
 
     #[test]
     fn folding_a_details_region_hides_its_body_and_keeps_its_summary() {
-        let mut a = App::new("d.md".into(), Document::parse(DETAILS_SRC), 40, 10);
+        // Tall enough to scroll the summary to the top. The fixture used to
+        // get its height from the blank rows of the tag-only `</details>`
+        // block, which no longer takes any.
+        let src = format!("{DETAILS_SRC}\nmore\n\nmore\n\nmore\n");
+        let mut a = App::new("d.md".into(), Document::parse(&src), 40, 10);
         assert_eq!(a.doc.details.len(), 1, "{:?}", a.doc.details);
         update(&mut a, Action::FoldToggle); // top block is the H1 → its section
         assert!(a.folded.contains(&a.doc.nodes[0].id), "za folded Top");

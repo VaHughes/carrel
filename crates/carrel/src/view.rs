@@ -5,7 +5,7 @@
 //! consequence of the ordinary path rather than a special case bolted on.
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
-use carrel_core::{Affinity, DocByte, Document};
+use carrel_core::{Affinity, BlockIdx, DocByte, Document};
 
 use crate::action::Where;
 use crate::layout::Layout;
@@ -55,7 +55,7 @@ impl ViewState {
 
     /// Put `byte` on screen at the requested position.
     pub fn reveal(&mut self, doc: &Document, l: &Layout, byte: u32, h: u16, at: Where) {
-        let b = doc.block_at_doc(DocByte(byte));
+        let b = anchor_block(doc, byte);
         let row = l.row_start(b) + l.visual_row_of(doc, b, byte, Affinity::Right);
         let top = match at {
             Where::Top => row,
@@ -71,7 +71,7 @@ impl ViewState {
     /// at the end of the document, and the reader's position should survive
     /// that rather than be overwritten by it.
     pub fn restore(&mut self, doc: &Document, l: &Layout, h: u16) {
-        let b = doc.block_at_doc(DocByte(self.anchor));
+        let b = anchor_block(doc, self.anchor);
         let sub = l.visual_row_of(doc, b, self.anchor, self.affinity);
         self.scroll_row = (l.row_start(b) + sub).min(l.max_scroll(h));
     }
@@ -94,6 +94,27 @@ impl ViewState {
         self.anchor = row.doc.start;
         self.affinity = Affinity::Right;
     }
+}
+
+/// The block an anchor names — `block_at_doc`, except for an empty block.
+///
+/// An empty block (an item holding only a nested list, an empty heading)
+/// holds no byte, so `reanchor` pins its row to its `doc.start`: the
+/// separator after it, which `block_at_doc` hands to the NEXT block. Without
+/// this, scrolling an empty block to the top and then resizing, reloading or
+/// resuming moved the page — one anchor, two rows. Separators make starts
+/// unique, so at most one empty block starts at any byte, and it is the one
+/// just before the block `block_at_doc` found.
+#[must_use]
+pub fn anchor_block(doc: &Document, anchor: u32) -> BlockIdx {
+    let b = doc.block_at_doc(DocByte(anchor));
+    if let Some(prev) = b.get().checked_sub(1).map(|i| BlockIdx(i as u32)) {
+        let node = doc.node_for_block(prev);
+        if node.doc.is_empty() && node.doc.start == anchor {
+            return prev;
+        }
+    }
+    b
 }
 
 #[cfg(test)]
@@ -145,6 +166,29 @@ mod tests {
         let b = narrow.block_at_row(v.scroll_row);
         let sub = narrow.visual_row_of(&doc, b, v.anchor, v.affinity);
         assert_eq!(v.scroll_row, narrow.row_start(b) + sub);
+    }
+
+    /// An empty block's row anchors at its `doc.start` — the byte of the
+    /// separator after it, which `block_at_doc` gives to the NEXT block. So
+    /// `gg` showed the empty block on top while opening (and every resize,
+    /// reload or resume) showed the block below it: one anchor, two rows.
+    #[test]
+    fn an_empty_blocks_row_restores_to_itself() {
+        // An empty item (its bullet paints) and an empty heading.
+        let doc = Document::parse("-\n\nx\n\n#\n\ny\n");
+        let l = Layout::new(&doc, 20);
+        let mut v = ViewState::new();
+        v.restore(&doc, &l, 3);
+        assert_eq!(v.scroll_row, 0, "opening shows the first row");
+        for b in [0u32, 2] {
+            let row = l.row_start(carrel_core::BlockIdx(b));
+            v.scroll_to(&doc, &l, row, 3);
+            assert_eq!(v.scroll_row, row);
+            v.restore(&doc, &l, 3);
+            assert_eq!(v.scroll_row, row, "block {b}: anchor {}", v.anchor);
+            v.reveal(&doc, &l, v.anchor, 3, Where::Top);
+            assert_eq!(v.scroll_row, row, "block {b}: reveal");
+        }
     }
 
     #[test]

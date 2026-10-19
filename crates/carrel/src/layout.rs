@@ -292,7 +292,10 @@ impl Layout {
     pub fn visual_row_of(&self, doc: &Document, b: BlockIdx, anchor: u32, aff: Affinity) -> u32 {
         let mut rows = Vec::new();
         self.rows_for(doc, b, &mut rows);
-        if rows.is_empty() {
+        // An empty block's every row is `start..start`, so the search below
+        // finds none and falls back to the LAST row — its gap, one row below
+        // the block itself. The block's own row is the only one it has.
+        if rows.is_empty() || doc.node_for_block(b).doc.is_empty() {
             return 0;
         }
         let idx = rows
