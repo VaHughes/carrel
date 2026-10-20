@@ -172,7 +172,7 @@ pub const NARROW_BELOW: u16 = 70;
 const MIN_WORD: usize = 6;
 /// Longest word considered, in letters. The break set is a `u64` bitmask.
 /// German compounds run long; anything longer than this is not prose.
-const MAX_WORD: usize = 63;
+pub(crate) const MAX_WORD: usize = 63;
 
 /// One language's patterns, exceptions and conventions.
 struct Patterns {

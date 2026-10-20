@@ -5,7 +5,8 @@
 //! wrong.
 
 use carrel_core::{
-    BlockIdx, Document, chunk_count, cluster_width, cols_for_doc_range, search, wrap, wrap_chunk,
+    BlockIdx, Document, Hyphenation, Row, RowKind, chunk_count, cluster_width, cols_for_doc_range,
+    search, wrap, wrap_chunk, wrap_with,
 };
 
 /// Doc bytes actually painted for a search, at a given width.
@@ -463,4 +464,237 @@ fn an_email_autolink_is_a_mailto_and_not_a_file_name() {
     let doc = Document::parse("<me@example.com> and <https://example.com>\n");
     let links: Vec<&str> = doc.links.iter().map(AsRef::as_ref).collect();
     assert_eq!(links, ["mailto:me@example.com", "https://example.com"]);
+}
+
+// --- the reflow layer against hostile text ---
+
+/// Every row of every block of `doc` at `width`.
+fn rows_of(doc: &Document, width: u16, h: Hyphenation) -> Vec<Row> {
+    let mut out = Vec::new();
+    for b in 0..doc.block_count() {
+        wrap_with(doc, BlockIdx(b as u32), width, &cluster_width, h, |r| {
+            out.push(r);
+        });
+    }
+    out
+}
+
+/// What the reflow layer promises of every row, checked against the text:
+///
+/// - it fits: content plus any mark is no wider than the row, unless the row
+///   is a single cluster wider than the whole row, which overhangs alone
+///   (with any zero-width clusters, such as a soft hyphen, beside it);
+/// - rows tile their block in order, on char boundaries, and the only bytes
+///   between two rows are the whitespace a break elided;
+/// - nothing is dropped: the first row starts at the block, the last ends
+///   at its last non-whitespace byte.
+fn assert_rows_honest(doc: &Document, width: u16, h: Hyphenation, what: &str) {
+    use unicode_segmentation::UnicodeSegmentation;
+    let rows = rows_of(doc, width, h);
+    for b in 0..doc.block_count() {
+        let node = doc.node_for_block(BlockIdx(b as u32));
+        let mut at = node.doc.start;
+        for r in rows.iter().filter(|r| r.block.0 == b as u32) {
+            let (s, e) = (r.doc.start as usize, r.doc.end as usize);
+            assert!(
+                doc.text.is_char_boundary(s) && doc.text.is_char_boundary(e) && s <= e,
+                "{what} w{width}: row off a char boundary {:?}",
+                r.doc
+            );
+            assert!(
+                r.doc.start >= at,
+                "{what} w{width}: rows overlap at {:?}",
+                r.doc
+            );
+            let gap = &doc.text[at as usize..s];
+            assert!(
+                gap.chars().all(char::is_whitespace),
+                "{what} w{width}: {gap:?} dropped before {:?}",
+                r.doc
+            );
+            at = r.doc.end;
+            let text = &doc.text[s..e];
+            let RowKind::Text { hyphen, split, .. } = r.kind else {
+                continue;
+            };
+            let cells = carrel_core::display_width(text) + u16::from(hyphen || split);
+            let avail = width.saturating_sub(r.indent).max(1);
+            assert!(
+                cells <= avail
+                    || text
+                        .graphemes(true)
+                        .filter(|g| cluster_width(g) > 0)
+                        .count()
+                        == 1,
+                "{what} w{width}: {cells} cells on a row of {avail}: {text:?}"
+            );
+        }
+        let rest = &doc.text[at as usize..node.doc.end as usize];
+        assert!(
+            rest.chars().all(char::is_whitespace),
+            "{what} w{width}: {rest:?} dropped at the end of block {b}"
+        );
+    }
+}
+
+/// A run with no break opportunity in it, wider than a `u16` can count.
+///
+/// A unit's width saturated at 65,535 cells, so cutting heads off a
+/// 100,000-cell run left a tail the packer believed was 65,535 minus the
+/// heads — and once that reached the row width, the rest of the run, some
+/// 34 KB, "fit" on one row. Every row must fit, however long the run.
+#[test]
+fn a_run_wider_than_sixty_five_thousand_cells_still_wraps_to_the_row() {
+    let doc = Document::parse(&"abcdefghij".repeat(10_000));
+    let rows = rows_of(&doc, 20, Hyphenation::Off);
+    let widest = rows.iter().map(|r| r.doc.end - r.doc.start).max().unwrap();
+    assert!(widest <= 20, "a row of {widest} bytes at width 20");
+    assert_rows_honest(&doc, 20, Hyphenation::Off, "100k run");
+}
+
+/// A run of soft hyphens is the author's ladder, and it must not overflow
+/// the packer's count of one.
+///
+/// Every row here ends at the author's U+00AD, so every row ends with a
+/// hyphen. The count of consecutive hyphenated rows was a `u8` incremented
+/// with no ceiling, which panicked in a debug build at the 256th.
+#[test]
+fn three_hundred_authored_hyphens_in_a_row_wrap_without_overflow() {
+    let doc = Document::parse(&"abcdefgh\u{AD}".repeat(300));
+    for h in [Hyphenation::Off, Hyphenation::English] {
+        let rows = rows_of(&doc, 10, h);
+        assert_eq!(rows.len(), 300, "{h:?}");
+        assert!(
+            rows[..299]
+                .iter()
+                .all(|r| matches!(r.kind, RowKind::Text { hyphen: true, .. })),
+            "every authored division shows its hyphen"
+        );
+    }
+}
+
+/// A cluster wider than the row goes on a row ALONE — not with the cluster
+/// after it. At width 1, `す。` used to share a row, because the packer
+/// refused the head the splitter rightly offered (one 2-cell cluster) and
+/// placed the whole unit instead.
+#[test]
+fn a_cluster_wider_than_the_row_overhangs_alone() {
+    for (src, want) in [
+        ("日本語です。", vec!["日", "本", "語", "で", "す", "。"]),
+        ("「「「「", vec!["「", "「", "「", "「"]),
+    ] {
+        let doc = Document::parse(src);
+        let rows = rows_of(&doc, 1, Hyphenation::Off);
+        let got: Vec<&str> = rows
+            .iter()
+            .map(|r| &doc.text[r.doc.start as usize..r.doc.end as usize])
+            .collect();
+        assert_eq!(got, want);
+    }
+}
+
+/// Wrapping a run with no whitespace in it must be LINEAR with
+/// hyphenation on, as it is with it off.
+///
+/// Each emergency cut of a run longer than a row asked the hyphenator about
+/// "the word" it was in, and found that word by scanning back to the
+/// previous whitespace and running the patterns over everything up to the
+/// next — the whole run, once per row. A 60 KB lowercase run took 0.6–2 s
+/// per wrap pass against 2 ms with hyphenation off; and wrap runs twice per
+/// relayout. A word longer than the patterns' 63 letters never divides, so
+/// there is nothing to look further back for.
+#[test]
+fn a_long_lowercase_run_wraps_in_linear_time_with_hyphenation_on() {
+    use std::time::Instant;
+
+    for (lang, h) in [("en", Hyphenation::English), ("de", Hyphenation::German)] {
+        let doc = |n: usize| {
+            Document::parse(&format!(
+                "---\nlang: {lang}\n---\n\nsome words {} end\n",
+                "abcdefghij".repeat(n / 10)
+            ))
+        };
+        let (small, large) = (doc(16_000), doc(64_000));
+        let time = |doc: &Document| {
+            let t = Instant::now();
+            let rows = rows_of(doc, 20, h).len();
+            assert!(rows > 0);
+            t.elapsed().as_secs_f64()
+        };
+        time(&small);
+        let (a, b) = (time(&small), time(&large));
+        assert!(
+            b < a * 12.0,
+            "{lang}: 4x the run took {:.1}x the time ({a:.4}s -> {b:.4}s). \
+             Linear is ~4x; the quadratic this guards was 16x.",
+            b / a
+        );
+        assert_rows_honest(&large, 20, h, lang);
+    }
+}
+
+/// The reflow promises, fuzzed: documents built from hostile fragments —
+/// soft hyphens, runs longer than any row, CJK and its openers, combining
+/// marks, every language's hyphenation — wrapped at every width from 1 to
+/// 40. Deterministic, so a failure reproduces.
+#[test]
+fn hostile_text_wraps_honestly_at_every_narrow_width() {
+    const FRAGMENTS: &[&str] = &[
+        "\u{AD}",
+        "abcdefgh\u{AD}",
+        "hyphenation ",
+        "internationalization ",
+        "Donaudampfschifffahrtsgesellschaft ",
+        "anticonstitutionnellement ",
+        "electroencefalografista ",
+        "precipitevolissimevolmente ",
+        "inconstitucionalissimamente ",
+        "arbeidsongeschiktheidsverzekering ",
+        "uafhængighedserklæringerne ",
+        "konstantynopolitańczykowianeczka ",
+        "abcdefghij",
+        "日本語です。",
+        "「「「",
+        "（（",
+        "e\u{301}",
+        "\u{200B}",
+        "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+        " ",
+        "  ",
+        "\n",
+        "\n\n",
+        "- ",
+        "> ",
+        "`co de` ",
+        "(((",
+        "))) ",
+        "https://example.com/a/b/c?d=e ",
+        "4f2a1bcd9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b ",
+    ];
+    const LANGS: &[&str] = &["en", "de", "fr", "es", "it", "pt", "nl", "da", "no", "pl"];
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for i in 0..60 {
+        let lang = LANGS[(next() % LANGS.len() as u64) as usize];
+        let mut src = format!("---\nlang: {lang}\n---\n\n");
+        for _ in 0..next() % 40 {
+            let f = FRAGMENTS[(next() % FRAGMENTS.len() as u64) as usize];
+            // Now and then a fragment many times over: a run longer than
+            // any row, or a ladder of soft hyphens.
+            let times = if next() % 8 == 0 { 30 } else { 1 };
+            src.push_str(&f.repeat(times));
+        }
+        let doc = Document::parse(&src);
+        let lang_h = carrel_core::hyphenation_for(&doc);
+        for width in 1..=40 {
+            for h in [Hyphenation::Off, lang_h] {
+                assert_rows_honest(&doc, width, h, &format!("#{i} {src:?}"));
+            }
+        }
+    }
 }

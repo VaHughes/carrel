@@ -254,26 +254,41 @@ fn escape_inline(s: &str) -> String {
 
 /// A message line with its block-level meaning removed, except a list
 /// marker, which is kept: a list in a commit body should read as one.
+///
+/// Every marker the line opens with is peeled, not just the first: in
+/// markdown `- - # x` is a heading in a list item in a list item, so
+/// neutralizing only what followed the first marker left the `#` free.
+/// What is left after the last marker is neutralized, and each marker is
+/// written back with one space — whatever whitespace followed it.
 fn block_safe(line: &str) -> std::borrow::Cow<'_, str> {
-    if let Some(marker_len) = list_marker(line) {
-        let (marker, rest) = line.split_at(marker_len);
-        let rest = rest.trim_start();
-        return format!("{} {}", marker.trim_end(), neutralize(rest)).into();
+    let mut rest = line;
+    let mut markers = String::new();
+    while let Some(marker_len) = list_marker(rest) {
+        let (marker, after) = rest.split_at(marker_len);
+        markers.push_str(marker.trim_end());
+        markers.push(' ');
+        rest = after.trim_start();
     }
-    neutralize(line)
+    if markers.is_empty() {
+        return neutralize(line);
+    }
+    markers.push_str(&neutralize(rest));
+    markers.into()
 }
 
-/// The byte length of a leading `- `, `* `, `+ `, `1. ` or `1) ` marker.
+/// The byte length of a leading `-`, `*`, `+`, `1.` or `1)` marker and the
+/// whitespace character after it — a space, or a TAB, which markdown takes
+/// just the same. A marker that ends the line is left to [`neutralize`]: a
+/// lone `-` under a line is a setext underline, not an empty item.
 fn list_marker(line: &str) -> Option<usize> {
     let b = line.as_bytes();
-    if matches!(b.first(), Some(b'-' | b'*' | b'+')) && b.get(1) == Some(&b' ') {
+    let gap = |at: usize| matches!(b.get(at), Some(b' ' | b'\t'));
+    if matches!(b.first(), Some(b'-' | b'*' | b'+')) && gap(1) {
         return Some(2);
     }
     let digits = b.iter().take_while(|c| c.is_ascii_digit()).count();
-    ((1..=9).contains(&digits)
-        && matches!(b.get(digits), Some(b'.' | b')'))
-        && b.get(digits + 1) == Some(&b' '))
-    .then_some(digits + 2)
+    ((1..=9).contains(&digits) && matches!(b.get(digits), Some(b'.' | b')')) && gap(digits + 1))
+        .then_some(digits + 2)
 }
 
 /// Escape the first character of `line` when the line would open a block:
@@ -298,7 +313,9 @@ fn neutralize(line: &str) -> std::borrow::Cow<'_, str> {
     let opens_block = line.starts_with(['#', '>', '<', '|', ':'])
         || line.starts_with("```")
         || line.starts_with("~~~")
-        || (line.starts_with('[') && line.contains("]:"));
+        // A reference definition — or the first line of one whose label
+        // runs onto the next line, which vanishes all the same.
+        || (line.starts_with('[') && (line.contains("]:") || !line.contains(']')));
     if opens_block {
         format!("\\{line}").into()
     } else {
@@ -776,6 +793,232 @@ Author: B <b@example.com>
             "a list is a list: {md}"
         );
         assert!(doc.text.contains("# with a hash inside"), "{:?}", doc.text);
+    }
+
+    /// The headings `to_markdown` wrote for `src`'s commits and files, and
+    /// every structural node of the parse it would not have: what a commit
+    /// message managed to turn into structure.
+    fn stolen_structure(src: &str) -> (Vec<String>, Vec<String>) {
+        let md = to_markdown(src);
+        let doc = Document::parse(&md);
+        let headings = doc
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, crate::NodeKind::Heading { .. }))
+            .map(|n| doc.text[n.doc.start as usize..n.doc.end as usize].to_string())
+            .collect();
+        let structure = doc
+            .nodes
+            .iter()
+            .filter(|n| match &n.kind {
+                crate::NodeKind::CodeBlock { lang } => lang.as_deref() != Some("diff"),
+                crate::NodeKind::BlockQuote
+                | crate::NodeKind::Table { .. }
+                | crate::NodeKind::Rule
+                | crate::NodeKind::DefTerm
+                | crate::NodeKind::DefDetails
+                | crate::NodeKind::Metadata { .. }
+                | crate::NodeKind::AlertLabel { .. } => true,
+                _ => false,
+            })
+            .map(|n| format!("{:?}", n.kind))
+            .collect();
+        (headings, structure)
+    }
+
+    /// `commit <sha>`, a message, and the commit after it.
+    fn two_commits(message_line: &str) -> String {
+        format!(
+            "commit aaaaaaabbbbbbbcccccccdddddddeeeeeeefffffff\n\
+             Author: A <a@example.com>\n\n    Subject\n\n    {message_line}\n    more\n\n\
+             commit 1111111222222233333334444444555555566666666\n\
+             Author: B <b@example.com>\n\n    Second\n"
+        )
+    }
+
+    /// A list marker is a marker whatever whitespace follows it — a tab
+    /// included — and a list item can open another. The marker check
+    /// wanted exactly one space, so `-\t# x` passed through whole: a
+    /// level-1 heading inside the commit, a fake commit in the outline, the
+    /// breadcrumb and the fold. And it peeled one marker, so `- - # x`
+    /// escaped the `-` and left the `#` to open a heading in the nested
+    /// item. A fence or a rule got through the same way.
+    #[test]
+    fn a_marker_followed_by_a_tab_or_another_marker_cannot_open_a_block() {
+        for line in [
+            "-\t# stolen heading",
+            "1.\t# stolen heading",
+            "- \t# stolen",
+            "- - # nested",
+            "- 1. # nested",
+            "* + 2) # deeper",
+            "*\t```",
+            "+\t---",
+            "-\t> quoted",
+            "-\t<pre>",
+            "1)\t~~~",
+            "- - ===",
+            "-\t[ref]: http://example.com/x",
+            "- [x",
+        ] {
+            let (headings, structure) = stolen_structure(&two_commits(line));
+            assert_eq!(
+                headings,
+                ["commit aaaaaaabbbbb", "commit 111111122222"],
+                "{line:?} became a heading"
+            );
+            assert!(structure.is_empty(), "{line:?} became {structure:?}");
+        }
+        // The text survives, and a list is still a list.
+        let doc = Document::parse(&to_markdown(&two_commits("-\t# kept")));
+        assert!(doc.text.contains("# kept"), "{:?}", doc.text);
+        assert!(
+            doc.nodes
+                .iter()
+                .any(|n| matches!(n.kind, crate::NodeKind::Item))
+        );
+    }
+
+    /// A link reference definition's label may run across lines, and the
+    /// whole definition then vanishes. A line that opens a bracket it does
+    /// not close is the first line of one.
+    #[test]
+    fn a_link_definition_split_across_lines_does_not_vanish() {
+        let src = "commit aaaaaaabbbbbbbcccccccdddddddeeeeeeefffffff\n\
+                   Author: A <a@example.com>\n\n    Subject\n\n    [split\n    label]: /url\n";
+        let doc = Document::parse(&to_markdown(src));
+        assert!(doc.text.contains("label"), "{:?}", doc.text);
+    }
+
+    /// Commit messages built from hostile fragments, line by line: the only
+    /// headings in the result are the ones `to_markdown` wrote, and no message
+    /// text becomes a fence, a rule, a table, a quote, a definition, an alert
+    /// or frontmatter.
+    mod hostile_messages {
+        use super::*;
+        use proptest::prelude::*;
+
+        const FRAGMENTS: &[&str] = &[
+            "#",
+            "# ",
+            "##",
+            "#tag",
+            "-",
+            "- ",
+            "-\t",
+            "*",
+            "* ",
+            "+",
+            "+ ",
+            "1.",
+            "1. ",
+            "2)",
+            "1.\t",
+            "\t",
+            " ",
+            "  ",
+            ">",
+            "> ",
+            "<pre>",
+            "</pre>",
+            "<div>",
+            "<!--",
+            "-->",
+            "<details>",
+            "</details>",
+            "<summary>s</summary>",
+            "```",
+            "~~~",
+            "---",
+            "===",
+            "***",
+            "___",
+            "- - -",
+            "|",
+            "| a | b |",
+            "|---|---|",
+            ":",
+            ": ",
+            "[x]:",
+            "[^a]:",
+            "[x",
+            "]: /u",
+            "[!NOTE]",
+            "$$",
+            "\\",
+            "- [ ] ",
+            "&#35;",
+            "&gt;",
+            "<",
+            "x",
+            "word",
+            "\u{a0}",
+            "\u{3000}",
+            "    ",
+            "commit",
+            "diff --git",
+            "@@ -1 +1 @@",
+            "`",
+            "+++ ",
+            "--- ",
+            "Signed-off-by: x",
+            "Author: y",
+            "=",
+            "-=-",
+            "[word",
+            "word]: /u",
+        ];
+
+        fn line() -> impl Strategy<Value = String> {
+            prop::collection::vec(prop::sample::select(FRAGMENTS), 0..5)
+                .prop_map(|parts| parts.concat())
+        }
+
+        /// One commit: its header, then message lines indented as git
+        /// indents them, and maybe a file.
+        fn commit() -> impl Strategy<Value = (Vec<String>, bool)> {
+            (prop::collection::vec(line(), 1..8), any::<bool>())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(2000))]
+            #[test]
+            fn only_the_headings_it_wrote(commits in prop::collection::vec(commit(), 1..4)) {
+                let mut src = String::new();
+                let mut want = Vec::new();
+                for (i, (lines, file)) in commits.iter().enumerate() {
+                    let sha = format!("{i}abcdef0123456789abcdef0123456789abcdef");
+                    let _ = write!(src, "commit {sha}\nAuthor: A (a at example.com)\n\n");
+                    want.push(format!("commit {}", &sha[..12]));
+                    for l in lines {
+                        if l.trim().is_empty() {
+                            src.push('\n');
+                        } else {
+                            let _ = writeln!(src, "    {l}");
+                        }
+                    }
+                    src.push('\n');
+                    if *file {
+                        src.push_str("diff --git a/f b/f\n@@ -1 +1 @@\n-a\n+b\n");
+                        want.push("f  +1 \u{2212}1".to_string());
+                    }
+                }
+                let (headings, structure) = stolen_structure(&src);
+                prop_assert_eq!(&headings, &want, "{}", to_markdown(&src));
+                prop_assert!(structure.is_empty(), "{:?}\n{}", structure, to_markdown(&src));
+                // And no message text vanishes — into a link reference
+                // definition, say. (Inline HTML may hide what it wraps, as
+                // the author's own markup; it stays inside its paragraph.)
+                if !src.contains('<') {
+                    let doc = Document::parse(&to_markdown(&src));
+                    prop_assert_eq!(
+                        doc.text.matches("word").count(),
+                        src.matches("word").count(),
+                        "{:?}", doc.text
+                    );
+                }
+            }
+        }
     }
 
     /// A path is a heading's text, and the heading is what the outline and
