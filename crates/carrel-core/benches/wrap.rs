@@ -133,6 +133,15 @@ fn bench_search(c: &mut Criterion) {
     g.bench_function("phrase_4word", |b| {
         b.iter(|| carrel_core::search(&doc, "quick brown fox jumps", true).len());
     });
+    // Typed punctuation widens into a class holding both spellings (`'` is
+    // `['‘’]`), which costs the regex its pure-literal prefilter. The worst
+    // shape is the class first; measured so it stays a non-event.
+    g.bench_function("punct_fold_class_first", |b| {
+        b.iter(|| carrel_core::search(&doc, "'quick", true).len());
+    });
+    g.bench_function("punct_fold_mid_word", |b| {
+        b.iter(|| carrel_core::search(&doc, "fox's", true).len());
+    });
     // What a user actually does: type a needle one character at a time.
     g.bench_function("incremental_5_keystrokes", |b| {
         b.iter(|| {

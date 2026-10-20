@@ -126,6 +126,14 @@ Key facts that are easy to get wrong:
   per-cluster `WidthFn` cannot express.
 - **`Event::Text` is not always a source substring** (entity decoding, smart punctuation change
   byte lengths). This is why `Prov` exists; `doc = src - block_start` is false.
+  Search bridges smart punctuation in the PATTERN, never the text: `search::fold_punctuation`
+  widens `'` `"` `...` `--` `---` (and their typographic forms) into classes holding both
+  spellings, so the reader (display text) and the home grep (source) count the same hits.
+  A lone `-` is not widened — the parser never makes a dash from one.
+- **`diff::to_markdown` treats a commit message as untrusted text.** Header and trailer blocks
+  become hard-break records; body paragraphs reflow; a line that would open a block (`#`,
+  `>`, `<`, a fence, a rule or setext underline, a table row, a link definition) is escaped,
+  while list markers and inline markup are kept.
 - **pulldown-cmark emits no `Paragraph` inside a tight list item**, so `NodeKind::Item` is a
   leaf. The `every_byte_of_display_text_is_covered_by_a_block_or_a_separator` test catches
   mistakes here.
