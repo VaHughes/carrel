@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-08
+Last updated: 2026-10-20
 
 ## Current state
 
@@ -37,6 +37,25 @@ Last updated: 2026-10-08
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (implemented 2026-10-19/20) — **the open list, cleared, then three cold
+  reviews and two fix waves.** Built in parallel worktrees, merged, then reviewed by two
+  code readers and one tester who only drove the binary. Shipped to `main`: the targeted
+  footnote menu jump; every defect the old Open list named; inline and nested `#tags`;
+  hyphenation in ten languages with a marked cut for over-long tokens; the whole
+  footnote in its box; smart-punctuation search with home counts taken from the reader's
+  own search; `git log` records and hostile-message escaping; `.deb` packaging; the
+  exact `carrel-core` pin; `THIRD-PARTY-NOTICES` and an honest license expression.
+  *What review found (all fixed):* a debug-build overflow panic on long soft-hyphen
+  ladders; runs wider than 65,535 cells collapsing into one row (widths are `u32` now);
+  quadratic hyphenation of long runs; a per-hit row walk that froze the reader on
+  100,000 hits (`cols_for_doc_ranges`); commit messages that could still forge headings
+  with tab-separated markers; German and Norwegian pattern files carrying non-pattern
+  lines; a `.deb` guard that passed a package setting a default handler. The two flaky
+  pty tests (`the_path_row_walks_the_directory_tree`, `live_resize_…`) raced input
+  against the app; they now wait for the effect, 20/20 under full load.
+  Gates: **1,306 tests**, zero-warning clippy, fmt, discipline, packaging.
+  Q3, Q5, Q29, Q33 and Q35 are answered in the private notes' `research.md`.
 
 - 2026.10.8 (implemented 2026-10-08) — **the known-defects list, cleared, and what three rounds
   of review found around it.** Fixed:
@@ -102,7 +121,7 @@ Last updated: 2026-10-08
   long `tags:` line runs off the edge (its far tags cannot be clicked) and blank
   rows follow the card. The card's value column is padding that is not in the
   text, which is why this is not a one-line change.
-  **Known limits:** the footnote box shows a footnote's first paragraph only; a
+  **Known limits:** a
   link to `other.md#heading` is judged by the file, not the heading; reload marks
   compare rendered blocks, so a change that renders identically is not marked;
   the sibling watch walks the document's folder tree (it rests 25× as long as a
@@ -223,48 +242,62 @@ Packaging / discoverability (quiet channels only; announcements are deferred by 
 decision — do not propose them):
 
 1. **nixpkgs by-name PR** — `contrib/packaging/carrel-package.nix` is version-stamped but
-   still needs its two hashes (`docker run --rm nixos/nix`; steps in the file header).
+   still needs its two hashes. This machine has no nix, the docker daemon needs root, and
+   `pkexec` has no reachable authentication agent from an agent's shell; run the steps in
+   the file header from a terminal (`sudo systemctl start docker`, then
+   `docker run --rm nixos/nix`).
 2. **AUR** — recipes stamped and build-tested (`makepkg -f`), blocked on Arch reopening
    account registration (closed since aurweb v6.5.0 during a supply-chain campaign).
-3. **Catalog listings** — awesome-ratatui, Terminal Trove, awesome-cli-apps / awesome-tuis.
-4. `.deb` packaging (README roadmap).
+3. **Catalog listings** — drafts in the private notes. awesome-ratatui: ready to submit.
+   Terminal Trove: needs a still PNG screenshot first. awesome-tuis: not before 2027-02-12
+   (six-month minimum age). awesome-cli-apps: archived, skip.
+4. **`.deb`** — built by `.github/workflows/deb.yml` after each Release run; first proven
+   at the next release (see `contrib/packaging/README.md`).
 5. Optional: set `HOMEBREW_TAP_TOKEN` and restore `publish-jobs = ["homebrew"]` to
    re-automate the formula push (currently hand-pushed each release).
 
-Every feature line on the README roadmap is now checked. Known limits, recorded rather
-than planned: hyphenation is English only, and a word longer than the whole row still takes
-the unmarked emergency break; tags are frontmatter only (no inline `#tags`) and nested tags
-are plain strings; the footnote box shows a footnote's first paragraph only.
+Every feature line on the README roadmap is checked. Known limits, recorded rather than
+planned:
 
-The six defects this section listed on 2026-09-30 were fixed on 2026-10-08 (see
-*Recently completed*). Known and not yet fixed, all minor:
-
-- "Go to the footnote text" in the right-click menu jumps from the reference nearest
-  above the view, not the one that was clicked; it needs a targeted action
-  (`FootnoteJumpAt(byte)`) wired into the key, menu and reachability matches.
-- The lightbox and the notes pane still cover the whole frame, `≡` and the lamp
-  included (by design; both have their own buttons). At 30×6 the help sheet clips
-  "esc close" off its border (its × still closes it).
-- `menu::reach` still classifies the pane move actions as keyboard-only, though the
-  footer chips and pane borders now click them.
-- In the card view of a wide table, a legend that wraps loses its `·` separators after
-  the first row.
-- README opened at the top shows "Carrel" first, but `G` then `gg` shows two blank rows
-  above it (the empty `<div align="center">` block).
-- The notes pane title reads "? unresolved", and `[export]` writes to a hashed path under
-  the state directory that is hard to find.
-- Copying from a CRLF frontmatter card gives LF line ends; the home list's title search
-  can take an indented `# x` inside a code block as a heading.
+- Hyphenation covers ten languages, chosen only by frontmatter `lang:`; Swedish, Russian
+  and Catalan patterns are LPPL-only and stay out. Dutch was relicensed to MIT upstream
+  in 2021 with no recorded author consent; it is kept, and it is the one to drop if that
+  ever matters.
+- The footnote box draws display math and wide tables like the page, but has no keyboard
+  scrolling (the box owns no keys; the wheel scrolls it).
+- Only the first 1 MiB of a file is read for tags; nested tags deeper than heading level 6
+  list side by side.
+- Home search misses a match spelled only through an entity or across markup.
+- `--plain` and `--render` never divide a word, so a long run exceeds the width.
 - In help and the outline, `q` is typed into the filter rather than closing the pane (by
   design: letters are the filter; the border says `esc close`).
+- The lightbox and the notes pane cover the whole frame, `≡` and the lamp included (by
+  design; both have their own buttons).
 
-Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) lands.
+Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
+release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
-The GTK4 GUI phase is not started and has no date. Its remaining homework (in the private
-notes' `research.md`): Q29 (dual-frontend prior-art study, P0) and Q33 (P1), to be answered
-before that phase rather than during it.
+Architecture follow-ups from Q29/Q33 (answered 2026-10-19 in the private notes'
+`research.md`), not yet scheduled: the TUI state layer is cell-shaped (`App::new` takes
+`u16` sizes; `Action` carries cell coordinates; `app.rs` imports `keys`, which imports
+crossterm), so rule 6's grep passes while the GUI could not reuse it verbatim. Recommended
+order: widen the discipline grep, move the state layer to its own crate, split `Action`
+into shared intents and TUI chrome, save positions and bookmarks as `SrcByte` (a
+`DocByte` drifts when flattening changes between releases), document the config-key split.
+The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
+
+- 2026-10-19: **the in-workspace dependency is an exact pin** (`carrel-core = "=<ver>"`):
+  CalVer's year is the semver major, so a caret accepted every 2026 core and an unlocked
+  install of an older carrel failed to compile. `check-packaging.sh` enforces it.
+- 2026-10-19: **a menu row prints a key only when the key does the row's job** — "Go to
+  the footnote text" shows none, because `%` works from the top of the view.
+- 2026-10-19: **a right-click or drag inside the footnote box does nothing**; opening a
+  menu would close the box and describe text no longer on screen.
+- 2026-10-19: **export writes to `$XDG_STATE_HOME/carrel/exports/`**, never beside the
+  document, and copies the path. CRLF copies are LF everywhere, by decision.
+- 2026-10-19: **hex colors are not tags** (`#fff`, `#1e1e2e`); `#bad`, `#cafe` are.
 
 - 2026-09-30: **`carrel --latest` is about where you are standing** — the current
   directory or the folder named, never the folder saved for the file list, which is a

@@ -2,6 +2,61 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **Search finds what you type through smart punctuation.** `don't`, `"quoted"`,
+  `...`, `--` and `---` match the curly quotes, ellipsis and dashes on screen, and the
+  reverse, so the home screen's match counts now agree with what the reader finds.
+- **Inline `#tags`.** Tags written in the text are clickable and listed on the tags
+  page, read the way Obsidian reads them. Nested tags (`project/alpha`) sit under their
+  parent, whose count includes them. Hex colors, `#42`, `C#`, headings and code are
+  never tags.
+- **Hyphenation in ten languages.** Name one with `lang:` in the frontmatter (German,
+  French, Spanish, Italian, Portuguese, Dutch, Danish, Norwegian, Polish, English); any
+  other declared language is left unhyphenated rather than guessed. A word or token
+  longer than the whole row is divided by its language's rules or ends its row in a dim
+  `↩`, and an author's soft hyphen is honored instead of throwing clicks a column off.
+- **The footnote box shows the whole footnote**: every paragraph, list, quote and code
+  block, with a count of what is below when it is taller than the box. The wheel over
+  it scrolls, and links and footnote marks inside it can be clicked.
+- **`git log | carrel` keeps each header and trailer on its own line** (`Author:`,
+  `Date:`, `Co-Authored-By:` …), and markdown inside a commit message can no longer
+  break its commit's section.
+- **Debian and Ubuntu packages.** Releases carry `carrel_<version>-1_amd64.deb` and
+  `_arm64.deb`, built from the static musl binaries, so they have no dependencies.
+- **Smaller fixes.**
+  - The right-click "Go to the footnote text" goes to the footnote you clicked, and is
+    not offered on a mark with no footnote.
+  - The notes list says how many notes there are and how many quotes were lost.
+    Export writes to `$XDG_STATE_HOME/carrel/exports/`, shows the full path and copies
+    it.
+  - Home-list titles never come from `#` lines inside code blocks or quotes.
+  - A wrapped card-view legend keeps its `·` separators.
+  - An HTML block that renders nothing (a README's centering `<div>`) takes no rows,
+    and a document's top is the same whether you open it or press `gg`.
+  - Narrow pane borders drop whole hints and keep `esc close` longest.
+  - The home search says "1 file", not "1 files", and its counts are now the reader's
+    own: a file is listed only with the matches you will find when you open it.
+  - Words with soft hyphens can be searched, double-clicked and copied whole.
+  - The footnote box draws tables (cards when wide) and math as the page does; a
+    right-click inside it no longer reaches the text hidden behind it.
+  - Outline and bookmark rows keep the start of a long heading and cut the end.
+  - Card-view legends never show column padding, and an empty last cell keeps its
+    label.
+  - Deeply nested lists and quotes keep a readable width, marked with a dim `«`.
+  - `Q` quits from the file list too. The notes title counts highlights apart from
+    notes. Binary files no longer appear on the tags page, and tags sort
+    accent-insensitively.
+  - `git log` keeps trailers, indented lines and `# Conflicts:` lists on their own
+    lines, and leaves `--` as two hyphens.
+  - `--plain` and `--render` no longer split or cut words.
+  - Searching to the end of a huge one-word line no longer stalls the screen.
+- **Licensing.** The hyphenation data carries each upstream file's full copyright and
+  license, `THIRD-PARTY-NOTICES` ships with every package, and the license expression
+  names the data's licenses as well as carrel's own.
+  - `cargo install carrel --version <older>` works without `--locked` again: the
+    frontend now pins its exact `carrel-core`.
+
 ## 2026.10.8
 
 - **Closing a terminal no longer crashes carrel.** Since 2026.9.1, closing the
