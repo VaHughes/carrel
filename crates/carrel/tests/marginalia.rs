@@ -369,6 +369,44 @@ fn notes_overlay_has_clickable_controls_and_owns_empty_space_at_all_sizes() {
     }
 }
 
+/// The pane's message wraps at words: the export note once read
+/// `…(path sent to the t` / `erminal clipboard)`.
+#[test]
+fn the_notes_message_wraps_at_word_boundaries() {
+    let (_dir, mut app) = reader();
+    select(&mut app, "café quote");
+    update(&mut app, Action::HighlightAdd);
+    update(&mut app, Action::NotesToggle);
+    let words = "Notes exported to ~/a/b/reading.notes.md (path sent to the terminal clipboard)";
+    app.note = Some(words.into());
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 20)).unwrap();
+    let mut painted = carrel::render::Painted::default();
+    terminal
+        .draw(|frame| {
+            carrel::render::draw_full(
+                frame,
+                &app,
+                &mut painted,
+                &mut std::collections::HashMap::new(),
+            );
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    let rows: Vec<String> = (0..20)
+        .map(|y| (0..70).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect();
+    let start = rows
+        .iter()
+        .position(|r| r.contains("Notes exported"))
+        .unwrap();
+    let joined = rows[start..start + 2]
+        .iter()
+        .map(|r| r.trim_matches(['│', ' ']))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(joined.starts_with(words), "{:#?}", &rows[start..start + 2]);
+}
+
 /// The pane's title row, as painted.
 fn notes_title(app: &App) -> String {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 20)).unwrap();
@@ -404,13 +442,25 @@ fn the_notes_title_counts_notes_and_explains_the_lost_ones() {
     select(&mut app, "Another paragraph");
     update(&mut app, Action::HighlightAdd);
     update(&mut app, Action::NotesToggle);
+    // Two highlights with no text are highlights, not notes: their rows
+    // say `(highlight)`, and the title must not call them something else.
     let found = notes_title(&app);
-    assert!(found.contains("Notes · 2 notes · esc close"), "{found:?}");
+    assert!(
+        found.contains("Notes · 2 highlights · esc close"),
+        "{found:?}"
+    );
     assert!(!found.contains('?'), "{found:?}");
+    // A highlight given words becomes a note; the two are counted apart.
+    app.notes.entries[0].note = "worth keeping".into();
+    let mixed = notes_title(&app);
+    assert!(
+        mixed.contains("Notes · 1 note · 1 highlight · esc close"),
+        "{mixed:?}"
+    );
     app.reload_from("# Reading\n\nAnother paragraph.\n");
     let lost = notes_title(&app);
     assert!(
-        lost.contains("Notes · 2 notes · 1 quote not found (marked ?) · esc close"),
+        lost.contains("Notes · 1 note · 1 highlight · 1 quote not found (marked ?) · "),
         "{lost:?}"
     );
 }

@@ -20,7 +20,7 @@
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
-use carrel_core::{BlockIdx, NodeKind, Row, RowKind, cols_for_doc_range, display_width};
+use carrel_core::{BlockIdx, Node, NodeKind, Row, RowKind, cols_for_doc_range, display_width};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -534,18 +534,28 @@ fn small_panel(frame: &mut Frame, targets: &mut Targets, title: &str, close: Act
             theme::status(),
         );
     }
+    let label = if area.width >= 7 { "[close]" } else { "×" };
+    let w = display_width(label).min(area.width);
+    let y = area.bottom() - 1;
+    // One row: the button goes to the right end and the words stop a cell
+    // short of it, rather than the button being painted over them.
+    let (x, room) = if area.height == 1 {
+        (
+            area.right() - w,
+            area.width.saturating_sub(w).saturating_sub(1),
+        )
+    } else {
+        (area.x, area.width)
+    };
     buf.set_stringn(
         area.x,
         area.y,
         format!("{title} needs room"),
-        usize::from(area.width),
+        usize::from(room),
         theme::status(),
     );
-    let label = if area.width >= 7 { "[close]" } else { "×" };
-    let w = display_width(label).min(area.width);
-    let y = area.bottom() - 1;
-    buf.set_stringn(area.x, y, label, usize::from(w), theme::button());
-    targets.push(close, Zone::new(area.x, y, w, 1), Z_MENU);
+    buf.set_stringn(x, y, label, usize::from(w), theme::button());
+    targets.push(close, Zone::new(x, y, w, 1), Z_MENU);
 }
 
 /// The settings pane: every persisted preference, with its current value,
@@ -686,18 +696,32 @@ fn paint_setting_entries(
 /// Selected navigation entries borrow rows from their neighbors. Other entries
 /// retain their distinguishing tail; an oversized selection ends with an ellipsis
 /// and its tail rather than silently hiding the destination.
+/// Which end of a row that does not fit is kept.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// A heading or a paragraph is named by how it begins.
+    Start,
+    /// A path is named by how it ends: the file, not the home directory.
+    End,
+}
+
 fn paint_navigation_entries(
     buf: &mut ratatui::buffer::Buffer,
     targets: &mut Targets,
     area: Rect,
     entries: &[(String, Action)],
     selected: usize,
+    keep: Keep,
 ) {
     if entries.is_empty() || area.height == 0 {
         return;
     }
     let selected = selected.min(entries.len() - 1);
     let width = area.width.saturating_sub(2).max(1);
+    let fit = |text: &str| match keep {
+        Keep::Start => crate::layout::head_text(text, width),
+        Keep::End => crate::layout::tail_text(text, width),
+    };
     let mut lines: Vec<String> = entries[selected]
         .0
         .lines()
@@ -709,7 +733,7 @@ fn paint_navigation_entries(
     if lines.len() > usize::from(area.height) {
         lines.truncate(usize::from(area.height));
         *lines.last_mut().expect("nonempty viewport") =
-            crate::layout::tail_text(&entries[selected].0.replace('\n', " "), width);
+            fit(&entries[selected].0.replace('\n', " "));
     }
     let first = selected.saturating_sub(usize::from(area.height).saturating_sub(lines.len()));
     let mut y = area.y;
@@ -717,7 +741,7 @@ fn paint_navigation_entries(
         let shown = if index == selected {
             lines.clone()
         } else {
-            vec![crate::layout::tail_text(&text.replace('\n', " · "), width)]
+            vec![fit(&text.replace('\n', " · "))]
         };
         let height = u16::try_from(shown.len()).unwrap_or(u16::MAX);
         if height > area.bottom().saturating_sub(y) {
@@ -819,6 +843,7 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         Rect::new(x + 1, y + 1, w - 2, h - 2),
         &entries,
         selected,
+        Keep::Start,
     );
 }
 
@@ -901,6 +926,7 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         Rect::new(x + 1, y + 1, w - 2, h - 2),
         &entries,
         bl.selected,
+        Keep::End,
     );
 }
 
@@ -980,6 +1006,7 @@ fn paint_forward(frame: &mut Frame, app: &App, targets: &mut Targets) {
         Rect::new(x + 1, y + 1, w - 2, h - 2),
         &entries,
         pane.selected,
+        Keep::End,
     );
 }
 
@@ -1102,6 +1129,7 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
         Rect::new(x + 1, y + 1, w - 2, h - 2),
         &entries,
         picker.selected,
+        Keep::Start,
     );
 }
 
@@ -1788,11 +1816,22 @@ fn paint_row(
             Some(kind) => theme::alert(kind),
             None => theme::quote_bar(),
         };
+        // Nesting too deep for the column is drawn in from the left
+        // (`layout::nest_shift`, already taken off the rows): the bars that
+        // would fall off the left edge are not drawn, and a dim `«` in the
+        // first cell says levels are hidden there.
+        let shift = crate::layout::nest_shift(node.indent, app.layout.block_width(&node.kind));
         for &col in &node.quote_cols {
+            let Some(col) = col.checked_sub(shift) else {
+                continue;
+            };
             let x = area.x + col;
             if x < area.right() {
                 buf.set_stringn(x, y, "│ ", 2, bar);
             }
+        }
+        if shift > 0 && !matches!(row.kind, RowKind::Decoration) {
+            buf.set_stringn(area.x, y, "«", 1, theme::dim());
         }
 
         // 1a. Decoration rows carry no text: a card rule, an image
@@ -1851,10 +1890,8 @@ fn paint_row(
                     );
                 }
             }
-            if cards && row.doc.start != node.doc.start {
-                let x = area.x + node.indent;
-                let w = area.right().saturating_sub(x).min(app.layout.width());
-                buf.set_stringn(x, y, "─".repeat(w as usize), w as usize, theme::dim());
+            if cards {
+                paint_card_rule(buf, node, row, area, y, node.indent, app.layout.width());
             }
             return;
         }
@@ -1889,41 +1926,9 @@ fn paint_row(
             }
         }
 
-        // 2c. Card gutter label — body value rows only. The column is
-        //     recovered from `cell_starts`: the greatest cell start at or
-        //     before this row's, mod the column count, names the header cell
-        //     whose text becomes the (dim, truncated) label.
-        if cards
-            && let NodeKind::Table { cols, cell_starts } = &node.kind
-            && let RowKind::Text {
-                continued: false, ..
-            } = row.kind
-        {
-            let ncols = cols.len();
-            let header_end = cell_starts.get(ncols).copied().unwrap_or(node.doc.end);
-            if row.doc.start >= header_end {
-                // Rank of the greatest cell_start <= row.doc.start. Defensive
-                // `saturating_sub`: `partition_point` returning 0 would mean
-                // `cell_starts[0] != node.doc.start`, which never happens
-                // today, but this must not underflow if that ever changes.
-                let idx = cell_starts
-                    .partition_point(|&cs| cs <= row.doc.start)
-                    .saturating_sub(1);
-                let c = idx % ncols;
-                let ls = cell_starts[c] as usize;
-                let le = if c + 1 < ncols {
-                    cell_starts[c + 1] as usize
-                } else {
-                    header_end as usize
-                };
-                let label = app.doc.text[ls..le.max(ls)].trim_end();
-                let gutter = row.indent.saturating_sub(node.indent) as usize;
-                let avail = gutter.saturating_sub(2);
-                let (nx, _) = buf.set_stringn(area.x + node.indent, y, label, avail, theme::dim());
-                if usize::from(carrel_core::display_width(label)) > avail {
-                    buf.set_stringn(nx, y, "…", 1, theme::dim());
-                }
-            }
+        // 2c. Card gutter label — body value rows only.
+        if cards {
+            paint_card_label(buf, app, node, row, area, y, node.indent);
         }
 
         // 3. Text — shared with the footnote peek, which paints the same
@@ -1964,57 +1969,18 @@ fn paint_row(
         // first body cell.
         let is_body = row.doc.start >= header_end;
         if cards && !is_body {
-            let text = app.doc.text.as_bytes();
-            let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
-            let buf = frame.buffer_mut();
-            for &next in cell_starts.iter().take(ncols).skip(1) {
-                // A missing header cell starts at the line end with no gap
-                // before it; only a real three-space gap gets a separator.
-                let gap = next.saturating_sub(3);
-                if next < 3 || !text[gap as usize..next as usize].iter().all(|&b| b == b' ') {
-                    continue;
-                }
-                let mid = gap + 1;
-                // Both sides on this row: never a dangling `·` at a break.
-                if mid < row.doc.start || next >= row.doc.end {
-                    continue;
-                }
-                let (x0, _) = carrel_core::cols_for_doc_range(
-                    row_text,
-                    row.doc.start,
-                    row.indent,
-                    &(mid..mid + 1),
-                );
-                let x = area.x.saturating_add(x0);
-                if x < area.right() {
-                    buf.set_stringn(x, y, "·", 1, theme::quote_bar());
-                }
-            }
+            paint_legend_seps(frame.buffer_mut(), app, node, row, area, y);
         } else if !cards && !continued {
-            let sep = "│";
-            let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
-            let row_w = carrel_core::display_width(row_text);
-            let buf = frame.buffer_mut();
-            let mut cum = 0u32;
-            for w in cols.iter().take(cols.len().saturating_sub(1)) {
-                cum = cum.saturating_add(u32::from(*w));
-                let off = cum.saturating_add(1); // the middle of the 3-cell gap
-                cum = cum.saturating_add(3);
-                if !app.wrap_tables && off >= u32::from(row_w) {
-                    break; // this visual row wrapped before the gap
-                }
-                let offset = app.table_offset(block);
-                if off < offset {
-                    continue;
-                }
-                let x = area
-                    .x
-                    .saturating_add(original_indent)
-                    .saturating_add(u16::try_from(off - offset).unwrap_or(u16::MAX));
-                if x < area.right() {
-                    buf.set_stringn(x, y, sep, 1, theme::quote_bar());
-                }
-            }
+            paint_column_seps(
+                frame.buffer_mut(),
+                app,
+                cols,
+                row,
+                (area, y),
+                area.x.saturating_add(original_indent),
+                app.table_offset(block),
+                !app.wrap_tables,
+            );
         }
     }
 
@@ -2748,7 +2714,7 @@ fn paint_launcher(
 fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(peek) = &app.peek else { return };
     let area = frame.area();
-    let z = peek.zone(&app.doc, app.hyphenation(), area.width, area.height);
+    let z = peek.zone(&app.doc, app.peek_fit(), area.width, area.height);
     if z.w < 8 || z.h < 4 {
         return; // no room to say anything; the next action closes it
     }
@@ -2798,7 +2764,7 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
             buf.set_stringn(z.x + 1, y, " ".repeat(inner), inner, theme::status());
         }
     }
-    let view = peek.view(&app.doc, app.hyphenation(), area.width, area.height);
+    let view = peek.view(&app.doc, app.peek_fit(), area.width, area.height);
     // The text column: a cell of air inside each border, above the button
     // row.
     let text = Rect::new(z.x + 2, z.y + 1, z.w - 4, z.h - 3);
@@ -2815,6 +2781,9 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
         // nesting.
         let mut row = row.clone();
         row.indent = row.indent.saturating_sub(inset);
+        if paint_peek_math(frame, app, &row, line.nth, inset, text, y) {
+            continue;
+        }
         paint_peek_row(frame, app, &row, first, inset, text, y, targets);
     }
     // The long way round, on the box's last inner row — and beside it, how
@@ -2835,6 +2804,148 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
         frame
             .buffer_mut()
             .set_stringn(text.x, y, more, usize::from(room), theme::dim());
+    }
+}
+
+/// A card view's rule: the decoration row between two cards (anchored away
+/// from the block's own start, which is where its trailing gap rows sit).
+/// `indent` is where the card starts in `area`; `max` caps the rule's width.
+/// Shared by the page and the footnote peek.
+fn paint_card_rule(
+    buf: &mut Buffer,
+    node: &Node,
+    row: &Row,
+    area: Rect,
+    y: u16,
+    indent: u16,
+    max: u16,
+) {
+    if row.doc.start == node.doc.start {
+        return;
+    }
+    let x = area.x + indent;
+    let w = area.right().saturating_sub(x).min(max);
+    buf.set_stringn(x, y, "─".repeat(w as usize), w as usize, theme::dim());
+}
+
+/// A card's gutter label — body value rows only. The column is recovered
+/// from `cell_starts`: the greatest cell start at or before this row's, mod
+/// the column count, names the header cell whose text becomes the (dim,
+/// truncated) label. `indent` is where the card starts in `area`; the
+/// gutter is what the row's own indent holds beyond it. Shared by the page
+/// and the footnote peek.
+fn paint_card_label(
+    buf: &mut Buffer,
+    app: &App,
+    node: &Node,
+    row: &Row,
+    area: Rect,
+    y: u16,
+    indent: u16,
+) {
+    let NodeKind::Table { cols, cell_starts } = &node.kind else {
+        return;
+    };
+    let RowKind::Text {
+        continued: false, ..
+    } = row.kind
+    else {
+        return;
+    };
+    let ncols = cols.len();
+    let header_end = cell_starts.get(ncols).copied().unwrap_or(node.doc.end);
+    if row.doc.start < header_end {
+        return;
+    }
+    // Rank of the greatest cell_start <= row.doc.start. Defensive
+    // `saturating_sub`: `partition_point` returning 0 would mean
+    // `cell_starts[0] != node.doc.start`, which never happens today, but
+    // this must not underflow if that ever changes.
+    let idx = cell_starts
+        .partition_point(|&cs| cs <= row.doc.start)
+        .saturating_sub(1);
+    let c = idx % ncols;
+    let ls = cell_starts[c] as usize;
+    let le = if c + 1 < ncols {
+        cell_starts[c + 1] as usize
+    } else {
+        header_end as usize
+    };
+    let label = app.doc.text[ls..le.max(ls)].trim_end();
+    let gutter = row.indent.saturating_sub(indent) as usize;
+    let avail = gutter.saturating_sub(2);
+    let (nx, _) = buf.set_stringn(area.x + indent, y, label, avail, theme::dim());
+    if usize::from(carrel_core::display_width(label)) > avail {
+        buf.set_stringn(nx, y, "…", 1, theme::dim());
+    }
+}
+
+/// The card legend's separators: a `·` in the middle of the three
+/// synthetic spaces before each header cell, found by BYTE, and painted only
+/// on the row that holds both that gap and the cell after it. Counting
+/// columns from the line start, as the column view does, is only right on
+/// the first row — the bug that left every wrapped legend row without its
+/// separators. Shared by the page and the footnote peek.
+fn paint_legend_seps(buf: &mut Buffer, app: &App, node: &Node, row: &Row, area: Rect, y: u16) {
+    let NodeKind::Table { cols, cell_starts } = &node.kind else {
+        return;
+    };
+    let text = app.doc.text.as_bytes();
+    let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+    for &next in cell_starts.iter().take(cols.len()).skip(1) {
+        // A missing header cell starts at the line end with no gap
+        // before it; only a real three-space gap gets a separator.
+        let gap = next.saturating_sub(3);
+        if next < 3 || !text[gap as usize..next as usize].iter().all(|&b| b == b' ') {
+            continue;
+        }
+        let mid = gap + 1;
+        // Both sides on this row: never a dangling `·` at a break.
+        if mid < row.doc.start || next >= row.doc.end {
+            continue;
+        }
+        let (x0, _) =
+            carrel_core::cols_for_doc_range(row_text, row.doc.start, row.indent, &(mid..mid + 1));
+        let x = area.x.saturating_add(x0);
+        if x < area.right() {
+            buf.set_stringn(x, y, "·", 1, theme::quote_bar());
+        }
+    }
+}
+
+/// A table's column separators: a dim `│` in the middle of each 2-cell gap,
+/// painted over synthetic padding, counted from `x0` (where the row's first
+/// column is painted) and `offset` cells scrolled. `stop_at_wrap` stops at
+/// the row's end — a wrapped row's columns no longer line up. Shared by the
+/// page and the footnote peek.
+#[allow(clippy::too_many_arguments)]
+fn paint_column_seps(
+    buf: &mut Buffer,
+    app: &App,
+    cols: &[u16],
+    row: &Row,
+    (area, y): (Rect, u16),
+    x0: u16,
+    offset: u32,
+    stop_at_wrap: bool,
+) {
+    let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+    let row_w = carrel_core::display_width(row_text);
+    let mut cum = 0u32;
+    for w in cols.iter().take(cols.len().saturating_sub(1)) {
+        cum = cum.saturating_add(u32::from(*w));
+        let off = cum.saturating_add(1); // the middle of the 3-cell gap
+        cum = cum.saturating_add(3);
+        if stop_at_wrap && off >= u32::from(row_w) {
+            break; // this visual row wrapped before the gap
+        }
+        if off < offset {
+            continue;
+        }
+        let x = x0.saturating_add(u16::try_from(off - offset).unwrap_or(u16::MAX));
+        if x < area.right() {
+            buf.set_stringn(x, y, "│", 1, theme::quote_bar());
+        }
     }
 }
 
@@ -2867,6 +2978,41 @@ fn paint_cut_mark(buf: &mut Buffer, row: &Row, x: u16, area: Rect, y: u16) {
     }
 }
 
+/// Line `nth` of a math block's drawing in the footnote box, as the page
+/// draws it (`paint_math`): the same art, chosen by the same ladder at the
+/// width the box gives it. `false` for any other row.
+fn paint_peek_math(
+    frame: &mut Frame,
+    app: &App,
+    row: &Row,
+    nth: u16,
+    inset: u16,
+    area: Rect,
+    y: u16,
+) -> bool {
+    let node = app.doc.node_for_block(row.block);
+    if !matches!(node.kind, NodeKind::Math) || !matches!(row.kind, RowKind::Decoration) {
+        return false;
+    }
+    let avail = area.width.saturating_add(inset).saturating_sub(node.indent);
+    let Some(art) = app.math_art.get(&row.block) else {
+        return false;
+    };
+    let chosen = match app.math_form(row.block, avail) {
+        crate::app::MathForm::Display => &art.display,
+        crate::app::MathForm::Inline => &art.inline,
+        crate::app::MathForm::Source => return false,
+    };
+    if let Some(line) = chosen.rows.get(usize::from(nth)) {
+        let x = area.x + row.indent.min(area.width.saturating_sub(1));
+        let w = area.right().saturating_sub(x);
+        frame
+            .buffer_mut()
+            .set_stringn(x, y, line, usize::from(w), theme::marker());
+    }
+    true
+}
+
 /// One row of a footnote inside the peek box, already shifted by the
 /// definition's inset: `area.x + row.indent` is where its text starts.
 #[allow(clippy::too_many_arguments)]
@@ -2882,6 +3028,22 @@ fn paint_peek_row(
 ) {
     let node = app.doc.node_for_block(row.block);
     let buf = frame.buffer_mut();
+    // A table in the footnote is laid out as the page lays one out at this
+    // width (`peek::Peek::rows`): aligned when it fits, cards when it does
+    // not. The box cannot pan, so column mode does not apply here.
+    let table = match &node.kind {
+        NodeKind::Table { cols, .. } => Some(cols),
+        _ => None,
+    };
+    let cards =
+        table.is_some() && crate::layout::table_overflows(node, area.width.saturating_add(inset));
+    let card_x = node.indent.saturating_sub(inset);
+    if let RowKind::Decoration = row.kind {
+        if cards {
+            paint_card_rule(buf, node, row, area, y, card_x, area.width);
+        }
+        return;
+    }
     // Quote bars inside the footnote; a quote around the whole definition
     // is the page's context, not the footnote's.
     let bar = node.alert.map_or_else(theme::quote_bar, theme::alert);
@@ -2916,14 +3078,37 @@ fn paint_peek_row(
             }
         }
     }
+    let header_end = match &node.kind {
+        NodeKind::Table { cols, cell_starts } => {
+            cell_starts.get(cols.len()).copied().unwrap_or(node.doc.end)
+        }
+        _ => node.doc.start,
+    };
     let base = match &node.kind {
         NodeKind::Heading { level } => theme::heading(*level),
         NodeKind::AlertLabel { kind } => theme::alert(*kind).add_modifier(Modifier::BOLD),
         NodeKind::Image { .. } => theme::dim(),
+        // A table's header is bold, as on the page.
+        NodeKind::Table { .. } if row.doc.start < header_end => {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
         _ => Style::default(),
     };
+    if cards {
+        paint_card_label(buf, app, node, row, area, y, card_x);
+    }
     let x = paint_text(buf, app, row.block, row, area, y, base);
     paint_cut_mark(buf, row, x, area, y);
+    if let Some(cols) = table
+        && let RowKind::Text { continued, .. } = row.kind
+    {
+        if cards && row.doc.start < header_end {
+            paint_legend_seps(buf, app, node, row, area, y);
+        } else if !cards && !continued {
+            let x0 = area.x.saturating_add(row.indent);
+            paint_column_seps(buf, app, cols, row, (area, y), x0, 0, true);
+        }
+    }
     // The buttons on the row, on the box's layer and pushed after its
     // `Absorb`, so they are what a click inside the box finds.
     let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];

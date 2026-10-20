@@ -331,7 +331,9 @@ impl Keys {
                 KeyCode::Char('j') => Some(Action::HomeMove(1)),
                 KeyCode::Char('k') => Some(Action::HomeMove(-1)),
                 KeyCode::Char('h') => Some(Action::HelpToggle),
-                KeyCode::Char('q') => Some(Action::Quit),
+                // `Q` quits outright everywhere else in carrel; on the file
+                // list there is nothing to close first, so it is `q` again.
+                KeyCode::Char('q' | 'Q') => Some(Action::Quit),
                 KeyCode::Char('T') => Some(Action::ThemeCycle),
                 KeyCode::Char('H') => Some(Action::HintsToggle),
                 KeyCode::Char('d') => Some(Action::PickerOpen),
@@ -858,7 +860,7 @@ pub const HOME_HELP: &[(&str, &str)] = &[
     (",", "settings"),
     ("h F1", "this help (F1 while typing)"),
     ("H", "hide / show the hint row"),
-    ("q Ctrl-C", "quit"),
+    ("q Q Ctrl-C", "quit"),
 ];
 
 /// The key presses a help row's FIRST key is, or `None` for a row that
@@ -1390,6 +1392,13 @@ mod tests {
             Some(Action::PickerOpen)
         );
         assert_eq!(m.map_home(k('q'), HomeMode::Normal), Some(Action::Quit));
+        // `Q` quits outright everywhere; the file list must not be the one
+        // screen where it silently does nothing. While typing it is a letter.
+        assert_eq!(m.map_home(k('Q'), HomeMode::Normal), Some(Action::Quit));
+        assert_eq!(
+            m.map_home(k('Q'), HomeMode::Filter),
+            Some(Action::HomeKey(SearchKey::Char('Q')))
+        );
         assert_eq!(m.map_home(k('g'), HomeMode::Normal), None, "gg is two keys");
         assert_eq!(
             m.map_home(k('g'), HomeMode::Normal),

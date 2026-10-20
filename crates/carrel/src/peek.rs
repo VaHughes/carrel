@@ -41,6 +41,8 @@ use crate::action::Zone;
 pub const MAX_LINES: usize = 12;
 /// As wide as a comfortable line, and no wider than the window allows.
 const MAX_W: u16 = 64;
+/// The window's last column: the scrollbar, which the box never covers.
+const SCROLLBAR: u16 = 1;
 
 /// An open peek.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +64,58 @@ pub struct Peek {
 #[derive(Clone, Debug)]
 pub struct Line {
     pub row: Option<Row>,
+    /// For a row of drawn math: which row of the art it is. The rows of a
+    /// drawing are all the same empty slice at the block's start, as on the
+    /// page, so only this says which line of the art goes here.
+    pub nth: u16,
+}
+
+impl Line {
+    const GAP: Self = Self { row: None, nth: 0 };
+
+    fn row(row: Row) -> Self {
+        Self {
+            row: Some(row),
+            nth: 0,
+        }
+    }
+
+    /// A row the box may start at: text, a card rule, or the FIRST row of a
+    /// drawing — never a gap, and never partway down a drawing, whose rows
+    /// share one slice and so one scroll position.
+    fn is_top(&self) -> bool {
+        self.row.is_some() && self.nth == 0
+    }
+}
+
+/// How tall a block that is drawn rather than wrapped is — display math,
+/// whose height is its art's, not its text's — at `avail` cells. `None`
+/// for a block wrapped as text. The page answers this from its own state
+/// (`App`); the box asks the same question so the two draw alike.
+pub trait Drawn {
+    fn drawn_rows(&self, block: BlockIdx, avail: u16) -> Option<u32>;
+}
+
+/// What the box is laid out with: the page's hyphenation, and what it draws.
+#[derive(Clone, Copy)]
+pub struct Fit<'a> {
+    pub hy: Hyphenation,
+    pub drawn: Option<&'a dyn Drawn>,
+}
+
+impl std::fmt::Debug for Fit<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Fit")
+            .field("hy", &self.hy)
+            .field("drawn", &self.drawn.is_some())
+            .finish()
+    }
+}
+
+impl From<Hyphenation> for Fit<'_> {
+    fn from(hy: Hyphenation) -> Self {
+        Self { hy, drawn: None }
+    }
 }
 
 /// What the box shows at one size.
@@ -124,7 +178,14 @@ impl Peek {
     /// as `hy` says, so each row is a slice of the text. Stops at a block
     /// boundary once `limit` rows are in hand.
     #[must_use]
-    pub fn rows(&self, doc: &Document, hy: Hyphenation, inner: u16, limit: usize) -> Vec<Line> {
+    pub fn rows<'a>(
+        &self,
+        doc: &Document,
+        fit: impl Into<Fit<'a>>,
+        inner: u16,
+        limit: usize,
+    ) -> Vec<Line> {
+        let Fit { hy, drawn } = fit.into();
         let inset = self.inset(doc);
         let width = inner.max(1).saturating_add(inset);
         let blocks = self.blocks(doc);
@@ -134,20 +195,45 @@ impl Peek {
                 break;
             }
             if b != blocks.start {
-                out.push(Line { row: None });
+                out.push(Line::GAP);
             }
-            wrap_with(doc, BlockIdx(b), width, &cluster_width, hy, |r| {
-                out.push(Line { row: Some(r) });
-            });
+            // Display math the page draws is drawn here too: its rows are
+            // the art's, each the block's empty start, as on the page.
+            let node = doc.node_for_block(BlockIdx(b));
+            let avail = width.saturating_sub(node.indent);
+            if let Some(n) = drawn.and_then(|d| d.drawn_rows(BlockIdx(b), avail)) {
+                for nth in 0..n.max(1) {
+                    out.push(Line {
+                        row: Some(Row {
+                            block: BlockIdx(b),
+                            doc: node.doc.start..node.doc.start,
+                            indent: node.indent,
+                            kind: carrel_core::RowKind::Decoration,
+                        }),
+                        nth: u16::try_from(nth).unwrap_or(u16::MAX),
+                    });
+                }
+                continue;
+            }
+            let mut push = |r| out.push(Line::row(r));
+            // A table the box is too narrow for is cards, as it would be
+            // on a page this wide; wrapped as prose, its padded columns
+            // flowed into misaligned text.
+            if crate::layout::table_overflows(doc.node_for_block(BlockIdx(b)), width) {
+                crate::layout::card_rows(doc, BlockIdx(b), width, &mut push);
+            } else {
+                wrap_with(doc, BlockIdx(b), width, &cluster_width, hy, &mut push);
+            }
         }
         out
     }
 
     /// The box's width in a `cols`-wide window, and the width of the text
-    /// inside it (two borders and a cell of air each side).
+    /// inside it (two borders and a cell of air each side). The window's
+    /// last column is the scrollbar's, which the box leaves showing.
     #[must_use]
     pub fn widths(cols: u16) -> (u16, u16) {
-        let w = MAX_W.min(cols.saturating_sub(2)).max(1);
+        let w = MAX_W.min(cols.saturating_sub(3)).max(1);
         (w, w.saturating_sub(4).max(1))
     }
 
@@ -161,23 +247,28 @@ impl Peek {
     fn top_index(&self, lines: &[Line]) -> usize {
         lines
             .iter()
-            .position(|l| l.row.as_ref().is_some_and(|r| r.doc.end > self.top))
-            .or_else(|| lines.iter().rposition(|l| l.row.is_some()))
+            .position(|l| {
+                l.is_top()
+                    && l.row
+                        .as_ref()
+                        .is_some_and(|r| r.doc.end > self.top || r.doc.start >= self.top)
+            })
+            .or_else(|| lines.iter().rposition(Line::is_top))
             .unwrap_or(0)
     }
 
     /// What the box shows in a `cols × rows` window.
     #[must_use]
-    pub fn view(&self, doc: &Document, hy: Hyphenation, cols: u16, rows: u16) -> View {
+    pub fn view<'a>(&self, doc: &Document, fit: impl Into<Fit<'a>>, cols: u16, rows: u16) -> View {
         let (_, inner) = Self::widths(cols);
         let room = Self::room(rows);
-        let all = self.rows(doc, hy, inner, usize::MAX);
+        let all = self.rows(doc, fit, inner, usize::MAX);
         let first = self.top_index(&all).min(all.len().saturating_sub(room));
         let shown = all.len().saturating_sub(first).min(room);
         let below = all.len() - first - shown;
         let mut lines: Vec<Line> = all.into_iter().skip(first).take(shown).collect();
         if lines.is_empty() {
-            lines.push(Line { row: None });
+            lines.push(Line::GAP);
         }
         View {
             lines,
@@ -189,9 +280,16 @@ impl Peek {
     /// Move the box's text by `delta` rows, never past either end. A blank
     /// between blocks is never the top row, so a step that lands on one
     /// goes one further.
-    pub fn scroll(&mut self, doc: &Document, hy: Hyphenation, delta: i32, cols: u16, rows: u16) {
+    pub fn scroll<'a>(
+        &mut self,
+        doc: &Document,
+        fit: impl Into<Fit<'a>>,
+        delta: i32,
+        cols: u16,
+        rows: u16,
+    ) {
         let (_, inner) = Self::widths(cols);
-        let all = self.rows(doc, hy, inner, usize::MAX);
+        let all = self.rows(doc, fit, inner, usize::MAX);
         let max = all.len().saturating_sub(Self::room(rows));
         let now = self.top_index(&all).min(max);
         let to = now
@@ -206,10 +304,10 @@ impl Peek {
     /// above it when there is no room below — the menu's rule, for the
     /// menu's reason.
     #[must_use]
-    pub fn zone(&self, doc: &Document, hy: Hyphenation, cols: u16, rows: u16) -> Zone {
+    pub fn zone<'a>(&self, doc: &Document, fit: impl Into<Fit<'a>>, cols: u16, rows: u16) -> Zone {
         let (w, inner) = Self::widths(cols);
         let room = Self::room(rows);
-        let shown = self.rows(doc, hy, inner, room).len().clamp(1, room);
+        let shown = self.rows(doc, fit, inner, room).len().clamp(1, room);
         // Borders, the text, and the row the button sits on.
         let h = u16::try_from(shown)
             .unwrap_or(u16::MAX)
@@ -223,7 +321,7 @@ impl Peek {
             cy.saturating_sub(h)
         };
         Zone::new(
-            cx.min(cols.saturating_sub(w)),
+            cx.min(cols.saturating_sub(w.saturating_add(SCROLLBAR))),
             y.min(rows.saturating_sub(h)),
             w,
             h,
@@ -241,7 +339,7 @@ impl Peek {
 /// opening a footnote and bouncing it forever.
 fn nearest_row(lines: &[Line], to: usize, back: bool) -> Option<usize> {
     let to = to.min(lines.len().checked_sub(1)?);
-    let is_row = |i: &usize| lines[*i].row.is_some();
+    let is_row = |i: &usize| lines[*i].is_top();
     let behind = (0..=to).rev().find(is_row);
     let ahead = (to..lines.len()).find(is_row);
     if back {
@@ -292,6 +390,11 @@ mod tests {
         let z = peek(&doc, (10, 3)).zone(&doc, Hyphenation::Off, 80, 24);
         assert_eq!((z.x, z.y), (10, 4));
         assert_eq!(z.h, 1 + 3, "one line, two borders, the button row");
+
+        // Pushed in from the right edge, it stops short of the scrollbar's
+        // column rather than painting its border over it.
+        let right = peek(&doc, (79, 3)).zone(&doc, Hyphenation::Off, 80, 24);
+        assert_eq!(right.x + right.w, 79, "{right:?}");
 
         let low = peek(&doc, (10, 22)).zone(&doc, Hyphenation::Off, 80, 24);
         assert_eq!(low.y + low.h, 22, "its last row is the one above the mark");
@@ -417,10 +520,8 @@ mod tests {
             let doc = doc_with("x");
             let mut v = Vec::new();
             carrel_core::wrap(&doc, BlockIdx(0), 80, &cluster_width, |r| v.push(r));
-            let row = || Line {
-                row: Some(v[0].clone()),
-            };
-            let gap = || Line { row: None };
+            let row = || Line::row(v[0].clone());
+            let gap = || Line::GAP;
             let lines = vec![gap(), gap(), row(), gap(), gap(), row(), gap()];
             for (to, back, want) in [
                 (0, true, Some(2)),

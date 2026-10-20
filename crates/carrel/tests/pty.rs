@@ -54,6 +54,45 @@ fn pty_run(args: &str, keys: &str, dir: &Path) -> String {
     captured(&out)
 }
 
+/// Like [`pty_run`], but `then` is typed only once `until` has appeared in
+/// what the program wrote (or ten seconds have passed, so a regression fails
+/// on its assertion instead of hanging).
+///
+/// For a key that must not race the effect of the one before it: a click on
+/// the path row starts a scan of the new folder, and a `q` sent in the same
+/// write quit before that scan painted, often enough under load to fail one
+/// run in a few. Waiting a fixed beat instead only moves the race.
+fn pty_run_until(args: &str, keys: &str, until: &str, then: &str, dir: &Path) -> String {
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = dir.join("pty-capture");
+    let cfg = dir.join("cfg");
+    let state = dir.join("state");
+    let cache = dir.join("cache");
+    // `script -f` flushes the capture as output arrives, which is what lets
+    // the key feeder watch it.
+    let cmd = format!(
+        "( sleep 1; printf '{keys}'; i=0; \
+           while [ $i -lt 100 ] && ! grep -qF '{until}' '{out}' 2>/dev/null; do \
+             sleep 0.1; i=$((i+1)); done; \
+           printf '{then}' ) | \
+         XDG_CONFIG_HOME='{}' XDG_STATE_HOME='{}' XDG_CACHE_HOME='{}' HOME='{}' \
+         timeout 60 script -fqec 'stty rows 20 cols 76; {bin} {args}' '{out}' >/dev/null 2>&1",
+        cfg.display(),
+        state.display(),
+        cache.display(),
+        dir.display(),
+        out = out.display(),
+    );
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(dir)
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    captured(&out)
+}
+
 /// What the program wrote to the pty, without `script`'s own header line.
 ///
 /// util-linux `script` opens its typescript with `Script started on …
@@ -1437,9 +1476,11 @@ fn the_path_row_walks_the_directory_tree() {
     // with `docs` at columns 9-12 and the arrow at column 2.
     let a = tempfile::tempdir().unwrap();
     nested_tree(a.path());
-    let cap = pty_run(
+    let cap = pty_run_until(
         "docs/today/current",
-        r"\033[<0;10;8M\033[<0;10;8mq",
+        r"\033[<0;10;8M\033[<0;10;8m",
+        "today/other.md",
+        "q",
         a.path(),
     );
     assert!(
@@ -1449,7 +1490,13 @@ fn the_path_row_walks_the_directory_tree() {
 
     let b = tempfile::tempdir().unwrap();
     nested_tree(b.path());
-    let cap = pty_run("docs/today/current", r"\033[<0;2;8M\033[<0;2;8mq", b.path());
+    let cap = pty_run_until(
+        "docs/today/current",
+        r"\033[<0;2;8M\033[<0;2;8m",
+        "other.md",
+        "q",
+        b.path(),
+    );
     assert!(
         cap.contains("other.md"),
         "the ↑ must go up one, where other.md lives"
@@ -1463,6 +1510,53 @@ fn the_path_row_walks_the_directory_tree() {
         !cap.contains("other.md"),
         "other.md is not under the starting directory"
     );
+}
+
+/// A `#tag` in a heading is a button for the tags page, not a click on the
+/// heading: the tag's target wins over click-to-fold. Reported once as
+/// collapsing the heading; guarded end to end, where the press is routed.
+#[test]
+fn a_tag_in_a_heading_opens_the_tags_page_instead_of_collapsing_it() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let write = |dir: &Path| {
+        std::fs::write(
+            dir.join("h.md"),
+            "# Plans for #roadmap work\n\nBody under the heading.\n",
+        )
+        .unwrap();
+    };
+    // 76x20 with the heading bar: the heading is row 3, `#roadmap` from
+    // column 13.
+    let a = tempfile::tempdir().unwrap();
+    write(a.path());
+    let cap = pty_run_until(
+        "h.md",
+        r"\033[<0;14;3M\033[<0;14;3m",
+        "Most used first",
+        "q",
+        a.path(),
+    );
+    assert!(cap.contains("Most used first"), "the tags page opens");
+
+    // The control: a click on the heading's words collapses it, and opens
+    // no tags page — so the tag's cell, not the row, is what decided.
+    let b = tempfile::tempdir().unwrap();
+    write(b.path());
+    let cap = pty_run_until(
+        "h.md",
+        r"\033[<0;4;3M\033[<0;4;3m",
+        "\u{2026}",
+        "q",
+        b.path(),
+    );
+    assert!(
+        !cap.contains("Most used first"),
+        "a click on the words folds"
+    );
+    assert!(cap.contains('\u{2026}'), "the collapsed heading says so");
 }
 
 /// The `⌂` on the reader's status row opens the file list — including from a

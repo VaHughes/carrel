@@ -64,6 +64,18 @@ fn short_reader_spends_space_on_text_and_restores_preferences() {
 }
 
 #[test]
+fn a_one_row_window_says_what_needs_room_and_offers_close_beside_it() {
+    // At 80x1 the `[close]` button was painted over the words.
+    let mut app = app(80, 1);
+    update(&mut app, Action::HelpToggle);
+    let (buf, painted) = frame(&app);
+    let row = text(&buf);
+    assert!(row.contains("help needs room"), "{row:?}");
+    assert!(row.trim_end().ends_with("[close]"), "{row:?}");
+    assert!(has_action(&painted, 80, 1, Action::Dismiss));
+}
+
+#[test]
 fn narrow_help_still_explains_the_keys() {
     let mut app = app(24, 8);
     update(&mut app, Action::HelpToggle);

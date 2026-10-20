@@ -82,7 +82,7 @@ fn clicking_a_mark_shows_the_footnote_where_the_mark_is() {
     assert_eq!(app.view.scroll_row, 0, "and the reader has not moved");
 
     let (buf, targets) = painted(&app, 80, 24);
-    let boxed = peek.zone(&app.doc, app.hyphenation(), 80, 24);
+    let boxed = peek.zone(&app.doc, app.peek_fit(), 80, 24);
     assert_eq!(boxed.y, zone.y + 1, "the box hangs under the mark");
     let text: String = (boxed.y..boxed.y + boxed.h)
         .map(|y| {
@@ -247,8 +247,8 @@ fn open_first(app: &mut App, cols: u16, rows: u16) {
 fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
     let (buf, _) = painted(app, cols, rows);
     let peek = app.peek.as_ref().unwrap();
-    let z = peek.zone(&app.doc, app.hyphenation(), cols, rows);
-    let view = peek.view(&app.doc, app.hyphenation(), cols, rows);
+    let z = peek.zone(&app.doc, app.peek_fit(), cols, rows);
+    let view = peek.view(&app.doc, app.peek_fit(), cols, rows);
     let inset = peek.inset(&app.doc);
     let (left, right) = (z.x + 2, z.x + z.w - 2);
     let mut out = Vec::new();
@@ -260,6 +260,16 @@ fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
             out.push(String::new());
             continue;
         };
+        // Drawn math is the page's art, not a slice: checked on its own.
+        if matches!(row.kind, carrel_core::RowKind::Decoration)
+            && matches!(
+                app.doc.node_for_block(row.block).kind,
+                carrel_core::NodeKind::Math
+            )
+        {
+            out.push(String::new());
+            continue;
+        }
         let slice = app.doc.text[row.doc.start as usize..row.doc.end as usize].replace('\t', " ");
         let x0 = left + row.indent - inset;
         let mut x = x0;
@@ -267,6 +277,15 @@ fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
         while x < right && carrel_core::display_width(&got) < carrel_core::display_width(&slice) {
             got.push_str(buf[(x, y)].symbol());
             x += carrel_core::cluster_width(buf[(x, y)].symbol()).max(1);
+        }
+        // A table's column separators are the page's decoration over its
+        // synthetic padding — `│` aligned, `·` in a card legend — painted
+        // in the box exactly as on the page.
+        if matches!(
+            app.doc.node_for_block(row.block).kind,
+            carrel_core::NodeKind::Table { .. }
+        ) {
+            got = got.replace(['│', '·'], " ");
         }
         assert_eq!(got, slice, "row {dy} painted something else");
         // A row the core cut mid-run ends in the page's own mark, in the
@@ -285,8 +304,11 @@ fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
             x += 1;
         }
         let rest: String = (x..right).map(|x| buf[(x, y)].symbol()).collect();
+        // (A card's rule is a decoration row: no text, all rule.)
+        let rule =
+            matches!(row.kind, carrel_core::RowKind::Decoration) && rest.chars().all(|c| c == '─');
         assert!(
-            rest.trim().is_empty(),
+            rule || rest.trim().is_empty(),
             "row {dy} has {rest:?} after its text"
         );
         out.push(slice);
@@ -318,7 +340,7 @@ fn a_word_cut_in_the_box_is_marked_as_on_the_page() {
     );
     open_first(&mut app, cols, rows);
     let peek = app.peek.as_ref().unwrap();
-    let view = peek.view(&app.doc, app.hyphenation(), cols, rows);
+    let view = peek.view(&app.doc, app.peek_fit(), cols, rows);
     assert_eq!(view.below, 0, "the whole footnote is in view");
     let kinds: Vec<_> = view
         .lines
@@ -349,7 +371,7 @@ fn a_word_cut_in_the_box_is_marked_as_on_the_page() {
         .peek
         .as_ref()
         .unwrap()
-        .view(&app.doc, app.hyphenation(), cols, rows);
+        .view(&app.doc, app.peek_fit(), cols, rows);
     assert!(
         !view
             .lines
@@ -372,7 +394,7 @@ fn the_box_shows_every_block_of_the_footnote_and_scrolls_to_the_rest() {
             .peek
             .as_ref()
             .unwrap()
-            .view(&app.doc, app.hyphenation(), cols, rows);
+            .view(&app.doc, app.peek_fit(), cols, rows);
         if view.below == 0 {
             break;
         }
@@ -413,7 +435,7 @@ fn a_footnote_taller_than_its_box_says_how_much_more_there_is() {
         .peek
         .as_ref()
         .unwrap()
-        .zone(&app.doc, app.hyphenation(), cols, rows);
+        .zone(&app.doc, app.peek_fit(), cols, rows);
     let button_row: String = (z.x..z.x + z.w)
         .map(|x| buf[(x, z.y + z.h - 2)].symbol())
         .collect();
@@ -450,7 +472,7 @@ fn a_link_and_a_mark_inside_the_box_are_clickable() {
         .peek
         .as_ref()
         .unwrap()
-        .zone(&app.doc, app.hyphenation(), cols, rows);
+        .zone(&app.doc, app.peek_fit(), cols, rows);
     let inside = |z: &Zone| boxed.contains(z.x, z.y);
     let link = targets
         .iter()
@@ -505,7 +527,7 @@ fn a_search_hit_in_the_footnote_is_lit_in_the_box() {
         .peek
         .as_ref()
         .unwrap()
-        .zone(&app.doc, app.hyphenation(), cols, rows);
+        .zone(&app.doc, app.peek_fit(), cols, rows);
     let y = z.y + 1;
     let row: String = (z.x..z.x + z.w).map(|x| buf[(x, y)].symbol()).collect();
     let col = row.find("measurement").expect("the first row has the word");
@@ -539,7 +561,7 @@ fn at_thirty_columns_the_footnote_wraps_inside_the_box() {
             .peek
             .as_ref()
             .unwrap()
-            .view(&app.doc, app.hyphenation(), cols, rows)
+            .view(&app.doc, app.peek_fit(), cols, rows)
             .below
             == 0
         {
@@ -549,4 +571,85 @@ fn at_thirty_columns_the_footnote_wraps_inside_the_box() {
     }
     let words: String = seen.join(" ");
     assert!(words.contains("The last word."), "{words}");
+}
+
+/// A table too wide for the box is laid out as the page would lay it out
+/// at that width — cards, each value under its column's label — not wrapped
+/// as prose, which flowed its padded columns into misaligned text.
+#[test]
+fn a_wide_table_in_the_box_is_cards_as_on_the_page() {
+    let cell = "longcellvalue";
+    let mut src = String::from(
+        "Mark[^w] here.\n\n[^w]: Wide:\n\n    | a | b | c | d | e | f | g |\n    |---|---|---|---|---|---|---|\n    |",
+    );
+    for _ in 0..7 {
+        let _ = write!(src, " {cell} |");
+    }
+    src.push('\n');
+    let (cols, rows) = (70, 60);
+    let mut app = App::new("w.md".into(), Document::parse(&src), cols, rows);
+    app.on_resize(cols, rows);
+    open_first(&mut app, cols, rows);
+    let (mut slices, mut labeled) = (Vec::new(), Vec::new());
+    loop {
+        slices.extend(check_rows(&app, cols, rows));
+        // Each value carries its column's label in the card's gutter.
+        let peek = app.peek.as_ref().unwrap();
+        let (buf, _) = painted(&app, cols, rows);
+        let z = peek.zone(&app.doc, app.peek_fit(), cols, rows);
+        labeled.clear();
+        labeled.extend(
+            (z.y..z.y + z.h)
+                .map(|y| {
+                    (z.x..z.x + z.w)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .filter(|l| l.contains(cell))
+                .map(|l| {
+                    let inner = l.trim_matches(['│', ' ']);
+                    inner.split_whitespace().next().unwrap().to_string()
+                }),
+        );
+        if peek.view(&app.doc, app.peek_fit(), cols, rows).below == 0 {
+            break;
+        }
+        update(&mut app, Action::PeekScroll(1));
+    }
+    // Every value is a row of its own: none shares a row with another, as
+    // they did when the table was wrapped as prose.
+    let mut values: Vec<_> = slices.iter().filter(|s| s.contains(cell)).collect();
+    values.dedup();
+    assert!(values.iter().all(|s| s.trim() == cell), "{slices:#?}");
+    assert_eq!(labeled, ["a", "b", "c", "d", "e", "f", "g"], "{labeled:?}");
+}
+
+/// Display math in a footnote is drawn in the box as the page draws it —
+/// the box once showed the LaTeX source beside a page showing `a² + b² = c²`.
+#[test]
+fn display_math_in_the_box_is_drawn_as_on_the_page() {
+    let src = "Mark[^m] here.\n\n[^m]: Pythagoras:\n\n    $$a^2+b^2=c^2$$\n\n    After.\n";
+    let (cols, rows) = (80, 24);
+    let mut app = App::new("m.md".into(), Document::parse(src), cols, rows);
+    app.on_resize(cols, rows);
+    open_first(&mut app, cols, rows);
+    let (buf, _) = painted(&app, cols, rows);
+    let z = app
+        .peek
+        .as_ref()
+        .unwrap()
+        .zone(&app.doc, app.peek_fit(), cols, rows);
+    let inside: String = (z.y..z.y + z.h)
+        .map(|y| {
+            (z.x..z.x + z.w)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect();
+    assert!(inside.contains("a² + b² = c²"), "{inside}");
+    assert!(!inside.contains("a^2"), "{inside}");
+    assert!(inside.contains("After."), "{inside}");
+    // The rows around the drawing are still the text's own.
+    check_rows(&app, cols, rows);
 }

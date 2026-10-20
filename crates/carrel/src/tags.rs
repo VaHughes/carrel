@@ -307,7 +307,21 @@ pub fn tags_of(path: &Path) -> Vec<String> {
     if f.take(BODY_MAX).read_to_end(&mut buf).is_err() {
         return Vec::new();
     }
-    tags_in(&String::from_utf8_lossy(&buf))
+    as_text(&buf, buf.len() as u64 == BODY_MAX).map_or_else(Vec::new, tags_in)
+}
+
+/// `bytes` as text, by the reader's rule: a file that is not UTF-8 does not
+/// open ("this is not text"), so it holds no tags either — a stray `#z` in a
+/// binary must not list a document that a click then refuses. A `cut` read
+/// may end inside a character; that tail is dropped, not judged.
+fn as_text(bytes: &[u8], cut: bool) -> Option<&str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Some(text),
+        Err(e) if cut && e.error_len().is_none() => {
+            Some(std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap_or_default())
+        }
+        Err(_) => None,
+    }
 }
 
 /// [`tags_of`] over text already read.
@@ -739,13 +753,14 @@ pub fn groups(index: &Index) -> Vec<Group<'_>> {
     // Sorting by the path of sort keys puts every child straight after its
     // parent, siblings in the page's order.
     let rank: HashMap<String, usize> = nodes.iter().map(|(k, g)| (k.clone(), g.total)).collect();
-    let path_of = |k: &str| -> Vec<(std::cmp::Reverse<usize>, String)> {
+    let path_of = |k: &str| -> Vec<(std::cmp::Reverse<usize>, String, String)> {
         levels(k)
             .into_iter()
             .map(|end| {
                 let prefix = &k[..end];
                 (
                     std::cmp::Reverse(rank.get(prefix).copied().unwrap_or(0)),
+                    collate(prefix),
                     prefix.to_string(),
                 )
             })
@@ -753,6 +768,43 @@ pub fn groups(index: &Index) -> Vec<Group<'_>> {
     };
     nodes.sort_by_cached_key(|(k, _)| path_of(k));
     nodes.into_iter().map(|(_, g)| g).collect()
+}
+
+/// The alphabetical sort key for a tag: its accented Latin letters read as
+/// their base letters, so `émoji` sorts among the `e`s rather than after
+/// `z` the way code-point order puts it. Keys are lowercase already; ties
+/// (`resume`, `résumé`) are broken by the key itself, so the order never
+/// depends on the scan.
+fn collate(key: &str) -> String {
+    /// U+0100..=U+017F (Latin Extended-A), each as its base letter.
+    const EXTENDED_A: &[u8; 128] = b"AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoOoRrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs";
+    let mut out = String::with_capacity(key.len());
+    for c in key.chars() {
+        let base = match c {
+            'à'..='å' => "a",
+            'æ' => "ae",
+            'ç' => "c",
+            'è'..='ë' => "e",
+            'ì'..='ï' => "i",
+            'ð' => "d",
+            'ñ' => "n",
+            'ò'..='ö' | 'ø' => "o",
+            'ù'..='ü' => "u",
+            'ý' | 'ÿ' => "y",
+            'þ' => "th",
+            'ß' => "ss",
+            '\u{100}'..='\u{17f}' => {
+                out.push(char::from(EXTENDED_A[c as usize - 0x100]).to_ascii_lowercase());
+                continue;
+            }
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        out.push_str(base);
+    }
+    out
 }
 
 /// Where each level of a [`key`] ends: `a/b/c` is `[1, 3, 5]`. A key with an
@@ -1134,6 +1186,24 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_does_not_open_as_text_has_no_tags() {
+        // The reader refuses a file that is not UTF-8, so the tags page must
+        // not list it: a stray `#z` in random bytes once did, and the click
+        // said "cannot open".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bin.md");
+        std::fs::write(&path, b"\xff\xfe junk #zeta \x80 more").unwrap();
+        assert!(tags_of(&path).is_empty());
+        let path = dir.path().join("ok.md");
+        std::fs::write(&path, "caf\u{e9} #zeta").unwrap();
+        assert_eq!(tags_of(&path), ["zeta"]);
+        // A read cut by the size cap may end mid-character; that is not
+        // binary.
+        assert_eq!(as_text(&"é".as_bytes()[..1], true), Some(""));
+        assert_eq!(as_text(&"é".as_bytes()[..1], false), None);
+    }
+
+    #[test]
     fn a_file_is_read_for_its_frontmatter_and_nothing_else() {
         let d = tempfile::tempdir().unwrap();
         let tagged = write(d.path(), "a.md", "---\ntags: [rust]\n---\n\n# A\n");
@@ -1206,6 +1276,24 @@ mod tests {
             tags: tags.iter().map(ToString::to_string).collect(),
             title: None,
         }
+    }
+
+    #[test]
+    fn accented_tags_sort_among_their_letters() {
+        // Code-point order put `émoji` after `under_score`.
+        let index = Index {
+            tagged: vec![
+                doc("a.md", 1, &["under_score"]),
+                doc("b.md", 1, &["émoji"]),
+                doc("c.md", 1, &["zebra"]),
+                doc("d.md", 1, &["emu"]),
+                doc("e.md", 1, &["Łódź"]),
+            ],
+            ..Index::default()
+        };
+        let names: Vec<_> = groups(&index).into_iter().map(|g| g.name).collect();
+        assert_eq!(names, ["émoji", "emu", "Łódź", "under_score", "zebra"]);
+        assert_eq!(collate("ą\u{17f}ž"), "asz");
     }
 
     #[test]
