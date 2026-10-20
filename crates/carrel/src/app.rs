@@ -2848,8 +2848,9 @@ impl App {
     }
 
     /// How the open document's prose is hyphenated: the reader's preference,
-    /// then the document's language. English patterns divide English words
-    /// only, so a document that does not read as English is left alone.
+    /// then the document's language: the one its frontmatter names, or
+    /// English when it names none and reads as English. A language with no
+    /// patterns is left alone rather than divided by another's.
     #[must_use]
     pub fn hyphenation(&self) -> carrel_core::Hyphenation {
         if self.hyphenate {

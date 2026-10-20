@@ -44,6 +44,10 @@ const PIECES: &[&str] = &[
     // indent 0 and the tightened fit invariant degenerates to the old one.
     "\n    ",
     "\n        ",
+    // The author's own division points: zero cells mid-row, a hyphen where
+    // a row ends at one.
+    "\u{AD}",
+    "Donau\u{AD}dampf\u{AD}schiff",
 ];
 
 fn text() -> impl Strategy<Value = String> {
@@ -52,12 +56,31 @@ fn text() -> impl Strategy<Value = String> {
 
 /// Wrap and return `(row_text, row_range, row_indent)` triples.
 fn rows(text: &str, width: u16) -> Vec<(String, std::ops::Range<u32>, u16)> {
+    marked_rows(text, width)
+        .into_iter()
+        .map(|(s, r, indent, _)| (s, r, indent))
+        .collect()
+}
+
+/// [`rows`], with whether each row ends in a continuation mark.
+fn marked_rows(text: &str, width: u16) -> Vec<(String, std::ops::Range<u32>, u16, bool)> {
     let mut out = Vec::new();
     wrap_text(text, 0, BlockIdx(0), width, 0, &cluster_width, |r| {
+        let RowKind::Text { split, hyphen, .. } = r.kind else {
+            unreachable!("wrap emits only text rows")
+        };
+        let row = &text[r.doc.start as usize..r.doc.end as usize];
+        assert!(
+            !hyphen || row.ends_with('\u{AD}'),
+            "plain wrapping divided a word the author did not: {row:?}"
+        );
+        // An author's division reserves its hyphen's cell like a cut does.
+        let split = split || hyphen;
         out.push((
             text[r.doc.start as usize..r.doc.end as usize].to_string(),
             r.doc.clone(),
             r.indent,
+            split,
         ));
     });
     out
@@ -67,9 +90,13 @@ fn rows(text: &str, width: u16) -> Vec<(String, std::ops::Range<u32>, u16)> {
 fn soft_rows(text: &str, width: u16) -> Vec<(String, std::ops::Range<u32>, u16, bool)> {
     let mut out = Vec::new();
     wrap_text_soft(text, 0, BlockIdx(0), width, 0, &cluster_width, true, |r| {
-        let RowKind::Text { hyphen, .. } = r.kind else {
+        let RowKind::Text { hyphen, split, .. } = r.kind else {
             unreachable!("wrap emits only text rows")
         };
+        assert!(!(hyphen && split), "one mark per row");
+        // Both reserve the same one cell, so the invariants below treat a
+        // continuation mark exactly as they treat a hyphen.
+        let hyphen = hyphen || split;
         out.push((
             text[r.doc.start as usize..r.doc.end as usize].to_string(),
             r.doc.clone(),
@@ -78,6 +105,13 @@ fn soft_rows(text: &str, width: u16) -> Vec<(String, std::ops::Range<u32>, u16, 
         ));
     });
     out
+}
+
+/// Clusters that take a cell. A lone wide cluster may overhang a row too
+/// narrow for it; a soft hyphen beside it takes nothing, so it does not make
+/// the overhang a second cluster's fault.
+fn visible_clusters(s: &str) -> usize {
+    s.graphemes(true).filter(|g| cluster_width(g) > 0).count()
 }
 
 /// Doc bytes a match set actually paints at `width`, ignoring whitespace.
@@ -116,17 +150,36 @@ proptest! {
     ///    it is a single cluster that cannot fit at all, which overhangs rather
     ///    than vanishing. The budget is per-row, not per-block, because a
     ///    continuation row hangs under its logical line's own indentation.
+    ///    A row cut inside a run with no break counts its continuation mark:
+    ///    the mark has a cell of its own, or there is no mark.
     #[test]
     fn no_row_exceeds_the_viewport(t in text(), width in 1u16..=200) {
-        for (s, _, indent) in rows(&t, width) {
+        for (s, _, indent, split) in marked_rows(&t, width) {
             let budget = width.saturating_sub(indent).max(1);
-            let fits = display_width(&s) <= budget;
-            let single_cluster = s.graphemes(true).count() <= 1;
+            let cells = display_width(&s) + u16::from(split);
+            let fits = cells <= budget;
+            let single_cluster = visible_clusters(&s) <= 1 && !split;
             prop_assert!(
                 fits || single_cluster,
-                "row {s:?} is {} cells with indent {indent} at width {width}",
-                display_width(&s),
+                "row {s:?} (mark {split}) is {cells} cells with indent {indent} at width {width}",
             );
+        }
+    }
+
+    /// 8. A cut is not a break: the row after a marked row starts at the
+    ///    very byte the marked row ends at — the mark replaces nothing and
+    ///    elides nothing — and the run it cut really had no break there.
+    #[test]
+    fn a_marked_cut_elides_nothing(t in text(), width in 1u16..=200) {
+        let rs = marked_rows(&t, width);
+        for w in rs.windows(2) {
+            if w[0].3 {
+                prop_assert_eq!(w[0].1.end, w[1].1.start, "a marked row left a gap");
+                prop_assert!(
+                    !t[..w[0].1.end as usize].ends_with(char::is_whitespace),
+                    "a mark at a space: {:?}", &w[0].0,
+                );
+            }
         }
     }
 
@@ -190,7 +243,7 @@ proptest! {
             let budget = width.saturating_sub(*indent).max(1);
             let cells = display_width(s) + u16::from(*hyphen);
             prop_assert!(
-                cells <= budget || (s.graphemes(true).count() <= 1 && !hyphen),
+                cells <= budget || (visible_clusters(s) <= 1 && !hyphen),
                 "row {s:?} (hyphen {hyphen}) is {cells} cells in {budget} at width {width}",
             );
             for i in r.start..r.end {

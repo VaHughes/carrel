@@ -79,6 +79,9 @@ fn bench_wrap(c: &mut Criterion) {
     for (name, hyphenation) in [
         ("ascii_1mb_w40_plain", Hyphenation::Off),
         ("ascii_1mb_w40_hyphenated", Hyphenation::English),
+        // The same words through the largest pattern set: German's trie is
+        // seven times English's, and every row end walks it.
+        ("ascii_1mb_w40_hyphenated_de", Hyphenation::German),
     ] {
         g.bench_function(name, |b| {
             b.iter(|| {

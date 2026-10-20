@@ -252,14 +252,27 @@ A narrow column of unhyphenated English is ragged — every long word that misse
 the end of a row leaves a hole the size of itself — so where the text column is
 under 70 cells, carrel divides such a word to fill the row, by the rules TeX
 uses (`docu-` / `mentation`). It is deliberately reluctant: only running prose,
-only a plain lowercase word of six letters or more, never code, a heading, a
+only a plain lowercase word of six letters or more (or a capitalized German
+noun), never code, a heading, a
 table, a name or a path, never the last word of a paragraph, and never three
-rows in a row. It applies English rules to English only — a document that does
-not read as English is left alone, and a `lang:` line in the frontmatter settles
-it either way. **The hyphen is drawn, not written**: it is dimmer than the
-letters beside it, and search, selection and copy see the word whole, because it
-was never in the text. `--plain` and `--render` never divide a word. Turn it off
-in the settings pane (`,`) or with `hyphenate = false`.
+rows in a row. Each language's rules apply to that language only: a `lang:`
+(or `language:`) line in the frontmatter names it — `de`, `fr-CA`, `pt-BR` —
+and carrel has the rules for English, German, French, Spanish, Italian,
+Portuguese, Dutch, Danish, Norwegian and Polish. A document that names any
+other language is left alone rather than divided by the wrong rules, and one
+that names none is divided only if it reads as English. A soft hyphen the
+author wrote (`&shy;`) is honored in any language: invisible mid-row, a hyphen
+where the row breaks at it. **The hyphen is drawn,
+not written**: it is dimmer than the letters beside it, and search, selection
+and copy see the word whole, because it was never in the text. `--plain` and
+`--render` never divide a word. Turn it off in the settings pane (`,`) or with
+`hyphenate = false`.
+
+A word, hash or token longer than the whole row has to be cut somewhere. A word
+in the document's language is divided where its rules allow, with a hyphen;
+anything else is cut where it must and the row ends in a dim `↩`, so a cut
+token does not look like a shorter one. That mark is drawn, not written, too.
+Code is the exception: its continued lines already start with `↳`.
 
 ### Images, highlights, and notes
 
@@ -295,7 +308,7 @@ when you change a setting in the app, and you can edit it by hand. One `key = va
 | Key | Default | What it does |
 |---|---|---|
 | `max_width` | `90` | The line length: prose wraps at this many columns and centres on the page. Tables, code blocks, images and diagrams ignore it and use the full width. Set `0` to turn it off and let prose fill the terminal. |
-| `hyphenate` | `true` | Divide a long word to fill a row where the text column is under 70 cells — English prose only, and the hyphen is never in the text you search or copy. See [Small terminals](#small-terminals). |
+| `hyphenate` | `true` | Divide a long word to fill a row where the text column is under 70 cells — in the language the frontmatter's `lang:` names (ten have rules), or English prose when it names none; the hyphen is never in the text you search or copy. See [Small terminals](#small-terminals). |
 | `sort` | `newest` | The order of the file list: `newest`, `name` (which keeps a folder's documents together) or `read` (what you were reading most recently). `s` steps through them. |
 | `preview` | `true` | Show the head of the highlighted document beside the file list on a window at least 100 columns wide. |
 | `theme` | `terminal`, or `omarchy` where there is one | Palette name — one of the seventeen listed under the example. `terminal` inherits your terminal's own colours; `omarchy` follows the desktop (see below). `T` steps to the next one in the app and saves your choice. |
@@ -494,8 +507,9 @@ The module map, the decisions already made, and the pinned dependencies are in
       a file written elsewhere appears without a restart; and `d` browses from the folder
       you ran `carrel` in, highlight parked on here, so enter alone reads where you are,
       typing filters, and `Tab` goes in
-- [x] Hyphenation at narrow measures — TeX's patterns, below 70 columns, English prose
-      only; the hyphen is paint and never enters the text, so search and copy are unchanged
+- [x] Hyphenation at narrow measures — TeX's patterns, below 70 columns, in ten languages
+      chosen by the frontmatter's `lang:`; the hyphen is paint and never enters the text, so
+      search and copy are unchanged
 - [x] Auto-read mode (`A`) — the view scrolls slowly on its own, a line every 300 ms; any deliberate
       motion takes the wheel back, and the end of the document stops it gently
 - [x] For the reader beside an agent — `--latest`, `FILE:LINE`, what a reload changed,
@@ -521,7 +535,9 @@ one-coordinate-space invariant above, and `./scripts/check-discipline.sh` is the
 
 MIT OR Apache-2.0, at your option.
 
-The hyphenation patterns for American English embedded in `carrel-core`
-(`src/hyphen/hyph-en-us.pat.txt`) are Knuth's and Gerard D.C. Kuiken's, from the
-[hyph-utf8](https://www.hyphenation.org/tex) package, distributed under the permissive notice
-the file carries.
+The hyphenation patterns embedded in `carrel-core` (`src/hyphen/hyph-*.txt`) come from
+the [hyph-utf8](https://www.hyphenation.org/tex) package, each file unmodified apart from a
+header that carries its authors' copyright and licence in full: American English (Knuth's
+and Gerard D.C. Kuiken's) and Norwegian under all-permissive notices; German, French,
+Spanish and Dutch under the MIT license; Italian, Danish and Polish, each offered under a
+choice of licenses, taken under MIT; and Portuguese under the BSD 3-clause license.

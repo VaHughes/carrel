@@ -12,8 +12,9 @@
 //!   invariants are testable against units built by hand.
 //!
 //! Keeping the base unit producer width-free is deliberate: the only
-//! width-dependent step is `split_to_fit`, layered on top, which leaves room to
-//! cache break units across widths later without touching the fitting logic.
+//! width-dependent steps are the cuts the packer asks for (`units::split`,
+//! `units::divide`), which leaves room to cache break units across widths
+//! later without touching the fitting logic.
 //!
 //! # Scope
 //!
@@ -86,8 +87,17 @@ pub type WidthFn = dyn Fn(&str) -> u16 + Send + Sync;
 ///
 /// `.max(1)` matches Helix's `grapheme_width` and keeps an ill-formed cluster
 /// occupying a cell rather than vanishing.
+///
+/// The one exception is the soft hyphen (U+00AD), which is zero cells: it
+/// is invisible where the text does not break at it, and the frontend draws
+/// the hyphen where it does. Counted as a cell, every character after one on
+/// a row was hit-tested a column right of where it is painted, because the
+/// terminal frontend paints it as nothing.
 #[must_use]
 pub fn cluster_width(g: &str) -> u16 {
+    if g == "\u{AD}" {
+        return 0;
+    }
     u16::try_from(UnicodeWidthStr::width(g)).unwrap_or(1).max(1)
 }
 
@@ -115,14 +125,28 @@ pub enum RowKind {
         /// This row continues a logical line that did not fit on one row.
         /// The core states the fact; the frontend decides whether to mark it.
         continued: bool,
-        /// This row ends **inside a word** that was divided to fill it, and
-        /// one cell after its content is reserved for a hyphen.
+        /// This row ends **inside a word** that was divided — to fill it, or
+        /// because the word is longer than a whole row, or at the author's
+        /// own soft hyphen (U+00AD) — and one cell after its content is
+        /// reserved for a hyphen.
         ///
         /// The hyphen is the frontend's to draw and is in no text anywhere:
-        /// `doc` ends at the last letter before the division and the next
-        /// row's `doc` starts at the letter after it, with no gap. Only
-        /// [`wrap_with`] ever sets this.
+        /// `doc` ends at the last letter before the division (or at the soft
+        /// hyphen) and the next row's `doc` starts at the letter after it,
+        /// with no gap. Only [`wrap_with`] divides by a language's patterns;
+        /// plain [`wrap`] sets this only at an author's soft hyphen.
         hyphen: bool,
+        /// This row ends **inside a run with no break opportunity** — a hash,
+        /// a token, a word of no language here — cut because it is wider
+        /// than a whole row (the emergency break), and one cell after its
+        /// content is reserved for a continuation mark.
+        ///
+        /// Like `hyphen`, the mark is the frontend's to draw and is in no
+        /// text: the next row's `doc` starts where this one's ends, with no
+        /// gap. Never set with `hyphen`, and never on a code line, whose
+        /// continuation row carries its own marker ([`CONTINUATION_COLS`]).
+        /// A row too narrow to give up a cell is cut unmarked.
+        split: bool,
     },
     /// A rule, a table border, an image frame — has no content bytes.
     /// Nothing constructs this yet; see the scope note in the module docs.
@@ -268,9 +292,11 @@ pub fn wrap_range<F: FnMut(Row)>(
 /// height-only pass and a `Vec::push` for the row pass, so the two can never
 /// disagree.
 ///
-/// Never divides a word; [`wrap_with`] is the one that may. This is the form
-/// for output that leaves the screen — a hyphen written into a pipe is a
-/// character somebody downstream has to take back out.
+/// Never divides a word by its language's patterns; [`wrap_with`] is the one
+/// that may. This is the form for output that leaves the screen — a hyphen
+/// written into a pipe is a character somebody downstream has to take back
+/// out. (A row may still end at an author's own soft hyphen, which is in the
+/// text already.)
 pub fn wrap<F: FnMut(Row)>(
     doc: &Document,
     block: BlockIdx,
@@ -283,12 +309,14 @@ pub fn wrap<F: FnMut(Row)>(
 
 /// The style runs of a block whose words may be divided, or `None` when they
 /// may not: hyphenation is off, or the block is not running prose.
-fn soft_breaks(doc: &Document, block: BlockIdx, hyphenation: Hyphenation) -> Option<&[Inline]> {
+fn soft_breaks(
+    doc: &Document,
+    block: BlockIdx,
+    hyphenation: Hyphenation,
+) -> Option<(Hyphenation, &[Inline])> {
     let node = doc.node_for_block(block);
-    match hyphenation {
-        Hyphenation::English if divisible_kind(&node.kind) => Some(&node.inlines),
-        Hyphenation::English | Hyphenation::Off => None,
-    }
+    (hyphenation != Hyphenation::Off && divisible_kind(&node.kind))
+        .then_some((hyphenation, &node.inlines[..]))
 }
 
 /// [`wrap`], dividing words to fill narrow rows where `hyphenation` allows.
@@ -367,9 +395,10 @@ struct Slice<'a> {
     /// `Some((value_col, format))` for a frontmatter card: a key line's
     /// continuation rows hang under its value column. See [`meta_fit`].
     meta: Option<(u16, crate::document::MetaFormat)>,
-    /// `Some` when this slice's words may be divided: the block's style
-    /// runs, which say which of them may not. See [`soft_breaks`].
-    soft: Option<&'a [Inline]>,
+    /// `Some` when this slice's words may be divided: their language, and
+    /// the block's style runs, which say which of them may not. See
+    /// [`soft_breaks`].
+    soft: Option<(Hyphenation, &'a [Inline])>,
 }
 
 /// The `value_col` and dialect of a frontmatter card, or `None` for every
@@ -532,29 +561,35 @@ fn wrap_slice<F: FnMut(Row)>(
             Some(meta) => meta_fit(line, meta, at, w),
             None => LineFit::new(at.width, at.indent, leading_width(line, w), reserve),
         };
-        // Split against the NARROWER budget so a unit can never overflow the
-        // row it lands on. Only tokens wider than `cont_avail` are affected,
-        // and those break a few cells earlier on the first row than strictly
-        // necessary — deterministic, and pathological tokens only.
-        let fitted = units::fitted(units::units(line, w), line, fit.cont_avail, w);
         let line_base = at.doc_base + offset as u32;
         // Judged per line against the space a row really has, so a deeply
         // nested item in a wide window hyphenates and a full measure does not.
-        let soft = at.soft.filter(|_| fit.cont_avail < NARROW_BELOW);
-        let mut divide = |u: &units::Unit, room: u16| {
-            let inlines = soft?;
-            units::divide(u, line, room, w, |r| {
-                fixed(inlines, &(line_base + r.start..line_base + r.end))
-            })
+        let fixed_in = |inlines: &[Inline], r: Range<u32>| {
+            fixed(inlines, &(line_base + r.start..line_base + r.end))
         };
+        let soft = at
+            .soft
+            .filter(|_| fit.cont_avail < NARROW_BELOW)
+            .map(|(language, inlines)| (language, move |r| fixed_in(inlines, r)));
+        let soft = soft.as_ref().map(|(language, fixed)| units::Soft {
+            language: *language,
+            fixed,
+        });
+        let mut divide =
+            |u: &units::Unit, room: u16| units::divide(u, line, room, w, soft.as_ref()?);
+        // A code line's continuation row carries `↳`; marking the row it
+        // leaves too would say the same thing twice.
+        let mut split =
+            |u: &units::Unit, avail: u16| units::split(u, line, avail, w, !at.code, soft.as_ref());
         rows = rows.saturating_add(pack::pack(
-            fitted,
+            units::units(line, w),
             line_base,
             at.block,
             &fit,
             first,
             sink,
             &mut divide,
+            &mut split,
         ));
         offset += line.len();
     }
@@ -569,6 +604,7 @@ fn wrap_slice<F: FnMut(Row)>(
             &fit,
             first,
             sink,
+            &mut |_, _| None,
             &mut |_, _| None,
         );
     }
@@ -615,7 +651,7 @@ pub(crate) fn wrap_text_soft<F: FnMut(Row)>(
             indent,
             code: false,
             meta: None,
-            soft: soft.then_some(&[][..]),
+            soft: soft.then_some((Hyphenation::English, &[][..])),
         };
         rows = rows.saturating_add(wrap_slice(
             &text[*start as usize..end],
@@ -970,6 +1006,200 @@ mod tests {
         }
     }
 
+    /// Stands in for the frontend's continuation mark on a row the core cut
+    /// inside a run with no break in it.
+    const MARK: char = '↩';
+
+    /// Every row of `block` at `width`, as text with [`SOFT`] or [`MARK`]
+    /// where the frontend paints one, each with its doc range.
+    fn marked(
+        doc: &Document,
+        block: u32,
+        width: u16,
+        hyphenation: Hyphenation,
+    ) -> Vec<(String, Range<u32>)> {
+        let mut out = Vec::new();
+        wrap_with(
+            doc,
+            BlockIdx(block),
+            width,
+            &cluster_width,
+            hyphenation,
+            |r| {
+                let mut s = doc.text[r.doc.start as usize..r.doc.end as usize].to_string();
+                if let RowKind::Text { hyphen, split, .. } = r.kind {
+                    assert!(!(hyphen && split), "one mark per row: {s:?}");
+                    if hyphen {
+                        s.push(SOFT);
+                    }
+                    if split {
+                        s.push(MARK);
+                    }
+                }
+                out.push((s, r.doc));
+            },
+        );
+        out
+    }
+
+    /// A run UAX #14 offers no break inside: letters and digits, like the
+    /// hashes, tokens and long URL segments a reader actually meets. (A URL
+    /// with short segments needs no cut — it breaks after each `/`.)
+    const HASH: &str = "3f2a9c4e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39";
+
+    #[test]
+    fn a_run_wider_than_the_row_is_cut_with_a_mark_that_fits() {
+        let doc = Document::parse(&format!("commit {HASH} landed"));
+        let rows = marked(&doc, 0, 16, Hyphenation::Off);
+        let cut = rows.iter().filter(|(s, _)| s.ends_with(MARK)).count();
+        assert!(cut >= 2, "the fixture must be cut: {rows:?}");
+        for (s, _) in &rows {
+            assert!(display_width(s) <= 16, "{s:?} does not fit with its mark");
+            assert!(!s.ends_with(SOFT), "a hash is never hyphenated: {s:?}");
+        }
+        // The mark is in no text: the cut rows meet with no gap, and the
+        // pieces put back together are the run as written.
+        for w in rows.windows(2) {
+            if w[0].0.ends_with(MARK) {
+                assert_eq!(w[0].1.end, w[1].1.start, "a cut is not a gap");
+            }
+        }
+        let start = doc.text.find(HASH).unwrap() as u32;
+        let end = start + HASH.len() as u32;
+        let pieces: String = rows
+            .iter()
+            .filter(|(_, r)| r.start < end && r.end > start)
+            .map(|(_, r)| &doc.text[r.start.max(start) as usize..r.end.min(end) as usize])
+            .collect();
+        assert_eq!(pieces, HASH);
+        // Its last piece is not marked: the run ends there.
+        let last = rows.iter().find(|(_, r)| r.end >= end).unwrap();
+        assert!(!last.0.ends_with(MARK), "{last:?}");
+    }
+
+    #[test]
+    fn a_cut_code_line_is_left_to_its_own_continuation_marker() {
+        let doc = Document::parse(&format!("```\nlet id = \"{HASH}\";\n```\n"));
+        let rows = marked(&doc, 0, 20, Hyphenation::Off);
+        assert!(rows.len() >= 3, "the fixture must be cut: {rows:?}");
+        assert!(
+            rows.iter().all(|(s, _)| !s.ends_with(MARK)),
+            "the `↳` on the next row already says it: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_too_narrow_to_give_up_a_cell_is_cut_unmarked() {
+        let doc = Document::parse("abcdef");
+        let rows = marked(&doc, 0, 1, Hyphenation::Off);
+        let texts: Vec<&str> = rows.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(texts, ["a", "b", "c", "d", "e", "f"]);
+        // At two cells there is room: one letter and its mark.
+        let rows = marked(&doc, 0, 2, Hyphenation::Off);
+        assert_eq!(rows[0].0, format!("a{MARK}"));
+    }
+
+    const COMPOUND: &str = "Donaudampfschifffahrtsgesellschaft";
+
+    #[test]
+    fn a_word_longer_than_the_row_is_divided_where_its_language_allows() {
+        let src = format!("---\nlang: de\n---\n\nDie {COMPOUND} fährt.");
+        let doc = Document::parse(&src);
+        assert_eq!(crate::hyphen::hyphenation_for(&doc), Hyphenation::German);
+        let rows = marked(&doc, 1, 16, Hyphenation::German);
+        let start = doc.text.find(COMPOUND).unwrap() as u32;
+        let points: Vec<u32> = crate::hyphen::divisions(Hyphenation::German, COMPOUND)
+            .map(|(_, b)| start + b as u32)
+            .collect();
+        let inside: Vec<_> = rows
+            .iter()
+            .filter(|(_, r)| r.end > start && r.end < start + COMPOUND.len() as u32)
+            .collect();
+        assert!(inside.len() >= 2, "the word must span rows: {rows:?}");
+        for (s, r) in inside {
+            assert!(s.ends_with(SOFT), "cut, not divided: {s:?}");
+            assert!(points.contains(&r.end), "{s:?} is not a division TeX makes");
+            assert!(display_width(s) <= 16, "{s:?}");
+        }
+        // The control: with no language, the same word is cut and marked.
+        let rows = marked(&doc, 1, 16, Hyphenation::Off);
+        assert!(rows.iter().any(|(s, _)| s.ends_with(MARK)), "{rows:?}");
+        assert!(rows.iter().all(|(s, _)| !s.ends_with(SOFT)), "{rows:?}");
+    }
+
+    #[test]
+    fn a_compound_the_author_divided_breaks_only_where_the_author_said() {
+        // `U+00AD` is the author's own division point. UAX #14 breaks there,
+        // the row shows a hyphen in a cell kept for it, and the patterns must
+        // not divide the pieces again as if they were words.
+        let shy = '\u{AD}';
+        let src = "---\nlang: de\n---\n\nAuf der Donau\u{AD}dampf\u{AD}schiff\u{AD}fahrts\u{AD}gesellschaft fährt man.";
+        let doc = Document::parse(src);
+        let from = doc.text.find("Donau").unwrap() as u32;
+        let to = doc.text.find(" fährt").unwrap() as u32;
+        let mut shown = 0;
+        for width in 8..40 {
+            for (s, r) in marked(&doc, 1, width, Hyphenation::German) {
+                assert!(display_width(&s) <= width, "{s:?} at {width}");
+                if s.ends_with(SOFT) && r.end > from && r.end < to {
+                    assert!(
+                        s.trim_end_matches(SOFT).ends_with(shy),
+                        "divided again inside the authored compound at {width}: {s:?}"
+                    );
+                    shown += 1;
+                }
+                // And a row that ends at one always shows its hyphen: the
+                // fit kept a cell for it.
+                assert!(
+                    !(s.ends_with(shy) && r.end < to),
+                    "an author's division with no hyphen at {width}: {s:?}"
+                );
+            }
+        }
+        assert!(
+            shown > 10,
+            "the control: the author's points are used ({shown})"
+        );
+    }
+
+    #[test]
+    fn a_soft_hyphen_takes_no_cell_where_the_text_does_not_break() {
+        assert_eq!(cluster_width("\u{AD}"), 0);
+        // Hit-testing agrees with paint: the `d` after it is in the column
+        // right after the `u`, as the terminal draws it.
+        let row = "Donau\u{AD}dampf";
+        let d = row.find('d').unwrap() as u32;
+        assert_eq!(cols_for_doc_range(row, 0, 0, &(d..d + 1)), (5, 6));
+        assert_eq!(cluster_at_col(row, 0, 0, 5), (d, d + 1));
+    }
+
+    #[test]
+    fn a_declared_language_reaches_only_running_prose() {
+        // `lang: en` on a page that is mostly code: the code is still code.
+        let src = "---\nlang: en\n---\n\n```\n// the documentation reader becomes uncomfortably international\n```\n\n\
+            Run `configurationdocumentation` and international documentation follows.\n";
+        let doc = Document::parse(src);
+        assert_eq!(crate::hyphen::hyphenation_for(&doc), Hyphenation::English);
+        let as_prose =
+            Document::parse("the documentation reader becomes uncomfortably international");
+        let mut control = false;
+        for width in 14..40 {
+            let code = marked(&doc, 1, width, Hyphenation::English);
+            assert!(code.iter().all(|(s, _)| !s.ends_with(SOFT)), "{code:?}");
+            control |= marked(&as_prose, 0, width, Hyphenation::English)
+                .iter()
+                .any(|(s, _)| s.ends_with(SOFT));
+        }
+        assert!(control, "the same words as prose do divide");
+        let prose = marked(&doc, 2, 20, Hyphenation::English);
+        assert!(
+            prose
+                .iter()
+                .all(|(s, _)| !s.contains("configurat") || !s.ends_with(SOFT)),
+            "inline code was divided: {prose:?}"
+        );
+    }
+
     #[test]
     fn zwj_emoji_is_measured_as_a_cluster_not_a_sum_of_codepoints() {
         let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
@@ -1092,6 +1322,7 @@ mod tests {
                 first_in_block: true,
                 continued: false,
                 hyphen: false,
+                split: false,
             },
         );
         assert!(
@@ -1306,6 +1537,7 @@ mod tests {
                 first_in_block: false,
                 continued: false,
                 hyphen: false,
+                split: false,
             }
         ));
         assert!(matches!(

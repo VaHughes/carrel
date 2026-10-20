@@ -785,13 +785,27 @@ steps to the next and saves the choice.
 .TP
 .B hyphenate
 Divide a long word that misses the end of a row, to fill the row, where the
-text column is narrower than 70 cells. Default true. Only running prose in a
-document that reads as English is divided \(em never a heading, code, a table,
-a name with a capital or a digit in it \(em and a
+text column is narrower than 70 cells. Default true. Only running prose is
+divided \(em never a heading, code, a table, a name with a capital (a German
+noun aside) or a digit in it \(em and only by the rules of its own language. A
 .B lang:
-line in the frontmatter decides the language outright, in either direction.
-The hyphen is drawn, not written: searching, selecting and copying see the
-word whole, and
+or
+.B language:
+line in the frontmatter names the language
+.RB ( de ,
+.BR fr\-CA ,
+.BR pt\-BR );
+English, German, French, Spanish, Italian, Portuguese, Dutch, Danish,
+Norwegian and Polish have rules. A document that names any other language is
+not divided at all, and one that names none is divided only if it reads as
+English. A soft hyphen the author wrote is honored in any language. A word
+longer than the whole row is divided by the same rules; any
+other run too long for the row is cut and its row ends in a dim
+.BR \[u21A9] ,
+except in code, whose continued lines start with
+.BR \[u21B3] .
+The hyphen and the mark are drawn, not written: searching, selecting and
+copying see the word whole, and
 .B \-\-plain
 and
 .B \-\-render

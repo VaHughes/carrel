@@ -160,6 +160,11 @@ fn every_cell_of_the_card_is_the_byte_a_click_on_it_resolves_to() {
                     continue;
                 }
                 let byte = &a.doc.text[start as usize..end as usize];
+                // The mark on a row cut inside a long key is decoration, in
+                // no text — the one painted cell with no byte behind it.
+                if painted == carrel::render::SPLIT_MARK && byte.is_empty() {
+                    continue;
+                }
                 assert_eq!(
                     byte,
                     painted,
@@ -284,7 +289,11 @@ fn only_the_key_is_bold() {
             })
             .filter(|s| !s.trim().is_empty())
             .collect();
-        let joined = bold.join("|").replace("tha|n", "than");
+        let mut joined = bold.join("|");
+        let key = "a_key_wider_than_the_cap";
+        for i in 1..key.len() {
+            joined = joined.replace(&format!("{}|{}", &key[..i], &key[i..]), key);
+        }
         assert!(
             joined.starts_with("title|tags|a_key_wider_than_the_cap|summary|url|aliases|"),
             "cols={cols}: {joined:?}"

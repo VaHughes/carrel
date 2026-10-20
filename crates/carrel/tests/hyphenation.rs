@@ -180,10 +180,106 @@ fn a_declared_language_decides_in_both_directions() {
     // ...and with it, the reader has said what the language is.
     let app = app_at(36, 60, &format!("---\nlang: en\n---\n\n{bare}"));
     assert!(hyphens(&app, 1) > 0);
-    // ...and English prose that says it is German is left alone.
+    // ...and English prose that says it is in a language with no patterns
+    // here is left alone, rather than divided as the English it looks like.
     assert!(hyphens(&app_at(36, 60, PROSE), 0) > 0, "the control");
-    let app = app_at(36, 60, &format!("---\nlang: de\n---\n\n{PROSE}"));
-    assert_eq!(hyphens(&app, 1), 0);
+    for lang in ["sv", "xx"] {
+        let app = app_at(36, 60, &format!("---\nlang: {lang}\n---\n\n{PROSE}"));
+        assert_eq!(hyphens(&app, 1), 0, "lang: {lang}");
+    }
+}
+
+/// A run UAX #14 will not break: wider than any row these tests use.
+const HASH: &str = "3f2a9c4e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39";
+
+#[test]
+fn a_run_cut_for_width_ends_each_row_in_a_dim_mark_that_is_not_text() {
+    let (cols, lines) = (20, 30);
+    let mut app = app_at(cols, lines, &format!("The commit {HASH} landed today."));
+    let mut rows = Vec::new();
+    app.layout.rows_for(&app.doc, BlockIdx(0), &mut rows);
+    let cut: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::Text { split: true, .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(cut.len() >= 2, "the fixture must be cut: {rows:?}");
+
+    let plain = frame(&app, cols, lines);
+    let start = app.doc.text.find(HASH).unwrap() as u32;
+    app.selection = Some(start..start + HASH.len() as u32);
+    let buf = frame(&app, cols, lines);
+    let x = App::text_x(cols, app.max_width, 0);
+    let top = app.text_y();
+    for (i, row) in rows.iter().enumerate() {
+        let text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
+        let end = x + row.indent + display_width(text);
+        let y = top + u16::try_from(i).unwrap();
+        let after = &buf[(end, y)];
+        if cut.contains(&i) {
+            assert_eq!(
+                after.symbol(),
+                carrel::render::SPLIT_MARK,
+                "row {i} {text:?}"
+            );
+            assert!(
+                end < x + app.text_w(),
+                "row {i}: the mark is outside the column"
+            );
+            assert_ne!(
+                plain[(end, y)].style(),
+                plain[(end - 1, y)].style(),
+                "row {i}: the mark is styled like the text before it"
+            );
+            assert!(
+                !after.style().add_modifier.contains(Modifier::REVERSED),
+                "row {i}: the mark is selected as if it were text"
+            );
+        } else {
+            assert_ne!(
+                after.symbol(),
+                carrel::render::SPLIT_MARK,
+                "row {i} {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_german_page_that_says_so_is_divided_by_german_patterns() {
+    let hyphenated = |app: &App, block: u32| {
+        let mut rows = Vec::new();
+        app.layout.rows_for(&app.doc, BlockIdx(block), &mut rows);
+        rows.iter()
+            .filter(|r| matches!(r.kind, RowKind::Text { hyphen: true, .. }))
+            .map(|r| r.doc.end)
+            .collect::<Vec<_>>()
+    };
+    // Undeclared, German is never guessed at.
+    let app = app_at(36, 60, GERMAN);
+    assert_eq!(app.hyphenation(), carrel_core::Hyphenation::Off);
+    assert!(hyphenated(&app, 0).is_empty());
+    // Declared, it is divided — capitalized nouns included — and only
+    // where the German patterns allow.
+    let app = app_at(36, 60, &format!("---\nlang: de-DE\n---\n\n{GERMAN}"));
+    assert_eq!(app.hyphenation(), carrel_core::Hyphenation::German);
+    let ends = hyphenated(&app, 1);
+    assert!(!ends.is_empty(), "the fixture must divide something");
+    for end in ends {
+        let text = &app.doc.text;
+        let from = text[..end as usize].rfind(' ').map_or(0, |i| i + 1);
+        let to = text[end as usize..]
+            .find([' ', ',', '.'])
+            .map_or(text.len(), |i| end as usize + i);
+        let word = &text[from..to];
+        assert!(
+            carrel_core::hyphen::division_points(carrel_core::Hyphenation::German, word)
+                .contains(&(end as usize - from)),
+            "{word:?} divided at {} is not a German division",
+            end as usize - from
+        );
+    }
 }
 
 /// The round trip `tests/measure.rs` guards, on rows that end in a hyphen.
