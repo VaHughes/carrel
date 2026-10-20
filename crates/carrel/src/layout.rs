@@ -423,6 +423,7 @@ fn column_rows(doc: &Document, b: BlockIdx, mut sink: impl FnMut(Row)) -> u32 {
                 first_in_block: i == 0,
                 continued: false,
                 hyphen: false,
+                split: false,
             },
         });
     }
@@ -603,6 +604,7 @@ fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F
                         first_in_block: false,
                         continued: false,
                         hyphen: false,
+                        split: false,
                     },
                 });
                 n += 1;

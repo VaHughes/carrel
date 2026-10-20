@@ -58,6 +58,11 @@ const Z_OVERLAY: u8 = 3;
 /// question "was that click inside the open menu" — asked of the painter,
 /// never re-derived from the geometry.
 pub const Z_MENU: u8 = 4;
+
+/// What ends a row the core cut inside a run with no break in it
+/// (`RowKind::Text::split`). The curved arrow is the conventional "this
+/// line continues" mark; it is one cell everywhere (East Asian Width N).
+pub const SPLIT_MARK: &str = "↩";
 use crate::app::{App, Mode, Pane, Screen};
 
 /// A visible link span, for the OSC 8 post-draw pass in `main.rs`.
@@ -1972,6 +1977,15 @@ fn paint_row(
             && x < area.right()
         {
             buf.set_stringn(x, y, "-", 1, theme::dim());
+        }
+        // 3''. A run with no break in it — a hash, a token — cut because it
+        //      is wider than the row. Not a hyphen: a hyphen in a URL is a
+        //      character somebody types back in. Decoration in the cell the
+        //      core reserved, like the hyphen, so it is in no text either.
+        if let RowKind::Text { split: true, .. } = row.kind
+            && x < area.right()
+        {
+            buf.set_stringn(x, y, SPLIT_MARK, 1, theme::dim());
         }
     }
 
