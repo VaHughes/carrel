@@ -1062,6 +1062,14 @@ pub fn meta_value() -> Style {
     tinted(Style::default().fg(active().dim))
 }
 
+/// An inline `#tag`: the link ink without the underline. It is a button
+/// like a link, and it is not one — a click opens the tags page, not a
+/// destination — so it shares the color and not the mark.
+#[must_use]
+pub fn tag() -> Style {
+    tinted(Style::default().fg(active().link))
+}
+
 /// The selected row in a list.
 #[must_use]
 pub fn selected() -> Style {

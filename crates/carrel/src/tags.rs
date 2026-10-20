@@ -1,4 +1,4 @@
-//! Frontmatter tags across the folder, read as a document.
+//! Tags across the folder, read as a document.
 //!
 //! `/rust` on the home screen already finds every document tagged `rust` —
 //! retrieval works with a general tool. What it cannot answer is *which tags
@@ -10,9 +10,10 @@
 //! machinery. It is `grep::render_results`' idea again, and `carrel_core::diff`'s.
 //!
 //! Same streaming shape as `grep.rs` and `scan.rs`: a background thread walks
-//! the already-scanned entry list and reads the HEAD of each file, so the
-//! filesystem never blocks a frame. Most files do not open with a frontmatter
-//! fence and cost one short read.
+//! the already-scanned entry list and reads each file (to [`BODY_MAX`]), so
+//! the filesystem never blocks a frame. A file is parsed only when a byte
+//! scan cannot rule out an inline tag ([`may_hold_inline_tag`]); a note whose
+//! only hashes open headings costs the read and nothing more.
 //!
 //! # What counts as a tag
 //!
@@ -21,10 +22,18 @@
 //! three spellings people actually write are all read: a flow list
 //! (`[a, b]`), a block list (`- a`), and a bare scalar (`a, b` or `a b`).
 //!
-//! **Inline `#tags` in the body are not read.** A `#word` in markdown is also
-//! a heading typed without its space, an issue number, a hex color, a URL
-//! fragment and a C preprocessor line; telling those apart needs the whole
-//! file parsed, for every file, to find tags the author did not declare.
+//! And an inline `#tag` in the body, by the reader's own parse
+//! ([`carrel_core::Document::tags`]) — so the page lists exactly the tags the
+//! reader paints as buttons. That parse is what tells a tag from the other
+//! things a `#word` is in markdown: a heading needs a space, `#42` has no
+//! letter, `C#` and a URL's `/#fragment` do not follow whitespace, a hex
+//! color is refused by shape, and code is never read.
+//!
+//! # Nesting
+//!
+//! `project/alpha` is `alpha` inside `project`, Obsidian's reading. The page
+//! makes it a section inside its parent's, and a parent's count is every
+//! document tagged with it or with anything under it ([`groups`]).
 //!
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
@@ -37,14 +46,16 @@ use carrel_core::MetaFormat;
 
 use crate::scan::Entry;
 
-/// The first read. A frontmatter block almost always ends inside it, and a
-/// file that does not open with a fence is dismissed from its first bytes.
-/// A longer block is read on to `scan::FRONTMATTER_MAX`.
+/// The buffer a file's read starts with; most notes fit in it.
 const HEAD_BYTES: usize = 8 * 1024;
+/// How much of a file is read for its tags. Frontmatter is far inside it,
+/// and a note longer than this is a dump, not a note: its tags past here are
+/// not read, and a hostile file costs one bounded parse.
+const BODY_MAX: u64 = 1024 * 1024;
 /// Tags kept per document. A list longer than this is data, not labeling.
 const MAX_TAGS_PER_FILE: usize = 32;
 /// Characters kept per tag.
-const MAX_TAG_CHARS: usize = 64;
+const MAX_TAG_CHARS: usize = carrel_core::document::MAX_TAG_CHARS;
 /// Tagged documents collected before the scan stops. The document this
 /// becomes says so when the cap is what ended it.
 pub const MAX_TAGGED: usize = 5000;
@@ -122,29 +133,11 @@ pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
             // The walk is the home screen's own, on this thread.
             Source::Walk(root) => crate::scan::walk_blocking(&root).0,
         };
-        let (mut read, mut found, mut capped) = (0usize, 0usize, false);
-        for e in entries {
-            if found >= MAX_TAGGED {
-                capped = true;
-                break;
-            }
-            read += 1;
-            let tags = tags_of(&e.path);
-            if tags.is_empty() {
-                continue;
-            }
-            let title = titles.then(|| crate::scan::title_of(&e.path)).flatten();
-            let t = Tagged {
-                path: e.path,
-                mtime: e.mtime,
-                tags,
-                title,
-            };
-            if tx.send(Msg::Found(t, generation)).is_err() {
-                return; // receiver gone: the reader moved on
-            }
-            found += 1;
-        }
+        let Some((read, capped)) = read_all(&entries, titles, |t| {
+            tx.send(Msg::Found(t, generation)).is_ok()
+        }) else {
+            return; // receiver gone: the reader moved on
+        };
         let _ = tx.send(Msg::Done {
             read,
             capped,
@@ -154,17 +147,153 @@ pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
     rx
 }
 
-/// The tags a file's frontmatter declares. Empty when it has no frontmatter,
-/// no tags, or cannot be read.
+/// Read every entry's tags, handing each tagged document to `found` in the
+/// entries' own order, and return `(read, capped)` — or `None` once `found`
+/// says no one is listening.
+///
+/// Spread over a few threads, because an inline tag can only be told from
+/// the other things a `#word` is by parsing the file, and parsing is the
+/// cost: measured over a 25,000-document tree, the files the byte scan
+/// could not rule out took seconds to parse on one core. The order the
+/// documents arrive in is kept, so the result is the one a single thread
+/// would give, and [`MAX_TAGGED`] stops the read at the same document.
+fn read_all(
+    entries: &[Entry],
+    titles: bool,
+    mut found: impl FnMut(Tagged) -> bool,
+) -> Option<(usize, bool)> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .clamp(1, 8);
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let (done_tx, done_rx) = mpsc::channel::<(usize, Option<Tagged>)>();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let done_tx = done_tx.clone();
+            let (next, stop) = (&next, &stop);
+            scope.spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(e) = entries.get(i) else { break };
+                    let tags = tags_of(&e.path);
+                    let tagged = (!tags.is_empty()).then(|| Tagged {
+                        path: e.path.clone(),
+                        mtime: e.mtime,
+                        tags,
+                        title: titles.then(|| crate::scan::title_of(&e.path)).flatten(),
+                    });
+                    if done_tx.send((i, tagged)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(done_tx);
+        // Results arrive in whatever order the workers finish; hold the
+        // early ones until the documents before them are in.
+        let mut waiting: HashMap<usize, Option<Tagged>> = HashMap::new();
+        let (mut read, mut count, mut capped) = (0usize, 0usize, false);
+        let mut alive = true;
+        'outer: for (i, tagged) in &done_rx {
+            waiting.insert(i, tagged);
+            while let Some(tagged) = waiting.remove(&read) {
+                if count >= MAX_TAGGED {
+                    capped = true;
+                    break 'outer;
+                }
+                read += 1;
+                if let Some(t) = tagged {
+                    if !found(t) {
+                        alive = false;
+                        break 'outer;
+                    }
+                    count += 1;
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        alive.then_some((read, capped))
+    })
+}
+
+/// The tags a file carries: its frontmatter's, then the inline `#tags` in
+/// its body. Empty when it has neither, is not a regular file, or cannot be
+/// read.
 ///
 /// Frontmatter is found by the reader's own rule
-/// ([`carrel_core::frontmatter`]), through [`crate::scan::read_front`], so
-/// this can never index tags from a block the reader shows as a rule and a
-/// paragraph, nor read a block in the wrong dialect.
+/// ([`carrel_core::frontmatter`]), so this can never index tags from a block
+/// the reader shows as a rule and a paragraph, nor read a block in the wrong
+/// dialect. Inline tags are found by the reader's own parse
+/// ([`carrel_core::Document::tags`]) — the same buttons the reader paints —
+/// but only for a file [`may_hold_inline_tag`] cannot rule out, which is
+/// most of what keeps the scan near the cost of reading the files at all.
 #[must_use]
 pub fn tags_of(path: &Path) -> Vec<String> {
-    crate::scan::read_front(path, HEAD_BYTES)
-        .map_or_else(Vec::new, |(head, fm)| parse_tags(&head[fm.body], fm.format))
+    use std::io::Read as _;
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Vec::new(); // a FIFO named `notes.md` blocks its reader
+    }
+    let Ok(f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let mut buf = Vec::with_capacity(HEAD_BYTES);
+    if f.take(BODY_MAX).read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    tags_in(&String::from_utf8_lossy(&buf))
+}
+
+/// [`tags_of`] over text already read.
+#[must_use]
+pub fn tags_in(text: &str) -> Vec<String> {
+    let mut out = carrel_core::frontmatter(text)
+        .map_or_else(Vec::new, |fm| parse_tags(&text[fm.body], fm.format));
+    if may_hold_inline_tag(text.as_bytes()) {
+        let doc = carrel_core::Document::parse(text);
+        for r in &doc.tags {
+            push_tag(&mut out, doc.tag_name(r));
+        }
+    }
+    out
+}
+
+/// Could `bytes` hold an inline tag? `false` is certain; `true` means parse
+/// and see.
+///
+/// Judged on raw bytes, so it may only refuse what no markup can turn into a
+/// tag:
+///
+/// - **After the `#`**, whitespace, another `#`, or punctuation the display
+///   text keeps as it is (`NEVER_NAMED`), since no name starts with any of
+///   them. So headings (`# Title`, `## Part`), a Rust attribute
+///   (`#[derive]`) and a word-ending `F#,` are dismissed. Markup that
+///   vanishes is not refused: `#^x^` is `#x` once the superscript's
+///   delimiters are gone, and `#![x](u)` is `#x`, an image's alt text.
+/// - **Before it**, an ASCII letter or digit: no markup is one, so the
+///   display text has it too, glued to the `#` — `C#x`, `page#frag`. Any
+///   other byte may be markup the display text drops (`**#bold**`,
+///   `|#cell|`, `>#quote`), and is left to the parse.
+#[must_use]
+pub fn may_hold_inline_tag(bytes: &[u8]) -> bool {
+    /// Bytes that, straight after a `#`, the display text keeps as they are
+    /// — so the `#` is followed by something no name starts with. Markup
+    /// that vanishes (`*`, `_`, `^`, `~`, `<`, `\`, `&`) is not here.
+    const NEVER_NAMED: &[u8] = b"#[](){}.,;:?\"')/=+@%|$`";
+    let mut from = 0usize;
+    while let Some(i) = bytes[from..].iter().position(|&b| b == b'#') {
+        let at = from + i;
+        let glued = at > 0 && bytes[at - 1].is_ascii_alphanumeric();
+        let named = bytes
+            .get(at + 1)
+            .is_some_and(|&b| !(b.is_ascii_whitespace() || NEVER_NAMED.contains(&b)));
+        if named && !glued {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
 }
 
 /// The tags in a frontmatter body.
@@ -441,47 +570,137 @@ fn same_tag(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
+/// The key a tag is grouped by: lowercase, and nested at its `/`s with the
+/// empty and blank segments dropped, so `Project/Alpha`, `project//alpha`
+/// and `project / alpha` are one tag. A tag that is nothing but slashes
+/// keeps itself.
+#[must_use]
+pub fn key(tag: &str) -> String {
+    let lower = tag.to_lowercase();
+    let joined = lower
+        .split('/')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if joined.is_empty() { lower } else { joined }
+}
+
 /// One tag and the documents that carry it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group<'a> {
-    /// The spelling shown: the one used by the most documents, and among
-    /// equals the first alphabetically, so the choice never depends on the
-    /// order the scan happened to find them in.
+    /// The spelling shown, the whole path (`project/alpha`): the one used by
+    /// the most documents, and among equals the first alphabetically, so the
+    /// choice never depends on the order the scan happened to find them in.
     pub name: String,
-    /// Newest first.
+    /// How deep it nests: 0 for `project`, 1 for `project/alpha`.
+    pub depth: usize,
+    /// The documents tagged with exactly this tag. Newest first.
     pub docs: Vec<&'a Tagged>,
+    /// The documents tagged with it or with anything nested under it, each
+    /// counted once — the number its heading shows.
+    pub total: usize,
 }
 
-/// The index grouped by tag: most-used first, then alphabetically.
+/// The index grouped by tag, as a tree flattened in reading order: each tag
+/// followed by the tags nested under it. Siblings are most-used first (by
+/// [`Group::total`]), then alphabetical.
+///
+/// A nested tag makes its parents exist: `project/alpha` alone still gives a
+/// `project` group, with no documents of its own and alpha's in its total.
 #[must_use]
 pub fn groups(index: &Index) -> Vec<Group<'_>> {
-    let mut by_key: HashMap<String, (HashMap<&str, usize>, Vec<&Tagged>)> = HashMap::new();
+    #[derive(Default)]
+    struct Slot<'a> {
+        spellings: HashMap<String, usize>,
+        docs: Vec<&'a Tagged>,
+        under: Vec<&'a Tagged>,
+    }
+    let mut by_key: HashMap<String, Slot<'_>> = HashMap::new();
     for doc in &index.tagged {
         for tag in &doc.tags {
-            let slot = by_key.entry(tag.to_lowercase()).or_default();
-            *slot.0.entry(tag.as_str()).or_default() += 1;
-            slot.1.push(doc);
+            let full = key(tag);
+            // The spelling of each level, read from this tag as written.
+            let written: Vec<&str> = tag
+                .split('/')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let ends = levels(&full);
+            for (i, &end) in ends.iter().enumerate() {
+                let k = &full[..end];
+                let slot = by_key.entry(k.to_string()).or_default();
+                let spelled = if written.len() == ends.len() {
+                    written[..=i].join("/")
+                } else {
+                    k.to_string()
+                };
+                *slot.spellings.entry(spelled).or_default() += 1;
+                slot.under.push(doc);
+                if end == full.len() {
+                    slot.docs.push(doc);
+                }
+            }
         }
     }
-    let mut out: Vec<(String, Group<'_>)> = by_key
+    let mut nodes: Vec<(String, Group<'_>)> = by_key
         .into_iter()
-        .map(|(key, (spellings, mut docs))| {
-            let name = spellings
+        .map(|(key, slot)| {
+            let name = slot
+                .spellings
                 .into_iter()
-                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
-                .map(|(s, _)| s.to_string())
+                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+                .map(|(s, _)| s)
                 .unwrap_or_default();
+            let mut docs = slot.docs;
             docs.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.path.cmp(&b.path)));
-            (key, Group { name, docs })
+            docs.dedup_by(|a, b| std::ptr::eq(*a, *b));
+            let mut under = slot.under;
+            under.sort_by_key(|d| std::ptr::from_ref(*d));
+            under.dedup_by(|a, b| std::ptr::eq(*a, *b));
+            let depth = levels(&key).len() - 1;
+            let total = under.len();
+            (
+                key,
+                Group {
+                    name,
+                    depth,
+                    docs,
+                    total,
+                },
+            )
         })
         .collect();
-    out.sort_by(|a, b| {
-        b.1.docs
-            .len()
-            .cmp(&a.1.docs.len())
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    out.into_iter().map(|(_, g)| g).collect()
+    // Sorting by the path of sort keys puts every child straight after its
+    // parent, siblings in the page's order.
+    let rank: HashMap<String, usize> = nodes.iter().map(|(k, g)| (k.clone(), g.total)).collect();
+    let path_of = |k: &str| -> Vec<(std::cmp::Reverse<usize>, String)> {
+        levels(k)
+            .into_iter()
+            .map(|end| {
+                let prefix = &k[..end];
+                (
+                    std::cmp::Reverse(rank.get(prefix).copied().unwrap_or(0)),
+                    prefix.to_string(),
+                )
+            })
+            .collect()
+    };
+    nodes.sort_by_cached_key(|(k, _)| path_of(k));
+    nodes.into_iter().map(|(_, g)| g).collect()
+}
+
+/// Where each level of a [`key`] ends: `a/b/c` is `[1, 3, 5]`. A key with an
+/// empty level — only the all-slashes tag [`key`] keeps as written — is one
+/// level, not a nest of nothing.
+fn levels(key: &str) -> Vec<usize> {
+    if key.split('/').any(str::is_empty) {
+        return vec![key.len()];
+    }
+    key.match_indices('/')
+        .map(|(i, _)| i)
+        .chain(std::iter::once(key.len()))
+        .collect()
 }
 
 /// Backslash-escape everything markdown could read as syntax.
@@ -539,7 +758,12 @@ pub fn render(root: &Path, index: &Index) -> String {
         );
     }
     for g in &groups {
-        let _ = writeln!(out, "## {} ({})\n", escape(&g.name), g.docs.len());
+        // A nested tag is a section inside its parent's, so collapsing the
+        // parent folds its children with it and expanding it shows every
+        // document under it. Markdown stops at six levels; deeper tags sit
+        // beside each other at the sixth.
+        let hashes = "#".repeat((2 + g.depth).min(6));
+        let _ = writeln!(out, "{hashes} {} ({})\n", escape(&g.name), g.total);
         for d in &g.docs {
             let rel = d
                 .path
@@ -851,9 +1075,10 @@ mod tests {
         let body = write(d.path(), "b.md", "# B\n\ntags: [nope]\n#inline tag\n");
         let rule = write(d.path(), "c.md", "---\n\ntags: [nope]\n\nprose\n");
         assert_eq!(tags_of(&tagged.path), ["rust"]);
-        assert!(
-            tags_of(&body.path).is_empty(),
-            "the body is not frontmatter"
+        assert_eq!(
+            tags_of(&body.path),
+            ["inline"],
+            "the body's `tags:` line is not frontmatter; its #tag is a tag"
         );
         assert!(
             tags_of(&rule.path).is_empty(),
@@ -1017,9 +1242,16 @@ mod tests {
             .filter(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }))
             .map(|n| &parsed.text[n.doc.start as usize..n.doc.end as usize])
             .collect();
-        assert_eq!(headings.len(), 7, "`# Tags` and one per tag: {headings:?}");
+        // The link-shaped tag holds slashes, so it nests: a parent section
+        // `[click](http:` and its child. Still characters, never a link.
+        assert_eq!(
+            headings.len(),
+            8,
+            "`# Tags`, one per tag, one nested parent: {headings:?}"
+        );
         for literal in [
-            "[click](http://evil.example) (1)",
+            "[click](http: (1)",
+            "[click](http:/evil.example) (1)",
             "<script> (1)",
             "*bold* (1)",
         ] {
@@ -1093,6 +1325,198 @@ mod tests {
         assert_eq!(at("tags: [rust, rust]\n").len(), 1, "one tag, one place");
         assert!(at("title: no tags\n").is_empty());
         assert!(at("tags: []\n").is_empty());
+    }
+
+    #[test]
+    fn inline_tags_join_the_frontmatter_ones_once_each() {
+        assert_eq!(
+            tags_in("---\ntags: [Rust]\n---\n\nOn #rust and #notes/daily.\n"),
+            ["Rust", "notes/daily"]
+        );
+        assert_eq!(
+            tags_in("# C# notes\n\nissue #42, `#code`, #fff, a ## b\n\n```\n#tag\n```\n"),
+            Vec::<String>::new(),
+            "nothing the reader does not paint as a tag"
+        );
+        // A hostile file: a hundred thousand tags is still one bounded list.
+        let many = (0..100_000).fold(String::new(), |mut s, i| {
+            use std::fmt::Write as _;
+            let _ = write!(s, "#t{i} ");
+            s
+        });
+        assert_eq!(tags_in(&many).len(), MAX_TAGS_PER_FILE);
+    }
+
+    #[test]
+    fn the_byte_scan_rules_out_only_what_cannot_be_a_tag() {
+        for no in [
+            "# Heading\n\n## Part\n\nprose\n",
+            "C# and F#, page#frag\n",
+            "#[derive(Debug)]\n#{x} #(y) #/usr\n",
+            "a # b ##\n",
+            "",
+        ] {
+            assert!(!may_hold_inline_tag(no.as_bytes()), "{no:?}");
+        }
+        for maybe in [
+            "#tag",
+            "a #tag",
+            "a\n#1st",
+            "x\u{a0}#nbsp",
+            "**#bold**",
+            "|#cell|",
+        ] {
+            assert!(may_hold_inline_tag(maybe.as_bytes()), "{maybe:?}");
+        }
+    }
+
+    /// Every source the core reads a tag from must get past the byte scan,
+    /// or the tags page silently loses a tag the reader shows.
+    #[test]
+    fn the_byte_scan_never_hides_a_tag_the_reader_shows() {
+        for src in [
+            "#a",
+            "x #a",
+            "x\u{a0}#a",
+            "x\u{3000}#日本",
+            "| #cell |\n|-|\n",
+            "- #item",
+            "x\\\n#after",
+            "x\t#tab",
+            "**#bold**",
+            "_#em_",
+            "|a|#cell|\n|-|-|\n",
+            ">#quote",
+            "<b>#html</b>",
+            "x #\\_esc",
+            "x #&eacute;t",
+            "x\u{a0}#nb",
+            "#1st",
+        ] {
+            let doc = carrel_core::Document::parse(src);
+            assert!(!doc.tags.is_empty(), "the fixture must hold a tag: {src:?}");
+            assert!(may_hold_inline_tag(src.as_bytes()), "{src:?}");
+        }
+    }
+
+    /// The same promise over every short string of markdown's punctuation:
+    /// a generated corpus, because the hand-picked list above is exactly
+    /// the cases someone thought of.
+    #[test]
+    fn the_byte_scan_never_hides_a_tag_in_generated_markdown() {
+        const ALPHABET: &[&str] = &[
+            "#", "a", "1", " ", "\n", "*", "_", "\\", "&", "`", "[", "]", "(", ")", "|", ">", "-",
+            "é", ";", "/", "!", "<", "~", "^", "$", ":", "&#35;", "&amp;", "\u{a0}", "![x](u)",
+            "[x]", "[x]: u\n", "<b>", "{", "=", "@", "%", "+", "\"", "'", ".", ",", "?", "[^1]",
+            "[[w]]", "}",
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut tagged = 0;
+        for _ in 0..50_000 {
+            let mut src = String::new();
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let len = 1 + (seed % 14) as usize;
+            for k in 0..len {
+                let pick = (seed.rotate_left(k as u32 * 5) as usize) % ALPHABET.len();
+                src.push_str(ALPHABET[pick]);
+            }
+            let doc = carrel_core::Document::parse(&src);
+            if !doc.tags.is_empty() {
+                tagged += 1;
+                assert!(may_hold_inline_tag(src.as_bytes()), "{src:?}");
+            }
+        }
+        assert!(tagged > 100, "the corpus must hold tags to test: {tagged}");
+    }
+
+    #[test]
+    fn tag_keys_nest_at_slashes_and_ignore_case_and_blanks() {
+        assert_eq!(key("Project/Alpha"), "project/alpha");
+        assert_eq!(key("project//alpha/"), "project/alpha");
+        assert_eq!(key(" project / alpha "), "project/alpha");
+        assert_eq!(key("rust"), "rust");
+        assert_eq!(key("//"), "//", "nothing but slashes keeps itself");
+    }
+
+    #[test]
+    fn nested_tags_group_under_their_parents_with_totals() {
+        let index = Index {
+            tagged: vec![
+                doc("/r/a.md", 1, &["project/alpha"]),
+                doc("/r/b.md", 2, &["Project/Beta", "project"]),
+                doc("/r/c.md", 3, &["project/alpha/v2", "rust"]),
+                doc("/r/d.md", 4, &["project/alpha", "project/alpha//"]),
+                doc("/r/e.md", 5, &["zebra"]),
+                doc("/r/f.md", 6, &["zebra"]),
+            ],
+            read: 6,
+            capped: false,
+        };
+        let g = groups(&index);
+        let shape: Vec<(&str, usize, usize, usize)> = g
+            .iter()
+            .map(|g| (g.name.as_str(), g.depth, g.docs.len(), g.total))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("project", 0, 1, 4),
+                ("project/alpha", 1, 2, 3),
+                ("project/alpha/v2", 2, 1, 1),
+                ("Project/Beta", 1, 1, 1),
+                ("zebra", 0, 2, 2),
+                ("rust", 0, 1, 1),
+            ],
+            "a parent first, its children after it — not interleaved with \
+             another tag by count — each document counted once"
+        );
+        let md = render(Path::new("/r"), &index);
+        for line in [
+            "## project (4)\n",
+            "### project\\/alpha (3)\n",
+            "#### project\\/alpha\\/v2 (1)\n",
+            "### Project\\/Beta (1)\n",
+            "## rust (1)\n",
+        ] {
+            assert!(md.contains(line), "{line:?} in\n{md}");
+        }
+    }
+
+    #[test]
+    fn a_parent_exists_when_only_its_children_are_used() {
+        let index = Index {
+            tagged: vec![doc("/r/a.md", 1, &["area/home"])],
+            read: 1,
+            capped: false,
+        };
+        let shape: Vec<(String, usize, usize)> = groups(&index)
+            .into_iter()
+            .map(|g| (g.name, g.docs.len(), g.total))
+            .collect();
+        assert_eq!(
+            shape,
+            [("area".to_string(), 0, 1), ("area/home".to_string(), 1, 1)]
+        );
+    }
+
+    #[test]
+    fn nesting_deeper_than_markdown_headings_stays_on_the_page() {
+        let index = Index {
+            tagged: vec![doc("/r/a.md", 1, &["a/b/c/d/e/f/g"])],
+            read: 1,
+            capped: false,
+        };
+        let md = render(Path::new("/r"), &index);
+        let parsed = carrel_core::Document::parse(&md);
+        let headings = parsed
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }))
+            .count();
+        assert_eq!(headings, 8, "the title and all seven levels:\n{md}");
+        assert_eq!(parsed.links.len(), 1, "the document, once, under its tag");
     }
 
     #[test]
