@@ -1,7 +1,18 @@
-% Hyphenation patterns for German (reformed orthography, 1996), from the hyph-utf8 package
-% (hyph-de-1996.pat.txt). Pattern lines are unmodified; the comment lines
-% below are the header of hyph-de-1996.tex, verbatim, carrying the
-% copyright and licence. See https://www.hyphenation.org/tex
+% --------------------------------------------------------------------------
+% German (reformed orthography) hyphenation patterns, embedded in carrel-core.
+% SPDX-License-Identifier: MIT
+%
+% Every line that does not start with % is hyph-utf8's hyph-de-1996.pat.txt,
+% unmodified, from https://github.com/hyphenation/tex-hyphen at commit
+% 5684c0f51c0b81133db2efbe60a408b4155a3ff5:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/txt/hyph-de-1996.pat.txt
+% The txt files carry no header of their own: hyph-utf8 generates them
+% from the .tex source named below, whose header comment carries the
+% copyright and licence. That header follows this block, verbatim:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-de-1996.tex
+%
+% See also THIRD-PARTY-NOTICES at the root of the carrel repository.
+% --------------------------------------------------------------------------
 %
 % title: German Hyphenation Patterns (Reformed Orthography, 2006)
 %
@@ -67,20 +78,6 @@
 %     package: german
 %
 % ===========================================================================
-
-\message{German Hyphenation Patterns (Reformed Orthography, 2006) `dehyphn-x' 2024-02-28 (WL)}
-
-%
-% The used patgen parameters are
-%
-%   1 1 | 1 3 | 2 3 1
-%   2 2 | 2 4 | 1 5 1
-%   3 3 | 3 5 | 1 6 1
-%   4 4 | 4 6 | 1 7 1
-%   5 5 | 5 12 | 1 8 1
-%   6 6 | 6 12 | 1 9 1
-%   7 7 | 7 12 | 1 9 1
-%   8 8 | 8 12 | 1 9 1
 .ab3a
 .abb2
 .ab5erk

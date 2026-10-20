@@ -1,0 +1,186 @@
+THIRD-PARTY NOTICES FOR CARREL
+==============================
+
+Carrel's own code is licensed MIT OR Apache-2.0 (LICENSE-MIT,
+LICENSE-APACHE). The carrel-core crate also embeds, and every carrel binary
+therefore contains, hyphenation pattern data from the hyph-utf8 package
+(https://www.hyphenation.org/tex), which is under the licences below. Taken
+together, the SPDX expression for carrel-core and for the carrel binary is:
+
+    (MIT OR Apache-2.0) AND MIT AND BSD-3-Clause
+        AND FSFAP-no-warranty-disclaimer AND Knuth-CTAN
+
+Every data file is hyph-utf8's own txt file, unmodified, from
+https://github.com/hyphenation/tex-hyphen at commit
+5684c0f51c0b81133db2efbe60a408b4155a3ff5 (2026-02-24), under
+hyph-utf8/tex/generic/hyph-utf8/patterns/txt/. Each file in carrel's
+crates/carrel-core/src/hyphen/ carries, in `%` comment lines that the loader
+skips, the verbatim header of the .tex file it was generated from, with that
+file's copyright and licence in full, and the upstream URLs of both.
+
+Crates that carrel links against carry their own licences; `cargo tree` and
+each crate's own files list them. This file covers only data carrel embeds
+itself.
+
+
+Per-file table
+--------------
+
+File (crates/carrel-core/)        Language    Upstream .tex source   Licence taken            Copyright holders
+--------------------------------  ----------  ---------------------  -----------------------  -----------------------------------------------
+src/hyphen/hyph-en-us.pat.txt     English     hyph-en-us.tex         FSFAP-no-warranty-       Gerard D.C. Kuiken (1990, 2004, 2005);
+src/hyphen/hyph-en-us.hyp.txt     (US)        (Knuth's hyphen.tex)   disclaimer AND           Donald E. Knuth (hyphen.tex)
+                                                                     Knuth-CTAN
+src/hyphen/hyph-de-1996.pat.txt   German      hyph-de-1996.tex       MIT                      Stephan Hennig, Werner Lemberg, Günter Milde,
+                                  (1996)                                                      Sander van Geloven, Georg Pfeiffer, Gisbert W.
+                                                                                              Selke, Tobias Wendorf, Keno Wehr (2013-2024)
+src/hyphen/hyph-fr.pat.txt        French      hyph-fr.tex            MIT                      Daniel Flipo, Bernard Gaulle (1994-2002);
+                                                                                              Arthur Reutenauer (2016)
+src/hyphen/hyph-es.pat.txt        Spanish     hyph-es.tex            MIT                      Javier Bezos (1993, 1997, 2001-2019), CervanTeX
+src/hyphen/hyph-it.pat.txt        Italian     hyph-it.tex            MIT (offered:            Claudio Beccari (2008-2011)
+                                                                     LPPL-1.3+ or MIT)
+src/hyphen/hyph-pt.pat.txt        Portuguese  hyph-pt.tex            BSD-3-Clause             Pedro J. de Rezende (1987, 1994, 1996, 2015);
+src/hyphen/hyph-pt.hyp.txt                                                                    J. Joao Dias Almeida (1996, 2015); Leonardo
+                                                                                              Araujo and Aline Benevides (2024)
+src/hyphen/hyph-nl.pat.txt        Dutch       hyph-nl.tex            MIT                      Piet Tutelaers (1996)
+src/hyphen/hyph-nl.hyp.txt
+src/hyphen/hyph-da.pat.txt        Danish      hyph-da.tex            MIT (offered:            Frank Jensen (1994)
+                                                                     LPPL-1.3+ or MIT)
+src/hyphen/hyph-nb.pat.txt        Norwegian   hyph-no.tex            FSFAP-no-warranty-       Rune Kleveland, Ole Michael Selberg (2004-2005)
+src/hyphen/hyph-nb.hyp.txt        (Bokmål)    hyph-nb.tex            disclaimer               Karl Ove Hufthammer (2007)
+src/hyphen/hyph-pl.pat.txt        Polish      hyph-pl.tex            MIT (offered: MIT or     Hanna Kołodziejska, Bogusław Jackowski,
+src/hyphen/hyph-pl.hyp.txt                                           Knuth's plain.tex terms) Marek Ryćko (1987-1995)
+
+Notes:
+
+- Dutch: hyph-nl.tex names the MIT licence by URL and carries no permission
+  text; hyph-utf8 changed it from LPPL to MIT in commit
+  ecf976ab6995acb653d38ab1af0b9b9829ec0c77 (2021-10-15). The MIT text below
+  is the one that URL names.
+- Norwegian: hyph-nb.pat.txt is generated from hyph-no.tex (hyph-nb.tex
+  \inputs it and adds two exceptions), so hyph-no.tex's notice is the one
+  that governs the patterns. Both notices are the same all-permissive text.
+- English: hyph-utf8's hyph-en-us.tex declares only Kuiken's all-permissive
+  notice, but the file contains Knuth's original hyphen.tex patterns and
+  exceptions, whose notice is reproduced below. Its condition (a modified
+  file must not be named hyphen.tex) is met. Knuth-CTAN is the closest SPDX
+  identifier for that notice (https://ctan.org/license/knuth), not a
+  word-for-word match.
+
+
+MIT License
+-----------
+
+Applies to hyph-de-1996, hyph-fr, hyph-es, hyph-it, hyph-nl, hyph-da and
+hyph-pl, with these copyright notices:
+
+    Copyright (c) 2013-2024 Stephan Hennig, Werner Lemberg, Günter Milde,
+      Sander van Geloven, Georg Pfeiffer, Gisbert W. Selke, Tobias Wendorf,
+      Keno Wehr  [German]
+    Copyright (C) 1994-2002 Daniel Flipo, Bernard Gaulle,
+      2016 Arthur Reutenauer  [French]
+    Copyright (C) 1993, 1997 Javier Bezos, 2001-2019 Javier Bezos,
+      CervanTeX  [Spanish]
+    Copyright (C) 2008-2011 Claudio Beccari  [Italian]
+    Copyright (C) 1996 Piet Tutelaers  [Dutch]
+    Copyright (C) 1994 Frank Jensen  [Danish]
+    Copyright (C) 1987-1995 Hanna Kołodziejska, Bogusław Jackowski,
+      Marek Ryćko  [Polish]
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+BSD 3-Clause License
+--------------------
+
+Applies to hyph-pt (Portuguese patterns and exceptions), verbatim from
+hyph-pt.tex:
+
+Copyright (C) 1987, 1994, 1996, 2015 Pedro J. de Rezende, 1996, 2015
+J. Joao Dias Almeida, 2024 Leonardo Araujo and Aline Benevides
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+* Redistributions of source code must retain the above copyright
+  notice, this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in the
+  documentation and/or other materials provided with the
+  distribution.
+* Neither the name of the University of Campinas, of the University
+  of Minho nor the names of its contributors may be used to endorse
+  or promote products derived from this software without specific
+  prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL PEDRO J. DE
+REZENDE OR J.JOAO DIAS ALMEIDA BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+
+All-permissive notices (FSFAP-no-warranty-disclaimer)
+-----------------------------------------------------
+
+Applies to hyph-en-us (American English), verbatim from hyph-en-us.tex:
+
+    Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken
+
+    Copying and distribution of this file, with or without modification,
+    are permitted in any medium without royalty provided the copyright
+    notice and this notice are preserved.
+
+Applies to hyph-nb (Norwegian) patterns, verbatim from hyph-no.tex:
+
+    Copyright (C) 2004, 2005 Rune Kleveland, Ole Michael Selberg
+
+    Copying and distribution of this file, with or without modification,
+    is permitted in any medium without royalty provided the copyright
+    notice and this notice are preserved.
+
+Applies to hyph-nb (Norwegian) exceptions, verbatim from hyph-nb.tex:
+
+    Copyright (C) 2004–2005 Rune Kleveland, Ole Michael Selberg,
+    2007 Karl Ove Hufthammer
+
+    Copying and distribution of this file, with or without modification,
+    are permitted in any medium without royalty, provided the copyright
+    notice and this notice are preserved.
+
+
+Knuth's hyphen.tex notice (Knuth-CTAN)
+--------------------------------------
+
+Applies to the part of hyph-en-us (patterns and exceptions) that is Knuth's
+original hyphen.tex, verbatim from that file (old/hyphen/hyphen.tex in the
+tex-hyphen repository):
+
+    The Plain TeX hyphenation tables [NOT TO BE CHANGED IN ANY WAY!]
+    Unlimited copying and redistribution of this file are permitted as long
+    as this file is not modified. Modifications are permitted, but only if
+    the resulting file is not named hyphen.tex.

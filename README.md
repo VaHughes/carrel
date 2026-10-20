@@ -535,11 +535,19 @@ one-coordinate-space invariant above, and `./scripts/check-discipline.sh` is the
 
 ## License
 
-MIT OR Apache-2.0, at your option.
+Carrel's own code is MIT OR Apache-2.0, at your option.
 
-The hyphenation patterns embedded in `carrel-core` (`src/hyphen/hyph-*.txt`) come from
-the [hyph-utf8](https://www.hyphenation.org/tex) package, each file unmodified apart from a
-header that carries its authors' copyright and licence in full: American English (Knuth's
-and Gerard D.C. Kuiken's) and Norwegian under all-permissive notices; German, French,
-Spanish and Dutch under the MIT license; Italian, Danish and Polish, each offered under a
-choice of licenses, taken under MIT; and Portuguese under the BSD 3-clause license.
+`carrel-core` also embeds hyphenation patterns from the
+[hyph-utf8](https://www.hyphenation.org/tex) package (`src/hyphen/hyph-*.txt`), so every
+carrel binary contains them: American English (Gerard D.C. Kuiken's all-permissive notice,
+and Knuth's notice for his original `hyphen.tex`) and Norwegian under all-permissive
+notices; German, French, Spanish and Dutch under the MIT license; Italian, Danish and
+Polish, each offered under a choice of licenses, taken under MIT; and Portuguese under the
+BSD 3-clause license. Both crates therefore declare
+`(MIT OR Apache-2.0) AND MIT AND BSD-3-Clause AND FSFAP-no-warranty-disclaimer AND Knuth-CTAN`.
+
+Each data file is hyph-utf8's own, unmodified, under a header naming the upstream commit
+and reproducing its source's copyright and license notice. The full texts, with a table of
+which file is under which license, are in
+[THIRD-PARTY-NOTICES](https://github.com/VaHughes/carrel/blob/main/THIRD-PARTY-NOTICES),
+which ships in every release archive and package next to the license files.

@@ -5,7 +5,8 @@ Name:           carrel
 Version:        2026.10.8
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
-License:        MIT OR Apache-2.0
+# Carrel's code, plus the hyphenation data carrel-core embeds: THIRD-PARTY-NOTICES.
+License:        (MIT OR Apache-2.0) AND MIT AND BSD-3-Clause AND FSFAP-no-warranty-disclaimer AND Knuth-CTAN
 URL:            https://github.com/VaHughes/carrel
 Source0:        %{url}/archive/v%{version}/carrel-%{version}.tar.gz
 BuildRequires:  cargo
@@ -56,7 +57,7 @@ cargo test --locked --workspace
 %{_datadir}/bash-completion/completions/carrel
 %{_datadir}/zsh/site-functions/_carrel
 %{_datadir}/fish/vendor_completions.d/carrel.fish
-%license LICENSE-MIT LICENSE-APACHE
+%license LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES
 %doc README.md CHANGELOG.md
 
 %changelog

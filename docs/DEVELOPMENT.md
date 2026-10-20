@@ -178,6 +178,17 @@ Gotchas:
 - `release.yml` is hand-edited (SHA-pinned actions, a `gate` job). `dist-workspace.toml`
   has `allow-dirty = ["ci"]`; **never run `dist init`**, which unpins and deletes the gate.
   `dist init` also deletes every comment in `dist-workspace.toml`.
+- **`THIRD-PARTY-NOTICES` ships beside every binary.** The hyphenation data in
+  `carrel-core/src/hyphen/` is MIT, BSD-3-Clause and all-permissive (the Portuguese
+  BSD-3-Clause wants its notice in the materials shipped with a binary), so the file is in
+  dist's `include`, the `.deb` assets, `%license`, both PKGBUILDs, the nix expression, and
+  — as symlinks, which `cargo package` turns into files — in both crates. The licence
+  expression in `Cargo.toml` is repeated in every recipe. `check-packaging.sh` checks
+  both, recipe by recipe. Each `hyph-*.txt` is hyph-utf8's txt file verbatim under a `%`
+  header (upstream commit + the .tex source's header); the loader skips `%` lines, and the
+  hyphen tests pin each file's data fingerprint to upstream's and require a recognized
+  `SPDX-License-Identifier` line with the matching licence text. A new language needs its
+  own pins, its own header and a row in `THIRD-PARTY-NOTICES`.
 - **Relative links in the README break on crates.io** (resolved against `repository` +
   `path_in_vcs`). Use absolute URLs; the rendered readme is baked at publish time.
 - `copr-cli status` on a running build blocks past a ten-minute tool timeout; poll in bounded

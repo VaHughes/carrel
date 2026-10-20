@@ -21,8 +21,12 @@
 //! with their notices: American English, and nine more a document can ask
 //! for by name ([`Hyphenation::from_tag`]). Each was chosen because its
 //! licence lets it be embedded in an `MIT OR Apache-2.0` binary as it stands
-//! — MIT, BSD, or the all-permissive notice — and the notice travels inside
-//! the embedded file. Swedish and Russian are not here because their
+//! — MIT, BSD, or the all-permissive notice. Each file is hyph-utf8's own,
+//! unmodified, under a `%` header carrying the upstream commit and the .tex
+//! source's copyright and licence verbatim; THIRD-PARTY-NOTICES at the
+//! repository root collects them, ships beside every binary, and is why the
+//! crates' licence expression is more than `MIT OR Apache-2.0`. Swedish and
+//! Russian are not here because their
 //! patterns are LPPL-only. No dependency: the algorithm is forty lines and
 //! the data is the whole cost.
 //!
@@ -184,9 +188,13 @@ struct Patterns {
     capitalized: bool,
     /// Whether `'s` may close a word (`maintainer's`). English only.
     possessive: bool,
-    /// `hyph-*.pat.txt` (its notice in `%` lines at the top) and
-    /// `hyph-*.hyp.txt` (words that divide only where marked), built on
-    /// first use, and only for the language a document asks for.
+    /// `hyph-*.pat.txt`, verbatim: its notice in `%` lines at the top, one
+    /// pattern per line below them.
+    pat: &'static str,
+    /// `hyph-*.hyp.txt` (words that divide only where marked), its notice in
+    /// `%` lines too; empty for a language with no exceptions.
+    hyp: &'static str,
+    /// Both, built on first use, and only for the language a document asks for.
     trie: LazyLock<Trie>,
 }
 
@@ -197,15 +205,17 @@ macro_rules! patterns {
             right: $right,
             capitalized: $cap,
             possessive: $pos,
-            trie: LazyLock::new(|| {
-                Trie::build(include_str!(concat!("hyph-", $file, ".pat.txt")), $hyp)
-            }),
+            pat: include_str!(concat!("hyph-", $file, ".pat.txt")),
+            hyp: $hyp,
+            trie: LazyLock::new(|| Trie::build($name.pat, $name.hyp)),
         };
     };
 }
 
-// Licences, from each file's header (the files carry them in full):
-//   en-us — all-permissive notice (Knuth, Kuiken)
+// Licences, from each file's header (the files carry them in full, and
+// THIRD-PARTY-NOTICES at the repository root collects them; the test
+// `every_embedded_file_carries_its_licence` holds each file to it):
+//   en-us — all-permissive notice (Kuiken) and Knuth's hyphen.tex notice
 //   de-1996 — MIT · fr — MIT · es — MIT · nl — MIT
 //   it, da — LPPL or MIT, taken under MIT · pl — MIT or Knuth's, taken under MIT
 //   pt — BSD 3-clause · nb (no, nn) — all-permissive notice
@@ -260,6 +270,16 @@ patterns!(
     false
 );
 
+/// The data lines of an embedded hyph-utf8 file, trimmed: everything but its
+/// notice (`%` lines) and blank lines. One pattern per line in a `.pat.txt`;
+/// whitespace-separated words in a `.hyp.txt`.
+fn data_lines(source: &str) -> impl Iterator<Item = &str> {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('%'))
+}
+
 /// A pattern-trie node: its children, as a slice of [`Trie::edges`], and its
 /// levels, as a slice of [`Trie::levels`] — empty when no pattern ends here.
 struct Node {
@@ -295,11 +315,7 @@ impl Trie {
         let mut kids: Vec<Vec<(char, u32)>> = vec![Vec::new()];
         let mut ends: Vec<Range<u32>> = std::iter::once(0..0).collect();
         let mut levels = Vec::new();
-        for line in source.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('%') {
-                continue;
-            }
+        for line in data_lines(source) {
             // `a1bc3d` is the letters `abcd` with level 1 before `b` and
             // level 3 before `d`: one level per gap, letters + 1 of them.
             let mut at = 0usize;
@@ -350,8 +366,8 @@ impl Trie {
                 *slot = n;
             }
         }
-        let exceptions = exceptions
-            .split_whitespace()
+        let exceptions = data_lines(exceptions)
+            .flat_map(str::split_whitespace)
             .map(|ex| {
                 let (mut letters, mut mask) = (Vec::new(), 0u64);
                 for c in ex.chars() {
@@ -1202,6 +1218,173 @@ mod tests {
             word_in(Hyphenation::German, "Donau\u{AD}dampfschifffahrt"),
             None
         );
+    }
+
+    /// FNV-1a over a file's data lines, each followed by `\n`: stable across
+    /// Rust versions, unlike `DefaultHasher`, so the pins below mean the same
+    /// thing on every toolchain.
+    fn fingerprint(source: &str) -> (usize, u64) {
+        let (mut n, mut h) = (0, 0xcbf2_9ce4_8422_2325_u64);
+        for line in data_lines(source) {
+            n += 1;
+            for b in line.bytes().chain(*b"\n") {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        (n, h)
+    }
+
+    #[test]
+    fn the_embedded_data_is_hyph_utf8s_byte_for_byte() {
+        // What the trie is built from, pinned per file. Each pin is the
+        // fingerprint of hyph-utf8's own txt file at the commit the headers
+        // name (tex-hyphen 5684c0f5), computed from upstream, not from these
+        // files — so a header edit that leaks a line into the data, or a
+        // header that swallows a pattern, fails here.
+        const NONE: (usize, u64) = (0, 0xcbf2_9ce4_8422_2325);
+        let pins = [
+            (
+                Hyphenation::English,
+                (4938, 0xebec_970a_35db_5c81),
+                (14, 0xd1d8_4bf0_7d24_f4ff),
+            ),
+            (Hyphenation::German, (36709, 0x12d4_cad9_22a8_34e7), NONE),
+            (Hyphenation::French, (1216, 0x654a_853c_7dc2_cb5d), NONE),
+            (Hyphenation::Spanish, (4694, 0x931d_bf2a_04f2_75ea), NONE),
+            (Hyphenation::Italian, (384, 0xe552_3fb2_c60c_003a), NONE),
+            (
+                Hyphenation::Portuguese,
+                (427, 0xaddc_2ae3_54da_1924),
+                (2, 0x5436_7533_2796_d44c),
+            ),
+            (
+                Hyphenation::Dutch,
+                (12724, 0x79d1_43c4_be76_4841),
+                (40, 0x159c_2fda_fe13_f6a7),
+            ),
+            (Hyphenation::Danish, (1144, 0xcaa3_b12e_de2a_e096), NONE),
+            (
+                Hyphenation::Norwegian,
+                (27448, 0x9f14_d9dd_e0fa_5e41),
+                (2, 0x7be0_602b_8ca5_ce25),
+            ),
+            (
+                Hyphenation::Polish,
+                (4053, 0x9c5f_09f8_9b86_a795),
+                (20, 0x8238_496b_9500_95a6),
+            ),
+        ];
+        for (language, pat, hyp) in pins {
+            let p = language.patterns().expect("has patterns");
+            assert_eq!(fingerprint(p.pat), pat, "{language:?} patterns");
+            assert_eq!(fingerprint(p.hyp), hyp, "{language:?} exceptions");
+        }
+        let pinned: Vec<_> = pins.iter().map(|&(l, ..)| l).collect();
+        assert_eq!(
+            pinned,
+            Hyphenation::LANGUAGES,
+            "pin every language, in order"
+        );
+    }
+
+    #[test]
+    fn every_data_line_is_pattern_or_exception_syntax() {
+        // A TeX command in the data is not a comment to the parser: it is a
+        // pattern, and its characters join the language's alphabet. The
+        // German file once carried `\message{…}` that way, which put `'` in
+        // German's alphabet and so made `geht's` one divisible word.
+        for language in Hyphenation::LANGUAGES {
+            let p = language.patterns().expect("has patterns");
+            for line in data_lines(p.pat) {
+                assert!(
+                    line.chars().all(|c| c.is_alphabetic()
+                        || c.is_ascii_digit()
+                        || matches!(c, '.' | '-' | '\'' | '\u{2019}')),
+                    "{language:?}: {line:?} is not a pattern"
+                );
+            }
+            for word in data_lines(p.hyp).flat_map(str::split_whitespace) {
+                assert!(
+                    word.chars().all(|c| c.is_alphabetic() || c == '-'),
+                    "{language:?}: {word:?} is not an exception"
+                );
+            }
+        }
+        assert_eq!(word_in(Hyphenation::German, "geht's"), None);
+    }
+
+    #[test]
+    fn every_embedded_file_carries_its_licence() {
+        // Each id's licence text, as the file must carry it. The SPDX line is
+        // carrel's own; the text is upstream's, except Dutch, whose header
+        // names MIT by URL alone (see that file).
+        let texts = [
+            ("MIT", "Permission is hereby granted, free of charge"),
+            (
+                "BSD-3-Clause",
+                "Redistributions in binary form must reproduce",
+            ),
+            (
+                "FSFAP-no-warranty-disclaimer",
+                "Copying and distribution of this file, with or without modification,",
+            ),
+            (
+                "Knuth-CTAN",
+                "Unlimited copying and redistribution of this file",
+            ),
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/hyphen");
+        let notices = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("THIRD-PARTY-NOTICES"),
+        )
+        .expect("THIRD-PARTY-NOTICES ships with carrel-core");
+        let embedded: Vec<&str> = Hyphenation::LANGUAGES
+            .iter()
+            .flat_map(|l| {
+                let p = l.patterns().expect("has patterns");
+                [p.pat, p.hyp]
+            })
+            .collect();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).expect("src/hyphen") {
+            let path = entry.expect("entry").path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if !name.starts_with("hyph-") {
+                continue;
+            }
+            seen += 1;
+            let body = std::fs::read_to_string(&path).expect("utf-8");
+            assert!(
+                embedded.contains(&body.as_str()),
+                "{name} is in src/hyphen but no language embeds it"
+            );
+            assert!(body.starts_with('%'), "{name}: the notice comes first");
+            let header: Vec<&str> = body.lines().take_while(|l| l.starts_with('%')).collect();
+            let header = header.join("\n");
+            let ids = header
+                .lines()
+                .find_map(|l| l.strip_prefix("% SPDX-License-Identifier: "))
+                .unwrap_or_else(|| panic!("{name}: no SPDX-License-Identifier line"));
+            for id in ids.split(" AND ") {
+                let (_, text) = texts
+                    .iter()
+                    .find(|(known, _)| *known == id)
+                    .unwrap_or_else(|| panic!("{name}: {id} is not a licence carrel accepts"));
+                assert!(
+                    header.contains(text),
+                    "{name}: says {id} but its header lacks the licence text"
+                );
+            }
+            assert!(header.contains("Copyright"), "{name}: no copyright line");
+            assert!(
+                notices.contains(&format!("src/hyphen/{name}")),
+                "{name} is not listed in THIRD-PARTY-NOTICES"
+            );
+        }
+        assert_eq!(seen, 15, "every hyph-* file was checked");
     }
 
     #[test]

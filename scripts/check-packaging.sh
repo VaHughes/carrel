@@ -185,7 +185,7 @@ fi
 # the only thing to check is that the paths they name still exist.
 echo
 echo "source recipes against the working tree"
-for f in $(grep -ohE 'install -Dm[0-9]+ (contrib|LICENSE)[^ ]*' \
+for f in $(grep -ohE 'install -Dm[0-9]+ (contrib|LICENSE|THIRD-PARTY-NOTICES)[^ ]*' \
   contrib/packaging/PKGBUILD-carrel contrib/packaging/carrel.spec \
   | awk '{print $3}' | sed 's|%{buildroot}.*||' | sort -u); do
   [ -z "$f" ] && continue
@@ -254,6 +254,84 @@ else
   else
     ok "carrel.1 $man_ver"
   fi
+fi
+
+# --- the third-party notices, everywhere the binary goes ---
+#
+# Every carrel binary contains carrel-core's hyphenation data, which is under
+# MIT, BSD-3-Clause and all-permissive notices (THIRD-PARTY-NOTICES has the
+# texts). BSD-3-Clause's binary clause wants its notice "in the documentation
+# and/or other materials provided with the distribution", so a recipe that
+# installs the binary without this file ships it out of terms — and include_str!
+# alone puts the notice in the binary, where nobody reads it. Each recipe is
+# checked BY NAME, as with the versions above, so a new one cannot quietly skip
+# it; and each states the same licence expression as Cargo.toml.
+echo
+echo "third-party notices in every recipe"
+notices=THIRD-PARTY-NOTICES
+ws_license=$(awk '/^\[workspace\.package\]/{f=1; next} /^\[/{f=0}
+                  f && /^license = /{sub(/^license = "/, ""); sub(/"[[:space:]]*$/, ""); print; exit}' Cargo.toml)
+
+if [ -s "$notices" ]; then ok "$notices at the repository root"; else note "$notices is missing from the repository root"; fi
+if sed -n '/^include = \[/,/\]/p' "$DIST" | grep -qF "\"$notices\""; then
+  ok "$DIST includes $notices (flattened to the archive root)"
+else
+  note "$DIST does not include $notices — no release archive, carrel-bin or .deb would carry it"
+fi
+# crates.io: `cargo package` takes a crate's directory only, so each crate
+# carries the notices and both licences as symlinks to the root copies, which
+# cargo packages as ordinary files.
+for crate in crates/carrel-core crates/carrel; do
+  for f in "$notices" LICENSE-MIT LICENSE-APACHE; do
+    if [ -s "$crate/$f" ]; then ok "$crate/$f"; else note "$crate/$f is missing — the .crate on crates.io would not carry it"; fi
+  done
+done
+
+has_line() { # FILE FIXED-STRING WHAT
+  if grep -qF -- "$2" "$1"; then ok "$(basename "$1"): $3"; else note "$(basename "$1") does not $3"; fi
+}
+has_line contrib/packaging/PKGBUILD-carrel \
+  'install -Dm644 THIRD-PARTY-NOTICES "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES"' \
+  "install $notices to /usr/share/licenses"
+has_line contrib/packaging/PKGBUILD-carrel-bin \
+  'install -Dm644 "$dir/THIRD-PARTY-NOTICES" "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES"' \
+  "install $notices to /usr/share/licenses"
+if grep -qE "^%license([[:space:]].*)?[[:space:]]$notices([[:space:]]|$)" contrib/packaging/carrel.spec; then
+  ok "carrel.spec: %license $notices"
+else
+  note "carrel.spec does not list $notices under %license"
+fi
+has_line contrib/packaging/carrel-package.nix \
+  "install -Dm644 $notices \$out/share/doc/carrel/$notices" "install $notices to share/doc"
+if printf '%s\n' "$deb_assets" | grep -qxF "$notices usr/share/doc/carrel/$notices 644"; then
+  ok ".deb assets: $notices to /usr/share/doc/carrel"
+else
+  note ".deb assets do not install $notices to /usr/share/doc/carrel"
+fi
+
+if [ -z "$ws_license" ]; then
+  note "cannot read [workspace.package] license from Cargo.toml"
+else
+  spec_license=$(sed -n 's/^License:[[:space:]]*//p' contrib/packaging/carrel.spec | head -1)
+  [ "$spec_license" = "$ws_license" ] && ok "carrel.spec License matches Cargo.toml" \
+    || note "carrel.spec License is '$spec_license', Cargo.toml says '$ws_license'"
+  for pb in contrib/packaging/PKGBUILD-carrel contrib/packaging/PKGBUILD-carrel-bin; do
+    pl=$(sed -n "s/^license=('\(.*\)')\$/\1/p" "$pb" | head -1)
+    [ "$pl" = "$ws_license" ] && ok "$(basename "$pb") license matches Cargo.toml" \
+      || note "$(basename "$pb") license is '$pl', Cargo.toml says '$ws_license'"
+  done
+  sl=$(awk -F' = ' '/^\tlicense = /{print $2; exit}' contrib/packaging/SRCINFO-carrel)
+  [ "$sl" = "$ws_license" ] && ok "SRCINFO-carrel license matches Cargo.toml" \
+    || note "SRCINFO-carrel license is '$sl', Cargo.toml says '$ws_license' — regenerate it"
+  # nixpkgs spells licences its own way and has no FSFAP-no-warranty-disclaimer;
+  # require one entry per licence family the expression names.
+  nix_lic=$(sed -n '/license = with lib.licenses; \[/,/\];/p' contrib/packaging/carrel-package.nix)
+  nix_missing=
+  for want in mit asl20 bsd3 fsfap knuth; do
+    printf '%s\n' "$nix_lic" | grep -qxE "[[:space:]]*$want" || nix_missing="$nix_missing $want"
+  done
+  if [ -z "$nix_missing" ]; then ok "carrel-package.nix meta.license covers the expression"
+  else note "carrel-package.nix meta.license lacks:$nix_missing"; fi
 fi
 
 # --- .SRCINFO against its PKGBUILD ---

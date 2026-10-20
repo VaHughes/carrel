@@ -178,7 +178,8 @@ container and would gain nothing for it.
   `/usr/share/bash-completion/completions/carrel`,
   `/usr/share/zsh/vendor-completions/_carrel` (Debian's zsh path, not `site-functions`),
   `/usr/share/fish/vendor_completions.d/carrel.fish`,
-  `/usr/share/applications/carrel.desktop`, plus the licence texts and a generated DEP-5
+  `/usr/share/applications/carrel.desktop`, plus the licence texts, `THIRD-PARTY-NOTICES`
+  (the embedded hyphenation data's licences) and a generated DEP-5
   `copyright` under `/usr/share/doc/carrel/`.
 - **Version:** `<Cargo.toml version>-1`. CalVer sorts correctly under dpkg
   (`2026.10.8-1` > `2026.9.23-1`, `2027.1.1-1` > `2026.12.31-1`), so there is no epoch.

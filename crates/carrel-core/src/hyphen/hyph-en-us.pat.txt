@@ -1,14 +1,87 @@
-% Hyphenation patterns for American English, from the hyph-utf8 package
-% (hyph-en-us.pat.txt, version 2005-05-30): Knuth's hyphen.tex patterns plus
-% Gerard D.C. Kuiken's additions (ushyphmax.tex). Pattern lines are unmodified;
-% only these comment lines were added. See http://www.hyphenation.org/tex
+% --------------------------------------------------------------------------
+% American English hyphenation patterns, embedded in carrel-core.
+% SPDX-License-Identifier: FSFAP-no-warranty-disclaimer AND Knuth-CTAN
 %
-% Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken
+% Every line that does not start with % is hyph-utf8's hyph-en-us.pat.txt,
+% unmodified, from https://github.com/hyphenation/tex-hyphen at commit
+% 5684c0f51c0b81133db2efbe60a408b4155a3ff5:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/txt/hyph-en-us.pat.txt
+% The txt files carry no header of their own: hyph-utf8 generates them
+% from the .tex source named below, whose header comment carries the
+% copyright and licence. That header follows this block, verbatim:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-en-us.tex
 %
-% Copying and distribution of this file, with or without modification,
-% are permitted in any medium without royalty provided the copyright
-% notice and this notice are preserved.
+% These patterns and exceptions include Knuth's original hyphen.tex,
+% whose own notice (kept in the same repository as old/hyphen/hyphen.tex)
+% reads as follows. This file is not named hyphen.tex.
 %
+%   The Plain TeX hyphenation tables [NOT TO BE CHANGED IN ANY WAY!]
+%   Unlimited copying and redistribution of this file are permitted as long
+%   as this file is not modified. Modifications are permitted, but only if
+%   the resulting file is not named hyphen.tex.
+%
+% See also THIRD-PARTY-NOTICES at the root of the carrel repository.
+% --------------------------------------------------------------------------
+%
+% title: Hyphenation patterns for American English
+% copyright: Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken
+% notice: This file is part of the hyph-utf8 package.
+%     See http://www.hyphenation.org/tex for more information.
+% language:
+%     name: English, American spelling
+%     tag: en-us
+% version: 2005-05-30
+% authors:
+%   -
+%     name: Gerard D.C. Kuiken
+% licence:
+%     text: >
+%         Copying and distribution of this file, with or without modification,
+%         are permitted in any medium without royalty provided the copyright
+%         notice and this notice are preserved.
+% hyphenmins:
+%     typesetting:
+%         left: 2
+%         right: 3
+% changes:
+%     March 1, 1990 Initial release
+%     May 30, 2005 Added copyright notice, no patterns change.
+% texlive:
+%     encoding: ascii
+%     babelname: usenglishmax
+%     legacy_patterns: ushyphmax.tex
+%     message: Hyphenation patterns for American English
+%     package: english
+% known_bugs:
+%     de-mo-c-rat: 'instead of dem-o-crat (see GitHub issue #15)'
+% ==========================================
+%
+% ushyphmax.tex -- patterns for more hyphenation pattern memory (12000+).
+% Also known as ushyphen.max.
+%
+% Needs extended pattern memory.
+% Hyphenation trie becomes 7283 with 377 ops.
+%
+% These patterns are based on the Hyphenation Exception Log
+% published in TUGboat, Volume 10 (1989), No. 3, pp. 337-341,
+% and a large number of incorrectly hyphenated words not yet published.
+% If added to Liang's before the closing bracket } of \patterns,
+% the patterns run errorfree as far as known at this moment.
+%
+% These patterns find all admissible hyphens of the words in
+% the Exception Log.  ushyph2.tex is a smaller set.
+%
+% Please send bugs or suggestions to tex-live (at) tug.org.
+%
+% 2005-05-30 (karl): in the past, ushyphmax.tex was a file containing
+% only the additional patterns, without the \patterns command, etc.
+% This turned out not to be very useful, since in practice the TeX
+% distributions need one self-contained file for a language.  Therefore,
+% ushyphmax.tex now contains both the additional patterns from
+% Dr. Kuiken, and the original patterns and hyphenations from Knuth's
+% hyphen.tex.
+%
+% The Plain TeX hyphenation tables.
 .ach4
 .ad4der
 .af1t

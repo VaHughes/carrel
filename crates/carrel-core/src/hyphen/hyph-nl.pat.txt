@@ -1,7 +1,45 @@
-% Hyphenation patterns for Dutch, from the hyph-utf8 package
-% (hyph-nl.pat.txt). Pattern lines are unmodified; the comment lines
-% below are the header of hyph-nl.tex, verbatim, carrying the
-% copyright and licence. See https://www.hyphenation.org/tex
+% --------------------------------------------------------------------------
+% Dutch hyphenation patterns, embedded in carrel-core.
+% SPDX-License-Identifier: MIT
+%
+% Every line that does not start with % is hyph-utf8's hyph-nl.pat.txt,
+% unmodified, from https://github.com/hyphenation/tex-hyphen at commit
+% 5684c0f51c0b81133db2efbe60a408b4155a3ff5:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/txt/hyph-nl.pat.txt
+% The txt files carry no header of their own: hyph-utf8 generates them
+% from the .tex source named below, whose header comment carries the
+% copyright and licence. That header follows this block, verbatim:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-nl.tex
+%
+% The header names the MIT licence by URL only and carries no permission
+% notice, so carrel reproduces the standard text of the licence it names
+% (https://opensource.org/licenses/MIT) here, with the header's
+% copyright line. Upstream changed this file's licence from LPPL to MIT
+% in commit ecf976ab6995acb653d38ab1af0b9b9829ec0c77 (2021-10-15).
+%
+%   Copyright (C) 1996 Piet Tutelaers
+%
+%   Permission is hereby granted, free of charge, to any person obtaining
+%   a copy of this software and associated documentation files (the
+%   "Software"), to deal in the Software without restriction, including
+%   without limitation the rights to use, copy, modify, merge, publish,
+%   distribute, sublicense, and/or sell copies of the Software, and to
+%   permit persons to whom the Software is furnished to do so, subject to
+%   the following conditions:
+%
+%   The above copyright notice and this permission notice shall be
+%   included in all copies or substantial portions of the Software.
+%
+%   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+%   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+%   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+%   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+%   LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+%   OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+%   WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+%
+% See also THIRD-PARTY-NOTICES at the root of the carrel repository.
+% --------------------------------------------------------------------------
 %
 % title: Hyphenation patterns for Dutch
 % copyright: Copyright (C) 1996 Piet Tutelaers

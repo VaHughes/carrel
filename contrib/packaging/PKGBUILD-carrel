@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="A quiet place to read your markdown — a terminal markdown reader"
 arch=('x86_64' 'aarch64')
 url="https://github.com/VaHughes/carrel"
-license=('MIT OR Apache-2.0')
+license=('(MIT OR Apache-2.0) AND MIT AND BSD-3-Clause AND FSFAP-no-warranty-disclaimer AND Knuth-CTAN')
 depends=('gcc-libs')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
@@ -40,4 +40,5 @@ package() {
   install -Dm644 contrib/completions/carrel.fish "$pkgdir/usr/share/fish/vendor_completions.d/carrel.fish"
   install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
   install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm644 THIRD-PARTY-NOTICES "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES"
 }

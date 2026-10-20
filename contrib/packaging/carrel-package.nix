@@ -38,15 +38,24 @@ rustPlatform.buildRustPackage (finalAttrs: {
       --zsh contrib/completions/carrel.zsh \
       --fish contrib/completions/carrel.fish
     install -Dm644 contrib/carrel.desktop $out/share/applications/carrel.desktop
+    install -Dm644 THIRD-PARTY-NOTICES $out/share/doc/carrel/THIRD-PARTY-NOTICES
   '';
 
   meta = {
     description = "Terminal markdown reader with search that survives reflow and resize";
     homepage = "https://github.com/VaHughes/carrel";
     changelog = "https://github.com/VaHughes/carrel/blob/v${finalAttrs.version}/CHANGELOG.md";
+    # Carrel's code is MIT OR Apache-2.0; the embedded hyphenation data adds
+    # BSD-3-Clause, Knuth-CTAN and an all-permissive notice (SPDX
+    # FSFAP-no-warranty-disclaimer, which nixpkgs has no entry for — fsfap is
+    # the nearest). Cargo.toml has the exact expression; THIRD-PARTY-NOTICES
+    # the texts.
     license = with lib.licenses; [
       mit
       asl20
+      bsd3
+      fsfap
+      knuth
     ];
     mainProgram = "carrel";
     maintainers = [ ]; # add yourself: lib.maintainers.<handle>, registered in the same PR

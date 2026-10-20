@@ -52,4 +52,8 @@ install-path = "CARGO_HOME"
 # out made that package unbuildable and the release notes wrong (2026-08-16).
 # NOTE: dist FLATTENS these to the archive root — `contrib/carrel.1` arrives as
 # `carrel.1`. Packaging recipes must use the flat names.
-include = ["contrib/carrel.desktop", "contrib/carrel.1", "contrib/completions/carrel.bash", "contrib/completions/carrel.zsh", "contrib/completions/carrel.fish"]
+# THIRD-PARTY-NOTICES is here because dist picks up LICENSE* on its own but not
+# this: it carries the licences of the hyphenation data inside the binary, and
+# the Portuguese patterns' BSD-3-Clause requires their notice in the materials
+# shipped with every binary copy.
+include = ["contrib/carrel.desktop", "contrib/carrel.1", "contrib/completions/carrel.bash", "contrib/completions/carrel.zsh", "contrib/completions/carrel.fish", "THIRD-PARTY-NOTICES"]

@@ -1,7 +1,18 @@
-% Hyphenation patterns for Spanish, from the hyph-utf8 package
-% (hyph-es.pat.txt). Pattern lines are unmodified; the comment lines
-% below are the header of hyph-es.tex, verbatim, carrying the
-% copyright and licence. See https://www.hyphenation.org/tex
+% --------------------------------------------------------------------------
+% Spanish hyphenation patterns, embedded in carrel-core.
+% SPDX-License-Identifier: MIT
+%
+% Every line that does not start with % is hyph-utf8's hyph-es.pat.txt,
+% unmodified, from https://github.com/hyphenation/tex-hyphen at commit
+% 5684c0f51c0b81133db2efbe60a408b4155a3ff5:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/txt/hyph-es.pat.txt
+% The txt files carry no header of their own: hyph-utf8 generates them
+% from the .tex source named below, whose header comment carries the
+% copyright and licence. That header follows this block, verbatim:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-es.tex
+%
+% See also THIRD-PARTY-NOTICES at the root of the carrel repository.
+% --------------------------------------------------------------------------
 %
 % copyright: Copyright (C) 1993, 1997 Javier Bezos, 2001-2019 Javier Bezos, CervanTeX
 % title: Hyphenation patterns for Spanish

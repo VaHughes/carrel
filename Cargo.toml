@@ -14,7 +14,13 @@ edition = "2024"
 # releases could never have built. Verified: `cargo +1.95 check --workspace
 # --all-targets --locked` passes, and ci.yml now runs exactly that.
 rust-version = "1.95"
-license = "MIT OR Apache-2.0"
+# Carrel's own code is MIT OR Apache-2.0. The rest is the hyphenation data
+# carrel-core embeds (src/hyphen/hyph-*.txt), which every carrel binary
+# contains: see THIRD-PARTY-NOTICES. One expression for both crates, because
+# the binary is what carrel ships and the packagers read it from here — the
+# .deb's copyright file, the spec, the PKGBUILDs and the nix expression all
+# repeat it, and check-packaging.sh holds them to it.
+license = "(MIT OR Apache-2.0) AND MIT AND BSD-3-Clause AND FSFAP-no-warranty-disclaimer AND Knuth-CTAN"
 repository = "https://github.com/VaHughes/carrel"
 homepage = "https://github.com/VaHughes/carrel"
 authors = ["Joshua Hughes"]

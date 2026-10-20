@@ -79,6 +79,9 @@ assets = [
   # also require the notice itself to travel with every copy.
   ["target/release/LICENSE-MIT", "usr/share/doc/carrel/LICENSE-MIT", "644"],
   ["target/release/LICENSE-APACHE", "usr/share/doc/carrel/LICENSE-APACHE", "644"],
+  # The hyphenation data's licences (MIT, BSD-3-Clause, all-permissive), which
+  # the copyright file's License line names but does not reproduce.
+  ["target/release/THIRD-PARTY-NOTICES", "usr/share/doc/carrel/THIRD-PARTY-NOTICES", "644"],
 ]
 
 [dev-dependencies.criterion]

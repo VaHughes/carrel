@@ -1,7 +1,18 @@
-% Hyphenation patterns for Portuguese, from the hyph-utf8 package
-% (hyph-pt.pat.txt). Pattern lines are unmodified; the comment lines
-% below are the header of hyph-pt.tex, verbatim, carrying the
-% copyright and licence. See https://www.hyphenation.org/tex
+% --------------------------------------------------------------------------
+% Portuguese hyphenation patterns, embedded in carrel-core.
+% SPDX-License-Identifier: BSD-3-Clause
+%
+% Every line that does not start with % is hyph-utf8's hyph-pt.pat.txt,
+% unmodified, from https://github.com/hyphenation/tex-hyphen at commit
+% 5684c0f51c0b81133db2efbe60a408b4155a3ff5:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/txt/hyph-pt.pat.txt
+% The txt files carry no header of their own: hyph-utf8 generates them
+% from the .tex source named below, whose header comment carries the
+% copyright and licence. That header follows this block, verbatim:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-pt.tex
+%
+% See also THIRD-PARTY-NOTICES at the root of the carrel repository.
+% --------------------------------------------------------------------------
 %
 % title: Hyphenation patterns for Portuguese
 % copyright: Copyright (C) 1987, 1994, 1996, 2015 Pedro J. de Rezende, 1996, 2015 J. Joao Dias Almeida, 2024 Leonardo Araujo and Aline Benevides
@@ -41,7 +52,7 @@
 %           of Minho nor the names of its contributors may be used to endorse
 %           or promote products derived from this software without specific
 %           prior written permission.
-% 
+%
 %         THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 %         "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 %         LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR

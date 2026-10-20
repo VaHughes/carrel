@@ -1,7 +1,20 @@
-% Hyphenation patterns for Italian, from the hyph-utf8 package
-% (hyph-it.pat.txt). Pattern lines are unmodified; the comment lines
-% below are the header of hyph-it.tex, verbatim, carrying the
-% copyright and licence. See https://www.hyphenation.org/tex
+% --------------------------------------------------------------------------
+% Italian hyphenation patterns, embedded in carrel-core.
+% SPDX-License-Identifier: MIT
+%
+% Every line that does not start with % is hyph-utf8's hyph-it.pat.txt,
+% unmodified, from https://github.com/hyphenation/tex-hyphen at commit
+% 5684c0f51c0b81133db2efbe60a408b4155a3ff5:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/txt/hyph-it.pat.txt
+% The txt files carry no header of their own: hyph-utf8 generates them
+% from the .tex source named below, whose header comment carries the
+% copyright and licence. That header follows this block, verbatim:
+%   https://github.com/hyphenation/tex-hyphen/blob/5684c0f51c0b81133db2efbe60a408b4155a3ff5/hyph-utf8/tex/generic/hyph-utf8/patterns/tex/hyph-it.tex
+%
+% The header offers a choice of licences; carrel takes this file under MIT.
+%
+% See also THIRD-PARTY-NOTICES at the root of the carrel repository.
+% --------------------------------------------------------------------------
 %
 % title: Hyphenation patterns for Italian
 % copyright: Copyright (C) 2008-2011 Claudio Beccari
