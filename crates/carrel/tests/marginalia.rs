@@ -404,13 +404,22 @@ fn the_notes_title_counts_notes_and_explains_the_lost_ones() {
     select(&mut app, "Another paragraph");
     update(&mut app, Action::HighlightAdd);
     update(&mut app, Action::NotesToggle);
+    // Two highlights with no text are highlights, not notes: their rows
+    // say `(highlight)`, and the title must not call them something else.
     let found = notes_title(&app);
-    assert!(found.contains("Notes · 2 notes · esc close"), "{found:?}");
+    assert!(found.contains("Notes · 2 highlights · esc close"), "{found:?}");
     assert!(!found.contains('?'), "{found:?}");
+    // A highlight given words becomes a note; the two are counted apart.
+    app.notes.entries[0].note = "worth keeping".into();
+    let mixed = notes_title(&app);
+    assert!(
+        mixed.contains("Notes · 1 note · 1 highlight · esc close"),
+        "{mixed:?}"
+    );
     app.reload_from("# Reading\n\nAnother paragraph.\n");
     let lost = notes_title(&app);
     assert!(
-        lost.contains("Notes · 2 notes · 1 quote not found (marked ?) · esc close"),
+        lost.contains("Notes · 1 note · 1 highlight · 1 quote not found (marked ?) · "),
         "{lost:?}"
     );
 }

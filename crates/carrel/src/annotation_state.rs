@@ -23,17 +23,28 @@ pub struct Notes {
 }
 
 impl Notes {
-    /// The list pane's title, in words: how many notes there are and how
-    /// many have lost their place in the document, naming the `?` those
-    /// rows are marked with — a legend, never a bare `?` that reads as a
-    /// key to press.
+    /// The list pane's title, in words: how many notes and how many bare
+    /// highlights there are, and how many have lost their place in the
+    /// document, naming the `?` those rows are marked with — a legend,
+    /// never a bare `?` that reads as a key to press.
+    ///
+    /// A highlight is an entry with no text of its own; its row reads
+    /// `(highlight)`, so the count calls it one rather than a note.
     #[must_use]
     pub fn title(&self) -> String {
-        let n = self.entries.len();
-        if n == 0 {
+        if self.entries.is_empty() {
             return "Notes · ".into();
         }
-        let mut title = format!("Notes · {n} note{} · ", if n == 1 { "" } else { "s" });
+        let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+        let highlights = self.entries.iter().filter(|a| a.note.is_empty()).count();
+        let notes = self.entries.len() - highlights;
+        let mut title = String::from("Notes · ");
+        if notes > 0 {
+            let _ = write!(title, "{} · ", plural(notes, "note"));
+        }
+        if highlights > 0 {
+            let _ = write!(title, "{} · ", plural(highlights, "highlight"));
+        }
         let lost = self.entries.iter().filter(|a| a.range.is_none()).count();
         if lost > 0 {
             let quotes = if lost == 1 { "quote" } else { "quotes" };

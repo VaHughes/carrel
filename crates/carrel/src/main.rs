@@ -3569,7 +3569,7 @@ mod tests {
             .peek
             .as_ref()
             .unwrap()
-            .zone(&app.doc, app.hyphenation(), cols, rows);
+            .zone(&app.doc, app.peek_fit(), cols, rows);
         let mut leaked = Vec::new();
         let mut covered_text = 0;
         for row in z.y..z.y + z.h {

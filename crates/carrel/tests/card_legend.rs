@@ -71,3 +71,37 @@ fn a_separator_never_dangles_at_a_row_break() {
     let rows = legend(&screen(md, 12, 14));
     assert_eq!(rows, ["alpha", "beta", "gamma", "delta"], "{rows:?}");
 }
+
+#[test]
+fn a_padded_header_ends_its_legend_row_instead_of_painting_the_padding() {
+    // `a` is padded to `short`'s width in the text (aligned at parse for
+    // the column view). The legend once painted that padding: `a     · b`.
+    let md = "| a | b |\n|---|---|\n\
+| short | a much longer value in column b that keeps going for a while |\n| 1 | 2 |\n";
+    let rows = legend(&screen(md, 40, 20));
+    assert_eq!(rows, ["a", "b"], "{rows:?}");
+    // Cells that fill their column still share a row, separated.
+    let md = "| alpha | b | gamma |\n|---|---|---|\n| x | a longer value here | y |\n";
+    let rows = legend(&screen(md, 20, 20));
+    assert_eq!(rows, ["alpha · b", "gamma"], "{rows:?}");
+}
+
+#[test]
+fn an_empty_last_cell_keeps_its_label_like_any_other_empty_cell() {
+    let md = "| Name | Owner | Notes |\n|---|---|---|\n\
+| alpha | a rather long owner value that overflows | none |\n\
+| beta | | |\n| gamma |\n";
+    let lines = screen(md, 30, 40);
+    let labeled = |label: &str| {
+        lines
+            .iter()
+            .skip_while(|l| !l.contains('─')) // past the legend
+            .filter(|l| l.trim_start().starts_with(label))
+            .count()
+    };
+    // One card per body row, each labeling all three cells: the empty
+    // middle cell, the empty last cell, and the cells `gamma`'s row never
+    // wrote (GFM fills them empty; so does the parse).
+    assert_eq!(labeled("Owner"), 3, "{lines:#?}");
+    assert_eq!(labeled("Notes"), 3, "{lines:#?}");
+}

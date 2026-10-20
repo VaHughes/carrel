@@ -2840,6 +2840,16 @@ impl App {
     ///
     /// Paint MUST read `math_form` too, or height and paint disagree -- the
     /// same reason `with_images` runs the row pass's own functions.
+    /// What the footnote box is laid out with: the page's hyphenation, and
+    /// the page's drawn math, so the box shows what the page shows.
+    #[must_use]
+    pub fn peek_fit(&self) -> crate::peek::Fit<'_> {
+        crate::peek::Fit {
+            hy: self.hyphenation(),
+            drawn: Some(self),
+        }
+    }
+
     fn math_rows(&self, block: BlockIdx, avail: u16) -> Option<u32> {
         let art = self.math_art.get(&block)?;
         match self.math_form(block, avail) {
@@ -3284,6 +3294,12 @@ pub fn explain_open_error(path: &Path, e: &std::io::Error) -> String {
     format!("carrel: {}: {}", path.display(), open_failure_reason(e))
 }
 
+impl crate::peek::Drawn for App {
+    fn drawn_rows(&self, block: BlockIdx, avail: u16) -> Option<u32> {
+        self.math_rows(block, avail)
+    }
+}
+
 pub fn read_document(path: &Path) -> std::io::Result<String> {
     use std::io::Read as _;
     check_document_size(path)?;
@@ -3518,7 +3534,11 @@ fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
             // The wheel over the box reads on in it; the box stays.
             Action::PeekScroll(delta) => {
                 let mut peek = peek;
-                peek.scroll(&app.doc, app.hyphenation(), delta, app.cols, app.rows);
+                let fit = crate::peek::Fit {
+                    hy: app.hyphenation(),
+                    drawn: Some(&*app),
+                };
+                peek.scroll(&app.doc, fit, delta, app.cols, app.rows);
                 app.peek = Some(peek);
                 return Some(Outcome::Redraw);
             }

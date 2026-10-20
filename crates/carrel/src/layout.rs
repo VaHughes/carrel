@@ -519,11 +519,11 @@ fn card_gutter(
 
 /// Emit one overflowing table as cards. Returns the row count.
 ///
-/// Legend (the header line, ordinary wrap), then per body row: a rule
-/// `Decoration` anchored at the row's first cell, then one run of rows per
-/// cell via `wrap_range` under the gutter. Missing cells (start at the line
-/// end) are omitted; empty-but-present cells emit one blank row so the card
-/// keeps its rhythm. A trailing rule reuses the last body row's own start
+/// Legend (the header line, ordinary wrap, broken wherever a header cell
+/// carries padding), then per body row: a rule `Decoration` anchored at the
+/// row's first cell, then one run of rows per cell via `wrap_range` under
+/// the gutter. An empty cell — written empty, or missing and filled by the
+/// parse — emits one blank row so the card keeps its rhythm and its label. A trailing rule reuses the last body row's own start
 /// (`cell_starts[(nrows - 1) * ncols]`, the same anchor as the rule right
 /// before it) rather than `node.doc.end` or the table's true last content
 /// byte. Two anchors sound wrong for two different-looking rows, but both
@@ -540,7 +540,7 @@ fn card_gutter(
 ///
 /// The chosen value is a real row boundary strictly inside the block and
 /// strictly less than the last row's own end, so it always resolves.
-fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F) -> u32 {
+pub fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F) -> u32 {
     let node = doc.node_for_block(b);
     let NodeKind::Table { cols, cell_starts } = &node.kind else {
         return 0;
@@ -561,44 +561,75 @@ fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F
         *n += 1;
     };
 
-    // Legend: the header line, at the block's own indent.
+    // Legend: the header line, at the block's own indent — in runs of
+    // header cells that sit side by side with nothing but the three-space
+    // gap between them (where paint puts the `·`). A header narrower than
+    // its column carries padding in the text, aligned at parse for the
+    // column view; that padding is ended at, never painted, so the legend
+    // can never read `a     · b`. The padding falls between two rows, where
+    // wrapping elides whitespace anyway.
     let mut first = true;
-    n += wrap_range(
-        doc,
-        b,
-        node.doc.start..ends[0],
-        width,
-        node.indent,
-        &cluster_width,
-        &mut first,
-        &mut sink,
-    );
+    let cell_end = |c: usize| -> u32 {
+        let s = cell_starts[c];
+        let e = if c + 1 < ncols {
+            cell_starts[c + 1]
+        } else {
+            ends[0]
+        }
+        .max(s);
+        s + doc.text[s as usize..e as usize].trim_end().len() as u32
+    };
+    let mut c = 0;
+    while c < ncols {
+        let start = cell_starts[c];
+        let mut end = cell_end(c);
+        while c + 1 < ncols && end + 3 == cell_starts[c + 1] && end > cell_starts[c] {
+            c += 1;
+            end = cell_end(c);
+        }
+        c += 1;
+        n += wrap_range(
+            doc,
+            b,
+            start..end,
+            width,
+            node.indent,
+            &cluster_width,
+            &mut first,
+            &mut sink,
+        );
+    }
 
     for r in 1..nrows {
         rule(&mut sink, cell_starts[r * ncols], &mut n);
         for c in 0..ncols {
             let s = cell_starts[r * ncols + c];
-            if s >= ends[r] {
-                continue; // missing cell — the row genuinely lacks it
-            }
             let e = if c + 1 < ncols {
                 cell_starts[r * ncols + c + 1]
             } else {
                 ends[r]
             };
-            let mut cf = false;
-            let got = wrap_range(
-                doc,
-                b,
-                s..e,
-                width,
-                indent,
-                &cluster_width,
-                &mut cf,
-                &mut sink,
-            );
+            // An empty last cell starts at the line end — and so does one
+            // the row never wrote, which GFM fills with an empty cell, as
+            // the parse does. Either way it is empty, labeled like any
+            // other empty cell rather than silently dropped.
+            let got = if s >= ends[r] {
+                0
+            } else {
+                let mut cf = false;
+                wrap_range(
+                    doc,
+                    b,
+                    s..e,
+                    width,
+                    indent,
+                    &cluster_width,
+                    &mut cf,
+                    &mut sink,
+                )
+            };
             if got == 0 {
-                // Present but empty (padding only): keep the card's rhythm.
+                // Empty (padding only, or nothing): keep the card's rhythm.
                 sink(Row {
                     block: b,
                     doc: s..s,
@@ -690,6 +721,31 @@ pub fn tail_text(text: &str, width: u16) -> String {
         start = at;
     }
     format!("…{}", &text[start..])
+}
+
+/// The start of `text` that fits `width` cells, with `…` for the rest: the
+/// twin of [`tail_text`] for text whose beginning names it — a heading, a
+/// paragraph — where a path is named by its end.
+#[must_use]
+pub fn head_text(text: &str, width: u16) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    if carrel_core::display_width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut used = 1u16;
+    let mut end = 0;
+    for (at, grapheme) in text.grapheme_indices(true) {
+        let size = carrel_core::display_width(grapheme);
+        if used.saturating_add(size) > width {
+            break;
+        }
+        used += size;
+        end = at + grapheme.len();
+    }
+    format!("{}…", text[..end].trim_end())
 }
 
 /// Use two or more lines when a label and value would otherwise collide.
