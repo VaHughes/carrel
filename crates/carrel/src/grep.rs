@@ -8,9 +8,13 @@
 //!
 //! The pattern comes from `carrel_core::content_pattern` — the same
 //! compilation the reader uses, so a file the grep reports will light up
-//! identically once opened. (Counts run over SOURCE text here and DISPLAY
-//! text there, so an entity reference or invisible URL can shift a count by
-//! one; accepted, and invisible in practice.)
+//! identically once opened. Counts run over SOURCE text here and DISPLAY
+//! text there. Smart punctuation is the gap that showed: the source says
+//! `don't`, the reader shows `don’t`. The pattern carries both spellings of
+//! every glyph smart punctuation rewrites, so the two sides agree on it
+//! (`the_grep_count_is_what_the_reader_finds_through_smart_punctuation`).
+//! What remains is accepted: a match inside an invisible link URL, or across
+//! an entity reference (`&amp;`), counts here and not there.
 //!
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
@@ -250,6 +254,36 @@ mod tests {
         let rx = spawn(vec![entry(&a)], "Needle".into(), 0);
         let (hits, _) = collect(&rx);
         assert_eq!(hits[0].count, 1, "a capital makes it exact");
+    }
+
+    /// The grep reads SOURCE, where the author typed `don't`; the reader
+    /// searches DISPLAY text, where smart punctuation made it `don’t`. A file
+    /// the home screen says matches must match once opened, the same number
+    /// of times, whichever spelling was typed — this used to report hits the
+    /// reader then called "no matches".
+    #[test]
+    fn the_grep_count_is_what_the_reader_finds_through_smart_punctuation() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        let src = "don't say \"hi\" -- wait...\n\nit's 10--20 --- done\n\n\
+                   ```\ndon't \"hi\" x--y\n```\n";
+        std::fs::write(&a, src).unwrap();
+        let doc = carrel_core::Document::parse(src);
+        for needle in [
+            "don't", "don’t", "\"hi\"", "“hi”", "wait...", "wait…", "10--20", "10–20", "it's",
+            "--- done", "— done",
+        ] {
+            let reader = carrel_core::search(&doc, needle, true).len();
+            let rx = spawn(vec![entry(&a)], needle.into(), 0);
+            let (hits, _) = collect(&rx);
+            let grep = hits.first().map_or(0, |h| h.count);
+            assert!(
+                reader > 0,
+                "{needle:?}: the reader finds nothing in {:?}",
+                doc.text
+            );
+            assert_eq!(grep, reader, "{needle:?}: grep and reader disagree");
+        }
     }
 
     #[test]

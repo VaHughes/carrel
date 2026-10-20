@@ -142,7 +142,7 @@ impl FileDiff {
         }
         if !self.heading.is_empty() {
             out.push_str("## ");
-            out.push_str(&self.heading);
+            out.push_str(&escape_inline(&self.heading));
             if self.added > 0 || self.removed > 0 {
                 let _ = write!(out, "  +{} −{}", self.added, self.removed);
             }
@@ -162,13 +162,157 @@ impl FileDiff {
     }
 }
 
+/// Write the text between commits and files — a commit's headers, its
+/// message, any prose around a bare diff — as markdown that cannot escape
+/// its section.
+///
+/// Paragraphs (split at blank lines) reflow, because a commit body is prose
+/// hard-wrapped at 72 columns. Two kinds of paragraph are records instead,
+/// one per line, joined with hard breaks:
+///
+/// - the **header block** git writes unindented under `commit` (`Merge:`,
+///   `Author:`, `Date:`, and `--format=fuller`'s four), and
+/// - the **trailer block** closing a message (`Co-Authored-By:`,
+///   `Signed-off-by:`), when it is not also the subject line — a
+///   conventional-commit subject (`fix: …`) has the same shape.
+///
+/// A commit message is someone else's text, and its markdown would
+/// otherwise be parsed as structure: a `# …` line opening a section that
+/// steals the commit's folding and outline entry, a fence or `<pre>`
+/// swallowing every commit after it. [`neutralize`] escapes the few line
+/// starts that open a block; everything inline (`code`, *emphasis*, links)
+/// keeps working, and so do lists, which commit bodies use.
+fn emit_message(message: &[&str], out: &mut String) {
+    let mut paras: Vec<&[&str]> = Vec::new();
+    for chunk in message.split(|l| l.trim().is_empty()) {
+        if !chunk.is_empty() {
+            paras.push(chunk);
+        }
+    }
+    let header = paras
+        .first()
+        .is_some_and(|p| p.iter().all(|l| is_header_line(l)));
+    let body = usize::from(header);
+    for (i, p) in paras.iter().enumerate() {
+        let records = (i == 0 && header)
+            || (i + 1 == paras.len() && i > body && p.iter().all(|l| is_trailer_line(l.trim())));
+        if records {
+            let lines: Vec<String> = p.iter().map(|l| escape_inline(l.trim())).collect();
+            out.push_str(&lines.join("\\\n"));
+            out.push('\n');
+        } else {
+            for line in *p {
+                out.push_str(&block_safe(line.trim()));
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+}
+
+/// `Author: …`, `AuthorDate: …`, `Merge: …`, `Reflog message: …` — the
+/// unindented lines git writes between `commit` and the message.
+fn is_header_line(l: &str) -> bool {
+    let Some((key, _)) = l.split_once(':') else {
+        return false;
+    };
+    !key.is_empty()
+        && key.len() <= 24
+        && key.starts_with(|c: char| c.is_ascii_alphabetic())
+        && key
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b' ')
+}
+
+/// `Signed-off-by: Name <mail>` — git's trailer shape: a token of letters,
+/// digits and hyphens, a colon, a space, a value.
+fn is_trailer_line(l: &str) -> bool {
+    let Some((key, value)) = l.split_once(": ") else {
+        return false;
+    };
+    !value.trim().is_empty()
+        && key.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+}
+
+/// Backslash-escape every character that means something inline, so a
+/// record line or a file path reads exactly as git wrote it: `<mail>` keeps
+/// its brackets instead of becoming an autolink, `*` and `_` stay literal.
+fn escape_inline(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        if matches!(
+            c,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '!' | '|' | '~' | '&' | '$'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A message line with its block-level meaning removed, except a list
+/// marker, which is kept: a list in a commit body should read as one.
+fn block_safe(line: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(marker_len) = list_marker(line) {
+        let (marker, rest) = line.split_at(marker_len);
+        let rest = rest.trim_start();
+        return format!("{} {}", marker.trim_end(), neutralize(rest)).into();
+    }
+    neutralize(line)
+}
+
+/// The byte length of a leading `- `, `* `, `+ `, `1. ` or `1) ` marker.
+fn list_marker(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    if matches!(b.first(), Some(b'-' | b'*' | b'+')) && b.get(1) == Some(&b' ') {
+        return Some(2);
+    }
+    let digits = b.iter().take_while(|c| c.is_ascii_digit()).count();
+    ((1..=9).contains(&digits)
+        && matches!(b.get(digits), Some(b'.' | b')'))
+        && b.get(digits + 1) == Some(&b' '))
+    .then_some(digits + 2)
+}
+
+/// Escape the first character of `line` when the line would open a block:
+/// a heading, quote, HTML block, fence, table row or definition, a link
+/// reference definition (which would vanish), or a run of `-`/`=`/`*`/`_`
+/// (a rule, or a setext underline that would turn the line above into a
+/// heading). Inline markup at the start — `` `code` ``, `*emphasis*`,
+/// `[a link](x)` — is left alone, because it cannot leave its paragraph.
+fn neutralize(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.is_empty() && line.chars().all(|c| "-=*_|: \t".contains(c)) {
+        // Every glyph, not just the first: `\---` would still read `--` as
+        // an en dash, so the line would print as `-–`.
+        let mut out = String::with_capacity(line.len() * 2);
+        for c in line.chars() {
+            if c.is_ascii_punctuation() {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        return out.into();
+    }
+    let opens_block = line.starts_with(['#', '>', '<', '|', ':'])
+        || line.starts_with("```")
+        || line.starts_with("~~~")
+        || (line.starts_with('[') && line.contains("]:"));
+    if opens_block {
+        format!("\\{line}").into()
+    } else {
+        line.into()
+    }
+}
+
 /// Turn a unified diff — or `git log`/`git show` output — into markdown.
 ///
 /// Commits become `#` headings, files become `##` headings with their line
 /// counts, and each file's hunks become one `diff`-tagged fence. Anything that
 /// is neither (a commit message, `Author:`, trailing prose) passes through as
-/// ordinary text, which is what makes `git log` readable rather than merely
-/// not-broken.
+/// text — see [`emit_message`] for how it keeps its lines and its section —
+/// which is what makes `git log` readable rather than merely not-broken.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn to_markdown(src: &str) -> String {
@@ -180,22 +324,8 @@ pub fn to_markdown(src: &str) -> String {
     let mut message: Vec<&str> = Vec::new();
 
     let flush_message = |message: &mut Vec<&str>, out: &mut String| {
-        while message.last().is_some_and(|l| l.trim().is_empty()) {
-            message.pop();
-        }
-        if message.is_empty() {
-            return;
-        }
-        for line in message.drain(..) {
-            let line = line.trim();
-            if line.is_empty() {
-                out.push('\n');
-            } else {
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-        out.push('\n');
+        emit_message(message, out);
+        message.clear();
     };
 
     for line in src.lines() {
@@ -496,6 +626,173 @@ Author: B <b@example.com>
                    rename to new name.md\n@@ -1 +1 @@\n-a\n+b\n";
         let md = to_markdown(src);
         assert!(md.contains("## new name.md"), "{md}");
+    }
+
+    const LOG: &str = "\
+commit 900449309c16739ea37977c6c0a01271423956f5
+Merge: dd63473 b20c3db
+Author: Some One <s@example.com>
+Date:   Thu Oct 8 12:54:38 2026 -0400
+
+    Anchor the selection to its path
+
+    The list re-sorts while a scan streams, so a bare
+    index drifts onto a different file.
+
+    Co-Authored-By: Claude <noreply@example.com>
+    Signed-off-by: Some One <s@example.com>
+
+commit 15d032117b441b4f9c4c6933af5ed2c6e6a80738
+Author:     Some One <s@example.com>
+AuthorDate: Thu Oct 8 16:38:47 2026 -0400
+Commit:     Some One <s@example.com>
+CommitDate: Thu Oct 8 16:38:47 2026 -0400
+
+    fix: a subject in the
+    shape: of a trailer
+";
+
+    /// `git log` headers and trailers are records, one per line. They were
+    /// joined into a single wrapped paragraph — `Merge: … Author: … Date: …`
+    /// — while the message body, which IS prose, should still reflow.
+    #[test]
+    fn commit_headers_and_trailers_keep_their_own_lines() {
+        let doc = Document::parse(&to_markdown(LOG));
+        let t = &doc.text;
+        assert!(
+            t.contains("Merge: dd63473 b20c3db\nAuthor: Some One <s@example.com>\nDate:"),
+            "headers run together: {t:?}"
+        );
+        assert!(
+            t.contains("Author:     Some One <s@example.com>\nAuthorDate:"),
+            "--format=fuller headers run together: {t:?}"
+        );
+        assert!(
+            t.contains("Co-Authored-By: Claude <noreply@example.com>\nSigned-off-by:"),
+            "trailers run together: {t:?}"
+        );
+        assert!(
+            t.contains("so a bare index drifts"),
+            "the body must still reflow: {t:?}"
+        );
+        // A paragraph shaped like trailers is not one when it is the subject:
+        // a conventional-commit subject wrapped over two lines still reflows.
+        assert!(t.contains("fix: a subject in the shape: of"), "{t:?}");
+    }
+
+    /// A commit message is someone else's text. Whatever markdown it holds
+    /// must stay inside its commit: a `#` line is not a section, a `---`
+    /// under a line is not a setext heading, a fence or `<pre>` must not
+    /// swallow the next commit, a link definition must not vanish.
+    #[test]
+    fn a_hostile_commit_message_cannot_break_its_commit_section() {
+        let src = "\
+commit aaaaaaabbbbbbbcccccccdddddddeeeeeeefffffff
+Author: A <a@example.com>
+
+    # not a heading
+
+    Title-ish line
+    ===
+
+    another
+    ---
+
+    ```
+    <pre>
+    > quoted
+    [ref]: http://example.com/x
+    : a definition
+    | a | b |
+    |---|---|
+    *emphasis* and `code` and [link](x) stay inline
+    - a list item stays a list
+    - # with a hash inside
+
+commit 1111111222222233333334444444555555566666666
+Author: B <b@example.com>
+
+    Second
+";
+        let md = to_markdown(src);
+        let doc = Document::parse(&md);
+        let headings: Vec<_> = doc
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, crate::NodeKind::Heading { .. }))
+            .map(|n| doc.text[n.doc.start as usize..n.doc.end as usize].to_string())
+            .collect();
+        assert_eq!(
+            headings,
+            ["commit aaaaaaabbbbb", "commit 111111122222"],
+            "a message line became structure: {md}"
+        );
+        for kind in [
+            "CodeBlock",
+            "BlockQuote",
+            "Table",
+            "Rule",
+            "DefTerm",
+            "DefDetails",
+            "Math",
+        ] {
+            assert!(
+                !doc.nodes
+                    .iter()
+                    .any(|n| format!("{:?}", n.kind).starts_with(kind)),
+                "a message line became a {kind}: {md}"
+            );
+        }
+        for literal in [
+            "# not a heading",
+            "===",
+            "```",
+            "<pre>",
+            "> quoted",
+            "[ref]: http://example.com/x",
+            ": a definition",
+            "| a | b |",
+            // Escaped glyph by glyph, or smart punctuation turns the run
+            // it no longer reads as a rule into an em dash.
+            "another ---",
+            "|---|---|",
+        ] {
+            assert!(
+                doc.text.contains(literal),
+                "{literal:?} lost: {:?}",
+                doc.text
+            );
+        }
+        // What a commit message legitimately uses still works.
+        assert!(
+            doc.text.contains("emphasis and code and link stay"),
+            "{:?}",
+            doc.text
+        );
+        assert!(
+            doc.nodes
+                .iter()
+                .any(|n| matches!(n.kind, crate::NodeKind::Item)),
+            "a list is a list: {md}"
+        );
+        assert!(doc.text.contains("# with a hash inside"), "{:?}", doc.text);
+    }
+
+    /// A path is a heading's text, and the heading is what the outline and
+    /// breadcrumb show: it must read as the file is named.
+    #[test]
+    fn a_file_heading_shows_its_path_literally() {
+        for path in ["wip *draft* <pre>.md", "notes #", "a_b_ `c`.md"] {
+            let src = format!("diff --git a/{path} b/{path}\n@@ -1 +1 @@\n-a\n+b\n");
+            let doc = Document::parse(&to_markdown(&src));
+            let heading = doc
+                .nodes
+                .iter()
+                .find(|n| matches!(n.kind, crate::NodeKind::Heading { .. }))
+                .map(|n| &doc.text[n.doc.start as usize..n.doc.end as usize])
+                .unwrap();
+            assert_eq!(heading, format!("{path}  +1 −1"));
+        }
     }
 
     #[test]

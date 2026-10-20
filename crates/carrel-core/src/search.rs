@@ -134,11 +134,11 @@ fn build_pattern(needle: &str, flexible_ws: bool) -> Option<Regex> {
     let body = if flexible_ws {
         needle
             .split_whitespace()
-            .map(regex::escape)
+            .map(fold_punctuation)
             .collect::<Vec<_>>()
             .join(r"\s+")
     } else {
-        regex::escape(needle)
+        fold_punctuation(needle)
     };
     // Smart-case: an all-lowercase needle matches any case; one uppercase
     // letter makes it exact. The vim/less convention, with zero UI.
@@ -147,6 +147,50 @@ fn build_pattern(needle: &str, flexible_ws: bool) -> Option<Regex> {
         .case_insensitive(!exact)
         .build()
         .ok()
+}
+
+/// Escape `literal` for the regex, widening each piece of punctuation that
+/// smart punctuation rewrites into a class holding both spellings.
+///
+/// The parser turns `'` `"` `...` `--` `---` into `’` `”` `…` `–` `—` in
+/// [`Document::text`] — but not inside code, and not in the source file the
+/// home screen greps. So the PATTERN takes both forms and the text is left
+/// alone: a typed `don't` finds the displayed `don’t`, a straight quote in a
+/// code block, and the source line the grep reads; a curly quote pasted off
+/// the screen finds all three as well.
+///
+/// Hyphen runs read greedily (`---` before `--`), the order the parser uses.
+/// A single `-` stays a hyphen: the parser never makes a dash out of one, so
+/// widening it would only let the reader find what the grep, reading source,
+/// cannot.
+fn fold_punctuation(literal: &str) -> String {
+    const SINGLE: &str = "['‘’]";
+    const DOUBLE: &str = "[\"“”]";
+    const ELLIPSIS: &str = r"(?:\.\.\.|…)";
+    const EN: &str = "(?:--|–)";
+    const EM: &str = "(?:---|—)";
+    let mut out = String::with_capacity(literal.len() + 8);
+    let mut rest = literal;
+    while let Some(c) = rest.chars().next() {
+        let (piece, len) = match c {
+            '\'' | '‘' | '’' => (SINGLE, c.len_utf8()),
+            '"' | '“' | '”' => (DOUBLE, c.len_utf8()),
+            '…' => (ELLIPSIS, c.len_utf8()),
+            '.' if rest.starts_with("...") => (ELLIPSIS, 3),
+            '—' => (EM, c.len_utf8()),
+            '–' => (EN, c.len_utf8()),
+            '-' if rest.starts_with("---") => (EM, 3),
+            '-' if rest.starts_with("--") => (EN, 2),
+            _ => {
+                out.push_str(&regex::escape(&rest[..c.len_utf8()]));
+                rest = &rest[c.len_utf8()..];
+                continue;
+            }
+        };
+        out.push_str(piece);
+        rest = &rest[len..];
+    }
+    out
 }
 
 #[cfg(test)]
@@ -264,5 +308,102 @@ mod tests {
             "one capital turns it exact"
         );
         assert_eq!(search(&doc, "HELLO", true).ranges.len(), 1);
+    }
+
+    /// The text each match covers, so a test asserts the range is exactly
+    /// the substituted glyphs and not a byte to either side.
+    fn hits<'a>(d: &'a Document, needle: &str) -> Vec<&'a str> {
+        search(d, needle, true)
+            .ranges
+            .iter()
+            .map(|r| &d.text[r.start as usize..r.end as usize])
+            .collect()
+    }
+
+    /// Smart punctuation rewrites what the author typed before it reaches
+    /// `Document::text`, so a reader typing the keys the author typed found
+    /// nothing: `don't` against a displayed `don’t`.
+    #[test]
+    fn typed_ascii_punctuation_finds_its_smart_form() {
+        let d =
+            Document::parse("don't say \"hello\" or 'hi'. Wait... pages 10--20 --- an aside.\n");
+        assert!(
+            d.text.contains("don’t"),
+            "fixture lost its smart quote: {:?}",
+            d.text
+        );
+        assert_eq!(hits(&d, "don't"), ["don’t"]);
+        assert_eq!(hits(&d, "\"hello\""), ["“hello”"]);
+        assert_eq!(hits(&d, "'hi'"), ["‘hi’"]);
+        assert_eq!(hits(&d, "wait..."), ["Wait…"]);
+        assert_eq!(hits(&d, "10--20"), ["10–20"]);
+        assert_eq!(hits(&d, "20 --- an"), ["20 — an"]);
+        // A run reads greedily: `---` is the em dash, never an en dash and
+        // a hyphen.
+        assert!(hits(&d, "10---20").is_empty());
+    }
+
+    /// The reverse: a curly quote pasted from the screen must still find a
+    /// straight one, which is what a code block holds — smart punctuation
+    /// never runs there.
+    #[test]
+    fn a_typed_smart_form_finds_both_spellings() {
+        let d = Document::parse("don't\n\n```\ndon't -- ... \"x\"\n```\n");
+        assert_eq!(hits(&d, "don’t"), ["don’t", "don't"]);
+        assert_eq!(hits(&d, "don‘t"), ["don’t", "don't"]);
+        assert_eq!(hits(&d, "–"), ["--"]);
+        assert_eq!(hits(&d, "…"), ["..."]);
+        assert_eq!(hits(&d, "“x”"), ["\"x\""]);
+    }
+
+    /// Inside code, ASCII is what is there, and an ASCII needle still finds
+    /// it: the fold widens a needle, it never replaces it.
+    #[test]
+    fn ascii_punctuation_in_code_still_matches_itself() {
+        let d = Document::parse("```\nlet s = 'a'; x--; y...z\n```\n");
+        assert_eq!(hits(&d, "'a'"), ["'a'"]);
+        assert_eq!(hits(&d, "x--"), ["x--"]);
+        assert_eq!(hits(&d, "y...z"), ["y...z"]);
+    }
+
+    /// A single typed hyphen stays a hyphen. Smart punctuation only makes a
+    /// dash out of two or more, so a lone `-` in the display text is always
+    /// one the author typed — and widening it would let `10-20` find a
+    /// displayed `10–20` that the home screen's grep, reading the source
+    /// `10--20`, can never find.
+    #[test]
+    fn a_single_hyphen_is_not_a_dash() {
+        let d = Document::parse("pages 10--20 and well-known\n");
+        assert!(hits(&d, "10-20").is_empty());
+        assert_eq!(hits(&d, "well-known"), ["well-known"]);
+    }
+
+    /// A needle with nothing to fold compiles to exactly the pattern it did
+    /// before folding existed — so ordinary searches keep their literal
+    /// prefilter and the measured per-keystroke cost, by construction.
+    #[test]
+    fn a_needle_with_nothing_to_fold_is_plainly_escaped() {
+        for n in [
+            "the",
+            "a.b*c",
+            "(x)|[y]",
+            "well-known",
+            "x.y..z",
+            "über ß",
+            "-",
+        ] {
+            assert_eq!(fold_punctuation(n), regex::escape(n), "{n:?}");
+        }
+    }
+
+    /// The fold must not disturb escaping, flexible whitespace or smart-case.
+    #[test]
+    fn folding_keeps_escaping_flexible_whitespace_and_smart_case() {
+        let d = Document::parse("It's (a.b) [c]* here...\n\nit's\n");
+        assert_eq!(hits(&d, "(a.b) [c]*"), ["(a.b) [c]*"]);
+        assert!(hits(&d, "(a?b)").is_empty(), "metacharacters stay literal");
+        assert_eq!(hits(&d, "it's"), ["It’s", "it’s"]);
+        assert_eq!(hits(&d, "It's"), ["It’s"], "a capital still makes it exact");
+        assert_eq!(hits(&d, "[c]*   here..."), ["[c]* here…"]);
     }
 }
