@@ -8,13 +8,20 @@
 //!
 //! The pattern comes from `carrel_core::content_pattern` — the same
 //! compilation the reader uses, so a file the grep reports will light up
-//! identically once opened. Counts run over SOURCE text here and DISPLAY
-//! text there. Smart punctuation is the gap that showed: the source says
-//! `don't`, the reader shows `don’t`. The pattern carries both spellings of
-//! every glyph smart punctuation rewrites, so the two sides agree on it
+//! identically once opened. The SOURCE is only the filter: a file whose
+//! source holds no match is passed over at regex speed, which is nearly
+//! every file. One that holds a match is parsed and counted over its
+//! DISPLAY text, exactly as the reader will count it. Counting the source
+//! disagreed wherever the display differs: a hyphen run becomes however
+//! many dashes smart punctuation decides (`---` is `—`, which holds no
+//! `--`), except in code, which the source cannot tell apart; and a match
+//! inside a link's URL is never shown. The pattern carries both spellings
+//! of every glyph smart punctuation rewrites, so the filter passes `don't`
+//! for a reader showing `don’t`
 //! (`the_grep_count_is_what_the_reader_finds_through_smart_punctuation`).
-//! What remains is accepted: a match inside an invisible link URL, or across
-//! an entity reference (`&amp;`), counts here and not there.
+//! What the filter cannot see is accepted: a match the source does not
+//! spell — through an entity (`&ndash;`) or across markup (`` `--`x ``) —
+//! is found once the file is open, and not here.
 //!
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
@@ -71,7 +78,7 @@ pub enum Msg {
 pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let Some(re) = carrel_core::content_pattern(&needle, true) else {
+        let Some(q) = Query::new(&needle) else {
             let _ = tx.send(Msg::Done(generation));
             return;
         };
@@ -80,7 +87,7 @@ pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Receiver<M
             if sent >= MAX_HITS {
                 break;
             }
-            if let Some(hit) = grep_file(&re, &e.path) {
+            if let Some(hit) = grep_file(&q, &e.path) {
                 if tx.send(Msg::Hit(hit, generation)).is_err() {
                     return; // receiver gone: a newer query took over
                 }
@@ -92,23 +99,58 @@ pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Receiver<M
     rx
 }
 
+/// A needle, and the source filters for it.
+struct Query {
+    needle: String,
+    /// For a source with no soft hyphen — nearly all of them.
+    plain: carrel_core::Regex,
+    /// For one with a soft hyphen, which may sit inside any word.
+    soft: carrel_core::Regex,
+}
+
+impl Query {
+    /// `None` for an empty needle.
+    fn new(needle: &str) -> Option<Self> {
+        Some(Self {
+            needle: needle.to_owned(),
+            plain: carrel_core::content_pattern(needle, true)?,
+            soft: carrel_core::content_pattern_soft(needle, true)?,
+        })
+    }
+}
+
 /// Count matches in one file; `None` when unreadable, oversized, non-UTF-8,
 /// or match-free.
-fn grep_file(re: &carrel_core::Regex, path: &std::path::Path) -> Option<Hit> {
+fn grep_file(q: &Query, path: &std::path::Path) -> Option<Hit> {
     let meta = std::fs::metadata(path).ok()?;
     if meta.len() > MAX_BYTES {
         return None;
     }
     let text = std::fs::read_to_string(path).ok()?;
-    let mut count = 0usize;
-    let mut matches: Vec<HitLine> = Vec::new();
-    for m in re.find_iter(&text) {
-        if matches.len() < MATCH_LINES {
-            let (lineno, line) = context_line(&text, m.start());
-            matches.push(HitLine { lineno, line });
-        }
-        count += 1;
-    }
+    // The source is the cheap filter: almost every file fails it, at
+    // regex speed. One that passes is parsed and counted by the reader's
+    // own search, over the display text.
+    let filter = if text.contains('\u{AD}') {
+        &q.soft
+    } else {
+        &q.plain
+    };
+    filter.find(&text)?;
+    let doc = carrel_core::Document::parse(&text);
+    let found = carrel_core::search(&doc, &q.needle, true);
+    let count = found.len();
+    let matches: Vec<HitLine> = found
+        .ranges
+        .iter()
+        .take(MATCH_LINES)
+        .map(|r| {
+            let lineno = doc.line_of(carrel_core::DocByte(r.start));
+            HitLine {
+                lineno,
+                line: source_line(&text, lineno),
+            }
+        })
+        .collect();
     let first = matches.first()?;
     Some(Hit {
         path: path.to_path_buf(),
@@ -118,18 +160,16 @@ fn grep_file(re: &carrel_core::Regex, path: &std::path::Path) -> Option<Hit> {
     })
 }
 
-/// The 1-based number and trimmed text of the source line holding `byte`.
-fn context_line(text: &str, byte: usize) -> (u32, String) {
-    let line_start = text[..byte].rfind('\n').map_or(0, |i| i + 1);
-    let line_end = text[byte..].find('\n').map_or(text.len(), |i| byte + i);
-    let lineno = u32::try_from(text[..byte].matches('\n').count() + 1).unwrap_or(u32::MAX);
-    let line: String = text[line_start..line_end]
+/// The trimmed text of 1-based source line `lineno`.
+fn source_line(text: &str, lineno: u32) -> String {
+    text.split('\n')
+        .nth(lineno.saturating_sub(1) as usize)
+        .unwrap_or_default()
         .trim()
         .chars()
         .filter(|c| !c.is_control())
         .take(120)
-        .collect();
-    (lineno, line)
+        .collect()
 }
 
 /// Render search hits as a markdown document: a section per file with a link
@@ -283,6 +323,80 @@ mod tests {
                 doc.text
             );
             assert_eq!(grep, reader, "{needle:?}: grep and reader disagree");
+        }
+    }
+
+    /// A hyphen run becomes as many dashes as smart punctuation decides,
+    /// not one per pair: `---` is `—`, which holds no `--` and no `-`. The
+    /// source holds both. Inside code the run stays literal, which reading
+    /// the source cannot tell apart — so the file list counted 3 where the
+    /// reader then said `1 of 2`.
+    #[test]
+    fn a_hyphen_run_counts_what_the_reader_shows() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        let src = "Wait... what -- really --- yes.\n\nCode: `... --` and `---` stay.\n";
+        std::fs::write(&a, src).unwrap();
+        let q = Query::new("--").unwrap();
+        assert_eq!(grep_file(&q, &a).map(|h| h.count), Some(3));
+        let q = Query::new("-").unwrap();
+        assert_eq!(grep_file(&q, &a).map(|h| h.count), Some(5), "code only");
+    }
+
+    /// A file whose only match is somewhere the reader never shows — a
+    /// link's URL — is not offered: opening it would say "no matches".
+    #[test]
+    fn a_match_the_reader_cannot_show_is_no_hit() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        std::fs::write(&a, "[docs](https://zebra.example/)\n").unwrap();
+        let q = Query::new("zebra").unwrap();
+        assert!(grep_file(&q, &a).is_none());
+    }
+
+    /// A word the author divided with soft hyphens is found whole on the
+    /// file list, as it is once open.
+    #[test]
+    fn a_soft_hyphenated_word_is_found_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        std::fs::write(&a, "super\u{AD}cali\u{AD}fragi\u{AD}listic\n").unwrap();
+        let q = Query::new("supercalifragilistic").unwrap();
+        assert_eq!(grep_file(&q, &a).map(|h| h.count), Some(1));
+    }
+
+    proptest::proptest! {
+        /// The file list's count is the reader's, for documents made of
+        /// the punctuation smart punctuation rewrites, in prose and in code.
+        #[test]
+        fn the_grep_count_is_the_reader_count(
+            parts in proptest::collection::vec(proptest::sample::select(&[
+                "-", "--", "---", "----", "-----", "x", " ", "a-b", "...", "....",
+                "'", "\"", "don't", "`--`", "`---`", "`... --`", "\n\n",
+                "\n\n```\nx---y -- z\n```\n\n", "\n- item\n", "&ndash;",
+                "super\u{AD}cali", "\u{AD}",
+            ][..]), 0..24),
+            needle in proptest::sample::select(&[
+                "-", "--", "---", "–", "—", "...", "…", "'", "\"", "x-", "x--", "-x",
+                "don't", "a-b", "percal", "supercali",
+            ][..]),
+        ) {
+            let src = parts.concat();
+            let d = tempfile::tempdir().unwrap();
+            let a = d.path().join("a.md");
+            std::fs::write(&a, &src).unwrap();
+            let q = Query::new(needle).unwrap();
+            let grep = grep_file(&q, &a).map_or(0, |h| h.count);
+            let doc = carrel_core::Document::parse(&src);
+            let reader = carrel_core::search(&doc, needle, true).len();
+            // The source is only the filter. Two things show the reader a
+            // match the source does not spell, and the filter cannot see
+            // them: an entity (`&ndash;` is `–`), and markup between the
+            // characters (`` `--`x `` reads `--x`). Both are accepted; any
+            // file the filter passes is counted exactly.
+            if grep > 0 || !(src.contains('&') || src.contains('`')) {
+                proptest::prop_assert_eq!(grep, reader, "{:?} in {:?}", needle, src);
+            }
         }
     }
 

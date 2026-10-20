@@ -824,18 +824,21 @@ line in the frontmatter names the language
 English, German, French, Spanish, Italian, Portuguese, Dutch, Danish,
 Norwegian and Polish have rules. A document that names any other language is
 not divided at all, and one that names none is divided only if it reads as
-English. A soft hyphen the author wrote is honored in any language. A word
+English. A soft hyphen the author wrote is honored in any language, as many
+rows in a row as it makes; carrel adds none of its own to make a third. A word
 longer than the whole row is divided by the same rules; any
 other run too long for the row is cut and its row ends in a dim
 .BR \[u21A9] ,
 except in code, whose continued lines start with
 .BR \[u21B3] .
-The hyphen and the mark are drawn, not written: searching, selecting and
-copying see the word whole, and
+The hyphen and the mark are drawn, not written, and the author's soft hyphen
+is invisible to searching, selecting and copying: all three see the word
+whole, and
 .B \-\-plain
 and
 .B \-\-render
-never divide one. The settings pane
+never divide one, nor cut a run too long for the row: such a line runs past
+the width instead. The settings pane
 .RB ( , )
 changes it.
 .TP

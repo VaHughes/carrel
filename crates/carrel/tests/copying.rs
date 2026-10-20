@@ -236,3 +236,31 @@ fn a_window_too_narrow_for_a_margin_still_offers_the_chip() {
         .count();
     assert_eq!(chips, code_blocks(&app).len());
 }
+
+/// A soft hyphen (U+00AD) is the author's division point, invisible
+/// unless a row ends at it. A double click takes the word it divides
+/// whole, and a copy leaves it out: pasted into a prompt or a shell it
+/// would sit inside the word, unseen, and break a search or a command.
+#[test]
+fn a_soft_hyphenated_word_selects_and_copies_whole() {
+    let src = "One super\u{AD}cali\u{AD}fragi\u{AD}listic word.\n";
+    let mut app = App::new("w.md".into(), Document::parse(src), 80, 10);
+    app.on_resize(80, 10);
+    let at = u32::try_from(app.doc.text.find("fragi").unwrap()).unwrap();
+    update(&mut app, Action::SelectWord(at));
+    let sel = app.selection.clone().expect("a word");
+    assert_eq!(
+        &app.doc.text[sel.start as usize..sel.end as usize],
+        "super\u{AD}cali\u{AD}fragi\u{AD}listic"
+    );
+    update(&mut app, Action::SelectRelease);
+    assert_eq!(app.clipboard.as_deref(), Some("supercalifragilistic"));
+
+    // Triple click: the whole block, and still none of them.
+    update(&mut app, Action::SelectBlock(at));
+    update(&mut app, Action::SelectRelease);
+    assert_eq!(
+        app.clipboard.as_deref(),
+        Some("One supercalifragilistic word.")
+    );
+}

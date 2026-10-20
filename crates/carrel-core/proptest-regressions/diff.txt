@@ -7,3 +7,7 @@
 cc ea0e74c17b85f44bde08c1d0b84bd532aca9b867ec45c5120aff084bfbfa0e6b # shrinks to commits = [(["1.\t```"], false)]
 cc 3143c5486fae59c1942e141f715e1d2bc8f9abce3a430bc872602c74ce6d42a7 # shrinks to commits = [(["1.\t1. ```"], false)]
 cc ae74a63271de49675612a941fec89a61fcdfed3be2fa79a837b4f308af754804 # shrinks to commits = [(["[word", "]: /u"], false)]
+cc 65e29877b27f0c1e3a34d2ae4e0a9469245f200ceb65bf0b175d4a725e52fa9b # shrinks to commits = [(["`--x```", "`--x`"], false)]
+cc 4766e2c1b3b602d98eae540ffc5abdb827d541019c0df36c7906e3b134da308d # shrinks to commits = [(["<!--", "```\u{a0}>"], false)]
+cc 1c539cdb965fc47ac0cd5b1840219ce333fe28c412c1ee1f1dbeb1fcc954c614 # shrinks to commits = [(["`<!--", "- `--x`"], false)]
+cc e56ab3668812dcc7bc6d503f6489af6443bf737e81624cd1be90d4d24100be6c # shrinks to commits = [(["><:", "-->"], false)]

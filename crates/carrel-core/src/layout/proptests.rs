@@ -284,4 +284,29 @@ proptest! {
             "needle {:?} highlights different characters at widths {} and {}", needle, a, b,
         );
     }
+
+    /// 9. Placing every hit of a row in one walk gives each hit the cells
+    ///    the one-hit walk gives it — over any sorted, disjoint ranges,
+    ///    including ones that start or end mid-cluster, share a cluster, or
+    ///    miss the row altogether.
+    #[test]
+    fn many_ranges_in_one_walk_match_one_range_at_a_time(
+        t in text(),
+        base in 0u32..4,
+        indent in 0u16..4,
+        cuts in prop::collection::vec(0u32..400, 0..24),
+    ) {
+        let mut cuts = cuts;
+        cuts.sort_unstable();
+        cuts.dedup();
+        let ranges: Vec<_> = cuts.as_chunks::<2>().0.iter().map(|[a, b]| *a..*b).collect();
+        let row = t.as_str();
+        let many = super::cols_for_doc_ranges(row, base, indent, &ranges);
+        prop_assert_eq!(many.len(), ranges.len());
+        for (r, got) in ranges.iter().zip(many) {
+            let r = r.start.max(base)..r.end;
+            let want = super::cols_for_doc_range(row, base, indent, &r);
+            prop_assert_eq!(got, want, "range {:?} of {:?}", r, row);
+        }
+    }
 }

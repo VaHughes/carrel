@@ -176,12 +176,30 @@ impl FileDiff {
 ///   `Signed-off-by:`), when it is not also the subject line — a
 ///   conventional-commit subject (`fix: …`) has the same shape.
 ///
+/// Inside a paragraph, some lines are records too, each kept on its own
+/// line by a hard break around it:
+///
+/// - a **trailer** run closing the last paragraph after the subject, even
+///   with no blank line above it — git's own trailer parsing reads the
+///   closing lines of the message, and a `Signed-off-by:` written straight
+///   under the body is still one;
+/// - an **indented** line, four columns or more deeper than the message —
+///   code, a quoted command, an aligned table — which reflowed into a run
+///   of words; and
+/// - a **comment** line opening with `#`, which is what git writes for a
+///   merge's `# Conflicts:` list.
+///
+/// A record is shown exactly as written ([`record_safe`]): no markup, no
+/// autolink eating a `<mail>`'s brackets.
+///
 /// A commit message is someone else's text, and its markdown would
 /// otherwise be parsed as structure: a `# …` line opening a section that
 /// steals the commit's folding and outline entry, a fence or `<pre>`
 /// swallowing every commit after it. [`neutralize`] escapes the few line
 /// starts that open a block; everything inline (`code`, *emphasis*, links)
-/// keeps working, and so do lists, which commit bodies use.
+/// keeps working, and so do lists, which commit bodies use. Smart
+/// punctuation's dashes do not ([`keep_hyphens`]): `--` in a commit
+/// message is a flag or an HTML comment, not an en dash.
 fn emit_message(message: &[&str], out: &mut String) {
     let mut paras: Vec<&[&str]> = Vec::new();
     for chunk in message.split(|l| l.trim().is_empty()) {
@@ -193,21 +211,171 @@ fn emit_message(message: &[&str], out: &mut String) {
         .first()
         .is_some_and(|p| p.iter().all(|l| is_header_line(l)));
     let body = usize::from(header);
+    // The message's own indent — git's four columns, or none for prose
+    // around a bare diff — from which a deeper line counts as indented.
+    let base = paras[body.min(paras.len())..]
+        .iter()
+        .flat_map(|p| p.iter())
+        .map(|l| indent_cols(l))
+        .min()
+        .unwrap_or(0);
     for (i, p) in paras.iter().enumerate() {
-        let records = (i == 0 && header)
-            || (i + 1 == paras.len() && i > body && p.iter().all(|l| is_trailer_line(l.trim())));
-        if records {
-            let lines: Vec<String> = p.iter().map(|l| escape_inline(l.trim())).collect();
+        if i == 0 && header {
+            let lines: Vec<String> = p.iter().map(|l| record_safe(l.trim())).collect();
             out.push_str(&lines.join("\\\n"));
-            out.push('\n');
-        } else {
-            for line in *p {
-                out.push_str(&block_safe(line.trim()));
-                out.push('\n');
-            }
+            out.push_str("\n\n");
+            continue;
         }
+        // The trailer run: the last paragraph's closing trailer-shaped
+        // lines. Never in the subject's paragraph, whose own first line
+        // has the shape whenever it is a conventional-commit subject.
+        let trailers = if i + 1 == paras.len() && i > body {
+            p.len()
+                - p.iter()
+                    .rev()
+                    .take_while(|l| is_trailer_line(l.trim()))
+                    .count()
+        } else {
+            p.len()
+        };
+        let record = |j: usize| {
+            let l: &str = p[j];
+            j >= trailers || indent_cols(l) >= base + 4 || l.trim_start().starts_with('#')
+        };
+        // Hyphens are kept over each run of lines that parses as ONE inline
+        // context, not line by line: a code span may open on one line and
+        // close on the next. A list marker opens a new item, and with it a
+        // new context; any other line continues the one before it.
+        let mut para = String::new();
+        for (j, line) in p.iter().enumerate() {
+            let shown = if record(j) {
+                record_safe(line.trim())
+            } else {
+                block_safe(line.trim()).into_owned()
+            };
+            if list_marker(&shown).is_some() {
+                out.push_str(&keep_hyphens(&para));
+                para.clear();
+            }
+            para.push_str(&shown);
+            // A hard break around a record — unless the line already ends
+            // in one: an odd run of backslashes is the author's own break,
+            // and one more would escape it into a literal backslash.
+            let own_break = shown.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1;
+            if j + 1 < p.len() && (record(j) || record(j + 1)) && !own_break {
+                para.push('\\');
+            }
+            para.push('\n');
+        }
+        out.push_str(&keep_hyphens(&para));
         out.push('\n');
     }
+}
+
+/// What sits between `<` and `>` in an autolink: a URI (a scheme of two to
+/// 32 letters, digits, `+`, `.` or `-` opening with a letter, then `:`) or
+/// a mail address — near enough to `CommonMark`'s rule that a hyphen pair
+/// inside one is left alone and nothing else is.
+fn is_autolink(t: &str) -> bool {
+    if let Some((scheme, _)) = t.split_once(':') {
+        return (2..=32).contains(&scheme.len())
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'.' | b'-'));
+    }
+    t.split_once('@').is_some_and(|(user, host)| {
+        !user.is_empty() && host.contains(|c: char| c.is_alphanumeric())
+    })
+}
+
+/// Leading columns of whitespace, a tab reaching the next multiple of four
+/// as markdown counts it.
+fn indent_cols(l: &str) -> usize {
+    let mut col = 0;
+    for b in l.bytes() {
+        match b {
+            b' ' => col += 1,
+            b'\t' => col += 4 - col % 4,
+            _ => break,
+        }
+    }
+    col
+}
+
+/// A record line, shown exactly as written: every inline character
+/// escaped ([`escape_inline`], which leaves no code span or autolink for a
+/// hyphen escape to land inside), the few line starts it leaves able to
+/// open a block — a list marker, a setext underline, a definition —
+/// escaped too, and no hyphen pair left for smart punctuation.
+fn record_safe(l: &str) -> String {
+    let mut s = escape_inline(l);
+    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+    if s.starts_with(['-', '+', '=', ':']) {
+        s.insert(0, '\\');
+    } else if (1..=9).contains(&digits) && matches!(s.as_bytes().get(digits), Some(b'.' | b')')) {
+        s.insert(digits, '\\');
+    }
+    keep_hyphens(&s).into_owned()
+}
+
+/// Escape hyphens so smart punctuation finds no pair to turn into a dash —
+/// outside code spans, where a backslash is literal, and outside
+/// autolinks, where it would change the address. An escaped hyphen ends a
+/// run, so only a hyphen followed by another unescaped one needs it.
+fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains("--") {
+        return s.into();
+    }
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            // An escape pair is copied whole: its character is literal.
+            b'\\' if i + 1 < b.len() => {
+                let n = 1 + s[i + 1..].chars().next().map_or(0, char::len_utf8);
+                out.push_str(&s[i..i + n]);
+                i += n;
+            }
+            // A code span — a run of backticks closed by a run of the same
+            // length — is copied verbatim. An unclosed run is literal text.
+            b'`' => {
+                let run = b[i..].iter().take_while(|&&c| c == b'`').count();
+                let ticks = &b[i..i + run];
+                let close = (i + run..b.len()).find(|&k| {
+                    b[k..].starts_with(ticks)
+                        && b.get(k + run) != Some(&b'`')
+                        && (k == 0 || b[k - 1] != b'`')
+                });
+                let end = close.map_or(i + run, |k| k + run);
+                out.push_str(&s[i..end]);
+                i = end;
+            }
+            // An autolink: `<`, no space, a scheme's colon or a mail's `@`,
+            // `>`. Raw HTML and a bare `<!--` are not, and get escaped.
+            b'<' => {
+                let span = s[i + 1..]
+                    .find(|c: char| c == '>' || c == '<' || c.is_whitespace())
+                    .filter(|&k| b[i + 1 + k] == b'>')
+                    .map(|k| &s[i + 1..i + 1 + k])
+                    .filter(|t| is_autolink(t));
+                let n = span.map_or(1, |t| t.len() + 2);
+                out.push_str(&s[i..i + n]);
+                i += n;
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                out.push_str("\\-");
+                i += 1;
+            }
+            _ => {
+                let n = s[i..].chars().next().map_or(1, char::len_utf8);
+                out.push_str(&s[i..i + n]);
+                i += n;
+            }
+        }
+    }
+    out.into()
 }
 
 /// `Author: …`, `AuthorDate: …`, `Merge: …`, `Reflog message: …` — the
@@ -697,6 +865,56 @@ CommitDate: Thu Oct 8 16:38:47 2026 -0400
         assert!(t.contains("fix: a subject in the shape: of"), "{t:?}");
     }
 
+    /// A trailer is a record even with no blank line above it — after body
+    /// text, or after an indented line — and keeps its `<mail>`. An indented
+    /// line and a `#` comment line (a merge's `# Conflicts:` list) keep
+    /// their own lines. And `--` in a message is two hyphens: a flag, an
+    /// HTML comment, never an en dash.
+    #[test]
+    fn message_records_keep_their_lines_and_hyphens_stay_hyphens() {
+        let src = "\
+commit aaaaaaabbbbbbbcccccccdddddddeeeeeeefffffff
+Author: A <a@example.com>
+
+    Subject line
+
+    Body text here
+    > quote
+        indented code
+    Signed-off-by: X <x@y>
+
+commit 1111111222222233333334444444555555566666666
+Merge: dd63473 b20c3db
+Author: B <b@example.com>
+
+    Merge branch 'topic'
+
+    # Conflicts:
+    #\tsrc/a.rs
+    #\tsrc/b.rs
+
+commit 2222222333333344444445555555666666677777777
+Author: C <c@example.com>
+
+    Use --force <!-- note --> and `--keep` here
+    still -- prose, a---b
+";
+        let md = to_markdown(src);
+        let doc = Document::parse(&md);
+        let t = &doc.text;
+        for want in [
+            "Body text here > quote\nindented code\nSigned-off-by: X <x@y>",
+            "# Conflicts:\n#",
+            "src/a.rs\n#",
+            "Use --force <!-- note --> and --keep here still -- prose, a---b",
+        ] {
+            assert!(t.contains(want), "{want:?} not in {t:?}\n{md}");
+        }
+        let (headings, structure) = stolen_structure(src);
+        assert_eq!(headings.len(), 3, "{headings:?}");
+        assert!(structure.is_empty(), "{structure:?}");
+    }
+
     /// A commit message is someone else's text. Whatever markdown it holds
     /// must stay inside its commit: a `#` line is not a section, a `---`
     /// under a line is not a setext heading, a fence or `<pre>` must not
@@ -967,6 +1185,18 @@ Author: B <b@example.com>
             "-=-",
             "[word",
             "word]: /u",
+            "Signed-off-by: x <y@z>",
+            "Co-Authored-By: w",
+            "# Conflicts:",
+            "#\t",
+            "--force",
+            "--",
+            "`--x`",
+            "``",
+            "<http://a--b>",
+            "<a@b>",
+            "\\-",
+            "        ",
         ];
 
         fn line() -> impl Strategy<Value = String> {
@@ -1009,8 +1239,13 @@ Author: B <b@example.com>
                 // And no message text vanishes — into a link reference
                 // definition, say. (Inline HTML may hide what it wraps, as
                 // the author's own markup; it stays inside its paragraph.)
+                // No hyphen pair in a message becomes a dash.
+                let doc = Document::parse(&to_markdown(&src));
+                prop_assert!(
+                    !doc.text.contains(['\u{2013}', '\u{2014}']),
+                    "{:?}\n{}", doc.text, to_markdown(&src)
+                );
                 if !src.contains('<') {
-                    let doc = Document::parse(&to_markdown(&src));
                     prop_assert_eq!(
                         doc.text.matches("word").count(),
                         src.matches("word").count(),
