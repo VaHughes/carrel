@@ -39,6 +39,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::SystemTime;
 
@@ -116,16 +118,45 @@ pub enum Msg {
     },
 }
 
+/// A tag scan in flight: the receiving end, and the switch that stops it.
+///
+/// Dropping it stops the workers at their next file. A dropped receiver
+/// alone could not: the workers only learned of it when a SEND failed, and
+/// they sent only on finding a tagged document — so in a folder of untagged
+/// notes, a scan whose page had been closed read every file anyway, and
+/// opening and closing the tags page a few times left that many eight-thread
+/// scans reading up to [`BODY_MAX`] a file.
+#[derive(Debug)]
+pub struct Scan {
+    rx: Receiver<Msg>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl std::ops::Deref for Scan {
+    type Target = Receiver<Msg>;
+    fn deref(&self) -> &Receiver<Msg> {
+        &self.rx
+    }
+}
+
+impl Drop for Scan {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Read the head of every entry on a background thread, reporting the ones
 /// that declare tags. Every message is stamped with `generation`; the caller
-/// ignores stale ones, and a dropped receiver stops the thread at its next
-/// send.
+/// ignores stale ones, and dropping the [`Scan`] stops the thread within a
+/// file per worker.
 ///
 /// `titles` also reads each tagged document's title (`scan::title_of`), for
 /// the reader who asked the file list to show titles.
 #[must_use]
-pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
+pub fn spawn(source: Source, titles: bool, generation: u64) -> Scan {
     let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let canceled = Arc::clone(&cancel);
     std::thread::spawn(move || {
         let entries = match source {
             Source::Entries(entries) => entries,
@@ -133,10 +164,19 @@ pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
             // The walk is the home screen's own, on this thread.
             Source::Walk(root) => crate::scan::walk_blocking(&root).0,
         };
-        let Some((read, capped)) = read_all(&entries, titles, |t| {
+        let read = |e: &Entry| {
+            let tags = tags_of(&e.path);
+            (!tags.is_empty()).then(|| Tagged {
+                path: e.path.clone(),
+                mtime: e.mtime,
+                tags,
+                title: titles.then(|| crate::scan::title_of(&e.path)).flatten(),
+            })
+        };
+        let Some((read, capped)) = read_all(&entries, &canceled, read, |t| {
             tx.send(Msg::Found(t, generation)).is_ok()
         }) else {
-            return; // receiver gone: the reader moved on
+            return; // canceled, or the receiver is gone: the reader moved on
         };
         let _ = tx.send(Msg::Done {
             read,
@@ -144,12 +184,18 @@ pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
             generation,
         });
     });
-    rx
+    Scan { rx, cancel }
 }
 
-/// Read every entry's tags, handing each tagged document to `found` in the
-/// entries' own order, and return `(read, capped)` — or `None` once `found`
-/// says no one is listening.
+/// How far past the oldest document still being read the workers may run.
+/// One file that will not finish — a stalled network mount — would
+/// otherwise let the rest read the whole folder into a reorder buffer that
+/// waits on it.
+const AHEAD: usize = 256;
+
+/// Read every entry with `read`, handing each tagged document to `found` in
+/// the entries' own order, and return `(read, capped)` — or `None` once
+/// `cancel` is set or `found` says no one is listening.
 ///
 /// Spread over a few threads, because an inline tag can only be told from
 /// the other things a `#word` is by parsing the file, and parsing is the
@@ -157,34 +203,46 @@ pub fn spawn(source: Source, titles: bool, generation: u64) -> Receiver<Msg> {
 /// could not rule out took seconds to parse on one core. The order the
 /// documents arrive in is kept, so the result is the one a single thread
 /// would give, and [`MAX_TAGGED`] stops the read at the same document.
+///
+/// Every worker checks `cancel` before each file, so a canceled scan stops
+/// within one file per worker, and none runs more than [`AHEAD`] documents
+/// past the oldest one not yet in.
 fn read_all(
     entries: &[Entry],
-    titles: bool,
+    cancel: &AtomicBool,
+    read: impl Fn(&Entry) -> Option<Tagged> + Sync,
     mut found: impl FnMut(Tagged) -> bool,
 ) -> Option<(usize, bool)> {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex, PoisonError};
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
         .clamp(1, 8);
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
+    // How many documents are in, in order; workers ahead of it wait.
+    let floor = (Mutex::new(0usize), Condvar::new());
+    let quit = || stop.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed);
     let (done_tx, done_rx) = mpsc::channel::<(usize, Option<Tagged>)>();
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let done_tx = done_tx.clone();
-            let (next, stop) = (&next, &stop);
+            let (next, floor, quit, read) = (&next, &floor, &quit, &read);
             scope.spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
+                while !quit() {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(e) = entries.get(i) else { break };
-                    let tags = tags_of(&e.path);
-                    let tagged = (!tags.is_empty()).then(|| Tagged {
-                        path: e.path.clone(),
-                        mtime: e.mtime,
-                        tags,
-                        title: titles.then(|| crate::scan::title_of(&e.path)).flatten(),
-                    });
-                    if done_tx.send((i, tagged)).is_err() {
+                    // A timeout, not a bare wait: `cancel` is set by whoever
+                    // owns the scan, and it has no condvar to notify.
+                    let mut at = floor.0.lock().unwrap_or_else(PoisonError::into_inner);
+                    while i >= *at + AHEAD && !quit() {
+                        at = floor
+                            .1
+                            .wait_timeout(at, std::time::Duration::from_millis(20))
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0;
+                    }
+                    drop(at);
+                    if quit() || done_tx.send((i, read(e))).is_err() {
                         break;
                     }
                 }
@@ -194,16 +252,20 @@ fn read_all(
         // Results arrive in whatever order the workers finish; hold the
         // early ones until the documents before them are in.
         let mut waiting: HashMap<usize, Option<Tagged>> = HashMap::new();
-        let (mut read, mut count, mut capped) = (0usize, 0usize, false);
+        let (mut done, mut count, mut capped) = (0usize, 0usize, false);
         let mut alive = true;
         'outer: for (i, tagged) in &done_rx {
+            if cancel.load(Ordering::Relaxed) {
+                alive = false;
+                break;
+            }
             waiting.insert(i, tagged);
-            while let Some(tagged) = waiting.remove(&read) {
+            while let Some(tagged) = waiting.remove(&done) {
                 if count >= MAX_TAGGED {
                     capped = true;
                     break 'outer;
                 }
-                read += 1;
+                done += 1;
                 if let Some(t) = tagged {
                     if !found(t) {
                         alive = false;
@@ -212,9 +274,12 @@ fn read_all(
                     count += 1;
                 }
             }
+            *floor.0.lock().unwrap_or_else(PoisonError::into_inner) = done;
+            floor.1.notify_all();
         }
         stop.store(true, Ordering::Relaxed);
-        alive.then_some((read, capped))
+        floor.1.notify_all();
+        (alive && !cancel.load(Ordering::Relaxed)).then_some((done, capped))
     })
 }
 
@@ -1527,5 +1592,101 @@ mod tests {
             capped: true,
         };
         assert!(render(Path::new("/r"), &index).contains("Stopped at"));
+    }
+
+    fn fake_entries(n: usize) -> Vec<Entry> {
+        (0..n)
+            .map(|i| Entry {
+                path: PathBuf::from(format!("/nowhere/{i}.md")),
+                mtime: SystemTime::UNIX_EPOCH,
+            })
+            .collect()
+    }
+
+    /// A canceled scan stops reading within a file per worker, whether or
+    /// not anything it reads is tagged. The bug: workers learned the page
+    /// was gone only when a send failed, and they sent only for a tagged
+    /// document — so over untagged notes every file was read anyway.
+    #[test]
+    fn a_canceled_scan_stops_reading_promptly() {
+        use std::time::{Duration, Instant};
+        let entries = fake_entries(100_000);
+        let cancel = AtomicBool::new(false);
+        let reads = AtomicUsize::new(0);
+        let begun = Instant::now();
+        let out = read_all(
+            &entries,
+            &cancel,
+            |_| {
+                if reads.fetch_add(1, Ordering::Relaxed) == 50 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                std::thread::sleep(Duration::from_micros(200));
+                None // untagged: nothing is ever sent to `found`
+            },
+            |_| true,
+        );
+        assert_eq!(out, None, "a canceled scan reports nothing");
+        let n = reads.load(Ordering::Relaxed);
+        assert!(n <= 51 + 8, "{n} files read after the cancel at 51");
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            begun.elapsed()
+        );
+    }
+
+    /// One file that never finishes holds the rest at most [`AHEAD`]
+    /// documents past it, rather than letting them read the whole folder
+    /// into the reorder buffer behind it.
+    #[test]
+    fn a_stalled_read_holds_the_rest_a_bounded_distance_ahead() {
+        use std::time::Duration;
+        let entries = fake_entries(10_000);
+        let cancel = AtomicBool::new(false);
+        let release = AtomicBool::new(false);
+        let reads = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            let scan = s.spawn(|| {
+                read_all(
+                    &entries,
+                    &cancel,
+                    |e| {
+                        if e.path == Path::new("/nowhere/0.md") {
+                            while !release.load(Ordering::Relaxed) {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                        reads.fetch_add(1, Ordering::Relaxed);
+                        None
+                    },
+                    |_| true,
+                )
+            });
+            std::thread::sleep(Duration::from_millis(300));
+            let ahead = reads.load(Ordering::Relaxed);
+            release.store(true, Ordering::Relaxed);
+            let out = scan.join().unwrap();
+            assert!(
+                ahead <= AHEAD + 8,
+                "{ahead} files read while the first stalled"
+            );
+            assert_eq!(out, Some((10_000, false)), "and the scan still finishes");
+        });
+    }
+
+    /// Dropping the handle is the cancel: `TagScan` withdraws a request by
+    /// dropping it, and has no other way to say so.
+    #[test]
+    fn dropping_a_scan_cancels_it() {
+        let d = tempfile::tempdir().unwrap();
+        let entries: Vec<Entry> = (0..3)
+            .map(|i| write(d.path(), &format!("{i}.md"), "plain\n"))
+            .collect();
+        let scan = spawn(Source::Entries(entries), false, 1);
+        let switch = Arc::clone(&scan.cancel);
+        assert!(!switch.load(Ordering::Relaxed));
+        drop(scan);
+        assert!(switch.load(Ordering::Relaxed));
     }
 }

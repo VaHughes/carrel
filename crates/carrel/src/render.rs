@@ -1929,25 +1929,7 @@ fn paint_row(
         // 3. Text — shared with the footnote peek, which paints the same
         //    rows into its own box.
         let x = paint_text(buf, app, block, row, area, y, base);
-
-        // 3'. The hyphen of a word divided to fill this row. Decoration, like
-        //     the bullet: it is in no text, so search, selection and copy
-        //     never see it, and it is painted dim so it does not pass for a
-        //     hyphen the author wrote. The core reserved its cell.
-        if let RowKind::Text { hyphen: true, .. } = row.kind
-            && x < area.right()
-        {
-            buf.set_stringn(x, y, "-", 1, theme::dim());
-        }
-        // 3''. A run with no break in it — a hash, a token — cut because it
-        //      is wider than the row. Not a hyphen: a hyphen in a URL is a
-        //      character somebody types back in. Decoration in the cell the
-        //      core reserved, like the hyphen, so it is in no text either.
-        if let RowKind::Text { split: true, .. } = row.kind
-            && x < area.right()
-        {
-            buf.set_stringn(x, y, SPLIT_MARK, 1, theme::dim());
-        }
+        paint_cut_mark(buf, row, x, area, y);
     }
 
     // 3d. The frontmatter card. Its rows are ordinary rows — the value column
@@ -2766,7 +2748,7 @@ fn paint_launcher(
 fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(peek) = &app.peek else { return };
     let area = frame.area();
-    let z = peek.zone(&app.doc, area.width, area.height);
+    let z = peek.zone(&app.doc, app.hyphenation(), area.width, area.height);
     if z.w < 8 || z.h < 4 {
         return; // no room to say anything; the next action closes it
     }
@@ -2816,7 +2798,7 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
             buf.set_stringn(z.x + 1, y, " ".repeat(inner), inner, theme::status());
         }
     }
-    let view = peek.view(&app.doc, area.width, area.height);
+    let view = peek.view(&app.doc, app.hyphenation(), area.width, area.height);
     // The text column: a cell of air inside each border, above the button
     // row.
     let text = Rect::new(z.x + 2, z.y + 1, z.w - 4, z.h - 3);
@@ -2853,6 +2835,35 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
         frame
             .buffer_mut()
             .set_stringn(text.x, y, more, usize::from(room), theme::dim());
+    }
+}
+
+/// The mark at the end of a row the core cut mid-run, at `x`, the cell
+/// after its text — shared by the page and the footnote peek, so a word cut
+/// in the box says so exactly as it does on the page.
+///
+/// 3'. The hyphen of a word divided to fill this row. Decoration, like the
+///     bullet: it is in no text, so search, selection and copy never see
+///     it, and it is painted dim so it does not pass for a hyphen the
+///     author wrote. The core reserved its cell.
+///
+/// 3''. A run with no break in it — a hash, a token — cut because it is
+///      wider than the row. Not a hyphen: a hyphen in a URL is a character
+///      somebody types back in. Decoration in the cell the core reserved,
+///      like the hyphen, so it is in no text either.
+fn paint_cut_mark(buf: &mut Buffer, row: &Row, x: u16, area: Rect, y: u16) {
+    let RowKind::Text { hyphen, split, .. } = row.kind else {
+        return;
+    };
+    let mark = if hyphen {
+        "-"
+    } else if split {
+        SPLIT_MARK
+    } else {
+        return;
+    };
+    if x < area.right() {
+        buf.set_stringn(x, y, mark, 1, theme::dim());
     }
 }
 
@@ -2911,7 +2922,8 @@ fn paint_peek_row(
         NodeKind::Image { .. } => theme::dim(),
         _ => Style::default(),
     };
-    paint_text(buf, app, row.block, row, area, y, base);
+    let x = paint_text(buf, app, row.block, row, area, y, base);
+    paint_cut_mark(buf, row, x, area, y);
     // The buttons on the row, on the box's layer and pushed after its
     // `Absorb`, so they are what a click inside the box finds.
     let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
@@ -6061,5 +6073,65 @@ mod pane_frame_tests {
                 }
             }
         }
+    }
+
+    /// A peek opened, scrolled both ways and repainted at every size down to
+    /// one cell never panics — with a footnote whose words divide and whose
+    /// token is cut, so the box's `-` and `↩` stages run at every width,
+    /// with the page's hyphenation on. Ported from a review probe of the
+    /// tiny-window paths.
+    #[test]
+    fn a_peek_at_any_size_never_panics() {
+        const SIZES: &[(u16, u16)] = &[
+            (1, 1),
+            (2, 1),
+            (1, 2),
+            (2, 2),
+            (3, 3),
+            (4, 3),
+            (5, 4),
+            (8, 4),
+            (9, 4),
+            (10, 3),
+            (12, 5),
+            (20, 4),
+            (30, 6),
+            (5, 10),
+            (1, 30),
+            (80, 2),
+            (80, 24),
+        ];
+        let src = format!(
+            "---\nlang: en\n---\n\nBody[^n] with #tag here.\n\n[^n]: incomprehensibilities \
+             {}\n\n    - one\n    - two\n\n    > quote\n\n    ```\n    {}\n    ```\n",
+            "0123456789abcdef".repeat(8),
+            "code ".repeat(20)
+        );
+        let mut fails = Vec::new();
+        for &(c, r) in SIZES {
+            for at in [
+                (0u16, 0u16),
+                (c.saturating_sub(1), r.saturating_sub(1)),
+                (c / 2, r / 2),
+            ] {
+                let res = std::panic::catch_unwind(|| {
+                    let mut a = App::new("t.md".into(), carrel_core::Document::parse(&src), c, r);
+                    a.on_resize(c, r);
+                    let byte = u32::try_from(a.doc.text.find("[^n]").unwrap()).unwrap();
+                    update(&mut a, Action::FootnotePeek { at, byte });
+                    paint(&a);
+                    update(&mut a, Action::PeekScroll(3));
+                    paint(&a);
+                    update(&mut a, Action::PeekScroll(-5));
+                    paint(&a);
+                    a.on_resize(c, r);
+                    paint(&a);
+                });
+                if res.is_err() {
+                    fails.push(format!("peek {c}x{r} at {at:?}"));
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{fails:#?}");
     }
 }

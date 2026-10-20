@@ -2124,7 +2124,7 @@ impl Siblings {
 /// layer as an action. `Grep`'s shape, without the debounce — a request is a
 /// single keystroke, not a query being typed.
 struct TagScan {
-    rx: Option<Receiver<carrel::tags::Msg>>,
+    rx: Option<carrel::tags::Scan>,
     generation: u64,
     found: Vec<carrel::tags::Tagged>,
 }
@@ -2145,8 +2145,8 @@ impl TagScan {
 
     fn tick(&mut self, app: &mut App) {
         if app.tags != carrel::tags::Request::Wanted {
-            // Withdrawn. Dropping the receiver stops the thread at its next
-            // send; bumping the generation discards anything already queued.
+            // Withdrawn. Dropping the scan stops its workers within a file;
+            // bumping the generation discards anything already queued.
             if self.rx.take().is_some() {
                 self.generation += 1;
             }
@@ -2737,10 +2737,20 @@ fn pane_wheel(m: MouseEvent, app: &App) -> Option<carrel::action::Action> {
     }
 }
 
-/// The wheel over an open peek reads on in the footnote. Anywhere else it
+/// The pointer over an open peek, beyond the left click its painted
+/// targets answer. The wheel reads on in the footnote; anywhere else it
 /// scrolls the page — and, being something the reader did, closes the
 /// peek. The box is a target only where it was painted.
-fn peek_wheel(
+///
+/// A right-click or a drag inside the box is the box's, and the box has no
+/// menu and nothing to select: `Some(Absorb)`, answered and dropped. Mapped
+/// through with `doc_span_at`, either acted on the text the box hides. The
+/// box does show document bytes, but a menu for one would close the box as
+/// it opened (a peek closes on whatever comes next — the one-pane rule) and
+/// leave its rows naming text no longer on screen; the box's own links and
+/// marks answer a left click. Inert, then, as a right-click into a pane is
+/// (`open_menu_at`).
+fn peek_pointer(
     m: MouseEvent,
     app: &App,
     targets: &Targets,
@@ -2753,6 +2763,7 @@ fn peek_wheel(
     match m.kind {
         MouseEventKind::ScrollDown => Some(Action::PeekScroll(ptr.wheel.notch(true))),
         MouseEventKind::ScrollUp => Some(Action::PeekScroll(-ptr.wheel.notch(false))),
+        MouseEventKind::Down(MouseButton::Right) | MouseEventKind::Drag(_) => Some(Action::Absorb),
         _ => None,
     }
 }
@@ -2799,8 +2810,8 @@ fn mouse_action(
     if let Some(action) = beside_pane(m, app, targets) {
         return (action != carrel::action::Action::Absorb).then_some(action);
     }
-    if let Some(action) = pane_wheel(m, app).or_else(|| peek_wheel(m, app, targets, ptr)) {
-        return Some(action);
+    if let Some(action) = pane_wheel(m, app).or_else(|| peek_pointer(m, app, targets, ptr)) {
+        return (action != Action::Absorb).then_some(action);
     }
     if matches!(m.kind, MouseEventKind::Down(MouseButton::Right)) {
         return open_menu_at(m, app);
@@ -3523,6 +3534,88 @@ mod tests {
                 assert_eq!(result, Some(expected), "home={home}, pane={open:?}");
             }
         }
+    }
+
+    /// A right-click, or a drag, anywhere inside an open footnote peek is
+    /// the box's, and the box has no menu: it never reaches the document
+    /// text hidden behind it. The bug: `open_menu_at` mapped the pointer
+    /// straight through the box with `doc_span_at`, so a right-click on the
+    /// footnote opened a context menu — "Open link", "Select word" — for
+    /// whatever the box was covering. Beside the box a right-click is the
+    /// page's, as it always was. Targets are the painter's own, not
+    /// hand-built, so the box tested is the box drawn.
+    #[test]
+    fn a_right_click_inside_a_peek_never_reaches_the_text_behind_it() {
+        use carrel::action::Action;
+        let src = "Body[^n] and [a link](x.md).\n\n\
+                   see [hidden](x.md) under the box and more words here\n\n\
+                   and [another](y.md) line of text under it too\n\n\
+                   [^n]: one [inside](z.md) the box, and a mark[^m] too\n\n\
+                   [^m]: m\n";
+        let (cols, rows) = (60, 20);
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(src), cols, rows);
+        let byte = u32::try_from(app.doc.text.find("[^n]").unwrap()).unwrap();
+        update(&mut app, Action::FootnotePeek { at: (4, 0), byte });
+        assert!(app.peek.is_some());
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(cols, rows)).unwrap();
+        let mut painted = carrel::render::Painted::default();
+        term.draw(|f| {
+            carrel::render::draw_full(f, &app, &mut painted, &mut std::collections::HashMap::new());
+        })
+        .unwrap();
+        let targets = painted.targets;
+        let z = app
+            .peek
+            .as_ref()
+            .unwrap()
+            .zone(&app.doc, app.hyphenation(), cols, rows);
+        let mut leaked = Vec::new();
+        let mut covered_text = 0;
+        for row in z.y..z.y + z.h {
+            for col in z.x..z.x + z.w {
+                if app.doc_span_at(col, row).is_some() {
+                    covered_text += 1;
+                }
+                for kind in [
+                    MouseEventKind::Down(MouseButton::Right),
+                    MouseEventKind::Drag(MouseButton::Left),
+                ] {
+                    let a = mouse_action(
+                        mouse(kind, col, row),
+                        &app,
+                        &targets,
+                        &mut Pointer::default(),
+                    );
+                    if a.is_some() {
+                        leaked.push(format!("{kind:?} at ({col},{row}) -> {a:?}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            covered_text > 20,
+            "the box must cover text, or this proves nothing"
+        );
+        assert!(leaked.is_empty(), "{}", leaked.join("\n"));
+
+        // Beside the box, the page's own context menu, for the text there.
+        let (col, row) = (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (c, r)))
+            .find(|&(c, r)| {
+                app.doc_span_at(c, r).is_some() && !targets.covered_at(c, r, carrel::render::Z_MENU)
+            })
+            .expect("text beside the box");
+        let a = mouse_action(
+            mouse(MouseEventKind::Down(MouseButton::Right), col, row),
+            &app,
+            &targets,
+            &mut Pointer::default(),
+        );
+        assert!(
+            matches!(a, Some(Action::MenuOpen { byte: Some(_), .. })),
+            "{a:?}"
+        );
     }
 
     /// The wheel over a peek scrolls the footnote in it; anywhere else it

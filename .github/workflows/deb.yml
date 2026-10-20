@@ -49,8 +49,12 @@ jobs:
     runs-on: ["self-hosted", "linux", "x64", "ghostmachine", "build"]
     permissions:
       contents: write
+    # GH_TOKEN is NOT job-wide. It can write to the repository's contents,
+    # and this job runs third-party code on a self-hosted runner: `cargo
+    # install cargo-deb` compiles and runs its dependencies' build scripts,
+    # and build-deb.sh runs cargo-deb. Only the two steps that talk to the
+    # release are given it.
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # For a tag push, a workflow_run's head_branch is the tag name.
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
       # Pinned like the toolchain: a cargo-deb upgrade changes the package.
@@ -79,6 +83,8 @@ jobs:
         run: cargo install cargo-deb --version "$CARGO_DEB_VERSION" --locked
 
       - name: Fetch the musl archives and check them against their own sums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl
           for t in x86_64 aarch64; do
@@ -104,4 +110,6 @@ jobs:
           for f in debs/*.deb; do ./scripts/check-packaging.sh "$f"; done
 
       - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber debs/*.deb debs/*.deb.sha256
