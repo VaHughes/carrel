@@ -6126,9 +6126,12 @@ impl App {
 }
 
 /// Put `text` on the clipboard and say what was sent. One line, no control
-/// characters: this is pasted into a prompt or a shell.
+/// characters and no soft hyphens: this is pasted into a prompt or a shell.
 fn copy_line(app: &mut App, text: &str) -> Outcome {
-    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    let text: String = text
+        .chars()
+        .filter(|&c| !c.is_control() && c != '\u{AD}')
+        .collect();
     app.note = Some(format!("copied {text}"));
     app.clipboard = Some(text);
     Outcome::Redraw
@@ -6209,6 +6212,8 @@ fn copy_quote(app: &mut App) -> Outcome {
 }
 
 /// The alphanumeric/`_`/`-` run around `byte`, or `None` on a non-word cell.
+/// A soft hyphen (U+00AD) is part of the word it divides: it is invisible
+/// unless a row ends at it, and the word reads whole.
 fn word_range_at(text: &str, byte: u32) -> Option<std::ops::Range<u32>> {
     let mut at = byte as usize;
     if at >= text.len() {
@@ -6217,7 +6222,7 @@ fn word_range_at(text: &str, byte: u32) -> Option<std::ops::Range<u32>> {
     while !text.is_char_boundary(at) {
         at -= 1;
     }
-    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '\u{AD}');
     if !text[at..].chars().next().is_some_and(is_word) {
         return None;
     }

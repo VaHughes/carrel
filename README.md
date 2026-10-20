@@ -254,17 +254,20 @@ under 70 cells, carrel divides such a word to fill the row, by the rules TeX
 uses (`docu-` / `mentation`). It is deliberately reluctant: only running prose,
 only a plain lowercase word of six letters or more (or a capitalized German
 noun), never code, a heading, a
-table, a name or a path, never the last word of a paragraph, and never three
-rows in a row. Each language's rules apply to that language only: a `lang:`
+table, a name or a path, never the last word of a paragraph, and never a
+third row in a row. Each language's rules apply to that language only: a `lang:`
 (or `language:`) line in the frontmatter names it — `de`, `fr-CA`, `pt-BR` —
 and carrel has the rules for English, German, French, Spanish, Italian,
 Portuguese, Dutch, Danish, Norwegian and Polish. A document that names any
 other language is left alone rather than divided by the wrong rules, and one
 that names none is divided only if it reads as English. A soft hyphen the
 author wrote (`&shy;`) is honored in any language: invisible mid-row, a hyphen
-where the row breaks at it. **The hyphen is drawn,
-not written**: it is dimmer than the letters beside it, and search, selection
-and copy see the word whole, because it was never in the text. `--plain` and
+where the row breaks at it. Those are the author's choices, so carrel takes
+every one, however many rows in a row they make; they count toward the limit,
+so carrel never adds a division of its own to make a third. **The hyphen is
+drawn, not written**: it is dimmer than the letters beside it, and search,
+selection and copy see the word whole — carrel's hyphen was never in the text,
+and the author's soft hyphen is invisible to all three. `--plain` and
 `--render` never divide a word. Turn it off in the settings pane (`,`) or with
 `hyphenate = false`.
 
@@ -272,7 +275,10 @@ A word, hash or token longer than the whole row has to be cut somewhere. A word
 in the document's language is divided where its rules allow, with a hyphen;
 anything else is cut where it must and the row ends in a dim `↩`, so a cut
 token does not look like a shorter one. That mark is drawn, not written, too.
-Code is the exception: its continued lines already start with `↳`.
+Code is the exception: its continued lines already start with `↳`. `--plain`
+and `--render` cannot draw a dim mark, and a hyphen would be wrong inside a
+hash or a URL, so they cut nothing: such a line runs past the width instead,
+and the author's soft hyphens are left out.
 
 ### Images, highlights, and notes
 

@@ -102,7 +102,10 @@ impl Matches {
 /// would paint as a zero-cell rectangle.
 #[must_use]
 pub fn search(doc: &Document, pattern: &str, flexible_ws: bool) -> Matches {
-    let ranges = build_pattern(pattern, flexible_ws).map_or_else(Vec::new, |re| {
+    // The soft-hyphen allowance costs the literal prefilter (about 2x per
+    // keystroke), so only a text that holds one pays for it.
+    let soft = doc.text.contains(SOFT_HYPHEN);
+    let ranges = build_pattern(pattern, flexible_ws, soft).map_or_else(Vec::new, |re| {
         re.find_iter(&doc.text)
             .filter(|m| m.end() > m.start())
             .map(|m| m.start() as u32..m.end() as u32)
@@ -117,28 +120,38 @@ pub fn search(doc: &Document, pattern: &str, flexible_ws: bool) -> Matches {
     }
 }
 
-/// The compiled pattern [`search`] uses, exposed so a frontend's multi-file
-/// grep matches EXACTLY what the reader will find after opening the file:
-/// same escaping, same `flexible_ws`, same smart-case. Returns `None` for an
-/// empty needle.
+/// The compiled pattern [`search`] uses on a text with no soft hyphen,
+/// exposed so a frontend's multi-file grep matches EXACTLY what the reader
+/// will find after opening the file: same escaping, same `flexible_ws`, same
+/// smart-case. Returns `None` for an empty needle. A text that holds a soft
+/// hyphen (U+00AD) takes [`content_pattern_soft`] instead, as `search` does.
 #[must_use]
 pub fn content_pattern(needle: &str, flexible_ws: bool) -> Option<Regex> {
-    build_pattern(needle, flexible_ws)
+    build_pattern(needle, flexible_ws, false)
+}
+
+/// [`content_pattern`] for a text that holds a soft hyphen (U+00AD): one
+/// may sit between any two characters of the needle, so a word the author
+/// divided is found whole.
+#[must_use]
+pub fn content_pattern_soft(needle: &str, flexible_ws: bool) -> Option<Regex> {
+    build_pattern(needle, flexible_ws, true)
 }
 
 /// Build the literal (escaped) pattern. Returns `None` for an empty needle.
-fn build_pattern(needle: &str, flexible_ws: bool) -> Option<Regex> {
+fn build_pattern(needle: &str, flexible_ws: bool, soft: bool) -> Option<Regex> {
     if needle.trim().is_empty() {
         return None;
     }
+    let fold = |w: &str| fold_punctuation(w, soft);
     let body = if flexible_ws {
         needle
             .split_whitespace()
-            .map(fold_punctuation)
+            .map(fold)
             .collect::<Vec<_>>()
             .join(r"\s+")
     } else {
-        fold_punctuation(needle)
+        fold(needle)
     };
     // Smart-case: an all-lowercase needle matches any case; one uppercase
     // letter makes it exact. The vim/less convention, with zero UI.
@@ -148,6 +161,9 @@ fn build_pattern(needle: &str, flexible_ws: bool) -> Option<Regex> {
         .build()
         .ok()
 }
+
+/// U+00AD, the author's own division point.
+const SOFT_HYPHEN: char = '\u{AD}';
 
 /// Escape `literal` for the regex, widening each piece of punctuation that
 /// smart punctuation rewrites into a class holding both spellings.
@@ -163,15 +179,26 @@ fn build_pattern(needle: &str, flexible_ws: bool) -> Option<Regex> {
 /// A single `-` stays a hyphen: the parser never makes a dash out of one, so
 /// widening it would only let the reader find what the grep, reading source,
 /// cannot.
-fn fold_punctuation(literal: &str) -> String {
+fn fold_punctuation(literal: &str, soft: bool) -> String {
     const SINGLE: &str = "['‘’]";
     const DOUBLE: &str = "[\"“”]";
     const ELLIPSIS: &str = r"(?:\.\.\.|…)";
     const EN: &str = "(?:--|–)";
     const EM: &str = "(?:---|—)";
-    let mut out = String::with_capacity(literal.len() + 8);
+    let mut out = String::with_capacity(literal.len() * 4 + 8);
     let mut rest = literal;
     while let Some(c) = rest.chars().next() {
+        // Between any two characters, the author may have written a soft
+        // hyphen (U+00AD): invisible mid-row, a division where a row ends
+        // at it. The word reads whole, so it is found whole. One typed or
+        // pasted into the needle is that allowance, so it is dropped.
+        if c == SOFT_HYPHEN {
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        if soft && !out.is_empty() {
+            out.push_str("\u{AD}*");
+        }
         let (piece, len) = match c {
             '\'' | '‘' | '’' => (SINGLE, c.len_utf8()),
             '"' | '“' | '”' => (DOUBLE, c.len_utf8()),
@@ -392,7 +419,7 @@ mod tests {
             "über ß",
             "-",
         ] {
-            assert_eq!(fold_punctuation(n), regex::escape(n), "{n:?}");
+            assert_eq!(fold_punctuation(n, false), regex::escape(n), "{n:?}");
         }
     }
 
@@ -405,5 +432,32 @@ mod tests {
         assert_eq!(hits(&d, "it's"), ["It’s", "it’s"]);
         assert_eq!(hits(&d, "It's"), ["It’s"], "a capital still makes it exact");
         assert_eq!(hits(&d, "[c]*   here..."), ["[c]* here…"]);
+    }
+
+    /// A word the author divided with soft hyphens (U+00AD) reads whole,
+    /// so it is found whole — and a needle pasted with one in it is the
+    /// same needle.
+    #[test]
+    fn a_soft_hyphen_never_stops_a_match() {
+        let d =
+            Document::parse("super\u{AD}cali\u{AD}fragi\u{AD}listic and supercalifragilistic\n");
+        assert_eq!(
+            hits(&d, "supercalifragilistic"),
+            [
+                "super\u{AD}cali\u{AD}fragi\u{AD}listic",
+                "supercalifragilistic"
+            ]
+        );
+        assert_eq!(hits(&d, "cali\u{AD}fragi").len(), 2);
+        assert_eq!(
+            hits(&d, "i").len(),
+            8,
+            "a soft hyphen is never a hit of its own"
+        );
+        // A text with none keeps the plain, prefiltered pattern.
+        assert_eq!(
+            content_pattern("supercali", true).unwrap().as_str(),
+            "supercali"
+        );
     }
 }

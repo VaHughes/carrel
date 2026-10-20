@@ -330,6 +330,83 @@ fn looks_like_color(name: &str) -> bool {
             || b.iter().all(|c| c.eq_ignore_ascii_case(&b[0])))
 }
 
+/// What a run's source says about the `#`s its text holds.
+#[derive(Debug)]
+enum SourceHashes {
+    /// Every `#` in the source is bare, and nothing in it decodes to one.
+    Bare,
+    /// Each construct yielding a `#`, in order: `true` where it is an
+    /// escape or an entity, which opens no tag.
+    Inert(Vec<bool>),
+    /// The range is not in the source at all; refuse everything.
+    Unread,
+}
+
+/// Read `src` for every construct that yields a `#` in the text: a bare
+/// `#`, an escaped `\#`, and an entity that decodes to one.
+fn source_hashes(src: &str) -> SourceHashes {
+    if !src.contains("&#") && !src.contains("&num;") && !src.contains("\\#") {
+        return SourceHashes::Bare;
+    }
+    let b = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            // An escape takes the next ASCII punctuation whole: `\\#` is a
+            // backslash and then a bare `#`.
+            b'\\' if b.get(i + 1).is_some_and(u8::is_ascii_punctuation) => {
+                if b[i + 1] == b'#' {
+                    out.push(true);
+                }
+                i += 2;
+            }
+            b'&' => match hash_entity_len(&src[i..]) {
+                Some(n) => {
+                    out.push(true);
+                    i += n;
+                }
+                None => i += 1,
+            },
+            b'#' => {
+                out.push(false);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    SourceHashes::Inert(out)
+}
+
+/// The length of the entity reference opening `s`, if it decodes to `#`:
+/// `&num;`, or a numeric reference to U+0023 with the digits `CommonMark`
+/// allows — one to seven decimal, one to six hex, leading zeros included.
+fn hash_entity_len(s: &str) -> Option<usize> {
+    if s.starts_with("&num;") {
+        return Some(5);
+    }
+    let rest = s.strip_prefix("&#")?;
+    let (radix, digits, lead, max) = match rest.as_bytes().first() {
+        Some(b'x' | b'X') => (16, &rest[1..], 3, 6),
+        _ => (10, rest, 2, 7),
+    };
+    let n = digits
+        .bytes()
+        .take_while(|c| {
+            if radix == 16 {
+                c.is_ascii_hexdigit()
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+        .count();
+    if n == 0 || n > max || digits.as_bytes().get(n) != Some(&b';') {
+        return None;
+    }
+    let v = u32::from_str_radix(&digits[..n], radix).ok()?;
+    (v == 0x23).then_some(lead + n + 1)
+}
+
 /// Inline `#tags` in finished display text, as doc ranges (the `#`
 /// included), in order.
 ///
@@ -777,7 +854,8 @@ impl Document {
     }
 
     /// What a copy of `r` puts on the clipboard: `text[r]`, except that the
-    /// frontmatter card gives back the author's spelling. `None` when `r` is
+    /// frontmatter card gives back the author's spelling and a soft hyphen
+    /// is left out. `None` when `r` is
     /// not a slice of the text.
     ///
     /// The card body is shown raw (see `push_meta_verbatim`), so only two
@@ -821,6 +899,9 @@ impl Document {
             at = e;
         }
         out.push_str(&self.text[at as usize..r.end as usize]);
+        // A soft hyphen (U+00AD) is a division point, invisible unless a
+        // row ends at it; in a paste it would sit unseen inside the word.
+        out.retain(|c| c != '\u{AD}');
         Some(out)
     }
 
@@ -1511,7 +1592,7 @@ struct Builder<'a> {
     inert_hashes: Vec<u32>,
     /// The last source range searched for an entity that decodes to `#`,
     /// and the answer — see `mark_inert_hashes`.
-    entity_src: Option<(Range<usize>, bool)>,
+    entity_src: Option<(Range<usize>, SourceHashes)>,
     /// Enclosing GFM alerts, innermost last (alerts can nest, in principle).
     alerts: Vec<AlertKind>,
     /// The column each enclosing quote's bar sits at, outermost first.
@@ -2002,40 +2083,61 @@ impl<'a> Builder<'a> {
     /// pulldown-cmark drops an escape's backslash and starts a new event at
     /// the character it escaped, so `\#` is a run opening with `#` whose
     /// source byte before it is `\`. A decoded entity (`&#35;`, `&num;`)
-    /// leaves the run's text and source differing; when the source holds
-    /// one, every `#` in the run is refused rather than guessed at — a
-    /// split run's source range is the whole event's, so which `#` came
-    /// from the entity is not recoverable, and a missed tag is better than
-    /// an invented one.
+    /// joins the text around it, so the run's text and source differ; the
+    /// source is then read for every construct that yields a `#` — bare,
+    /// escaped, or an entity — in order, and the run's `#`s are matched to
+    /// them one for one, so only the entity's own `#` is refused. Nothing
+    /// else in a run's source makes or eats a `#`, so for a whole run the
+    /// counts agree. A piece of a run split by an autolink or a script
+    /// carries the whole event's source range and fewer `#`s than it names;
+    /// which ones it holds is not recoverable, so a piece whose count
+    /// disagrees refuses all of them — a missed tag is better than an
+    /// invented one.
     fn mark_inert_hashes(&mut self, s: &str, src: &Range<usize>, kind: ProvKind, start: u32) {
         // Both tests are cheap where they fail, which is nearly always: one
-        // byte, and a search of a substituted run's source. Only a run that
+        // byte, and a read of a substituted run's source. Only a run that
         // passes one has its `#`s looked for at all.
         let bytes = self.source.as_bytes();
-        let escaped =
-            s.starts_with('#') && src.start > 0 && bytes.get(src.start - 1) == Some(&b'\\');
+        // An odd run of backslashes: `\\#` is an escaped backslash and then
+        // the author's own `#`.
+        let escaped = s.starts_with('#')
+            && bytes
+                .get(..src.start)
+                .is_some_and(|b| b.iter().rev().take_while(|&&c| c == b'\\').count() % 2 == 1);
+        if kind == ProvKind::Verbatim || !s.contains('#') {
+            if escaped {
+                self.inert_hashes.push(start);
+            }
+            return;
+        }
         // A run split by an autolink or a script hands every piece the
         // whole event's source range, so the answer is kept per range: a
-        // line of ten thousand `x^2^` must cost one search, not ten
-        // thousand searches of the whole line.
-        let entity = kind != ProvKind::Verbatim
-            && s.contains('#')
-            && match &self.entity_src {
-                Some((r, known)) if *r == *src => *known,
-                _ => {
-                    let known = self
-                        .source
-                        .get(src.clone())
-                        .is_some_and(|t| t.contains("&#") || t.contains("&num;"));
-                    self.entity_src = Some((src.clone(), known));
-                    known
-                }
-            };
-        if entity {
-            let found = s.match_indices('#').map(|(j, _)| start + j as u32);
-            self.inert_hashes.extend(found);
-        } else if escaped {
-            self.inert_hashes.push(start);
+        // line of ten thousand `x^2^` must cost one read, not ten thousand
+        // reads of the whole line.
+        if self.entity_src.as_ref().is_none_or(|(r, _)| r != src) {
+            let read = self
+                .source
+                .get(src.clone())
+                .map_or(SourceHashes::Unread, source_hashes);
+            self.entity_src = Some((src.clone(), read));
+        }
+        let Some((_, read)) = &self.entity_src else {
+            return;
+        };
+        let at = s.match_indices('#').map(|(j, _)| start + j as u32);
+        let first = self.inert_hashes.len();
+        match read {
+            SourceHashes::Bare => {}
+            SourceHashes::Inert(inert) if inert.len() == s.matches('#').count() => {
+                let refused = at.zip(inert).filter(|&(_, &i)| i).map(|(a, _)| a);
+                self.inert_hashes.extend(refused);
+            }
+            SourceHashes::Inert(_) | SourceHashes::Unread => self.inert_hashes.extend(at),
+        }
+        // A run opening at an escaped `#` whose backslash sits just before
+        // its range: the read could not see that backslash.
+        if escaped && self.inert_hashes.get(first) != Some(&start) {
+            self.inert_hashes.insert(first, start);
         }
     }
 
@@ -4982,6 +5084,31 @@ mod tests {
             "<https://e.com/#auto>\n",
         ] {
             assert_eq!(tag_names(src), Vec::<String>::new(), "{src:?}");
+        }
+    }
+
+    /// An entity or escape refuses its OWN `#`, not every `#` that shares
+    /// its run: entities decode into the run around them, so the run's
+    /// source holds `&#35;` and the bare `#after` alike.
+    #[test]
+    fn an_entity_hash_refuses_only_itself() {
+        for (src, want) in [
+            ("Ent &#35;ent then #after here.\n", &["after"][..]),
+            (
+                "#before &#35;ent &num;n &#x23;x &#X00023;y #after\n",
+                &["before", "after"],
+            ),
+            ("&#035;a #b \\#c #d\n", &["b", "d"]),
+            // `\\` is an escaped backslash, so the `#` after it is bare.
+            ("\\\\#x #live &#35;dead\n", &["live"]),
+            // Not an entity without its `;`: the `#` is the author's.
+            ("&#35x #y\n", &["y"]),
+            (
+                "smart \"quotes\" -- and &amp; #kept &#35;gone #too\n",
+                &["kept", "too"],
+            ),
+        ] {
+            assert_eq!(tag_names(src), want, "{src:?}");
         }
     }
 

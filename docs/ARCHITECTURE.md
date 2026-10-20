@@ -96,7 +96,8 @@ Key facts that are easy to get wrong:
   the mark; the frontend draws it. A divided row is the one break with **no gap**: its `doc.end`
   is the next row's `doc.start`. The packer still never sees a string — it asks a `divide`
   closure for a head that fits and decides the geometry itself (the hole must be at least
-  `max(4, avail / 8)` cells, never a line's last word, never three rows running). Only rows
+  `max(4, avail / 8)` cells, never a line's last word, never a third row running — the author's soft hyphens count toward
+  that and are never refused for it). Only rows
   narrower than `NARROW_BELOW` (70) are considered, judged per logical line, so a nested list
   item in a wide window qualifies. Plain `wrap` never divides, and that is the form for output
   that leaves the screen. Measured: +12% on the height pass at 40 columns, nothing at 80.
@@ -137,12 +138,20 @@ Key facts that are easy to get wrong:
   byte lengths). This is why `Prov` exists; `doc = src - block_start` is false.
   Search bridges smart punctuation in the PATTERN, never the text: `search::fold_punctuation`
   widens `'` `"` `...` `--` `---` (and their typographic forms) into classes holding both
-  spellings, so the reader (display text) and the home grep (source) count the same hits.
-  A lone `-` is not widened — the parser never makes a dash from one.
+  spellings, so the home grep's SOURCE filter passes every file the reader will match. The
+  grep then counts by parsing the file and running the reader's own `search` — a hyphen run
+  becomes however many dashes the parser decides (`---` is `—`, holding no `--`) except in
+  code, which no source pattern can tell apart. A lone `-` is not widened — the parser never
+  makes a dash from one. A text holding a soft hyphen (U+00AD) gets `content_pattern_soft`,
+  which allows one between any two needle characters; only such a text pays for it (the
+  allowance costs the literal prefilter, about 2x per keystroke).
 - **`diff::to_markdown` treats a commit message as untrusted text.** Header and trailer blocks
-  become hard-break records; body paragraphs reflow; a line that would open a block (`#`,
+  become hard-break records, and so do lines inside a paragraph: a closing trailer run with no
+  blank line above it, a line indented four columns past the message, and a `#` comment line
+  (a merge's `# Conflicts:`). Body paragraphs reflow; a line that would open a block (`#`,
   `>`, `<`, a fence, a rule or setext underline, a table row, a link definition) is escaped,
-  while list markers and inline markup are kept.
+  while list markers and inline markup are kept. No hyphen pair survives unescaped outside a
+  code span or an autolink, so `--force` and `<!--` never become dashes.
 - **pulldown-cmark emits no `Paragraph` inside a tight list item**, so `NodeKind::Item` is a
   leaf. The `every_byte_of_display_text_is_covered_by_a_block_or_a_separator` test catches
   mistakes here.

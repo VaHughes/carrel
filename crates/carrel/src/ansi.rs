@@ -117,21 +117,20 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
         let heading_bold = matches!(node.kind, NodeKind::Heading { .. });
         layout.rows_for(doc, b, &mut rows);
         let mut first_text = true;
+        // A row ending inside a word carries straight on, as in plain
+        // output: see [`crate::plain::render`].
+        let mut carried: Option<String> = None;
         for row in &rows {
             match row.kind {
                 RowKind::Decoration => pending_blanks += 1,
-                RowKind::Text { .. } => {
+                RowKind::Text { hyphen, split, .. } => {
                     // Separator, quote bars, indent and prefix are [`plain`]'s
                     // to decide — see [`crate::plain::open_row`] for why the
                     // duplication this module's header defends stops there.
                     // The prefix comes back unstyled: a bullet needs no weight.
-                    let mut line = crate::plain::open_row(
-                        &mut out,
-                        &mut pending_blanks,
-                        node,
-                        row,
-                        first_text,
-                    );
+                    let mut line = carried.take().unwrap_or_else(|| {
+                        crate::plain::open_row(&mut out, &mut pending_blanks, node, row, first_text)
+                    });
                     let text = &doc.text[row.doc.start as usize..row.doc.end as usize];
                     for seg in segments(
                         text,
@@ -167,11 +166,19 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
                     // Trimmed like plain output's lines, which is half of what
                     // `NO_COLOR` byte-identity needs; a styled line ends in a
                     // reset or a link terminator, so the trim finds nothing.
+                    first_text = false;
+                    if hyphen || split {
+                        carried = Some(line);
+                        continue;
+                    }
                     out.push_str(line.trim_end());
                     out.push('\n');
-                    first_text = false;
                 }
             }
+        }
+        if let Some(line) = carried {
+            out.push_str(line.trim_end());
+            out.push('\n');
         }
     }
     out

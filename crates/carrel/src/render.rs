@@ -2263,9 +2263,14 @@ fn paint_matches(buf: &mut Buffer, app: &App, row: &Row, area: Rect, y: u16) {
         return;
     };
     let text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
-    for (i, r) in m.intersecting(&row.doc) {
-        let clamped = r.start.max(row.doc.start)..r.end.min(row.doc.end);
-        let (c0, c1) = cols_for_doc_range(text, row.doc.start, row.indent, &clamped);
+    // Every hit on the row placed in one walk of it: a row is bounded in
+    // cells, not in bytes, and a walk per hit was bytes times hits.
+    let (hits, clamped): (Vec<usize>, Vec<_>) = m
+        .intersecting(&row.doc)
+        .map(|(i, r)| (i, r.start.max(row.doc.start)..r.end.min(row.doc.end)))
+        .unzip();
+    let cols = carrel_core::cols_for_doc_ranges(text, row.doc.start, row.indent, &clamped);
+    for (i, (c0, c1)) in hits.into_iter().zip(cols) {
         let x0 = area.x + c0;
         let w = c1.saturating_sub(c0).min(area.right().saturating_sub(x0));
         if w == 0 {

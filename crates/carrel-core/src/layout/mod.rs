@@ -714,6 +714,71 @@ pub fn cols_for_doc_range(
     (c0, c1.max(c0))
 }
 
+/// [`cols_for_doc_range`] for many ranges of one row, in ONE walk of it.
+///
+/// `ranges` must be sorted by start and non-overlapping — what
+/// `Matches::intersecting` yields — and the answers come back in their
+/// order, each exactly what [`cols_for_doc_range`] gives for that range.
+///
+/// Calling the single-range form once per search hit walked the row from
+/// its first cluster every time, so a row's paint cost its byte length
+/// times its hits. A row is a bounded number of CELLS but not of bytes —
+/// zero-width combining marks ride along free — so a search for a mark in
+/// a row of heavily marked letters held tens of thousands of hits over a
+/// row of tens of kilobytes, and one frame took seconds. This is
+/// O(row + hits).
+#[must_use]
+pub fn cols_for_doc_ranges(
+    row_text: &str,
+    row_doc_start: u32,
+    indent: u16,
+    ranges: &[Range<u32>],
+) -> Vec<(u16, u16)> {
+    let row_end = row_doc_start.saturating_add(u32::try_from(row_text.len()).unwrap_or(u32::MAX));
+    let rel = |b: u32| b.saturating_sub(row_doc_start) as usize;
+    let n = ranges.len();
+    let mut out = vec![(indent, indent); n];
+    // A range missing the row is "paint nothing", as the single form says;
+    // it takes no part in the walk.
+    let live: Vec<usize> = (0..n)
+        .filter(|&j| ranges[j].end > row_doc_start && ranges[j].start < row_end)
+        .collect();
+    // `next_start`: the first live range whose start cluster is not yet
+    // found. `next_end`: the first whose end is not yet passed. Both only
+    // move forward, because the ranges are sorted and disjoint.
+    let (mut next_start, mut next_end) = (0, 0);
+    let mut col = indent;
+    for (off, g) in row_text.grapheme_indices(true) {
+        if next_end == live.len() {
+            break;
+        }
+        // A range ends on the last cluster that starts before its end: the
+        // one just walked, whose right edge is `col`.
+        while next_end < next_start && rel(ranges[live[next_end]].end) <= off {
+            out[live[next_end]].1 = col;
+            next_end += 1;
+        }
+        // A range starts on the first cluster that ends after its start.
+        while next_start < live.len() && rel(ranges[live[next_start]].start) < off + g.len() {
+            out[live[next_start]].0 = col;
+            next_start += 1;
+        }
+        while next_end < next_start && rel(ranges[live[next_end]].end) <= off {
+            out[live[next_end]].1 = col;
+            next_end += 1;
+        }
+        col = col.saturating_add(cluster_width(g));
+    }
+    // Whatever is still open runs to the end of the walk.
+    for &j in &live[next_end..] {
+        out[j].1 = col;
+    }
+    for c in &mut out {
+        c.1 = c.1.max(c.0);
+    }
+    out
+}
+
 /// The doc-byte `(start, end)` of the grapheme cluster rendered at display
 /// column `col` of a row — the inverse of [`cols_for_doc_range`], for pointer
 /// hits. A column before `indent` resolves to the first cluster; one past the
