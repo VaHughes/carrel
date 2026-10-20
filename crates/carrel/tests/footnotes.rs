@@ -305,8 +305,8 @@ fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
         }
         let rest: String = (x..right).map(|x| buf[(x, y)].symbol()).collect();
         // (A card's rule is a decoration row: no text, all rule.)
-        let rule = matches!(row.kind, carrel_core::RowKind::Decoration)
-            && rest.chars().all(|c| c == '─');
+        let rule =
+            matches!(row.kind, carrel_core::RowKind::Decoration) && rest.chars().all(|c| c == '─');
         assert!(
             rule || rest.trim().is_empty(),
             "row {dy} has {rest:?} after its text"
@@ -579,7 +579,9 @@ fn at_thirty_columns_the_footnote_wraps_inside_the_box() {
 #[test]
 fn a_wide_table_in_the_box_is_cards_as_on_the_page() {
     let cell = "longcellvalue";
-    let mut src = String::from("Mark[^w] here.\n\n[^w]: Wide:\n\n    | a | b | c | d | e | f | g |\n    |---|---|---|---|---|---|---|\n    |");
+    let mut src = String::from(
+        "Mark[^w] here.\n\n[^w]: Wide:\n\n    | a | b | c | d | e | f | g |\n    |---|---|---|---|---|---|---|\n    |",
+    );
     for _ in 0..7 {
         let _ = write!(src, " {cell} |");
     }
@@ -598,7 +600,11 @@ fn a_wide_table_in_the_box_is_cards_as_on_the_page() {
         labeled.clear();
         labeled.extend(
             (z.y..z.y + z.h)
-                .map(|y| (z.x..z.x + z.w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .map(|y| {
+                    (z.x..z.x + z.w)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
                 .filter(|l| l.contains(cell))
                 .map(|l| {
                     let inner = l.trim_matches(['│', ' ']);
@@ -634,7 +640,12 @@ fn display_math_in_the_box_is_drawn_as_on_the_page() {
         .unwrap()
         .zone(&app.doc, app.peek_fit(), cols, rows);
     let inside: String = (z.y..z.y + z.h)
-        .map(|y| (z.x..z.x + z.w).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+        .map(|y| {
+            (z.x..z.x + z.w)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                + "\n"
+        })
         .collect();
     assert!(inside.contains("a² + b² = c²"), "{inside}");
     assert!(!inside.contains("a^2"), "{inside}");

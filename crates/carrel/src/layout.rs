@@ -154,7 +154,8 @@ impl Layout {
                 } else if !wrap_tables && table_overflows(node, width) {
                     card_rows(doc, b, width, |_| {})
                 } else {
-                    wrap_with(doc, b, bw, &cluster_width, hyphenation, |_| {})
+                    let shift = nest_shift(node.indent, bw);
+                    wrap_with(doc, b, bw + shift, &cluster_width, hyphenation, |_| {})
                 }
             };
             acc = acc
@@ -269,9 +270,23 @@ impl Layout {
             } else if !self.wrap_tables && table_overflows(node, self.width) {
                 card_rows(doc, b, self.width, |r| out.push(r));
             } else {
-                wrap_with(doc, b, bw, &cluster_width, self.hyphenation, |r| {
-                    out.push(r);
-                });
+                // Nesting deeper than the column allows is drawn in from
+                // the left (`nest_shift`): wrapped as if the column were
+                // wide enough, then moved over, so the text keeps its
+                // minimum width. Every consumer reads `indent` from these
+                // rows — paint, hit-testing, highlights — so they all agree.
+                let shift = nest_shift(node.indent, bw);
+                wrap_with(
+                    doc,
+                    b,
+                    bw + shift,
+                    &cluster_width,
+                    self.hyphenation,
+                    |mut r| {
+                        r.indent = r.indent.saturating_sub(shift);
+                        out.push(r);
+                    },
+                );
             }
         }
         // The spacing row. Anchored (empty) at the block's START so the
@@ -389,6 +404,24 @@ pub const fn block_width(kind: &NodeKind, bleed: u16, measure: u16) -> u16 {
         | NodeKind::Metadata { .. }
         | NodeKind::Rule => measure,
     }
+}
+
+/// The fewest cells of text a block keeps however deeply it is nested:
+/// twenty, or half a narrow column.
+#[must_use]
+pub fn min_text(width: u16) -> u16 {
+    20.min(width / 2).max(1)
+}
+
+/// How many cells a block nested `indent` deep is drawn in from the left in
+/// a `width`-cell column, so its text keeps [`min_text`] cells — 0 for any
+/// block that already has them. `Node::indent` is width-independent and is
+/// never changed; this is derived per layout, from the width, like a row.
+/// Three hundred nested list items once wrapped one letter to a row and
+/// then ran off the column entirely.
+#[must_use]
+pub fn nest_shift(indent: u16, width: u16) -> u16 {
+    indent.saturating_add(min_text(width)).saturating_sub(width)
 }
 
 /// §3 of the card-view spec: does this table's aligned form exceed `width`?
@@ -540,6 +573,7 @@ fn card_gutter(
 ///
 /// The chosen value is a real row boundary strictly inside the block and
 /// strictly less than the last row's own end, so it always resolves.
+#[allow(clippy::many_single_char_names)] // b, n, r, c, s: the table vocabulary
 pub fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F) -> u32 {
     let node = doc.node_for_block(b);
     let NodeKind::Table { cols, cell_starts } = &node.kind else {

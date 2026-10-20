@@ -534,18 +534,28 @@ fn small_panel(frame: &mut Frame, targets: &mut Targets, title: &str, close: Act
             theme::status(),
         );
     }
+    let label = if area.width >= 7 { "[close]" } else { "×" };
+    let w = display_width(label).min(area.width);
+    let y = area.bottom() - 1;
+    // One row: the button goes to the right end and the words stop a cell
+    // short of it, rather than the button being painted over them.
+    let (x, room) = if area.height == 1 {
+        (
+            area.right() - w,
+            area.width.saturating_sub(w).saturating_sub(1),
+        )
+    } else {
+        (area.x, area.width)
+    };
     buf.set_stringn(
         area.x,
         area.y,
         format!("{title} needs room"),
-        usize::from(area.width),
+        usize::from(room),
         theme::status(),
     );
-    let label = if area.width >= 7 { "[close]" } else { "×" };
-    let w = display_width(label).min(area.width);
-    let y = area.bottom() - 1;
-    buf.set_stringn(area.x, y, label, usize::from(w), theme::button());
-    targets.push(close, Zone::new(area.x, y, w, 1), Z_MENU);
+    buf.set_stringn(x, y, label, usize::from(w), theme::button());
+    targets.push(close, Zone::new(x, y, w, 1), Z_MENU);
 }
 
 /// The settings pane: every persisted preference, with its current value,
@@ -1806,11 +1816,22 @@ fn paint_row(
             Some(kind) => theme::alert(kind),
             None => theme::quote_bar(),
         };
+        // Nesting too deep for the column is drawn in from the left
+        // (`layout::nest_shift`, already taken off the rows): the bars that
+        // would fall off the left edge are not drawn, and a dim `«` in the
+        // first cell says levels are hidden there.
+        let shift = crate::layout::nest_shift(node.indent, app.layout.block_width(&node.kind));
         for &col in &node.quote_cols {
+            let Some(col) = col.checked_sub(shift) else {
+                continue;
+            };
             let x = area.x + col;
             if x < area.right() {
                 buf.set_stringn(x, y, "│ ", 2, bar);
             }
+        }
+        if shift > 0 && !matches!(row.kind, RowKind::Decoration) {
+            buf.set_stringn(area.x, y, "«", 1, theme::dim());
         }
 
         // 1a. Decoration rows carry no text: a card rule, an image
@@ -2790,7 +2811,15 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
 /// from the block's own start, which is where its trailing gap rows sit).
 /// `indent` is where the card starts in `area`; `max` caps the rule's width.
 /// Shared by the page and the footnote peek.
-fn paint_card_rule(buf: &mut Buffer, node: &Node, row: &Row, area: Rect, y: u16, indent: u16, max: u16) {
+fn paint_card_rule(
+    buf: &mut Buffer,
+    node: &Node,
+    row: &Row,
+    area: Rect,
+    y: u16,
+    indent: u16,
+    max: u16,
+) {
     if row.doc.start == node.doc.start {
         return;
     }
@@ -3006,8 +3035,8 @@ fn paint_peek_row(
         NodeKind::Table { cols, .. } => Some(cols),
         _ => None,
     };
-    let cards = table.is_some()
-        && crate::layout::table_overflows(node, area.width.saturating_add(inset));
+    let cards =
+        table.is_some() && crate::layout::table_overflows(node, area.width.saturating_add(inset));
     let card_x = node.indent.saturating_sub(inset);
     if let RowKind::Decoration = row.kind {
         if cards {

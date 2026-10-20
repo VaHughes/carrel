@@ -120,6 +120,24 @@ def main(binary, scratch, from_home=False):
             pump(.04)
         assert text in screen.text(), f"missing {text!r}:\n{screen.text()}"
 
+    def wait_for(done, what):
+        # Poll for an effect rather than assume one pump saw it: under load
+        # the program's answer can take longer than any fixed beat.
+        end = time.monotonic() + 4
+        while not done() and time.monotonic() < end:
+            pump(.04)
+        assert done(), f"{what}:\n{screen.text()}"
+
+    def settle(quiet=.3):
+        # Read until the program has been silent for `quiet` seconds, so a
+        # screen captured next is the finished frame, not one mid-draw.
+        end = time.monotonic() + 4
+        while time.monotonic() < end:
+            before = len(raw)
+            pump(quiet)
+            if len(raw) == before:
+                return
+
     def send(keys):
         os.write(fd, keys.encode())
         pump()
@@ -137,6 +155,7 @@ def main(binary, scratch, from_home=False):
             send("\r")
         expect("selectable")
         send("/a-long-query-with-END")
+        expect("END")
         for size in ((24,6),(12,5),(80,24),(24,6)):
             resize(*size)
             expect("END")
@@ -156,21 +175,26 @@ def main(binary, scratch, from_home=False):
         send("\x1b[<0;3;2M\x1b[<32;12;2M")
         resize(24,6)
         send("\x1b[<0;12;2m")
-        assert b"\x1b]52;c;" in raw, "selection must still copy through OSC 52"
+        wait_for(lambda: b"\x1b]52;c;" in raw, "selection must still copy through OSC 52")
         send("\x1b")
         # Notes preserve drafts and refuse invisible input, including bracketed paste.
         resize(80,24)
         send("a")
         expect("Note")
         send("draft-resize")
+        # Every typed key must be in before the window shrinks: a resize
+        # can overtake keys still queued, and a note too small to show
+        # rightly refuses them — which is the test racing, not the reader.
+        expect("draft-resize")
         resize(8,2,"X\r")
         send("\x1b[200~hidden-paste\x1b[201~")
         resize(24,8)
         expect("draft-resize")
         assert "hidden-paste" not in screen.text(), screen.text()
         send("\r")
-        files = list((root / "XDG_STATE_HOME").rglob("*.notes"))
-        assert files, "note must save after growing"
+        notes = lambda: list((root / "XDG_STATE_HOME").rglob("*.notes"))
+        wait_for(lambda: notes(), "note must save after growing")
+        files = notes()
         saved = files[0].read_text()
         assert "draft-resize" in saved and "hidden-paste" not in saved and "draft-resizeX" not in saved, saved
         # Exercise menu selection and stale pointer coordinates across rapid resizes.
@@ -179,10 +203,11 @@ def main(binary, scratch, from_home=False):
         send("\x1b[<0;24;6M\x1b[<0;24;6m")
         expect("Back")
         send("\x1b[B\x1b[B")
+        settle()
         before_burst = screen.text()
         for size in ((12,4),(80,24),(8,2),(24,6)):
             resize(*size, delay=.005)
-        pump(.2)
+        settle()
         assert screen.text() == before_burst, f"menu lost cells after resize burst:\n{screen.text()}"
         expect("Back")
         send("\x1b")

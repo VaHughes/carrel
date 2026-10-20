@@ -148,7 +148,12 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let width = area.width - 2;
     let foot = area.bottom() - 1;
     let message = app.notes.load_error.as_ref().or(app.note.as_ref());
-    let message_rows = message.map(|m| draft_rows(m, width)).unwrap_or_default();
+    // Words wrap whole, as everywhere else in carrel's chrome; only a word
+    // wider than the pane (a long path) is cut, so the destination still
+    // reads in full.
+    let message_rows = message
+        .map(|m| crate::layout::wrap_ui_text(m, width))
+        .unwrap_or_default();
     let message_count = message_rows
         .len()
         .min(usize::from(area.height.saturating_sub(4) / 2))
@@ -314,12 +319,12 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
         );
     }
     // Wrap successful export paths so the complete destination is readable.
-    if let Some(message) = message {
-        for (i, &(start, end)) in message_rows.iter().take(message_count).enumerate() {
+    if message.is_some() {
+        for (i, line) in message_rows.iter().take(message_count).enumerate() {
             frame.buffer_mut().set_stringn(
                 x,
                 message_top + u16::try_from(i).unwrap_or(0),
-                &message[start..end],
+                line,
                 usize::from(width),
                 theme::dim(),
             );
