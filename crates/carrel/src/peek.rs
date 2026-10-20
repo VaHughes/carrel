@@ -13,12 +13,17 @@
 //! for it.
 //!
 //! **It shows the whole footnote**: every paragraph, list, quote and code
-//! block in the definition, wrapped by the core's own `wrap` at the box's
-//! width, so every row is a slice of `Document::text` and the search hits,
-//! links and footnote marks inside it are the document's own. What is
-//! painted that is not in the text is decoration only — list markers,
-//! quote bars, the code continuation mark, the label on the border and the
-//! "more" count — exactly as in the reader.
+//! block in the definition, wrapped by the core's own `wrap_with` at the
+//! box's width and in the page's hyphenation, so every row is a slice of
+//! `Document::text` and the search hits, links and footnote marks inside it
+//! are the document's own. What is painted that is not in the text is
+//! decoration only — list markers, quote bars, the code continuation mark,
+//! the `-` or `↩` that ends a row cut mid-word, the label on the border
+//! and the "more" count — exactly as in the reader.
+//!
+//! The hyphenation is passed in, never kept: it is the reader's preference
+//! and the document's language, asked of `App::hyphenation` at each call
+//! as the page's own layout asks it.
 //!
 //! Its scroll position is a doc byte (`top`), never a row: rows are derived
 //! from `(document, width)` here as everywhere else.
@@ -28,7 +33,7 @@
 
 use std::ops::Range;
 
-use carrel_core::{BlockIdx, DocByte, Document, Row, cluster_width, wrap};
+use carrel_core::{BlockIdx, DocByte, Document, Hyphenation, Row, cluster_width, wrap_with};
 
 use crate::action::Zone;
 
@@ -115,11 +120,11 @@ impl Peek {
     }
 
     /// Every row of the footnote for text `inner` cells wide, blocks
-    /// separated by one blank row — the core's `wrap`, so each row is a
-    /// slice of the text. Stops at a block boundary once `limit` rows are
-    /// in hand.
+    /// separated by one blank row — the core's `wrap_with`, dividing words
+    /// as `hy` says, so each row is a slice of the text. Stops at a block
+    /// boundary once `limit` rows are in hand.
     #[must_use]
-    pub fn rows(&self, doc: &Document, inner: u16, limit: usize) -> Vec<Line> {
+    pub fn rows(&self, doc: &Document, hy: Hyphenation, inner: u16, limit: usize) -> Vec<Line> {
         let inset = self.inset(doc);
         let width = inner.max(1).saturating_add(inset);
         let blocks = self.blocks(doc);
@@ -131,7 +136,7 @@ impl Peek {
             if b != blocks.start {
                 out.push(Line { row: None });
             }
-            wrap(doc, BlockIdx(b), width, &cluster_width, |r| {
+            wrap_with(doc, BlockIdx(b), width, &cluster_width, hy, |r| {
                 out.push(Line { row: Some(r) });
             });
         }
@@ -163,10 +168,10 @@ impl Peek {
 
     /// What the box shows in a `cols × rows` window.
     #[must_use]
-    pub fn view(&self, doc: &Document, cols: u16, rows: u16) -> View {
+    pub fn view(&self, doc: &Document, hy: Hyphenation, cols: u16, rows: u16) -> View {
         let (_, inner) = Self::widths(cols);
         let room = Self::room(rows);
-        let all = self.rows(doc, inner, usize::MAX);
+        let all = self.rows(doc, hy, inner, usize::MAX);
         let first = self.top_index(&all).min(all.len().saturating_sub(room));
         let shown = all.len().saturating_sub(first).min(room);
         let below = all.len() - first - shown;
@@ -184,18 +189,15 @@ impl Peek {
     /// Move the box's text by `delta` rows, never past either end. A blank
     /// between blocks is never the top row, so a step that lands on one
     /// goes one further.
-    pub fn scroll(&mut self, doc: &Document, delta: i32, cols: u16, rows: u16) {
+    pub fn scroll(&mut self, doc: &Document, hy: Hyphenation, delta: i32, cols: u16, rows: u16) {
         let (_, inner) = Self::widths(cols);
-        let all = self.rows(doc, inner, usize::MAX);
+        let all = self.rows(doc, hy, inner, usize::MAX);
         let max = all.len().saturating_sub(Self::room(rows));
         let now = self.top_index(&all).min(max);
-        let mut to = now
+        let to = now
             .saturating_add_signed(isize::try_from(delta).unwrap_or(0))
             .min(max);
-        while all.get(to).is_some_and(|l| l.row.is_none()) {
-            to = if delta < 0 && to > 0 { to - 1 } else { to + 1 };
-        }
-        if let Some(r) = all.get(to).and_then(|l| l.row.as_ref()) {
+        if let Some(r) = nearest_row(&all, to, delta < 0).and_then(|i| all[i].row.as_ref()) {
             self.top = r.doc.start;
         }
     }
@@ -204,10 +206,10 @@ impl Peek {
     /// above it when there is no room below — the menu's rule, for the
     /// menu's reason.
     #[must_use]
-    pub fn zone(&self, doc: &Document, cols: u16, rows: u16) -> Zone {
+    pub fn zone(&self, doc: &Document, hy: Hyphenation, cols: u16, rows: u16) -> Zone {
         let (w, inner) = Self::widths(cols);
         let room = Self::room(rows);
-        let shown = self.rows(doc, inner, room).len().clamp(1, room);
+        let shown = self.rows(doc, hy, inner, room).len().clamp(1, room);
         // Borders, the text, and the row the button sits on.
         let h = u16::try_from(shown)
             .unwrap_or(u16::MAX)
@@ -226,6 +228,26 @@ impl Peek {
             w,
             h,
         )
+    }
+}
+
+/// The row nearest `to` that is text and not a blank between blocks: the
+/// first one in the direction of travel (`back` for upward), else the first
+/// the other way, else `None` when there is none at all.
+///
+/// Two bounded scans, never a walk that turns round: the loop this replaces
+/// stepped back from a blank and forward again from index 0, and only the
+/// core's "every block is at least one row" kept two blanks from ever
+/// opening a footnote and bouncing it forever.
+fn nearest_row(lines: &[Line], to: usize, back: bool) -> Option<usize> {
+    let to = to.min(lines.len().checked_sub(1)?);
+    let is_row = |i: &usize| lines[*i].row.is_some();
+    let behind = (0..=to).rev().find(is_row);
+    let ahead = (to..lines.len()).find(is_row);
+    if back {
+        behind.or(ahead)
+    } else {
+        ahead.or(behind)
     }
 }
 
@@ -267,11 +289,11 @@ mod tests {
     #[test]
     fn the_box_sits_under_its_mark_and_flips_above_at_the_bottom() {
         let doc = doc_with("a short footnote");
-        let z = peek(&doc, (10, 3)).zone(&doc, 80, 24);
+        let z = peek(&doc, (10, 3)).zone(&doc, Hyphenation::Off, 80, 24);
         assert_eq!((z.x, z.y), (10, 4));
         assert_eq!(z.h, 1 + 3, "one line, two borders, the button row");
 
-        let low = peek(&doc, (10, 22)).zone(&doc, 80, 24);
+        let low = peek(&doc, (10, 22)).zone(&doc, Hyphenation::Off, 80, 24);
         assert_eq!(low.y + low.h, 22, "its last row is the one above the mark");
     }
 
@@ -280,7 +302,7 @@ mod tests {
         let doc = doc_with(&"word ".repeat(400));
         for (cols, rows) in [(80u16, 24u16), (30, 10), (12, 5), (4, 3), (1, 1)] {
             for at in [(0u16, 0u16), (cols - 1, rows - 1), (cols / 2, rows / 2)] {
-                let z = peek(&doc, at).zone(&doc, cols, rows);
+                let z = peek(&doc, at).zone(&doc, Hyphenation::Off, cols, rows);
                 assert!(
                     z.x + z.w <= cols && z.y + z.h <= rows,
                     "{cols}x{rows}: {z:?}"
@@ -298,7 +320,7 @@ mod tests {
              > quoted\n\n    ```\n    code line\n    ```",
         );
         let p = peek(&doc, (0, 0));
-        let v = p.view(&doc, 80, 40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 40);
         assert_eq!((v.above, v.below), (0, 0));
         let t = texts(&doc, &v);
         for part in [
@@ -337,7 +359,7 @@ mod tests {
         let doc = doc_with(words);
         let p = peek(&doc, (0, 0));
         let (_, inner) = Peek::widths(30);
-        let v = p.view(&doc, 30, 40);
+        let v = p.view(&doc, Hyphenation::Off, 30, 40);
         let t = texts(&doc, &v);
         assert!(t.len() > 1, "{t:?}");
         for l in &t {
@@ -357,26 +379,67 @@ mod tests {
             .join("\n\n    ");
         let doc = doc_with(&body);
         let mut p = peek(&doc, (0, 0));
-        let v = p.view(&doc, 80, 40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 40);
         assert_eq!(v.lines.len(), MAX_LINES);
         assert_eq!(v.above, 0);
         assert!(v.below > 900, "{}", v.below);
         assert_eq!(more(&v), Some(format!("\u{2193} {} more", v.below)));
 
-        p.scroll(&doc, 1, 80, 40);
-        let v = p.view(&doc, 80, 40);
+        p.scroll(&doc, Hyphenation::Off, 1, 80, 40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 40);
         assert_eq!(texts(&doc, &v)[0], "line 1", "a blank is never the top row");
-        p.scroll(&doc, -1, 80, 40);
-        assert_eq!(texts(&doc, &p.view(&doc, 80, 40))[0], "line 0");
+        p.scroll(&doc, Hyphenation::Off, -1, 80, 40);
+        assert_eq!(
+            texts(&doc, &p.view(&doc, Hyphenation::Off, 80, 40))[0],
+            "line 0"
+        );
 
         // To the end and no further: the last row is the footnote's last.
-        p.scroll(&doc, 10_000, 80, 40);
-        let v = p.view(&doc, 80, 40);
+        p.scroll(&doc, Hyphenation::Off, 10_000, 80, 40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 40);
         assert_eq!(v.below, 0);
         assert_eq!(texts(&doc, &v).last().map(String::as_str), Some("line 499"));
         assert_eq!(more(&v), Some(format!("\u{2191} {} above", v.above)));
-        p.scroll(&doc, -10_000, 80, 40);
+        p.scroll(&doc, Hyphenation::Off, -10_000, 80, 40);
         assert_eq!(p.top, p.def);
+    }
+
+    /// The step off a blank always lands, whatever the blanks around it.
+    /// Hand-built, because the core never wraps a block to zero rows and so
+    /// no document can open a footnote with two blanks — the old loop
+    /// bounced 0 → 1 → 0 forever on exactly that, upward, and was only safe
+    /// by that coincidence. Run on a thread with a deadline, so a regression
+    /// fails instead of hanging the suite.
+    #[test]
+    fn the_step_off_a_blank_always_lands() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let doc = doc_with("x");
+            let mut v = Vec::new();
+            carrel_core::wrap(&doc, BlockIdx(0), 80, &cluster_width, |r| v.push(r));
+            let row = || Line {
+                row: Some(v[0].clone()),
+            };
+            let gap = || Line { row: None };
+            let lines = vec![gap(), gap(), row(), gap(), gap(), row(), gap()];
+            for (to, back, want) in [
+                (0, true, Some(2)),
+                (1, true, Some(2)),
+                (1, false, Some(2)),
+                (4, true, Some(2)),
+                (4, false, Some(5)),
+                (6, false, Some(5)),
+                (99, false, Some(5)),
+                (99, true, Some(5)),
+            ] {
+                assert_eq!(nearest_row(&lines, to, back), want, "{to} {back}");
+            }
+            assert_eq!(nearest_row(&[gap(), gap()], 0, true), None);
+            assert_eq!(nearest_row(&[], 3, true), None);
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("did not return");
     }
 
     /// A short window holds fewer rows than a peek otherwise shows, and the
@@ -386,8 +449,8 @@ mod tests {
         let doc = doc_with(&"word ".repeat(60));
         let p = peek(&doc, (0, 0));
         for rows in [10u16, 8, 6, 5] {
-            let v = p.view(&doc, 40, rows);
-            let z = p.zone(&doc, 40, rows);
+            let v = p.view(&doc, Hyphenation::Off, 40, rows);
+            let z = p.zone(&doc, Hyphenation::Off, 40, rows);
             assert_eq!(
                 v.lines.len(),
                 usize::from(z.h - 3),

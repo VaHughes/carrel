@@ -287,14 +287,14 @@ pub fn save_cache_in(dir: &Path, root: &Path, entries: &[Entry]) {
 /// followed by `title:` prose, or a nested `title:`, is no title.
 #[must_use]
 pub fn title_of(path: &Path) -> Option<String> {
-    let (head, fm) = read_head(path, TITLE_BYTES, true)?;
+    let (head, fm, cut) = read_head(path, TITLE_BYTES, true)?;
     if let Some(t) = fm
         .as_ref()
         .and_then(|fm| frontmatter_title(&head[fm.body.clone()], fm.format))
     {
         return Some(t);
     }
-    first_heading(&head, fm.is_none() && head.len() + 3 >= TITLE_BYTES)
+    first_heading(&head, cut)
 }
 
 /// The first top-level `#` heading in `head`, found by parsing it the way
@@ -343,7 +343,7 @@ pub fn frontmatter_title(body: &str, format: carrel_core::MetaFormat) -> Option<
 /// none, is not a regular file, or cannot be read. See [`read_head`].
 #[must_use]
 pub fn read_front(path: &Path, first: usize) -> Option<(String, carrel_core::Frontmatter)> {
-    let (text, fm) = read_head(path, first, false)?;
+    let (text, fm, _) = read_head(path, first, false)?;
     Some((text, fm?))
 }
 
@@ -362,40 +362,54 @@ pub fn read_front(path: &Path, first: usize) -> Option<(String, carrel_core::Fro
 ///
 /// `None` for anything that is not a regular file — a FIFO named `notes.md`
 /// blocks whoever opens it until someone writes — or cannot be read.
+///
+/// The third value says the file goes on past the text returned, so its
+/// last line may be cut in half. It is learned by asking for one byte more
+/// than is kept, never guessed from the text: the lossy decode changes the
+/// length, and whether frontmatter was found says nothing about where the
+/// file ends.
 fn read_head(
     path: &Path,
     first: usize,
     unfenced: bool,
-) -> Option<(String, Option<carrel_core::Frontmatter>)> {
+) -> Option<(String, Option<carrel_core::Frontmatter>, bool)> {
     use std::io::Read as _;
     if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
         return None;
     }
     let mut f = std::fs::File::open(path).ok()?;
     // One read: a short file costs one syscall, where `read_to_end` would
-    // spend a second finding its end.
-    let mut buf = vec![0u8; first];
+    // spend a second finding its end. The extra byte is how a file that
+    // ends exactly at `first` is told from one that goes on.
+    let mut buf = vec![0u8; first + 1];
     let n = f.read(&mut buf).ok()?;
     buf.truncate(n);
-    let start = buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&buf);
+    let mut cut = n > first;
+    let head = &buf[..n.min(first)];
+    let start = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
     if !(start.starts_with(b"---") || start.starts_with(b"+++")) {
         let text = if unfenced {
-            String::from_utf8_lossy(&buf).into_owned()
+            String::from_utf8_lossy(head).into_owned()
         } else {
             String::new()
         };
-        return Some((text, None));
+        return Some((text, None, cut));
     }
-    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    let mut text = String::from_utf8_lossy(head).into_owned();
     let mut fm = carrel_core::frontmatter(&text);
-    if fm.is_none() && n == first {
+    if fm.is_none() && cut {
+        // `buf` already holds the byte past `first`; read on to one past
+        // the limit, for the same reason.
+        let max = usize::try_from(FRONTMATTER_MAX).unwrap_or(usize::MAX);
         let _ = f
-            .take(FRONTMATTER_MAX.saturating_sub(first as u64))
+            .take(FRONTMATTER_MAX.saturating_sub(buf.len() as u64) + 1)
             .read_to_end(&mut buf);
+        cut = buf.len() > max;
+        buf.truncate(max);
         text = String::from_utf8_lossy(&buf).into_owned();
         fm = carrel_core::frontmatter(&text);
     }
-    Some((text, fm))
+    Some((text, fm, cut))
 }
 
 /// How far [`read_head`] keeps reading for a closing fence before deciding
@@ -505,6 +519,48 @@ mod title_tests {
         // A heading straddling the end of the read is not half a title.
         let cut = format!("{}\n# Straddling the cut\n", "x".repeat(TITLE_BYTES - 10));
         assert_eq!(title_of(&write(d.path(), "cut.md", &cut)), None);
+    }
+
+    /// Whether the read was cut is a fact about the FILE — did it go on past
+    /// what was read — not about frontmatter or the decoded length. The rule
+    /// this replaces asked `fm.is_none()`, so after any frontmatter a
+    /// heading straddling the end of the read came back as "Straddl"; and it
+    /// measured the lossy-decoded text, so a file that ended exactly at the
+    /// read lost a complete last-line heading.
+    #[test]
+    fn a_heading_cut_by_the_read_is_no_title_and_one_that_ends_the_file_is() {
+        let d = tempfile::tempdir().unwrap();
+        let fm = "---\nauthor: x\n---\n";
+        let straddle = format!(
+            "{fm}{}\n# Straddling the cut\n",
+            "x".repeat(TITLE_BYTES - fm.len() - 10)
+        );
+        assert_eq!(title_of(&write(d.path(), "fm-cut.md", &straddle)), None);
+
+        // The file ends exactly where the read does, on a heading with no
+        // newline after it: nothing was cut, and the heading is whole.
+        let tail = "\n# Ends the file";
+        let whole = format!("{}{tail}", "x".repeat(TITLE_BYTES - tail.len()));
+        assert_eq!(whole.len(), TITLE_BYTES);
+        assert_eq!(
+            title_of(&write(d.path(), "whole.md", &whole)),
+            Some("Ends the file".into())
+        );
+        let with_fm = format!(
+            "{fm}{}{tail}",
+            "x".repeat(TITLE_BYTES - fm.len() - tail.len())
+        );
+        assert_eq!(
+            title_of(&write(d.path(), "whole-fm.md", &with_fm)),
+            Some("Ends the file".into())
+        );
+        // Frontmatter longer than the first read is read on to its fence;
+        // the file ends inside that longer read, so it is not cut either.
+        let long = format!("---\nnotes: {}\n---\n{tail}", "y".repeat(TITLE_BYTES * 2));
+        assert_eq!(
+            title_of(&write(d.path(), "long-fm.md", &long)),
+            Some("Ends the file".into())
+        );
     }
 
     #[test]

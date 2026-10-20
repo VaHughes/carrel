@@ -82,7 +82,7 @@ fn clicking_a_mark_shows_the_footnote_where_the_mark_is() {
     assert_eq!(app.view.scroll_row, 0, "and the reader has not moved");
 
     let (buf, targets) = painted(&app, 80, 24);
-    let boxed = peek.zone(&app.doc, 80, 24);
+    let boxed = peek.zone(&app.doc, app.hyphenation(), 80, 24);
     assert_eq!(boxed.y, zone.y + 1, "the box hangs under the mark");
     let text: String = (boxed.y..boxed.y + boxed.h)
         .map(|y| {
@@ -247,8 +247,8 @@ fn open_first(app: &mut App, cols: u16, rows: u16) {
 fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
     let (buf, _) = painted(app, cols, rows);
     let peek = app.peek.as_ref().unwrap();
-    let z = peek.zone(&app.doc, cols, rows);
-    let view = peek.view(&app.doc, cols, rows);
+    let z = peek.zone(&app.doc, app.hyphenation(), cols, rows);
+    let view = peek.view(&app.doc, app.hyphenation(), cols, rows);
     let inset = peek.inset(&app.doc);
     let (left, right) = (z.x + 2, z.x + z.w - 2);
     let mut out = Vec::new();
@@ -269,6 +269,21 @@ fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
             x += carrel_core::cluster_width(buf[(x, y)].symbol()).max(1);
         }
         assert_eq!(got, slice, "row {dy} painted something else");
+        // A row the core cut mid-run ends in the page's own mark, in the
+        // cell the core reserved for it — and nothing else does.
+        let mark = match row.kind {
+            carrel_core::RowKind::Text { hyphen: true, .. } => Some("-"),
+            carrel_core::RowKind::Text { split: true, .. } => Some(carrel::render::SPLIT_MARK),
+            _ => None,
+        };
+        if let Some(mark) = mark {
+            assert_eq!(
+                buf[(x, y)].symbol(),
+                mark,
+                "row {dy} is cut and does not say so"
+            );
+            x += 1;
+        }
         let rest: String = (x..right).map(|x| buf[(x, y)].symbol()).collect();
         assert!(
             rest.trim().is_empty(),
@@ -279,6 +294,72 @@ fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
     out
 }
 
+/// The box wraps a footnote the way the page wraps prose: in the page's
+/// language, dividing words when hyphenation is on, and marking every cut
+/// row — `-` for a divided word, `↩` for a run with no break in it — as the
+/// page does. It used to wrap with hyphenation off and skip both marks, so
+/// a long token cut in the box ran on to the next row unannounced.
+#[test]
+fn a_word_cut_in_the_box_is_marked_as_on_the_page() {
+    let (cols, rows) = (40, 30);
+    let src = format!(
+        "---\nlang: en\n---\n\n# Notes\n\nA claim[^n] in passing.\n\n[^n]: Notwithstanding extraordinarily \
+         incomprehensible internationalization responsibilities, the checksum \
+         {} was recomputed.\n",
+        "0123456789abcdef".repeat(6)
+    );
+    let mut app = App::new("h.md".into(), Document::parse(&src), cols, rows);
+    app.file = Some("/w/h.md".into());
+    app.on_resize(cols, rows);
+    assert_ne!(
+        app.hyphenation(),
+        carrel_core::Hyphenation::Off,
+        "the page hyphenates"
+    );
+    open_first(&mut app, cols, rows);
+    let peek = app.peek.as_ref().unwrap();
+    let view = peek.view(&app.doc, app.hyphenation(), cols, rows);
+    assert_eq!(view.below, 0, "the whole footnote is in view");
+    let kinds: Vec<_> = view
+        .lines
+        .iter()
+        .filter_map(|l| l.row.as_ref())
+        .map(|r| r.kind)
+        .collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, carrel_core::RowKind::Text { hyphen: true, .. })),
+        "a word is divided in the box: {kinds:?}"
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, carrel_core::RowKind::Text { split: true, .. })),
+        "the checksum is cut: {kinds:?}"
+    );
+    // Every row reads back as its own slice of the text, and a cut row ends
+    // in its mark.
+    check_rows(&app, cols, rows);
+
+    // With hyphenation off, as the page would be, nothing is divided — the
+    // box asks the reader's preference, not its own.
+    app.hyphenate = false;
+    let view = app
+        .peek
+        .as_ref()
+        .unwrap()
+        .view(&app.doc, app.hyphenation(), cols, rows);
+    assert!(
+        !view
+            .lines
+            .iter()
+            .filter_map(|l| l.row.as_ref())
+            .any(|r| matches!(r.kind, carrel_core::RowKind::Text { hyphen: true, .. })),
+        "hyphenation off divides nothing"
+    );
+}
+
 #[test]
 fn the_box_shows_every_block_of_the_footnote_and_scrolls_to_the_rest() {
     let (cols, rows) = (80, 24);
@@ -287,7 +368,11 @@ fn the_box_shows_every_block_of_the_footnote_and_scrolls_to_the_rest() {
     let mut seen = Vec::new();
     for _ in 0..60 {
         seen.extend(check_rows(&app, cols, rows));
-        let view = app.peek.as_ref().unwrap().view(&app.doc, cols, rows);
+        let view = app
+            .peek
+            .as_ref()
+            .unwrap()
+            .view(&app.doc, app.hyphenation(), cols, rows);
         if view.below == 0 {
             break;
         }
@@ -324,7 +409,11 @@ fn a_footnote_taller_than_its_box_says_how_much_more_there_is() {
     let mut app = rich_reader(cols, rows);
     open_first(&mut app, cols, rows);
     let (buf, _) = painted(&app, cols, rows);
-    let z = app.peek.as_ref().unwrap().zone(&app.doc, cols, rows);
+    let z = app
+        .peek
+        .as_ref()
+        .unwrap()
+        .zone(&app.doc, app.hyphenation(), cols, rows);
     let button_row: String = (z.x..z.x + z.w)
         .map(|x| buf[(x, z.y + z.h - 2)].symbol())
         .collect();
@@ -334,7 +423,11 @@ fn a_footnote_taller_than_its_box_says_how_much_more_there_is() {
     let mut short = reader(80, 24);
     open_first(&mut short, 80, 24);
     let (buf, _) = painted(&short, 80, 24);
-    let z = short.peek.as_ref().unwrap().zone(&short.doc, 80, 24);
+    let z = short
+        .peek
+        .as_ref()
+        .unwrap()
+        .zone(&short.doc, short.hyphenation(), 80, 24);
     let button_row: String = (z.x..z.x + z.w)
         .map(|x| buf[(x, z.y + z.h - 2)].symbol())
         .collect();
@@ -353,7 +446,11 @@ fn a_link_and_a_mark_inside_the_box_are_clickable() {
     for (a, z, zz) in &targets {
         t.push(*a, *z, *zz);
     }
-    let boxed = app.peek.as_ref().unwrap().zone(&app.doc, cols, rows);
+    let boxed = app
+        .peek
+        .as_ref()
+        .unwrap()
+        .zone(&app.doc, app.hyphenation(), cols, rows);
     let inside = |z: &Zone| boxed.contains(z.x, z.y);
     let link = targets
         .iter()
@@ -404,7 +501,11 @@ fn a_search_hit_in_the_footnote_is_lit_in_the_box() {
     open_first(&mut app, cols, rows);
     app.matches = Some(carrel_core::search(&app.doc, "measurement", false));
     let (buf, _) = painted(&app, cols, rows);
-    let z = app.peek.as_ref().unwrap().zone(&app.doc, cols, rows);
+    let z = app
+        .peek
+        .as_ref()
+        .unwrap()
+        .zone(&app.doc, app.hyphenation(), cols, rows);
     let y = z.y + 1;
     let row: String = (z.x..z.x + z.w).map(|x| buf[(x, y)].symbol()).collect();
     let col = row.find("measurement").expect("the first row has the word");
@@ -434,7 +535,14 @@ fn at_thirty_columns_the_footnote_wraps_inside_the_box() {
     let mut seen = Vec::new();
     for _ in 0..200 {
         seen.extend(check_rows(&app, cols, rows));
-        if app.peek.as_ref().unwrap().view(&app.doc, cols, rows).below == 0 {
+        if app
+            .peek
+            .as_ref()
+            .unwrap()
+            .view(&app.doc, app.hyphenation(), cols, rows)
+            .below
+            == 0
+        {
             break;
         }
         update(&mut app, Action::PeekScroll(1));

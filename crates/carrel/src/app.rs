@@ -3518,7 +3518,7 @@ fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
             // The wheel over the box reads on in it; the box stays.
             Action::PeekScroll(delta) => {
                 let mut peek = peek;
-                peek.scroll(&app.doc, delta, app.cols, app.rows);
+                peek.scroll(&app.doc, app.hyphenation(), delta, app.cols, app.rows);
                 app.peek = Some(peek);
                 return Some(Outcome::Redraw);
             }

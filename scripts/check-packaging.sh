@@ -145,16 +145,59 @@ if [ -n "$deb" ]; then
   # packaged, which would install and then fail to start on an older libc.
   if [ -z "$(field Depends)" ]; then ok "no Depends (static binary)"; else note "Depends: $(field Depends) — a static binary needs none"; fi
 
-  # Q21: carrel must never make itself the default markdown handler. A
-  # maintainer script is the only place a .deb could do that (xdg-mime, a
-  # mimeapps.list write); the desktop database is refreshed by
-  # desktop-file-utils' own dpkg trigger without one.
-  scripts=$(tar tf "$t/control.tar" | grep -E '(pre|post)(inst|rm)$|config$' || true)
-  if [ -z "$scripts" ]; then ok "no maintainer scripts"; else note "maintainer scripts present: $scripts"; fi
+  # Q21: carrel must never make itself the default markdown handler. Both
+  # checks below are ALLOWLISTS, because a denylist cannot be complete: the
+  # first draft looked for maintainer scripts and for `mimeapps.list`, and
+  # passed a package shipping /usr/share/applications/defaults.list — which
+  # GIO honors as a default — and one carrying a `triggers` file.
+  #
+  # The control archive holds `control` and, optionally, `md5sums`. Nothing
+  # else: no maintainer script (xdg-mime, a mimeapps.list write), no
+  # `triggers` (activating anyone's handler), no `conffiles` (carrel ships
+  # nothing under /etc). The desktop database is refreshed by
+  # desktop-file-utils' own dpkg trigger without any of them.
+  extra=$(tar tf "$t/control.tar" | sed 's|^\./||' | grep -vxE '|control|md5sums' || true)
+  if [ -z "$extra" ]; then
+    ok "control archive holds only control and md5sums"
+  else
+    note "control archive carries more than control/md5sums: $(tr '\n' ' ' <<<"$extra")"
+  fi
 
+  # The data archive holds exactly the metadata's assets, cargo-deb's own
+  # copyright (and a changelog, should one ever be configured), and the
+  # directories that lead to them — regular files and directories only.
   listing=$(tar --numeric-owner -tvf "$t/data.tar")
-  if grep -qE 'mimeapps\.list|/etc/' <<<"$listing"; then
-    note "the package writes under /etc or ships a mimeapps.list"
+  allowed=$(
+    while read -r src dest _; do
+      [[ $dest == */ ]] && dest=$dest$(basename "$src")
+      echo "$dest"
+    done <<<"$deb_assets"
+    echo usr/share/doc/carrel/copyright
+  )
+  stray=$(
+    awk '{ name = $0; for (i = 1; i <= 5; i++) sub(/^[^ ]+ +/, "", name);
+           print substr($1, 1, 1), name }' <<<"$listing" \
+      | sed -E 's#^(.) \./#\1 #; s#/$##' \
+      | while read -r type name; do
+        [ -z "$name" ] && continue # the archive's own root
+        case $type in
+        -)
+          grep -qxF "$name" <<<"$allowed" && continue
+          [[ $name =~ ^usr/share/doc/carrel/changelog(\.Debian)?(\.gz)?$ ]] && continue
+          ;;
+        d)
+          # A directory on the way to an allowed file, and no other.
+          awk -v p="$name/" 'index($0, p) == 1 { f = 1 } END { exit !f }' \
+            <<<"$allowed" && continue
+          ;;
+        esac
+        echo "$type $name"
+      done
+  )
+  if [ -z "$stray" ]; then
+    ok "the package ships its assets, its copyright, and nothing else"
+  else
+    note "the package ships what its metadata does not name: $(tr '\n' ';' <<<"$stray")"
   fi
 
   while read -r src dest mode; do

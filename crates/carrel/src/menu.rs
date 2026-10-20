@@ -519,11 +519,17 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
                 },
             ]
         }
-        // The reference under the pointer, not the one `%` would pick from
-        // the top of the view; `%` is still the key that does this.
-        Under::Footnote => vec![Item::like(
+        // The reference under the pointer. No key beside it: `%` is not
+        // this row's job done from the keyboard, the way `za` is "Collapse
+        // this section"'s. `za` collapses a section, as the row does; `%`
+        // TOGGLES between a reference and its text, governed by whichever
+        // mark sits at or above the top of the view — so with a footnote's
+        // text at the top it goes BACK to a reference, and otherwise it can
+        // open a footnote that is not on screen at all. Printing it would
+        // teach a key that, pressed where it was read, did something else
+        // (`Item::plain`'s rule).
+        Under::Footnote => vec![Item::plain(
             "Go to the footnote text",
-            Action::FootnoteJump,
             Action::FootnoteJumpAt(byte),
         )],
         Under::Task => vec![Item::new("Next task", Action::TaskStep(1))],
@@ -735,6 +741,54 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 10, "the menus must be walked, got {checked}");
+    }
+
+    /// A row borrows a key only when the key does the row's job. `za` does
+    /// "Collapse this section"'s — it collapses a section. `%` does not do
+    /// "Go to the footnote text"'s: it toggles, from the mark governing the
+    /// top of the view, so with a footnote's own text at the top it goes
+    /// back to the reference instead.
+    #[test]
+    fn the_footnote_row_teaches_no_key_that_goes_somewhere_else() {
+        let src = format!(
+            "Body[^n] here.\n\n# Later\n\nmore[^m].\n\n{}[^n]: one\n\n[^m]: two\n\n{}",
+            "filler\n\n".repeat(60),
+            "after\n\n".repeat(60)
+        );
+        // A reader with the first footnote's text at the top of the view.
+        let reading = || {
+            let mut a = app(&src);
+            let h = a.text_h();
+            let top = u32::try_from(a.doc.text.find("one").unwrap()).unwrap();
+            a.reveal_byte(top, h, crate::action::Where::Top);
+            a
+        };
+        let a = reading();
+        let mark = u32::try_from(a.doc.text.find("more").unwrap() + 4).unwrap();
+        let row = context(&a, mark)[0];
+        assert_eq!(row.label, "Go to the footnote text");
+        assert_eq!(row.accel, "", "the row prints no key");
+
+        // Why: the row goes to `[^m]`'s text; `%` from here goes back up to
+        // `[^n]`'s reference.
+        let mut by_key = reading();
+        crate::app::update(&mut by_key, Action::FootnoteJump);
+        let mut by_row = reading();
+        crate::app::update(&mut by_row, row.action.unwrap());
+        let at = |a: &App| a.view.anchor;
+        assert_ne!(at(&by_key), at(&reading()), "the key moved");
+        assert_ne!(at(&by_row), at(&reading()), "the row moved");
+        assert_ne!(at(&by_key), at(&by_row), "but not to the same place");
+
+        // And the precedent the rule keeps: the heading's row still prints
+        // the fold key, because that key collapses a section too.
+        let heading = u32::try_from(a.doc.text.find("Later").unwrap()).unwrap();
+        let fold = context(&a, heading)[0];
+        assert_eq!(fold.label, "Collapse this section");
+        assert_eq!(
+            fold.accel,
+            keys::first(keys::accel(Action::FoldToggle).unwrap())
+        );
     }
 
     #[test]
