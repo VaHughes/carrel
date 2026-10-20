@@ -3856,7 +3856,7 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
         let feedback = if busy {
             format!("{count} searching…")
         } else {
-            format!("{count} files")
+            format!("{count} file{}", if count == 1 { "" } else { "s" })
         };
         let compact = format!("{count}{}", if busy { "…" } else { "" });
         paint_query_status(frame, app, area, targets, &left, &feedback, &compact);
