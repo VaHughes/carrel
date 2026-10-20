@@ -80,6 +80,15 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   drop it (`captured()` in `tests/pty.rs`) — the piped tests passed on that echo for a week
   while nothing piped was shown. Look for words, not phrases: ratatui skips unchanged blank
   cells with a cursor move, so `two arrived` on screen is `two`, a move, `arrived` in bytes.
+- **A pty test waits for the effect, never for a fixed delay.** Under load a click and
+  the `q` after it arrive together and the app quits before acting, or a resize overtakes
+  typed keys still queued. `pty_run_until` sends `q` only once the expected text is in the
+  capture; the resize driver waits for typed text before resizing. Both flaky tests of
+  2026-10 were these races, not app bugs.
+- **Run the gates with the default `TMPDIR`.** Pointing it inside the repo breaks the home
+  and picker tests: the fixtures land under a gitignored path (the `ignore` crate prunes
+  them), the path contains `work` (which the filter tests type), and the path row's
+  click columns move with the path's length.
 - **Every core dump raises a desktop notification on the maintainer's machine.** Drive only
   a build that has the hang-up fix; never build an old revision just to compare.
 - **Live resize regression:** `tests/pty.rs` launches the stdlib-only Python 3
