@@ -46,6 +46,15 @@ pub(super) const HYPHEN_COLS: u16 = MARK_COLS;
 /// Rows in a row that may end with a hyphen. A third is a "ladder" — the
 /// eye loses its place on the way back to the left margin — so the third
 /// takes the ragged edge instead.
+///
+/// Every hyphenated row counts, the author's own soft hyphens and the
+/// emergency cut of a word longer than the row included, so the layout
+/// never adds a division of its own to a ladder the text already has. Only
+/// the layout's optional divisions are ever refused for it: an authored
+/// hyphen and an emergency cut are not choices, and refusing them would
+/// overflow the row instead. That is why the count saturates rather than
+/// stopping at the limit — a run of three hundred authored divisions is
+/// three hundred hyphenated rows, and the count must survive them.
 const MAX_LADDER: u8 = 2;
 
 /// The smallest hole worth filling with half a word.
@@ -60,14 +69,23 @@ pub(super) fn min_room(avail: u16) -> u16 {
 
 /// Is `(head, tail, cut)` an honest answer for cutting `u` on an empty row
 /// of `avail` cells? The packer owns the fit, so it checks: the halves meet,
-/// each holds something, and the head fits its row with its mark.
+/// each holds something — which is the progress guarantee: every believed
+/// cut moves the start forward, so the loop asking for them ends — and a
+/// marked head fits its row with its mark.
+///
+/// An unmarked head wider than the row is believed: it is the splitter's
+/// answer for a first cluster wider than the whole row (`日` at width 1),
+/// which goes on a row ALONE and overhangs. Refusing it placed the whole
+/// unit instead, so the cluster after it overhung too. A marked head never
+/// overhangs: a mark the row has no cell for is not a mark.
 fn believable(u: &Unit, head: &Unit, tail: &Unit, cut: Cut, avail: u16) -> bool {
-    let mark = if cut == Cut::Plain { 0 } else { MARK_COLS };
+    let fits = cut == Cut::Plain
+        || head.content_width().saturating_add(u32::from(MARK_COLS)) <= u32::from(avail);
     head.range.start == u.range.start
         && head.range.end == tail.range.start
         && u.range.start < head.range.end
         && head.range.end < u.content_end()
-        && head.content_width().saturating_add(mark) <= avail
+        && fits
 }
 
 /// Greedily pack one logical line's units into rows.
@@ -129,7 +147,9 @@ where
     };
     let mut avail = fit.first_avail;
 
-    let mut col = 0u16;
+    // Cells, in the units' own `u32`: a run with no break in it can be
+    // wider than any row type counts.
+    let mut col = 0u32;
     let mut row_start: Option<u32> = None;
     let mut content_end = 0u32;
     // Consecutive rows ended with a hyphen so far.
@@ -142,26 +162,28 @@ where
         // The fit test uses CONTENT width. Whitespace that a break elides is
         // allowed to overhang, which is what UAX #14 and every browser do;
         // counting it wraps a column early.
-        if col > 0 && col.saturating_add(u.end_width()) > avail {
+        if col > 0 && col.saturating_add(u.end_width()) > u32::from(avail) {
             let s = row_start.take().unwrap_or(u.range.start);
             // `col` counts the space after the previous word, so `room` is
             // exactly what a head and its hyphen may occupy. The line's last
             // word is never divided: its tail would be a row of its own.
-            let room = avail.saturating_sub(col);
+            let room = u16::try_from(u32::from(avail).saturating_sub(col)).unwrap_or(0);
             let divided = if ladder < MAX_LADDER && !u.mandatory && room >= min_room(avail) {
-                divide(&u, room)
-                    .filter(|(head, _)| head.content_width().saturating_add(HYPHEN_COLS) <= room)
+                divide(&u, room).filter(|(head, _)| {
+                    head.content_width().saturating_add(u32::from(HYPHEN_COLS)) <= u32::from(room)
+                })
             } else {
                 None
             };
             if let Some((head, tail)) = divided {
                 e.row(s, head.range.end, Cut::Hyphen);
-                ladder += 1;
+                ladder = ladder.saturating_add(1);
                 u = tail;
-            } else if soft && col < avail {
+            } else if soft && col < u32::from(avail) {
                 // The author's division, and the cell its fit test kept.
+                // Never refused for the ladder; see `MAX_LADDER`.
                 e.row(s, content_end, Cut::Hyphen);
-                ladder += 1;
+                ladder = ladder.saturating_add(1);
             } else {
                 e.row(s, content_end, Cut::Plain);
                 ladder = 0;
@@ -175,7 +197,7 @@ where
         // The emergency break: a unit that does not fit an empty row is cut
         // until what is left does. Only on an empty row — a wide unit after
         // other words took the ordinary break above first.
-        while col == 0 && u.end_width() > avail {
+        while col == 0 && u.end_width() > u32::from(avail) {
             let Some((head, tail, cut)) = split(&u, avail)
                 .filter(|(head, tail, cut)| believable(&u, head, tail, *cut, avail))
             else {
@@ -183,7 +205,11 @@ where
             };
             let s = row_start.take().unwrap_or(head.range.start);
             e.row(s, head.range.end, cut);
-            ladder = if cut == Cut::Hyphen { ladder + 1 } else { 0 };
+            ladder = if cut == Cut::Hyphen {
+                ladder.saturating_add(1)
+            } else {
+                0
+            };
             e.continued = true;
             e.indent = fit.cont_indent;
             avail = fit.cont_avail;
@@ -228,12 +254,12 @@ mod tests {
     use super::*;
 
     /// A unit with no text behind it. The point of the seam.
-    fn unit(start: u32, end: u32, width: u16, trailing_ws: u16, mandatory: bool) -> Unit {
+    fn unit(start: u32, end: u32, width: u32, trailing_ws: u32, mandatory: bool) -> Unit {
         Unit {
             range: start..end,
             width,
             trailing_ws,
-            trailing_ws_bytes: u32::from(trailing_ws),
+            trailing_ws_bytes: trailing_ws,
             mandatory,
             soft_hyphen: false,
         }
@@ -345,10 +371,10 @@ mod tests {
             }
             let at = u.range.start + u32::from(letters);
             Some((
-                unit(u.range.start, at, letters, 0, false),
+                unit(u.range.start, at, u32::from(letters), 0, false),
                 Unit {
                     range: at..u.range.end,
-                    width: u.width - letters,
+                    width: u.width - u32::from(letters),
                     ..u.clone()
                 },
             ))
@@ -479,6 +505,83 @@ mod tests {
         );
     }
 
+    /// `unit`, ending in the author's soft hyphen.
+    fn soft(start: u32, end: u32, width: u32) -> Unit {
+        Unit {
+            soft_hyphen: true,
+            ..unit(start, end, width, 0, false)
+        }
+    }
+
+    #[test]
+    fn authored_hyphens_count_toward_the_ladder() {
+        // Two rows end at the author's soft hyphen; the third would end in a
+        // division of the layout's own — `cccc ` leaves 4 cells, and `ddd`
+        // and a hyphen fill them — making a ladder of three. Refused.
+        let units = vec![
+            soft(0, 7, 6),
+            soft(7, 14, 6),
+            unit(14, 20, 6, 1, false),
+            unit(20, 30, 10, 1, false),
+            unit(30, 32, 2, 0, true),
+        ];
+        let rows = rows_divided(units, 10, &[(20, 3)]);
+        let hyphens: Vec<bool> = rows.iter().map(|r| r.2).collect();
+        assert_eq!(&hyphens[..3], [true, true, false], "{rows:?}");
+    }
+
+    #[test]
+    fn an_authored_ladder_of_any_length_is_kept_and_counted_without_overflow() {
+        // Three hundred soft-hyphen units, each filling a row: every row
+        // shows the author's hyphen, and the count of them must not wrap.
+        let units: Vec<Unit> = (0..300u32).map(|i| soft(i * 9, i * 9 + 9, 8)).collect();
+        let rows = rows_divided(units, 10, &[]);
+        assert_eq!(rows.len(), 300);
+        assert!(rows[..299].iter().all(|r| r.2));
+    }
+
+    #[test]
+    fn a_ladder_of_emergency_hyphens_of_any_length_does_not_overflow() {
+        // A 3,000-cell word cut at every row, each cut a hyphen.
+        let units = vec![unit(0, 3000, 3000, 0, true)];
+        let rows = rows_cut(units, 10, |u, avail| {
+            Some(cut_at(u, avail - 1, Cut::Hyphen))
+        });
+        assert_eq!(rows.len(), 334);
+    }
+
+    #[test]
+    fn an_unmarked_head_wider_than_the_row_is_believed_and_goes_alone() {
+        // The splitter's answer for a first cluster wider than the row: a
+        // 2-cell head at avail 1. It goes on a row alone; refusing it put the
+        // whole unit on one row, the clusters after it overhanging too.
+        let units = vec![unit(0, 6, 6, 0, true)];
+        let rows = rows_cut(units, 1, |u, _| {
+            (u.width > 2).then(|| cut_at(u, 2, Cut::Plain))
+        });
+        assert_eq!(
+            rows,
+            [
+                (0, 2, false, false),
+                (2, 4, false, false),
+                (4, 6, false, false)
+            ]
+        );
+        // Marked, the same head is refused: there is no cell for its mark.
+        let units = vec![unit(0, 6, 6, 0, true)];
+        let rows = rows_cut(units, 1, |u, _| Some(cut_at(u, 2, Cut::Marked)));
+        assert_eq!(rows, [(0, 6, false, false)]);
+    }
+
+    #[test]
+    fn a_run_wider_than_a_u16_is_cut_until_every_row_fits() {
+        // 100,000 cells with no break: every row is 20 cells.
+        let units = vec![unit(0, 100_000, 100_000, 0, true)];
+        let rows = rows_cut(units, 20, |u, avail| Some(cut_at(u, avail, Cut::Plain)));
+        assert_eq!(rows.len(), 5000);
+        assert!(rows.iter().all(|r| r.1 - r.0 == 20), "{:?}", rows.last());
+    }
+
     #[test]
     fn units_that_fit_share_one_row() {
         let rows = rows_of(vec![unit(0, 4, 4, 1, false), unit(4, 7, 3, 0, true)], 10);
@@ -557,10 +660,10 @@ mod tests {
     fn cut_at(u: &Unit, cells: u16, cut: Cut) -> (Unit, Unit, Cut) {
         let at = u.range.start + u32::from(cells);
         (
-            unit(u.range.start, at, cells, 0, false),
+            unit(u.range.start, at, u32::from(cells), 0, false),
             Unit {
                 range: at..u.range.end,
-                width: u.width - cells,
+                width: u.width - u32::from(cells),
                 ..u.clone()
             },
             cut,

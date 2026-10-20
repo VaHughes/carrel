@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ea0e74c17b85f44bde08c1d0b84bd532aca9b867ec45c5120aff084bfbfa0e6b # shrinks to commits = [(["1.\t```"], false)]
+cc 3143c5486fae59c1942e141f715e1d2bc8f9abce3a430bc872602c74ce6d42a7 # shrinks to commits = [(["1.\t1. ```"], false)]
+cc ae74a63271de49675612a941fec89a61fcdfed3be2fa79a837b4f308af754804 # shrinks to commits = [(["[word", "]: /u"], false)]

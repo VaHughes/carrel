@@ -714,8 +714,8 @@ pub struct Document {
     /// doc byte each sits at. The tags themselves are stripped; this is what
     /// keeps a `#x` link to one working.
     pub anchors: Box<[(Box<str>, u32)]>,
-    /// Every footnote definition's whole extent in doc space, in document
-    /// order — first block's start to last block's end. Private:
+    /// Every footnote definition's whole extent in doc space, sorted by
+    /// start — first block's start to last block's end. Private:
     /// [`Document::footnote_def_range`] is the API.
     footnote_spans: Box<[Range<u32>]>,
     /// Inline `#tags` in the body: the doc range of each, its `#` included,
@@ -1212,9 +1212,10 @@ impl Document {
     /// from indentation. `None` for a byte no definition starts at.
     #[must_use]
     pub fn footnote_def_range(&self, start: u32) -> Option<Range<u32>> {
+        let i = self.footnote_spans.partition_point(|r| r.start < start);
         self.footnote_spans
-            .iter()
-            .find(|r| r.start == start)
+            .get(i)
+            .filter(|r| r.start == start)
             .cloned()
     }
 }
@@ -2375,8 +2376,13 @@ impl<'a> Builder<'a> {
                     self.indent = self.indent.saturating_add(w);
                     self.item_indent.push(w);
                     self.footnote = Some(label);
-                    // Every leaf closes on its own End event, so the blocks
-                    // pushed from here to the definition's End are its own.
+                    // A leaf takes its index when it CLOSES, so one still
+                    // open here — a list item's own text, with the
+                    // definition nested under it — would be counted as the
+                    // definition's first block. It is finished: close it
+                    // now. Then every block pushed from here to the
+                    // definition's End is its own.
+                    self.close_block(src.start);
                     self.footnote_first = Some(self.layout_order.len() as u32);
                 }
                 Event::End(TagEnd::FootnoteDefinition) => {
@@ -2795,11 +2801,14 @@ impl<'a> Builder<'a> {
                 .get(b as usize)
                 .map(|id| self.nodes[id.get()].doc.clone())
         };
-        let footnote_spans = self
+        let mut footnote_spans: Vec<Range<u32>> = self
             .footnote_blocks
             .iter()
             .filter_map(|r| Some(block_doc(r.start)?.start..block_doc(r.end - 1)?.end))
             .collect();
+        // Pushed as each definition ENDS, so a nested one would precede its
+        // parent. Stable, so a tie keeps document order, as a find did.
+        footnote_spans.sort_by_key(|r| r.start);
         let tags = find_inline_tags(
             &self.text,
             &self.nodes,
@@ -2807,7 +2816,7 @@ impl<'a> Builder<'a> {
             &self.inert_hashes,
         );
         Document {
-            footnote_spans,
+            footnote_spans: footnote_spans.into_boxed_slice(),
             source: Arc::from(self.source),
             text: self.text,
             nodes: self.nodes.into_boxed_slice(),
@@ -4095,6 +4104,58 @@ mod tests {
             None,
             "no definition starts there"
         );
+    }
+
+    /// A definition written inside a list item still has a range. Its first
+    /// block was counted from the moment the definition opened — while the
+    /// item's own text was still an open block, closed only when the
+    /// definition's paragraph opened — so the range began at the ITEM, and
+    /// no definition started there.
+    #[test]
+    fn a_footnote_defined_inside_a_list_item_has_a_range() {
+        for src in [
+            "- tight\n  [^a]: in tight item\n\nx[^a]\n",
+            "- item\n\n  [^a]: in item\n\nx[^a]\n",
+            "- one\n- two\n  [^a]: in item\n  more\n\nx[^a]\n",
+        ] {
+            let doc = Document::parse(src);
+            let defs = doc.footnote_defs();
+            assert_eq!(defs.len(), 1, "{src:?}: {defs:?}");
+            let r = doc
+                .footnote_def_range(defs[0].1)
+                .unwrap_or_else(|| panic!("{src:?}: no range"));
+            let inside = &doc.text[r.start as usize..r.end as usize];
+            assert!(
+                inside.starts_with("in item") || inside.starts_with("in tight"),
+                "{src:?}: {inside:?}"
+            );
+            assert!(
+                !inside.contains("tight\n") && !inside.contains('x'),
+                "{src:?}: {inside:?}"
+            );
+        }
+    }
+
+    /// Definitions found by binary search must still find every one, in
+    /// whatever order their blocks closed.
+    #[test]
+    fn every_footnote_definition_is_found_among_many() {
+        let src: String = (0..40)
+            .map(|i| format!("x[^n{i}]\n\n"))
+            .chain((0..40).rev().map(|i| format!("[^n{i}]: note {i}\n\n")))
+            .collect();
+        let doc = Document::parse(&src);
+        let defs = doc.footnote_defs();
+        assert_eq!(defs.len(), 40);
+        for (name, at) in &defs {
+            let r = doc.footnote_def_range(*at).expect("recorded");
+            let n = name.trim_start_matches('n');
+            assert_eq!(
+                &doc.text[r.start as usize..r.end as usize],
+                format!("note {n}")
+            );
+            assert_eq!(doc.footnote_def_range(*at + 1), None);
+        }
     }
 
     #[test]

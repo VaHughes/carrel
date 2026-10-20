@@ -18,14 +18,19 @@ use crate::hyphen::Hyphenation;
 ///
 /// `width` includes trailing whitespace; [`Unit::content_width`] is what the
 /// fit test uses, because whitespace at a break is elided rather than painted.
+///
+/// Widths are `u32`, not the `u16` a row is: a unit is a run with no break
+/// opportunity in it, and a pasted blob can be 100,000 cells of one. A `u16`
+/// saturated at 65,535, so each cut subtracted its head from the wrong total
+/// and a tail tens of kilobytes long came out "fitting" the row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Unit {
     /// Byte range within the chunk text, relative to its start.
     pub range: Range<u32>,
     /// Display cells of the whole unit, trailing whitespace included.
-    pub width: u16,
+    pub width: u32,
     /// Cells of `width` that are trailing whitespace.
-    pub trailing_ws: u16,
+    pub trailing_ws: u32,
     /// Bytes of `range` that are trailing whitespace.
     pub trailing_ws_bytes: u32,
     /// Ends at a mandatory break — a hard newline, or the end of the text.
@@ -38,15 +43,15 @@ pub(super) struct Unit {
 
 impl Unit {
     /// Width excluding trailing whitespace. **This is what fits, or doesn't.**
-    pub(super) fn content_width(&self) -> u16 {
+    pub(super) fn content_width(&self) -> u32 {
         self.width.saturating_sub(self.trailing_ws)
     }
 
     /// Cells this unit needs to stand at the end of a row: its content, and
     /// the hyphen its soft hyphen becomes there.
-    pub(super) fn end_width(&self) -> u16 {
+    pub(super) fn end_width(&self) -> u32 {
         self.content_width()
-            .saturating_add(u16::from(self.soft_hyphen && !self.mandatory))
+            .saturating_add(u32::from(self.soft_hyphen && !self.mandatory))
     }
 
     /// End of the painted content, excluding trailing whitespace.
@@ -93,7 +98,7 @@ pub(super) fn units<'a>(text: &'a str, w: &'a WidthFn) -> impl Iterator<Item = U
 const SOFT_HYPHEN: char = '\u{AD}';
 
 /// Measure a unit: total cells, trailing-whitespace cells, trailing bytes.
-fn measure(s: &str, w: &WidthFn) -> (u16, u16, u32) {
+fn measure(s: &str, w: &WidthFn) -> (u32, u32, u32) {
     let content_len = s.trim_end_matches(char::is_whitespace).len();
     let (content, tail) = s.split_at(content_len);
     let cw = sum_width(content, w);
@@ -101,17 +106,17 @@ fn measure(s: &str, w: &WidthFn) -> (u16, u16, u32) {
     (cw.saturating_add(tw), tw, tail.len() as u32)
 }
 
-fn sum_width(s: &str, w: &WidthFn) -> u16 {
+fn sum_width(s: &str, w: &WidthFn) -> u32 {
     // Printable ASCII is one cluster and one cell per byte, so both the
     // grapheme walk and the width table are skippable. This relies on the
     // documented [`WidthFn`] precondition that printable ASCII measures 1 —
     // true of every terminal, and unaffected by DEC mode 2027, which changes
     // how *clusters* are counted, not how `a` is.
     if s.is_ascii() && !s.bytes().any(|b| b < 0x20 || b == 0x7f) {
-        return u16::try_from(s.len()).unwrap_or(u16::MAX);
+        return u32::try_from(s.len()).unwrap_or(u32::MAX);
     }
     s.graphemes(true)
-        .fold(0u16, |acc, g| acc.saturating_add(w(g)))
+        .fold(0u32, |acc, g| acc.saturating_add(u32::from(w(g))))
 }
 
 /// How a row that ends inside a unit is marked: what an emergency break
@@ -133,6 +138,12 @@ pub(super) enum Cut {
 /// Cells a row gives up to the mark a [`Cut::Hyphen`] or [`Cut::Marked`]
 /// ends it with. The same cell either way.
 pub(super) const MARK_COLS: u16 = 1;
+
+/// Bytes past which a run is not a word any language here divides: the
+/// patterns' longest word, at UTF-8's widest, with its punctuation. A bound
+/// on how far [`divide`] and [`divide_long`] look, so each answers in
+/// constant time however long the run it is asked about.
+const LONGEST_WORD: usize = 4 * crate::hyphen::MAX_WORD + 32;
 
 /// Where words may be divided in a line, and which bytes of it must not be:
 /// what [`divide`] and [`split`] need beyond the unit itself. `fixed(range)`
@@ -180,13 +191,13 @@ pub(super) fn split(
     } else {
         0
     };
-    let budget = avail - reserve;
+    let budget = u32::from(avail - reserve);
     let start = u.range.start as usize;
     let content_end = u.content_end() as usize;
-    let mut col = 0u16;
+    let mut col = 0u32;
     let mut at = None;
     for (off, g) in text[start..content_end].grapheme_indices(true) {
-        let gw = w(g);
+        let gw = u32::from(w(g));
         if col > 0 && col.saturating_add(gw) > budget {
             at = Some(start + off);
             break;
@@ -196,7 +207,7 @@ pub(super) fn split(
     let at = at?;
     // A first cluster wider than the budget went on the row alone; it keeps
     // its mark only when the mark still fits beside it.
-    let cut = if reserve > 0 && col + reserve <= avail {
+    let cut = if reserve > 0 && col + u32::from(reserve) <= u32::from(avail) {
         Cut::Marked
     } else {
         Cut::Plain
@@ -205,7 +216,7 @@ pub(super) fn split(
 }
 
 /// `u` cut at byte `at`, the head `head_width` cells wide.
-fn halves(u: &Unit, at: u32, head_width: u16, cut: Cut) -> (Unit, Unit, Cut) {
+fn halves(u: &Unit, at: u32, head_width: u32, cut: Cut) -> (Unit, Unit, Cut) {
     (
         Unit {
             range: u.range.start..at,
@@ -234,6 +245,12 @@ fn halves(u: &Unit, at: u32, head_width: u16, cut: Cut) -> (Unit, Unit, Cut) {
 /// is found by looking back to the whitespace before it — its patterns are
 /// the whole word's, never the tail's. It must still be free-standing:
 /// whitespace, or the line's edge, on both sides.
+///
+/// **Bounded by [`LONGEST_WORD`] in both directions.** This is asked once
+/// per row of a run too long for one, so a lookback to the previous
+/// whitespace, or a pass over everything up to the next, made a long run
+/// quadratic: a 60 KB lowercase blob took seconds per wrap pass. Nothing
+/// that long is a word the patterns will divide.
 fn divide_long(
     u: &Unit,
     text: &str,
@@ -243,18 +260,24 @@ fn divide_long(
 ) -> Option<(Unit, Unit, Cut)> {
     let start = u.range.start as usize;
     let end = u.content_end() as usize;
-    let word_start = text[..start]
-        .char_indices()
-        .rev()
-        .find(|&(_, c)| c.is_whitespace())
-        .map_or(0, |(i, c)| i + c.len_utf8());
-    if text[end..]
-        .chars()
-        .next()
-        .is_some_and(|c| !c.is_whitespace())
+    if end - start > LONGEST_WORD
+        || text[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace())
     {
         return None;
     }
+    let mut floor = start.saturating_sub(LONGEST_WORD - (end - start));
+    while !text.is_char_boundary(floor) {
+        floor += 1;
+    }
+    let word_start = match text[floor..start].rfind(char::is_whitespace) {
+        Some(i) => floor + i + text[floor + i..].chars().next().map_or(1, char::len_utf8),
+        // The word would be longer than any the patterns divide.
+        None if floor > 0 => return None,
+        None => 0,
+    };
     let content = &text[word_start..end];
     let word = crate::hyphen::word_in(soft.language, content)?;
     let (ws, we) = (word_start + word.start, word_start + word.end);
@@ -266,7 +289,7 @@ fn divide_long(
         .map(|(_, b)| ws + b)
         .filter(|&at| at > start)
         .map(|at| (at, sum_width(&text[start..at], w)))
-        .take_while(|&(_, cells)| cells <= max_head)
+        .take_while(|&(_, cells)| cells <= u32::from(max_head))
         .last()?;
     Some(halves(u, at as u32, head_width, Cut::Hyphen))
 }
@@ -296,7 +319,7 @@ pub(super) fn divide(
         .chars()
         .next_back()
         .is_none_or(char::is_whitespace);
-    if !after_space || u.trailing_ws_bytes == 0 {
+    if !after_space || u.trailing_ws_bytes == 0 || u.content_end() as usize - start > LONGEST_WORD {
         return None;
     }
     let content = &text[start..u.content_end() as usize];
@@ -305,8 +328,8 @@ pub(super) fn divide(
         return None;
     }
     // Opening punctuation rides with the head and costs cells like any other.
-    let lead = sum_width(&content[..word.start], w);
-    let max_head = room.checked_sub(lead + MARK_COLS)?;
+    let lead = u16::try_from(sum_width(&content[..word.start], w)).ok()?;
+    let max_head = room.checked_sub(lead.checked_add(MARK_COLS)?)?;
     let cut =
         crate::hyphen::division(soft.language, &content[word.clone()], usize::from(max_head))?;
     let at = (start + word.start + cut) as u32;
