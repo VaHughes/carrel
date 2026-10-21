@@ -99,7 +99,7 @@ sudo dnf copr enable vahughes/carrel
 sudo dnf install carrel
 ```
 
-**Debian and Ubuntu** (amd64 and arm64, from the first release after 2026.10.8): download the
+**Debian and Ubuntu** (amd64 and arm64, from 2026.10.21): download the
 `.deb` for your machine from the [releases page](https://github.com/VaHughes/carrel/releases),
 then install it with apt. It has
 no dependencies. There is no apt repository yet, so updates mean downloading the next one.

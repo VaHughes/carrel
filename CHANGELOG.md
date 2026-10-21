@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.10.21
 
 - **Search finds what you type through smart punctuation.** `don't`, `"quoted"`,
   `...`, `--` and `---` match the curly quotes, ellipsis and dashes on screen, and the

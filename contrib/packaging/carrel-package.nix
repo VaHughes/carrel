@@ -21,7 +21,7 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "carrel";
-  version = "2026.10.8";
+  version = "2026.10.21";
 
   src = fetchFromGitHub {
     owner = "VaHughes";
