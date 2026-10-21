@@ -323,8 +323,15 @@ fn record_safe(l: &str) -> String {
 /// outside code spans, where a backslash is literal, and outside
 /// autolinks, where it would change the address. An escaped hyphen ends a
 /// run, so only a hyphen followed by another unescaped one needs it.
+///
+/// Every `$` is escaped too. A `$` in a commit message is shell (`$$`,
+/// `$HOME`), and math is the one inline construct that outranks a code
+/// span: `$$` lines around a backtick run swallowed it, so the span this
+/// scan had skipped over was never a span and its `--` became a dash.
+/// With no math possible, the spans found here are the spans the parser
+/// finds.
 fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
-    if !s.contains("--") {
+    if !s.contains("--") && !s.contains('$') {
         return s.into();
     }
     let b = s.as_bytes();
@@ -366,6 +373,10 @@ fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
             }
             b'-' if b.get(i + 1) == Some(&b'-') => {
                 out.push_str("\\-");
+                i += 1;
+            }
+            b'$' => {
+                out.push_str("\\$");
                 i += 1;
             }
             _ => {
@@ -870,6 +881,34 @@ CommitDate: Thu Oct 8 16:38:47 2026 -0400
     /// line and a `#` comment line (a merge's `# Conflicts:` list) keep
     /// their own lines. And `--` in a message is two hyphens: a flag, an
     /// HTML comment, never an en dash.
+    /// `$` in a message is literal: no math forms, `$$` reads as written,
+    /// and a backtick run that math would have swallowed still closes its
+    /// code span — so the `--` inside stays two hyphens. Found by
+    /// `only_the_headings_it_wrote` in CI.
+    #[test]
+    fn a_dollar_in_a_message_is_shell_not_math() {
+        let src = "commit 0abcdef0123456789\nAuthor: A\n\n    $$\n    ```$$\n    <!--``\n\n    kill $$ and echo $HOME$\n";
+        let md = to_markdown(src);
+        let doc = Document::parse(&md);
+        assert!(
+            !doc.text.contains(['\u{2013}', '\u{2014}']),
+            "{:?}\n{md}",
+            doc.text
+        );
+        assert!(doc.text.contains("<!--"), "{:?}\n{md}", doc.text);
+        assert!(
+            doc.text.contains("kill $$ and echo $HOME$"),
+            "{:?}\n{md}",
+            doc.text
+        );
+        assert!(
+            !doc.nodes
+                .iter()
+                .any(|n| format!("{:?}", n.kind).starts_with("Math")),
+            "{md}"
+        );
+    }
+
     #[test]
     fn message_records_keep_their_lines_and_hyphens_stay_hyphens() {
         let src = "\

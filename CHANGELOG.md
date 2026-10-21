@@ -21,7 +21,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   it scrolls, and links and footnote marks inside it can be clicked.
 - **`git log | carrel` keeps each header and trailer on its own line** (`Author:`,
   `Date:`, `Co-Authored-By:` …), and markdown inside a commit message can no longer
-  break its commit's section.
+  break its commit's section. A `$` in a message reads as written (`$$`, `$HOME`),
+  never as math.
 - **Debian and Ubuntu packages.** Releases carry `carrel_<version>-1_amd64.deb` and
   `_arm64.deb`, built from the static musl binaries, so they have no dependencies.
 - **Smaller fixes.**
