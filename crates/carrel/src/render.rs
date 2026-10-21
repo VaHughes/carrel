@@ -5398,7 +5398,19 @@ mod tests {
             .find(|l| l.contains(&*d.path().file_name().unwrap().to_string_lossy()))
             .expect("the path row");
         assert!(!row.contains("/ /"), "doubled root: {row:?}");
-        assert!(row.contains("/ tmp /"), "root then one separator: {row:?}");
+        // The temp dir's own first component — `tmp` usually, `build` in
+        // the nix sandbox, whose TMPDIR is /build.
+        let first = d
+            .path()
+            .components()
+            .nth(1)
+            .unwrap()
+            .as_os_str()
+            .to_string_lossy();
+        assert!(
+            row.contains(&format!("/ {first} /")),
+            "root then one separator: {row:?}"
+        );
     }
 
     #[test]

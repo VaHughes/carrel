@@ -186,15 +186,21 @@ jobs:
           cargo=$(build | tee cargo.log | got)
           [ -n "$cargo" ] || { tail -40 cargo.log; exit 1; }
           sed -i -E "s|^([[:space:]]*cargoHash = ).*;|\1\"$cargo\";|" "$f"
-          out=$(nix-build --no-out-link -E "with import <nixpkgs> {}; callPackage ./$f {}")
-          "$out/bin/carrel" --version | tee /dev/stderr | grep -qx "carrel $V"
+          # The hashes are right before the build passes: they name the
+          # sources, not the result. Publish them now, so a failing check
+          # phase turns this job red without costing the stamp its hashes.
           echo "src=$src" >> "$GITHUB_OUTPUT"
           echo "cargo=$cargo" >> "$GITHUB_OUTPUT"
+          # The full build runs carrel's tests in the sandbox, as nixpkgs
+          # review will (TMPDIR=/build, no network, no HOME).
+          out=$(nix-build --no-out-link -E "with import <nixpkgs> {}; callPackage ./$f {}")
+          "$out/bin/carrel" --version | tee /dev/stderr | grep -qx "carrel $V"
 
   stamp:
     needs: [check, nix]
-    # A nix failure (a nixpkgs change, a hosted-runner hiccup) must not cost
-    # the AUR sums: stamp those alone and let the red nix job say why.
+    # A nix failure (a nixpkgs change, a hosted-runner hiccup, a test that
+    # fails in the sandbox) must not cost the AUR sums: stamp those, plus the
+    # nix hashes if they were found, and let the red nix job say why.
     if: ${{ always() && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
