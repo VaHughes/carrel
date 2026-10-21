@@ -13,7 +13,7 @@ Last updated: 2026-10-21
   the nixpkgs PR should wait for the next release.
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
   reader-beside-an-agent slate.
-- All five local gates passed on 2026-10-08: **1,173 tests**, zero-warning clippy,
+- All five local gates passed on 2026-10-21: **1,307 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
 - **Decisions made 2026-10-08:** a click outside an open pane closes it and does nothing
@@ -31,7 +31,22 @@ Last updated: 2026-10-21
 
 ## Recently completed
 
-- Unreleased (implemented 2026-10-19/20) — **the open list, cleared, then three cold
+- 2026.10.21 (released 2026-10-21) — **publishing after the tag moved into CI, and the
+  release that proved it.** `.github/workflows/publish.yml` runs when `Release` succeeds:
+  `cargo publish` (core, then carrel) with a crate-page link check and an unlocked
+  `cargo install`; the formula committed to the tap with a write deploy key; the nix
+  hashes found on a hosted runner and built with; `scripts/stamp-release.sh` committing
+  the checksum stamp to `main`; the COPR build from the tag, waited on. Every job skips
+  work already done. A dispatched trial against v2026.10.8 skipped everything as it
+  should. Two defects surfaced on the way: CI's property test found `$$` in a commit
+  message forming math that hid a code span, so `--` printed as a dash (`$` is now
+  literal in messages); and a render test that hard-coded `/tmp` failed in the nix
+  sandbox (`TMPDIR=/build`), fixed on `main` after the tag. The Release run's host job
+  then failed with a 403 because `--target` named a commit that was no longer `main`'s
+  head; the release was created by hand from the run's verified artifacts, `deb.yml` and
+  `publish.yml` dispatched with the tag, and `release.yml` now uses `--verify-tag`.
+
+- 2026.10.21 (implemented 2026-10-19/20) — **the open list, cleared, then three cold
   reviews and two fix waves.** Built in parallel worktrees, merged, then reviewed by two
   code readers and one tester who only drove the binary. Shipped to `main`: the targeted
   footnote menu jump; every defect the old Open list named; inline and nested `#tags`;
@@ -242,8 +257,10 @@ decision — do not propose them):
 3. **Catalog listings** — drafts in the private notes. awesome-ratatui: ready to submit.
    Terminal Trove: needs a still PNG screenshot first. awesome-tuis: not before 2027-02-12
    (six-month minimum age). awesome-cli-apps: archived, skip.
-4. **`.deb`** — built by `.github/workflows/deb.yml` after each Release run; first proven
-   at the next release (see `contrib/packaging/README.md`).
+4. **`.deb`** — built by `.github/workflows/deb.yml` after each Release run; proven at
+   2026.10.21 (dispatched by hand that time, since the Release run had failed).
+6. **Prove the `release.yml` `--verify-tag` fix** at the next release. Until it has run
+   once, do not push to `main` between a tag and its Release run's host job.
 5. **Publishing after the tag is automated** (`.github/workflows/publish.yml`, added
    2026-10-21): crates.io, the Homebrew tap, nix hashes, the checksum stamp and COPR. It
    needs three repository secrets — `CARGO_REGISTRY_TOKEN`, `HOMEBREW_TAP_DEPLOY_KEY`,
@@ -280,6 +297,13 @@ into shared intents and TUI chrome, save positions and bookmarks as `SrcByte` (a
 The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
+
+- 2026-10-21: **everything after the tag is CI's** (`publish.yml`). By hand: docs sweep,
+  release commit, tag, watching runs by SHA. Secrets `CARGO_REGISTRY_TOKEN`,
+  `HOMEBREW_TAP_DEPLOY_KEY` (a deploy key scoped to the tap, not a PAT), `COPR_CONFIG`.
+  crates.io is now published after the gated build, not before the tag.
+- 2026-10-21: **a `$` in a commit message is literal.** It is shell (`$$`, `$HOME`), and
+  math outranks a code span, which let message text escape the hyphen guard.
 
 - 2026-10-19: **the in-workspace dependency is an exact pin** (`carrel-core = "=<ver>"`):
   CalVer's year is the semver major, so a caret accepted every 2026 core and an unlocked
