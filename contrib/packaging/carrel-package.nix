@@ -1,11 +1,14 @@
 # nixpkgs by-name package for carrel — destined for
 # pkgs/by-name/ca/carrel/package.nix in a nixpkgs PR.
 #
-# The two `lib.fakeHash` values must be filled on a machine with nix:
+# The two hashes are filled after each release by .github/workflows/publish.yml,
+# which runs this procedure on a hosted runner and builds the package with them:
 #   1. nix-build -E 'with import <nixpkgs> {}; callPackage ./carrel-package.nix {}'
-#      — the build fails printing the real `src` hash ("got: sha256-…"); paste it in.
-#   2. Re-run; it fails again printing the real `cargoHash`; paste that in.
+#      with both set to lib.fakeHash — the build fails printing the real `src`
+#      hash ("got: sha256-…"); put it in.
+#   2. Re-run; it fails again printing the real `cargoHash`; put that in.
 #   3. Re-run once more to a successful build, then `./result/bin/carrel --version`.
+# Between the release commit and the stamp, they are the previous release's.
 # Submitting: copy into a nixpkgs checkout as pkgs/by-name/ca/carrel/package.nix,
 # add the maintainer to maintainers/maintainer-list.nix (first PR can do both),
 # commit as "carrel: init at <version>", open the PR against master.

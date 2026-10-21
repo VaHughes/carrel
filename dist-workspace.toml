@@ -12,12 +12,10 @@ cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app. The homebrew formula is BUILT here
-# (it rides the release as `carrel.rb`) but is NOT pushed to the tap by CI: the
-# publish job would need a HOMEBREW_TAP_TOKEN repo secret with write access to
-# the tap, and without it the job fails and blocks `announce`. Until that secret
-# exists, the formula is committed to `VaHughes/homebrew-tap` by hand from the
-# release artifact — see RELEASING.md step 10. Re-add "homebrew" to publish-jobs
-# (and regenerate release.yml) the moment the secret is set.
+# (it rides the release as `carrel.rb`) but dist does NOT push it: its publish
+# job wants a HOMEBREW_TAP_TOKEN PAT, and adding it would mean regenerating the
+# hand-edited release.yml. `.github/workflows/publish.yml` commits the formula
+# to the tap instead, with a deploy key scoped to that one repository.
 installers = ["shell", "homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "VaHughes/homebrew-tap"

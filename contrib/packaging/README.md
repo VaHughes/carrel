@@ -15,6 +15,14 @@ against. COPR still builds `--commit main` rather than the tag, because the spec
 from the commit while `Source0` is fetched from the tag tarball — the two agree once the
 stamp is in the release commit.
 
+**After the tag, `.github/workflows/publish.yml` does the rest with no hand step.** It runs
+when `Release` succeeds: `cargo publish` (core, then carrel) with a check of the rendered
+crate page and an unlocked `cargo install`; the Homebrew formula committed to the tap; the
+nix hashes computed and built with on a hosted runner; the checksum stamp committed to
+`main` (`scripts/stamp-release.sh`); and the COPR build submitted from the tag and waited
+on. Every job is idempotent, so a failure is retried by re-running it, or by running the
+workflow from Actions with the tag.
+
 `carrel` (AUR) and
 `carrel.spec` (COPR) build from the GitHub **source** tarball, which carries `contrib/` and
 `Cargo.lock`. `carrel-bin` (AUR, prebuilt) is no longer blocked: v2026.8.17 is the first
@@ -22,9 +30,9 @@ release whose archives carry the man page and completions it installs. Note that
 flattens `include` paths to the archive root**: `contrib/carrel.1` arrives as `carrel.1`.
 AUR publishing itself still waits on Arch reopening account registration.
 
-**`carrel-package.nix`** is the nixpkgs by-name package, ready except for its two hashes.
-The hashes need nix, which `docker run --rm nixos/nix` provides — the fill-in steps are in
-the file's header comment.
+**`carrel-package.nix`** is the nixpkgs by-name package. `publish.yml` fills its two
+hashes after each release and builds it with them, so the copy on `main` is ready to drop
+into a nixpkgs checkout; until the first stamp it carries `lib.fakeHash`.
 
 ## `release.yml` is hand-edited, and dist must be told so
 
@@ -72,7 +80,8 @@ sudo dnf copr enable vahughes/carrel
 sudo dnf install carrel
 ```
 
-Publishing a new version, from a machine with no Fedora tooling at all:
+`publish.yml` submits each release's build from the tag and waits for it. By hand, from a
+machine with no Fedora tooling at all:
 
 ```bash
 uvx --from copr-cli copr-cli whoami        # token lives in ~/.config/copr, chmod 600.
@@ -149,8 +158,8 @@ out byte-identical, which is the result you want and not a reason to skip the st
 - **`PKGBUILD-carrel-bin`** — AUR prebuilt package, same flow into `carrel-bin.git`; sums come
   from the release's `.sha256` files.
 - **`carrel.spec`** — Fedora COPR. The project already exists (F43 and F44, x86_64 and
-  aarch64); each release is the `buildscm` command above, **not** `copr-cli build` — see
-  point 1. The same spec seeds an openSUSE OBS home project later.
+  aarch64); each release is the `buildscm` command above (run by `publish.yml`), **not**
+  `copr-cli build` — see point 1. The same spec seeds an openSUSE OBS home project later.
 - **`.deb`** (Debian, Ubuntu) — built and attached by CI, no manual step; see below.
 
 The full launch order lives in RELEASING.md in the private notes repo.

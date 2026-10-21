@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-20
+Last updated: 2026-10-21
 
 ## Current state
 
@@ -241,11 +241,9 @@ Last updated: 2026-10-20
 Packaging / discoverability (quiet channels only; announcements are deferred by maintainer
 decision — do not propose them):
 
-1. **nixpkgs by-name PR** — `contrib/packaging/carrel-package.nix` is version-stamped but
-   still needs its two hashes. This machine has no nix, the docker daemon needs root, and
-   `pkexec` has no reachable authentication agent from an agent's shell; run the steps in
-   the file header from a terminal (`sudo systemctl start docker`, then
-   `docker run --rm nixos/nix`).
+1. **nixpkgs by-name PR** — `publish.yml` now computes `carrel-package.nix`'s two hashes
+   and builds it after each release, so the file on `main` is submittable from the next
+   release on. The PR itself (and a nixpkgs maintainer entry) is still the owner's.
 2. **AUR** — recipes stamped and build-tested (`makepkg -f`), blocked on Arch reopening
    account registration (closed since aurweb v6.5.0 during a supply-chain campaign).
 3. **Catalog listings** — drafts in the private notes. awesome-ratatui: ready to submit.
@@ -253,8 +251,10 @@ decision — do not propose them):
    (six-month minimum age). awesome-cli-apps: archived, skip.
 4. **`.deb`** — built by `.github/workflows/deb.yml` after each Release run; first proven
    at the next release (see `contrib/packaging/README.md`).
-5. Optional: set `HOMEBREW_TAP_TOKEN` and restore `publish-jobs = ["homebrew"]` to
-   re-automate the formula push (currently hand-pushed each release).
+5. **Publishing after the tag is automated** (`.github/workflows/publish.yml`, added
+   2026-10-21): crates.io, the Homebrew tap, nix hashes, the checksum stamp and COPR. It
+   needs three repository secrets — `CARGO_REGISTRY_TOKEN`, `HOMEBREW_TAP_DEPLOY_KEY`,
+   `COPR_CONFIG` — set once from this machine; the COPR token expires 2027-02-12.
 
 Every feature line on the README roadmap is checked. Known limits, recorded rather than
 planned:

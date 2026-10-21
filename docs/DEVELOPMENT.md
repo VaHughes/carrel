@@ -173,9 +173,12 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
 The ordered runbook is `RELEASING.md` in the private notes repo. Its shape: documentation
 sweep (step 0 — grep for version strings, moved keys, counts, roadmap entries) → local gate →
 version bump **and recipe version stamps in the release commit, before the tag** →
-`cargo publish` core first → tag `v{version}` → watch CI by SHA → verify under a scratch
-`HOME` → checksum stamps → Homebrew formula hand-pushed to `VaHughes/homebrew-tap` →
-COPR `buildscm`. Packaging details, the COPR command that actually works, `.SRCINFO`
+tag `v{version}` → watch CI by SHA. Everything after the tag is CI: `release.yml` builds
+the GitHub Release, `deb.yml` attaches the `.deb`s, and `publish.yml` publishes both
+crates (core first), pushes the Homebrew formula, computes the nix hashes, commits the
+checksum stamp to `main` and runs the COPR build. Its secrets are `CARGO_REGISTRY_TOKEN`,
+`HOMEBREW_TAP_DEPLOY_KEY` (a write deploy key on the tap) and `COPR_CONFIG` (the COPR
+token expires 2027-02-12). Pull after a release: the stamp commit lands on `main` from CI. Packaging details, the COPR command that actually works, `.SRCINFO`
 regeneration and the `release.yml` hand-edit rules are in `contrib/packaging/README.md`.
 
 Gotchas:

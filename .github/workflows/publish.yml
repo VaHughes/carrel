@@ -1,0 +1,280 @@
+# Everything a release needs after `Release` has built and published the
+# GitHub Release, so a pushed tag is the last manual act:
+#
+#   crates    cargo publish carrel-core, then carrel; check the rendered crate
+#             page's links; build an UNLOCKED `cargo install` the way a
+#             stranger does (RELEASING step 7 — it caught the merman break).
+#   homebrew  commit dist's carrel.rb to VaHughes/homebrew-tap.
+#   nix       compute carrel-package.nix's two hashes on a hosted runner, and
+#             build the package with them.
+#   stamp     commit the post-tag checksums (scripts/stamp-release.sh) to main.
+#   copr      submit the Fedora COPR build from the tag and wait for it.
+#
+# Each job is idempotent: one that finds its work already done (the crate
+# version exists, the formula is unchanged, COPR already built this version,
+# main has moved on to the next version) says so and succeeds. So a failed
+# job is retried by re-running it, or the whole file by hand with the tag.
+#
+# Secrets (repository secrets on VaHughes/carrel):
+#   CARGO_REGISTRY_TOKEN       crates.io token with publish rights
+#   HOMEBREW_TAP_DEPLOY_KEY    private half of a write deploy key on the tap
+#                              (a deploy key, not a PAT: it can reach that one
+#                              repository and nothing else)
+#   COPR_CONFIG                the whole ~/.config/copr file
+# Each is given only to the step that uses it, never job-wide.
+#
+# Why `workflow_run` and not `release: published`: see deb.yml. The same
+# reasoning applies, and this file likewise always runs as it is on main.
+
+name: publish
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v2026.10.8"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # For a tag push, a workflow_run's head_branch is the tag name.
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_branch }}
+
+jobs:
+  check:
+    # Only a release that actually published: release.yml also runs on pull
+    # requests, where it builds but creates nothing.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG"; exit 1; }
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  crates:
+    needs: check
+    runs-on: ["self-hosted", "linux", "x64", "ghostmachine", "build"]
+    env:
+      V: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.TAG }}
+
+      - name: Toolchain (pinned)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08
+        with:
+          toolchain: "1.97"
+
+      # Core first: carrel pins it exactly, and cargo verifies the dependency
+      # against the registry (it waits for core to appear in the index).
+      - name: Publish carrel-core, then carrel
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          for c in carrel-core carrel; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -A Mozilla/5.0 \
+              "https://crates.io/api/v1/crates/$c/$V")
+            if [ "$code" = 200 ]; then
+              echo "$c $V is already on crates.io"
+            else
+              cargo publish -p "$c" --locked
+            fi
+          done
+
+      # A readme is rendered once, at publish time, and crates.io resolves a
+      # relative link against the crate's path in the repo, not the root.
+      - name: Every link on the crate page is absolute and resolves
+        run: |
+          curl -fsSL -A Mozilla/5.0 "https://crates.io/api/v1/crates/carrel/$V/readme" > readme.html
+          grep -oE '(href|src)="[^"#]+"' readme.html | sed -E 's/^(href|src)="//; s/"$//' | sort -u > links
+          bad=0
+          while read -r u; do
+            case $u in
+              http://*|https://*) ;;
+              *) echo "relative: $u"; bad=1; continue ;;
+            esac
+            code=$(curl -s -o /dev/null -L -w '%{http_code}' -A Mozilla/5.0 "$u")
+            case $code in 2*) ;; *) echo "$code: $u"; bad=1 ;; esac
+          done < links
+          echo "$(wc -l < links) links checked"
+          exit $bad
+
+      # The build a stranger runs: no lockfile, newest semver-compatible deps.
+      - name: Unlocked cargo install of the published version
+        run: |
+          cargo install carrel --version "$V" --root "$RUNNER_TEMP/unlocked"
+          "$RUNNER_TEMP/unlocked/bin/carrel" --version | tee /dev/stderr | grep -qx "carrel $V"
+
+  homebrew:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.check.outputs.version }}
+    steps:
+      - name: Fetch the formula dist built
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern carrel.rb --clobber
+          grep -q "version \"$V\"" carrel.rb || { echo "carrel.rb does not name $V"; exit 1; }
+
+      - name: Commit it to the tap
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          key="$RUNNER_TEMP/tap-key"
+          trap 'rm -f "$key"' EXIT
+          ( umask 077; printf '%s\n' "$DEPLOY_KEY" > "$key" )
+          # GitHub's host keys from its API over HTTPS, not trust-on-first-use.
+          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          rm -rf tap
+          git clone --depth 1 git@github.com:VaHughes/homebrew-tap.git tap
+          mkdir -p tap/Formula
+          cp carrel.rb tap/Formula/carrel.rb
+          cd tap
+          if git diff --quiet; then echo "formula already at $V"; exit 0; fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -am "carrel $V"
+          git push origin HEAD
+
+  nix:
+    needs: check
+    # Hosted: the self-hosted runner has no nix, and installing it there would
+    # outlive the job.
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.hash.outputs.src }}
+      cargo: ${{ steps.hash.outputs.cargo }}
+    env:
+      V: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.TAG }}
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      # The file's own header procedure, scripted: each fake hash fails the
+      # build with "got: sha256-…", in order, and the third build must pass.
+      - id: hash
+        run: |
+          f=contrib/packaging/carrel-package.nix
+          sed -i -E 's|^([[:space:]]*hash = ).*;|\1lib.fakeHash;|; s|^([[:space:]]*cargoHash = ).*;|\1lib.fakeHash;|' "$f"
+          build() { nix-build --no-out-link -E "with import <nixpkgs> {}; callPackage ./$f {}" 2>&1 || true; }
+          got() { sed -nE 's/^[[:space:]]*got:[[:space:]]*(sha256-[A-Za-z0-9+/=]+).*/\1/p' | head -1; }
+          src=$(build | tee src.log | got)
+          [ -n "$src" ] || { tail -40 src.log; exit 1; }
+          sed -i -E "s|^([[:space:]]*hash = ).*;|\1\"$src\";|" "$f"
+          cargo=$(build | tee cargo.log | got)
+          [ -n "$cargo" ] || { tail -40 cargo.log; exit 1; }
+          sed -i -E "s|^([[:space:]]*cargoHash = ).*;|\1\"$cargo\";|" "$f"
+          out=$(nix-build --no-out-link -E "with import <nixpkgs> {}; callPackage ./$f {}")
+          "$out/bin/carrel" --version | tee /dev/stderr | grep -qx "carrel $V"
+          echo "src=$src" >> "$GITHUB_OUTPUT"
+          echo "cargo=$cargo" >> "$GITHUB_OUTPUT"
+
+  stamp:
+    needs: [check, nix]
+    # A nix failure (a nixpkgs change, a hosted-runner hiccup) must not cost
+    # the AUR sums: stamp those alone and let the red nix job say why.
+    if: ${{ always() && needs.check.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      V: ${{ needs.check.outputs.version }}
+    steps:
+      # main, not the tag: the stamp is a new commit on main.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+
+      - name: Stamp the checksums
+        id: stamp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NIX_SRC: ${{ needs.nix.outputs.src }}
+          NIX_CARGO: ${{ needs.nix.outputs.cargo }}
+        run: |
+          pkgver=$(sed -n 's/^pkgver=//p' contrib/packaging/PKGBUILD-carrel)
+          if [ "$pkgver" != "$V" ]; then
+            echo "main's recipes are at $pkgver, not $V: a later release commit has landed; nothing to stamp"
+            exit 0
+          fi
+          tar_sum=$(curl -fsSL -A Mozilla/5.0 "https://github.com/$GITHUB_REPOSITORY/archive/$TAG.tar.gz" | sha256sum | cut -d' ' -f1)
+          mkdir -p "$RUNNER_TEMP/sums"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/sums" --clobber \
+            --pattern 'carrel-*-unknown-linux-musl.tar.xz.sha256'
+          x86=$(cut -d' ' -f1 "$RUNNER_TEMP/sums/carrel-x86_64-unknown-linux-musl.tar.xz.sha256")
+          arm=$(cut -d' ' -f1 "$RUNNER_TEMP/sums/carrel-aarch64-unknown-linux-musl.tar.xz.sha256")
+          nix=()
+          if [ -n "$NIX_SRC" ] && [ -n "$NIX_CARGO" ]; then nix=("$NIX_SRC" "$NIX_CARGO"); fi
+          ./scripts/stamp-release.sh "$V" "$tar_sum" "$x86" "$arm" "${nix[@]}"
+          ./scripts/check-packaging.sh
+
+      - name: Commit to main
+        run: |
+          if git diff --quiet; then echo "already stamped"; exit 0; fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -am "Stamp the packaging checksums for $V" \
+              -m "PKGBUILD-carrel and its .SRCINFO take the $TAG tag tarball's sha256; PKGBUILD-carrel-bin takes the two musl archives' sums from the release; carrel-package.nix takes the src and cargo hashes nix computed and built with, when that job passed. Written by publish.yml."
+          # main may have moved while this ran; the stamp touches only lines
+          # nothing else edits, so a rebase is safe.
+          for i in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git pull --rebase origin main
+          done
+          exit 1
+
+  copr:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.check.outputs.version }}
+      # Pinned like everything else here.
+      COPR_CLI_VERSION: "2.6"
+    steps:
+      - name: Already built?
+        id: done
+        run: |
+          latest=$(curl -fsSL -A Mozilla/5.0 \
+            "https://copr.fedorainfracloud.org/api_3/package/?ownername=vahughes&projectname=carrel&packagename=carrel&with_latest_succeeded_build=true" \
+            | jq -r '.builds.latest_succeeded.source_package.version // ""')
+          echo "latest succeeded COPR build: ${latest:-none}"
+          case $latest in "$V"-*) echo "built=true" >> "$GITHUB_OUTPUT" ;; esac
+
+      # rpkg reads the spec from the tag and fetches Source0 (the tag tarball)
+      # by URL, so the build is of exactly what was tagged. copr-cli waits for
+      # the build and exits non-zero if it fails, which fails this job.
+      - name: Submit the build and wait for it
+        if: steps.done.outputs.built != 'true'
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/copr"
+          "$RUNNER_TEMP/copr/bin/pip" install --quiet "copr-cli==$COPR_CLI_VERSION"
+          cfg="$RUNNER_TEMP/copr.conf"
+          trap 'rm -f "$cfg"' EXIT
+          ( umask 077; printf '%s\n' "$COPR_CONFIG" > "$cfg" )
+          "$RUNNER_TEMP/copr/bin/copr-cli" --config "$cfg" buildscm carrel \
+            --clone-url "https://github.com/$GITHUB_REPOSITORY" --commit "$TAG" \
+            --spec contrib/packaging/carrel.spec --type git --method rpkg --enable-net on
