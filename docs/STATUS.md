@@ -4,22 +4,15 @@ Last updated: 2026-10-21
 
 ## Current state
 
-- **Latest release: v2026.10.8** (2026-10-08), published to crates.io (both crates),
-  GitHub (six Unix targets and shell installer), the Homebrew tap, and Fedora COPR
-  (build 11094511, F43/F44, x86_64 and aarch64; the first, 11094487, failed `%check`
-  because the build root had no `python3` for the live-resize pty test — the spec now
-  requires it, and the test skips loudly without it). It carries everything built since
-  2026.9.23: small-terminal layouts, hyphenation and the tags page, the 25-item
-  reader-beside-an-agent slate, and the known-defects work below — including the fix
-  for a crash on closing the terminal that was in every release since 2026.9.1.
-- Release verification (2026-10-08): all public artifact checksums match; an unlocked
-  `cargo install carrel --version 2026.10.8` builds; every link on the rendered crate
-  page resolves; the shell installer succeeds under a scratch home without touching the
-  real shell files; the musl archive passes `check-packaging.sh` and its binary enters
-  and leaves the alternate screen and exits cleanly, with no core dump, when its tmux
-  server is killed; `carrel-bin` builds with `makepkg -f` (eight files); `.SRCINFO`
-  regenerates identically; the Homebrew formula's four sums match the release's; the
-  COPR repo metadata lists 2026.10.8 in all four chroots.
+- **Latest release: v2026.10.21** (2026-10-21), the first published by
+  `.github/workflows/publish.yml`: crates.io (both crates), the Homebrew tap, COPR
+  (2026.10.21-1), the `.deb`s, and the checksum stamp with real nix hashes
+  (`38f19d0`). Its GitHub Release was created by hand from the run's verified
+  artifacts after `release.yml`'s `--target` hit a 403 (fixed on `main`, unproven until
+  the next tag). Its nix build fails one test that assumed `/tmp`; fixed on `main`, so
+  the nixpkgs PR should wait for the next release.
+- Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
+  reader-beside-an-agent slate.
 - All five local gates passed on 2026-10-08: **1,173 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
