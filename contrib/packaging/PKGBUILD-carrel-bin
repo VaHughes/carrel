@@ -14,8 +14,8 @@ provides=('carrel')
 conflicts=('carrel')
 source_x86_64=("$url/releases/download/v$pkgver/carrel-x86_64-unknown-linux-musl.tar.xz")
 source_aarch64=("$url/releases/download/v$pkgver/carrel-aarch64-unknown-linux-musl.tar.xz")
-sha256sums_x86_64=('dda36d4f2c25dd6cb3c3e148b16d1c61c659bdc978875b3eb2a6a285dc0ccac3')
-sha256sums_aarch64=('78386259aee60a9c0ba2e984f7aaf89bce548d5b794e1c2e7eb96749362b6ef8')
+sha256sums_x86_64=('3316986162223d2faf22f31f49b2ac1aa794aedec6816a2d949ea4766697949a')
+sha256sums_aarch64=('057657a3420a2e72a2b449746de556d04d8ee7253fd6f416a8d613ba514c43f5')
 
 # dist FLATTENS every `include` entry to the archive root: `contrib/carrel.1`
 # arrives as `carrel.1`. The flat paths below were verified against the real
