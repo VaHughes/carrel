@@ -48,6 +48,7 @@ permissions:
 #   2. every third-party action pinned to a commit SHA rather than a tag;
 #   3. Ghostmachine routing and the Ubuntu 22.04 x64 release container.
 #      Keep external fork checks and native macOS/ARM builds on hosted runners.
+#   4. `gh release create` without `--target` (see the step for why).
 on:
   pull_request:
   push:
@@ -361,12 +362,18 @@ jobs:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
+        # LOCAL EDIT 4: no `--target`. The tag push that started this run
+        # means the tag exists, so `--verify-tag` releases exactly it. With
+        # `--target <sha>`, GitHub refuses GITHUB_TOKEN (HTTP 403, "Resource
+        # not accessible by integration") whenever that commit is no longer
+        # its branch's head — targeting any other commit needs the
+        # `workflows` permission, which GITHUB_TOKEN cannot have. That is
+        # what failed v2026.10.21: a commit landed on main after the tag.
         run: |
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          gh release create "${{ needs.plan.outputs.tag }}" --verify-tag $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
   announce:
     needs:

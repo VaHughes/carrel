@@ -189,6 +189,9 @@ Gotchas:
   binary package.
 - `release.yml` is hand-edited (SHA-pinned actions, a `gate` job). `dist-workspace.toml`
   has `allow-dirty = ["ci"]`; **never run `dist init`**, which unpins and deletes the gate.
+  Its release step runs `gh release create --verify-tag` with **no `--target`**: with a
+  target, `GITHUB_TOKEN` gets a 403 whenever a commit has landed on `main` since the tag
+  (any non-head target needs the `workflows` permission). That failed v2026.10.21's run.
   `dist init` also deletes every comment in `dist-workspace.toml`.
 - **`THIRD-PARTY-NOTICES` ships beside every binary.** The hyphenation data in
   `carrel-core/src/hyphen/` is MIT, BSD-3-Clause and all-permissive (the Portuguese
