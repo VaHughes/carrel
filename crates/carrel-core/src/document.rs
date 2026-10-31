@@ -1408,7 +1408,14 @@ impl HtmlStrip {
             if let Some(skip) = self.skip_until {
                 if let Some(t) = &mut self.tag {
                     t.push(ch);
-                    if t.to_ascii_lowercase().ends_with(skip) {
+                    // Only the tail can be the closer. Lowercasing the whole
+                    // body to ask made a script quadratic in its length —
+                    // seconds for 200 KB, minutes at the 4 MiB home search
+                    // reads — and home search parses whatever its filter
+                    // passes. ASCII case folding keeps byte lengths, so this
+                    // is the same answer.
+                    let tail = t.len().checked_sub(skip.len()).map(|i| &t.as_bytes()[i..]);
+                    if tail.is_some_and(|tail| tail.eq_ignore_ascii_case(skip.as_bytes())) {
                         self.skip_until = None;
                         self.tag = Some(String::new()); // consume to the tag's `>`
                     }
@@ -3257,6 +3264,28 @@ fn coalesce(mut v: Vec<Inline>) -> Vec<Inline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `<script>` body is skipped in time linear in its length.
+    /// The closer check lowercased the whole body per character, so a 1 MB
+    /// body took minutes; this one must finish in well under that, and the
+    /// text after the closer must still be shown, in either case.
+    #[test]
+    fn a_long_inline_script_is_skipped_in_linear_time() {
+        let body = "let x = 1; // some code here\n".repeat(36_000);
+        // At a line start, so the whole body is ONE HTML block event — the
+        // shape that reaches the stripper's skip loop in one piece.
+        let src = format!("a\n\n<script>\n{body}</SCRIPT>\n\ntail word\n");
+        let started = std::time::Instant::now();
+        let doc = Document::parse(&src);
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+        assert!(
+            doc.text.contains("tail word"),
+            "{:?}",
+            &doc.text[..doc.text.len().min(80)]
+        );
+        assert!(!doc.text.contains("let x"), "the body is hidden");
+    }
 
     /// A document with nesting, a skipped level, and a sibling return:
     /// H1 "Top" → H2 "Mid" → H4 "Deep" (skips H3) → H2 "Next".

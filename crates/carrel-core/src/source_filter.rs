@@ -77,6 +77,11 @@ const GAP_ATOMS: &[&str] = &[
     r"<[^>]*",
     // And the rest of one after a quoted value it shows (`" src=x.png>`).
     r#"["'][^>]*>"#,
+    // A whole tag whose quoted values hold a `>` (`<b title="1 > 0">`). The
+    // two above stop at that `>` and leave the rest stranded; this matters
+    // after an inline `<script>`/`<style>`, whose stripper then swallows
+    // every later tag whole while the text between them is still shown.
+    r#"<(?:[^>"']|"[^"]*"|'[^']*')*>?"#,
     // An HTML comment, to any later `-->`, line end, or the end: an HTML
     // block can end before its comment does (a quote around it closes),
     // and then the comment hid only the rest of that block.
@@ -270,6 +275,19 @@ mod tests {
         );
         let f = SourceFilter::new(needle).unwrap();
         assert!(f.may_match(src), "{needle:?} missed in {src:?}");
+    }
+
+    /// Found by a cold review's proptest: after an inline `<style>` or
+    /// `<script>`, a later tag with a `>` inside a quoted value is hidden
+    /// whole, so the text either side of it reads side by side.
+    #[test]
+    fn a_tag_with_a_quoted_angle_bracket_after_a_script_is_bridged() {
+        passes("a<style><b class=\"x>y\">z\n", "az");
+        passes(
+            "See <script>\n\nThe word <span title=\"1 > 0\">here\n",
+            "word here",
+        );
+        passes("x <style><i title='a>b'>y\n", "x y");
     }
 
     #[test]
