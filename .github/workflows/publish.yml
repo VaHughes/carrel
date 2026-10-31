@@ -1,7 +1,7 @@
 # Everything a release needs after `Release` has built and published the
 # GitHub Release, so a pushed tag is the last manual act:
 #
-#   crates    cargo publish carrel-core, then carrel; check the rendered crate
+#   crates    cargo publish carrel-core, carrel-state, then carrel; check the rendered crate
 #             page's links; build an UNLOCKED `cargo install` the way a
 #             stranger does (RELEASING step 7 — it caught the merman break).
 #   homebrew  commit dist's carrel.rb to VaHughes/homebrew-tap.
@@ -78,13 +78,14 @@ jobs:
         with:
           toolchain: "1.97"
 
-      # Core first: carrel pins it exactly, and cargo verifies the dependency
-      # against the registry (it waits for core to appear in the index).
-      - name: Publish carrel-core, then carrel
+      # In dependency order: carrel-state pins core exactly and carrel pins
+      # both, and cargo verifies each dependency against the registry (it
+      # waits for the one before to appear in the index).
+      - name: Publish carrel-core, carrel-state, then carrel
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          for c in carrel-core carrel; do
+          for c in carrel-core carrel-state carrel; do
             code=$(curl -s -o /dev/null -w '%{http_code}' -A Mozilla/5.0 \
               "https://crates.io/api/v1/crates/$c/$V")
             if [ "$code" = 200 ]; then

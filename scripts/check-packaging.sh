@@ -324,7 +324,7 @@ fi
 # crates.io: `cargo package` takes a crate's directory only, so each crate
 # carries the notices and both licences as symlinks to the root copies, which
 # cargo packages as ordinary files.
-for crate in crates/carrel-core crates/carrel; do
+for crate in crates/carrel-core crates/carrel-state crates/carrel; do
   for f in "$notices" LICENSE-MIT LICENSE-APACHE; do
     if [ -s "$crate/$f" ]; then ok "$crate/$f"; else note "$crate/$f is missing — the .crate on crates.io would not carry it"; fi
   done
@@ -447,21 +447,25 @@ fi
 # `carrel-core = "2026.10.8"` accepts every 2026 core. An unlocked
 # `cargo install carrel --version 2026.9.23` then resolved carrel-core
 # 2026.10.8 and failed to compile — the merman sibling trap again, on our own
-# crate. The two crates release in lockstep, so the frontend must name exactly
-# the core it was built against.
+# crate. The crates release in lockstep, so each must name exactly the version
+# of the others it was built against: carrel pins carrel-core and
+# carrel-state, and carrel-state pins carrel-core.
 echo
 echo "in-workspace dependencies against Cargo.toml"
-pins=$(grep -hE '^carrel-core[[:space:]]*=.*path' crates/*/Cargo.toml)
-if [ -z "$pins" ]; then
-  note "no carrel-core path dependency found — did its shape change?"
-fi
+pins=$(grep -HE '^carrel-[a-z]+[[:space:]]*=.*path' crates/*/Cargo.toml)
+for want in crates/carrel/Cargo.toml:carrel-core crates/carrel/Cargo.toml:carrel-state \
+            crates/carrel-state/Cargo.toml:carrel-core; do
+  grep -qF "$want" <<<"$pins" || note "${want%%:*} has no ${want#*:} path dependency — did its shape change?"
+done
 while IFS= read -r line; do
   [ -z "$line" ] && continue
+  file=${line%%:*}
+  dep=$(printf '%s\n' "${line#*:}" | sed -nE 's/^(carrel-[a-z]+).*/\1/p')
   req=$(printf '%s\n' "$line" | sed -nE 's/.*version[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p')
   if [ "$req" = "=$ws_ver" ]; then
-    ok "carrel-core = \"$req\""
+    ok "$file: $dep = \"$req\""
   else
-    note "carrel-core requires \"$req\"; want \"=$ws_ver\" (exact — CalVer makes a caret span the year)"
+    note "$file: $dep requires \"$req\"; want \"=$ws_ver\" (exact — CalVer makes a caret span the year)"
   fi
 done <<<"$pins"
 
