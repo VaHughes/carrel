@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/carrel-core", "crates/carrel"]
+members = ["crates/carrel-core", "crates/carrel-state", "crates/carrel"]
 
 [workspace.package]
 # CalVer spelled as semver (major = year, no leading zeros) — the scheme the

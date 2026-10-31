@@ -1,0 +1,33 @@
+[package]
+name        = "carrel-state"
+description = "Carrel's frontend-neutral reader state: shared intents, persistence, file discovery. No UI dependencies."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+readme.workspace       = true
+keywords   = ["markdown", "reader"]
+categories = ["text-processing"]
+
+# ---------------------------------------------------------------------------
+# DISCIPLINE: this crate must never depend on a UI crate, and its public API
+# carries no terminal geometry. It is the layer ABOVE the document model that
+# every frontend shares: what a reader can ask for (`Intent`), what carrel
+# remembers between sessions, and how it finds documents. Rule 6 of
+# `scripts/check-discipline.sh` enforces both halves.
+#
+# Why a crate and not a list of files: the state layer used to be guarded by a
+# grep for `use ratatui` in a list of TUI modules, and it passed while those
+# modules reached crossterm through `crate::keys` (Q29, research.md). A crate
+# boundary is enforced by the compiler. It blocks dependencies, not shapes —
+# Helix's shared crate had no terminal dependency and still defined
+# `Rect { width: u16 }` — so the shape half stays a script rule.
+# ---------------------------------------------------------------------------
+[dependencies]
+carrel-core = { path = "../carrel-core", version = "=2026.10.21" }
+
+[lints]
+workspace = true

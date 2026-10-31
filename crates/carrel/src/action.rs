@@ -1,66 +1,19 @@
-//! The intent enum — **the seam a second frontend reuses.**
+//! The terminal's event vocabulary: every [`Intent`] a reader can ask for,
+//! plus the TUI's own chrome.
 //!
-//! Discipline #4: share an `Action` enum, bind keys and mouse per-frontend. A
-//! GTK build will produce these from `GtkEventControllerKey` and menu items and
-//! feed them to the same [`crate::app::update`]. Nothing here mentions a key,
-//! a terminal, or a pixel.
+//! Discipline #4 — bind keys and pointer per-frontend, share the intents —
+//! lives in `carrel_state::intent`, which says what an intent is and what
+//! makes an action chrome instead: a terminal cell, a visual row or a row
+//! count in its payload, or a surface only this frontend draws (its menus,
+//! the scrim, the hint row, the key sheet, the settings rows, the palettes,
+//! the measure in cells). [`Action`] is flat so the terminal can match on it
+//! directly; [`Action::intent`] and `From<Intent>` convert, both exhaustive,
+//! so an action added here does not compile until it is classified.
+//!
+//! Nothing here mentions a key. Where a variant does name the terminal, the
+//! variant is chrome and [`Action::intent`] says so.
 
-/// How far one scroll step moves.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Span {
-    Line,
-    HalfPage,
-    Page,
-}
-
-/// Where [`Action::Recenter`] puts the current match.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Where {
-    Top,
-    Middle,
-    Bottom,
-}
-
-/// Which way a search runs when it opens. Both find every match; the direction
-/// only decides which one you land on first.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Direction {
-    Forward,
-    Backward,
-}
-
-/// A keystroke while the search prompt is open.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum SearchKey {
-    Char(char),
-    Backspace,
-    /// Keep the matches, close the prompt.
-    Accept,
-    /// Discard the matches, close the prompt, restore the previous position.
-    Cancel,
-}
-
-/// Editing a note changes its sidecar only, never the source document.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum NoteKey {
-    Char(char),
-    Newline,
-    Backspace,
-    Delete,
-    Left,
-    Right,
-    Home,
-    End,
-    Save,
-    Cancel,
-}
-
-/// Which end of a list.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Edge {
-    First,
-    Last,
-}
+pub use carrel_state::intent::{Direction, Edge, Intent, NoteKey, SearchKey, Span, Where};
 
 /// One thing the reader can be asked to do.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -455,6 +408,270 @@ pub enum Action {
     PickerUp,
 }
 
+impl From<Intent> for Action {
+    #[allow(clippy::too_many_lines)] // one arm per intent; that IS the guarantee
+    fn from(intent: Intent) -> Self {
+        match intent {
+            Intent::Scroll(v0, v1) => Self::Scroll(v0, v1),
+            Intent::GoToStart => Self::GoToStart,
+            Intent::GoToEnd => Self::GoToEnd,
+            Intent::BlockStep(v0) => Self::BlockStep(v0),
+            Intent::Recenter(v0) => Self::Recenter(v0),
+            Intent::AutoToggle => Self::AutoToggle,
+            Intent::FollowToggle => Self::FollowToggle,
+            Intent::FocusToggle => Self::FocusToggle,
+            Intent::InfoToggle => Self::InfoToggle,
+            Intent::TableToggle => Self::TableToggle,
+            Intent::TableScroll { block, delta } => Self::TableScroll { block, delta },
+            Intent::RenderedToggle => Self::RenderedToggle,
+            Intent::HelpToggle => Self::HelpToggle,
+            Intent::SettingsToggle => Self::SettingsToggle,
+            Intent::SearchOpen(v0) => Self::SearchOpen(v0),
+            Intent::SearchKey(v0) => Self::SearchKey(v0),
+            Intent::MatchStep(v0) => Self::MatchStep(v0),
+            Intent::FoldToggle => Self::FoldToggle,
+            Intent::FoldAll => Self::FoldAll,
+            Intent::UnfoldAll => Self::UnfoldAll,
+            Intent::FoldAt(v0) => Self::FoldAt(v0),
+            Intent::OutlineToggle => Self::OutlineToggle,
+            Intent::OutlineMove(v0) => Self::OutlineMove(v0),
+            Intent::OutlineKey(v0) => Self::OutlineKey(v0),
+            Intent::OutlineJump => Self::OutlineJump,
+            Intent::OutlineJumpAt(v0) => Self::OutlineJumpAt(v0),
+            Intent::OutlineJumpTo(v0) => Self::OutlineJumpTo(v0),
+            Intent::CrumbJump(v0) => Self::CrumbJump(v0),
+            Intent::LinkStep(v0) => Self::LinkStep(v0),
+            Intent::LinkFollow => Self::LinkFollow,
+            Intent::LinkOpen(v0) => Self::LinkOpen(v0),
+            Intent::LinkCopy => Self::LinkCopy,
+            Intent::Back => Self::Back,
+            Intent::Forward => Self::Forward,
+            Intent::BackTo(v0) => Self::BackTo(v0),
+            Intent::BacklinksToggle => Self::BacklinksToggle,
+            Intent::BacklinksMove(v0) => Self::BacklinksMove(v0),
+            Intent::BacklinksOpen => Self::BacklinksOpen,
+            Intent::BacklinksOpenAt(v0) => Self::BacklinksOpenAt(v0),
+            Intent::ForwardToggle => Self::ForwardToggle,
+            Intent::ForwardMove(v0) => Self::ForwardMove(v0),
+            Intent::ForwardOpen => Self::ForwardOpen,
+            Intent::ForwardOpenAt(v0) => Self::ForwardOpenAt(v0),
+            Intent::FootnoteJump => Self::FootnoteJump,
+            Intent::FootnoteJumpAt(v0) => Self::FootnoteJumpAt(v0),
+            Intent::SiblingOpen => Self::SiblingOpen,
+            Intent::ImageOpen(v0) => Self::ImageOpen(v0),
+            Intent::ImageStep(v0) => Self::ImageStep(v0),
+            Intent::SelectAnchor(v0) => Self::SelectAnchor(v0),
+            Intent::SelectDrag(v0) => Self::SelectDrag(v0),
+            Intent::SelectRelease => Self::SelectRelease,
+            Intent::SelectWord(v0) => Self::SelectWord(v0),
+            Intent::SelectBlock(v0) => Self::SelectBlock(v0),
+            Intent::YankBlock => Self::YankBlock,
+            Intent::YankBlockAt(v0) => Self::YankBlockAt(v0),
+            Intent::CodeStep(v0) => Self::CodeStep(v0),
+            Intent::CopyRef(v0) => Self::CopyRef(v0),
+            Intent::CopySection(v0) => Self::CopySection(v0),
+            Intent::CopyQuote => Self::CopyQuote,
+            Intent::TaskStep(v0) => Self::TaskStep(v0),
+            Intent::TaskOpen => Self::TaskOpen,
+            Intent::ChangeStep(v0) => Self::ChangeStep(v0),
+            Intent::MarkToggle => Self::MarkToggle,
+            Intent::MarkNext => Self::MarkNext,
+            Intent::MarkListToggle => Self::MarkListToggle,
+            Intent::MarkListMove(v0) => Self::MarkListMove(v0),
+            Intent::MarkListJump => Self::MarkListJump,
+            Intent::MarkListJumpAt(v0) => Self::MarkListJumpAt(v0),
+            Intent::HighlightAdd => Self::HighlightAdd,
+            Intent::HighlightAt(v0) => Self::HighlightAt(v0),
+            Intent::NoteAt(v0) => Self::NoteAt(v0),
+            Intent::NoteEdit => Self::NoteEdit,
+            Intent::NotesToggle => Self::NotesToggle,
+            Intent::NoteMove(v0) => Self::NoteMove(v0),
+            Intent::NoteSelect(v0) => Self::NoteSelect(v0),
+            Intent::NoteJump => Self::NoteJump,
+            Intent::NoteNext => Self::NoteNext,
+            Intent::NoteDelete => Self::NoteDelete,
+            Intent::NotesExport => Self::NotesExport,
+            Intent::NotesCopy => Self::NotesCopy,
+            Intent::NoteInput(v0) => Self::NoteInput(v0),
+            Intent::Dismiss => Self::Dismiss,
+            Intent::CloseFile => Self::CloseFile,
+            Intent::GoHome => Self::GoHome,
+            Intent::Quit => Self::Quit,
+            Intent::HomeMove(v0) => Self::HomeMove(v0),
+            Intent::HomePage(v0) => Self::HomePage(v0),
+            Intent::HomeSelect(v0) => Self::HomeSelect(v0),
+            Intent::HomeGo(v0) => Self::HomeGo(v0),
+            Intent::HomeOpen => Self::HomeOpen,
+            Intent::HomeKey(v0) => Self::HomeKey(v0),
+            Intent::HomeNormalMode => Self::HomeNormalMode,
+            Intent::HomeFilterMode => Self::HomeFilterMode,
+            Intent::HomeSearchMode => Self::HomeSearchMode,
+            Intent::HomeOpenResults => Self::HomeOpenResults,
+            Intent::HomeTags => Self::HomeTags,
+            Intent::HomeOpenTags => Self::HomeOpenTags,
+            Intent::TagOpen(v0) => Self::TagOpen(v0),
+            Intent::HomeSort => Self::HomeSort,
+            Intent::HomeUp => Self::HomeUp,
+            Intent::HomeCrumb(v0) => Self::HomeCrumb(v0),
+            Intent::HomeResume(v0) => Self::HomeResume(v0),
+            Intent::WelcomeOpen => Self::WelcomeOpen,
+            Intent::PickerOpen => Self::PickerOpen,
+            Intent::PickerSelect(v0) => Self::PickerSelect(v0),
+            Intent::PickerChoose => Self::PickerChoose,
+            Intent::PickerCancel => Self::PickerCancel,
+            Intent::PickerDescend => Self::PickerDescend,
+            Intent::PickerUp => Self::PickerUp,
+        }
+    }
+}
+
+impl Action {
+    /// The frontend-neutral intent this action is, or `None` for TUI chrome.
+    ///
+    /// Exhaustive on purpose, with no catch-all: the `None` arm IS the list
+    /// of what a second frontend does not inherit, kept by the compiler
+    /// rather than by a document that drifts (`carrel_state::intent`).
+    #[allow(clippy::too_many_lines)] // one arm per intent; that IS the guarantee
+    #[must_use]
+    pub fn intent(self) -> Option<Intent> {
+        match self {
+            Self::Scroll(v0, v1) => Some(Intent::Scroll(v0, v1)),
+            Self::GoToStart => Some(Intent::GoToStart),
+            Self::GoToEnd => Some(Intent::GoToEnd),
+            Self::BlockStep(v0) => Some(Intent::BlockStep(v0)),
+            Self::Recenter(v0) => Some(Intent::Recenter(v0)),
+            Self::AutoToggle => Some(Intent::AutoToggle),
+            Self::FollowToggle => Some(Intent::FollowToggle),
+            Self::FocusToggle => Some(Intent::FocusToggle),
+            Self::InfoToggle => Some(Intent::InfoToggle),
+            Self::TableToggle => Some(Intent::TableToggle),
+            Self::TableScroll { block, delta } => Some(Intent::TableScroll { block, delta }),
+            Self::RenderedToggle => Some(Intent::RenderedToggle),
+            Self::HelpToggle => Some(Intent::HelpToggle),
+            Self::SettingsToggle => Some(Intent::SettingsToggle),
+            Self::SearchOpen(v0) => Some(Intent::SearchOpen(v0)),
+            Self::SearchKey(v0) => Some(Intent::SearchKey(v0)),
+            Self::MatchStep(v0) => Some(Intent::MatchStep(v0)),
+            Self::FoldToggle => Some(Intent::FoldToggle),
+            Self::FoldAll => Some(Intent::FoldAll),
+            Self::UnfoldAll => Some(Intent::UnfoldAll),
+            Self::FoldAt(v0) => Some(Intent::FoldAt(v0)),
+            Self::OutlineToggle => Some(Intent::OutlineToggle),
+            Self::OutlineMove(v0) => Some(Intent::OutlineMove(v0)),
+            Self::OutlineKey(v0) => Some(Intent::OutlineKey(v0)),
+            Self::OutlineJump => Some(Intent::OutlineJump),
+            Self::OutlineJumpAt(v0) => Some(Intent::OutlineJumpAt(v0)),
+            Self::OutlineJumpTo(v0) => Some(Intent::OutlineJumpTo(v0)),
+            Self::CrumbJump(v0) => Some(Intent::CrumbJump(v0)),
+            Self::LinkStep(v0) => Some(Intent::LinkStep(v0)),
+            Self::LinkFollow => Some(Intent::LinkFollow),
+            Self::LinkOpen(v0) => Some(Intent::LinkOpen(v0)),
+            Self::LinkCopy => Some(Intent::LinkCopy),
+            Self::Back => Some(Intent::Back),
+            Self::Forward => Some(Intent::Forward),
+            Self::BackTo(v0) => Some(Intent::BackTo(v0)),
+            Self::BacklinksToggle => Some(Intent::BacklinksToggle),
+            Self::BacklinksMove(v0) => Some(Intent::BacklinksMove(v0)),
+            Self::BacklinksOpen => Some(Intent::BacklinksOpen),
+            Self::BacklinksOpenAt(v0) => Some(Intent::BacklinksOpenAt(v0)),
+            Self::ForwardToggle => Some(Intent::ForwardToggle),
+            Self::ForwardMove(v0) => Some(Intent::ForwardMove(v0)),
+            Self::ForwardOpen => Some(Intent::ForwardOpen),
+            Self::ForwardOpenAt(v0) => Some(Intent::ForwardOpenAt(v0)),
+            Self::FootnoteJump => Some(Intent::FootnoteJump),
+            Self::FootnoteJumpAt(v0) => Some(Intent::FootnoteJumpAt(v0)),
+            Self::SiblingOpen => Some(Intent::SiblingOpen),
+            Self::ImageOpen(v0) => Some(Intent::ImageOpen(v0)),
+            Self::ImageStep(v0) => Some(Intent::ImageStep(v0)),
+            Self::SelectAnchor(v0) => Some(Intent::SelectAnchor(v0)),
+            Self::SelectDrag(v0) => Some(Intent::SelectDrag(v0)),
+            Self::SelectRelease => Some(Intent::SelectRelease),
+            Self::SelectWord(v0) => Some(Intent::SelectWord(v0)),
+            Self::SelectBlock(v0) => Some(Intent::SelectBlock(v0)),
+            Self::YankBlock => Some(Intent::YankBlock),
+            Self::YankBlockAt(v0) => Some(Intent::YankBlockAt(v0)),
+            Self::CodeStep(v0) => Some(Intent::CodeStep(v0)),
+            Self::CopyRef(v0) => Some(Intent::CopyRef(v0)),
+            Self::CopySection(v0) => Some(Intent::CopySection(v0)),
+            Self::CopyQuote => Some(Intent::CopyQuote),
+            Self::TaskStep(v0) => Some(Intent::TaskStep(v0)),
+            Self::TaskOpen => Some(Intent::TaskOpen),
+            Self::ChangeStep(v0) => Some(Intent::ChangeStep(v0)),
+            Self::MarkToggle => Some(Intent::MarkToggle),
+            Self::MarkNext => Some(Intent::MarkNext),
+            Self::MarkListToggle => Some(Intent::MarkListToggle),
+            Self::MarkListMove(v0) => Some(Intent::MarkListMove(v0)),
+            Self::MarkListJump => Some(Intent::MarkListJump),
+            Self::MarkListJumpAt(v0) => Some(Intent::MarkListJumpAt(v0)),
+            Self::HighlightAdd => Some(Intent::HighlightAdd),
+            Self::HighlightAt(v0) => Some(Intent::HighlightAt(v0)),
+            Self::NoteAt(v0) => Some(Intent::NoteAt(v0)),
+            Self::NoteEdit => Some(Intent::NoteEdit),
+            Self::NotesToggle => Some(Intent::NotesToggle),
+            Self::NoteMove(v0) => Some(Intent::NoteMove(v0)),
+            Self::NoteSelect(v0) => Some(Intent::NoteSelect(v0)),
+            Self::NoteJump => Some(Intent::NoteJump),
+            Self::NoteNext => Some(Intent::NoteNext),
+            Self::NoteDelete => Some(Intent::NoteDelete),
+            Self::NotesExport => Some(Intent::NotesExport),
+            Self::NotesCopy => Some(Intent::NotesCopy),
+            Self::NoteInput(v0) => Some(Intent::NoteInput(v0)),
+            Self::Dismiss => Some(Intent::Dismiss),
+            Self::CloseFile => Some(Intent::CloseFile),
+            Self::GoHome => Some(Intent::GoHome),
+            Self::Quit => Some(Intent::Quit),
+            Self::HomeMove(v0) => Some(Intent::HomeMove(v0)),
+            Self::HomePage(v0) => Some(Intent::HomePage(v0)),
+            Self::HomeSelect(v0) => Some(Intent::HomeSelect(v0)),
+            Self::HomeGo(v0) => Some(Intent::HomeGo(v0)),
+            Self::HomeOpen => Some(Intent::HomeOpen),
+            Self::HomeKey(v0) => Some(Intent::HomeKey(v0)),
+            Self::HomeNormalMode => Some(Intent::HomeNormalMode),
+            Self::HomeFilterMode => Some(Intent::HomeFilterMode),
+            Self::HomeSearchMode => Some(Intent::HomeSearchMode),
+            Self::HomeOpenResults => Some(Intent::HomeOpenResults),
+            Self::HomeTags => Some(Intent::HomeTags),
+            Self::HomeOpenTags => Some(Intent::HomeOpenTags),
+            Self::TagOpen(v0) => Some(Intent::TagOpen(v0)),
+            Self::HomeSort => Some(Intent::HomeSort),
+            Self::HomeUp => Some(Intent::HomeUp),
+            Self::HomeCrumb(v0) => Some(Intent::HomeCrumb(v0)),
+            Self::HomeResume(v0) => Some(Intent::HomeResume(v0)),
+            Self::WelcomeOpen => Some(Intent::WelcomeOpen),
+            Self::PickerOpen => Some(Intent::PickerOpen),
+            Self::PickerSelect(v0) => Some(Intent::PickerSelect(v0)),
+            Self::PickerChoose => Some(Intent::PickerChoose),
+            Self::PickerCancel => Some(Intent::PickerCancel),
+            Self::PickerDescend => Some(Intent::PickerDescend),
+            Self::PickerUp => Some(Intent::PickerUp),
+            Self::GoToRow(..)
+            | Self::ThemeCycle
+            | Self::HintsToggle
+            | Self::BreadcrumbToggle
+            | Self::FootnotePeek { .. }
+            | Self::PeekGo
+            | Self::PeekScroll(..)
+            | Self::AutoTick
+            | Self::HelpKey(..)
+            | Self::HelpRun(..)
+            | Self::ScrollTo(..)
+            | Self::Hover(..)
+            | Self::MenuOpen { .. }
+            | Self::MenuMove(..)
+            | Self::MenuHover(..)
+            | Self::MenuChoose
+            | Self::MenuPick(..)
+            | Self::MenuClose
+            | Self::Absorb
+            | Self::PaneClose
+            | Self::MeasureStep(..)
+            | Self::SettingsMove(..)
+            | Self::SettingsAdjust(..)
+            | Self::SettingsPickAt(..) => None,
+        }
+    }
+}
+
 // --- pointer targets -------------------------------------------------------
 //
 // Discipline #4 again, from the other side: a click has to become an `Action`
@@ -716,5 +933,300 @@ mod pointer_tests {
         assert!(t.covered_at(3, 3, 5), "inside the pane");
         assert!(!t.covered_at(3, 3, 6), "nothing is above it");
         assert!(!t.covered_at(30, 3, 5), "outside the pane");
+    }
+}
+
+#[cfg(test)]
+mod intent_tests {
+    use super::*;
+    use carrel_core::{BlockIdx, NodeId};
+
+    /// A distinct number for every intent. Exhaustive, so an intent added
+    /// to the enum does not compile here until it has one — and then
+    /// [`every_intent_round_trips_through_action`] fails until
+    /// [`one_of_each`] carries it too.
+    #[allow(clippy::too_many_lines)] // one arm per intent; that IS the guarantee
+    fn witness(i: Intent) -> usize {
+        match i {
+            Intent::Scroll(..) => 0,
+            Intent::GoToStart => 1,
+            Intent::GoToEnd => 2,
+            Intent::BlockStep(..) => 3,
+            Intent::Recenter(..) => 4,
+            Intent::AutoToggle => 5,
+            Intent::FollowToggle => 6,
+            Intent::FocusToggle => 7,
+            Intent::InfoToggle => 8,
+            Intent::TableToggle => 9,
+            Intent::TableScroll { .. } => 10,
+            Intent::RenderedToggle => 11,
+            Intent::HelpToggle => 12,
+            Intent::SettingsToggle => 13,
+            Intent::SearchOpen(..) => 14,
+            Intent::SearchKey(..) => 15,
+            Intent::MatchStep(..) => 16,
+            Intent::FoldToggle => 17,
+            Intent::FoldAll => 18,
+            Intent::UnfoldAll => 19,
+            Intent::FoldAt(..) => 20,
+            Intent::OutlineToggle => 21,
+            Intent::OutlineMove(..) => 22,
+            Intent::OutlineKey(..) => 23,
+            Intent::OutlineJump => 24,
+            Intent::OutlineJumpAt(..) => 25,
+            Intent::OutlineJumpTo(..) => 26,
+            Intent::CrumbJump(..) => 27,
+            Intent::LinkStep(..) => 28,
+            Intent::LinkFollow => 29,
+            Intent::LinkOpen(..) => 30,
+            Intent::LinkCopy => 31,
+            Intent::Back => 32,
+            Intent::Forward => 33,
+            Intent::BackTo(..) => 34,
+            Intent::BacklinksToggle => 35,
+            Intent::BacklinksMove(..) => 36,
+            Intent::BacklinksOpen => 37,
+            Intent::BacklinksOpenAt(..) => 38,
+            Intent::ForwardToggle => 39,
+            Intent::ForwardMove(..) => 40,
+            Intent::ForwardOpen => 41,
+            Intent::ForwardOpenAt(..) => 42,
+            Intent::FootnoteJump => 43,
+            Intent::FootnoteJumpAt(..) => 44,
+            Intent::SiblingOpen => 45,
+            Intent::ImageOpen(..) => 46,
+            Intent::ImageStep(..) => 47,
+            Intent::SelectAnchor(..) => 48,
+            Intent::SelectDrag(..) => 49,
+            Intent::SelectRelease => 50,
+            Intent::SelectWord(..) => 51,
+            Intent::SelectBlock(..) => 52,
+            Intent::YankBlock => 53,
+            Intent::YankBlockAt(..) => 54,
+            Intent::CodeStep(..) => 55,
+            Intent::CopyRef(..) => 56,
+            Intent::CopySection(..) => 57,
+            Intent::CopyQuote => 58,
+            Intent::TaskStep(..) => 59,
+            Intent::TaskOpen => 60,
+            Intent::ChangeStep(..) => 61,
+            Intent::MarkToggle => 62,
+            Intent::MarkNext => 63,
+            Intent::MarkListToggle => 64,
+            Intent::MarkListMove(..) => 65,
+            Intent::MarkListJump => 66,
+            Intent::MarkListJumpAt(..) => 67,
+            Intent::HighlightAdd => 68,
+            Intent::HighlightAt(..) => 69,
+            Intent::NoteAt(..) => 70,
+            Intent::NoteEdit => 71,
+            Intent::NotesToggle => 72,
+            Intent::NoteMove(..) => 73,
+            Intent::NoteSelect(..) => 74,
+            Intent::NoteJump => 75,
+            Intent::NoteNext => 76,
+            Intent::NoteDelete => 77,
+            Intent::NotesExport => 78,
+            Intent::NotesCopy => 79,
+            Intent::NoteInput(..) => 80,
+            Intent::Dismiss => 81,
+            Intent::CloseFile => 82,
+            Intent::GoHome => 83,
+            Intent::Quit => 84,
+            Intent::HomeMove(..) => 85,
+            Intent::HomePage(..) => 86,
+            Intent::HomeSelect(..) => 87,
+            Intent::HomeGo(..) => 88,
+            Intent::HomeOpen => 89,
+            Intent::HomeKey(..) => 90,
+            Intent::HomeNormalMode => 91,
+            Intent::HomeFilterMode => 92,
+            Intent::HomeSearchMode => 93,
+            Intent::HomeOpenResults => 94,
+            Intent::HomeTags => 95,
+            Intent::HomeOpenTags => 96,
+            Intent::TagOpen(..) => 97,
+            Intent::HomeSort => 98,
+            Intent::HomeUp => 99,
+            Intent::HomeCrumb(..) => 100,
+            Intent::HomeResume(..) => 101,
+            Intent::WelcomeOpen => 102,
+            Intent::PickerOpen => 103,
+            Intent::PickerSelect(..) => 104,
+            Intent::PickerChoose => 105,
+            Intent::PickerCancel => 106,
+            Intent::PickerDescend => 107,
+            Intent::PickerUp => 108,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // one arm per intent; that IS the guarantee
+    fn one_of_each() -> Vec<Intent> {
+        vec![
+            Intent::Scroll(Span::Page, -2),
+            Intent::GoToStart,
+            Intent::GoToEnd,
+            Intent::BlockStep(-2),
+            Intent::Recenter(Where::Bottom),
+            Intent::AutoToggle,
+            Intent::FollowToggle,
+            Intent::FocusToggle,
+            Intent::InfoToggle,
+            Intent::TableToggle,
+            Intent::TableScroll {
+                block: None,
+                delta: -1,
+            },
+            Intent::RenderedToggle,
+            Intent::HelpToggle,
+            Intent::SettingsToggle,
+            Intent::SearchOpen(Direction::Backward),
+            Intent::SearchKey(SearchKey::Char('x')),
+            Intent::MatchStep(-2),
+            Intent::FoldToggle,
+            Intent::FoldAll,
+            Intent::UnfoldAll,
+            Intent::FoldAt(7),
+            Intent::OutlineToggle,
+            Intent::OutlineMove(-2),
+            Intent::OutlineKey(SearchKey::Char('x')),
+            Intent::OutlineJump,
+            Intent::OutlineJumpAt(7),
+            Intent::OutlineJumpTo(BlockIdx(4)),
+            Intent::CrumbJump(NodeId(5)),
+            Intent::LinkStep(-2),
+            Intent::LinkFollow,
+            Intent::LinkOpen(7),
+            Intent::LinkCopy,
+            Intent::Back,
+            Intent::Forward,
+            Intent::BackTo(7),
+            Intent::BacklinksToggle,
+            Intent::BacklinksMove(-2),
+            Intent::BacklinksOpen,
+            Intent::BacklinksOpenAt(7),
+            Intent::ForwardToggle,
+            Intent::ForwardMove(-2),
+            Intent::ForwardOpen,
+            Intent::ForwardOpenAt(7),
+            Intent::FootnoteJump,
+            Intent::FootnoteJumpAt(7),
+            Intent::SiblingOpen,
+            Intent::ImageOpen(Some(BlockIdx(4))),
+            Intent::ImageStep(-2),
+            Intent::SelectAnchor((3, 9)),
+            Intent::SelectDrag((3, 9)),
+            Intent::SelectRelease,
+            Intent::SelectWord(7),
+            Intent::SelectBlock(7),
+            Intent::YankBlock,
+            Intent::YankBlockAt(BlockIdx(4)),
+            Intent::CodeStep(-2),
+            Intent::CopyRef(7),
+            Intent::CopySection(7),
+            Intent::CopyQuote,
+            Intent::TaskStep(-2),
+            Intent::TaskOpen,
+            Intent::ChangeStep(-2),
+            Intent::MarkToggle,
+            Intent::MarkNext,
+            Intent::MarkListToggle,
+            Intent::MarkListMove(-2),
+            Intent::MarkListJump,
+            Intent::MarkListJumpAt(7),
+            Intent::HighlightAdd,
+            Intent::HighlightAt(7),
+            Intent::NoteAt(7),
+            Intent::NoteEdit,
+            Intent::NotesToggle,
+            Intent::NoteMove(-2),
+            Intent::NoteSelect(7),
+            Intent::NoteJump,
+            Intent::NoteNext,
+            Intent::NoteDelete,
+            Intent::NotesExport,
+            Intent::NotesCopy,
+            Intent::NoteInput(NoteKey::Save),
+            Intent::Dismiss,
+            Intent::CloseFile,
+            Intent::GoHome,
+            Intent::Quit,
+            Intent::HomeMove(-2),
+            Intent::HomePage(-2),
+            Intent::HomeSelect(3),
+            Intent::HomeGo(Edge::Last),
+            Intent::HomeOpen,
+            Intent::HomeKey(SearchKey::Char('x')),
+            Intent::HomeNormalMode,
+            Intent::HomeFilterMode,
+            Intent::HomeSearchMode,
+            Intent::HomeOpenResults,
+            Intent::HomeTags,
+            Intent::HomeOpenTags,
+            Intent::TagOpen(7),
+            Intent::HomeSort,
+            Intent::HomeUp,
+            Intent::HomeCrumb(3),
+            Intent::HomeResume(3),
+            Intent::WelcomeOpen,
+            Intent::PickerOpen,
+            Intent::PickerSelect(3),
+            Intent::PickerChoose,
+            Intent::PickerCancel,
+            Intent::PickerDescend,
+            Intent::PickerUp,
+        ]
+    }
+
+    #[test]
+    fn every_intent_round_trips_through_action() {
+        let all = one_of_each();
+        let mut seen: Vec<usize> = all.iter().map(|&i| witness(i)).collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..seen.len()).collect::<Vec<_>>(),
+            "one of each, no repeats"
+        );
+        assert_eq!(
+            witness(*all.last().unwrap()),
+            all.len() - 1,
+            "the list is complete"
+        );
+        for i in all {
+            assert_eq!(Action::from(i).intent(), Some(i), "{i:?}");
+        }
+    }
+
+    /// The chrome half: nothing that carries a cell or a row, or drives a
+    /// surface only the terminal draws, passes for an intent.
+    #[test]
+    fn terminal_chrome_is_no_intent() {
+        for a in [
+            Action::Hover((1, 2)),
+            Action::MenuOpen {
+                at: (1, 2),
+                byte: Some(3),
+            },
+            Action::FootnotePeek {
+                at: (1, 2),
+                byte: 3,
+            },
+            Action::GoToRow(9),
+            Action::ScrollTo(9),
+            Action::PeekScroll(1),
+            Action::AutoTick,
+            Action::Absorb,
+            Action::PaneClose,
+            Action::MenuPick(0),
+            Action::ThemeCycle,
+            Action::MeasureStep(1),
+            Action::HintsToggle,
+            Action::BreadcrumbToggle,
+            Action::SettingsAdjust(1),
+            Action::HelpRun(0),
+        ] {
+            assert_eq!(a.intent(), None, "{a:?}");
+        }
     }
 }

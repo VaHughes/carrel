@@ -161,6 +161,7 @@ name = "carrel"
 version = "2026.10.21"
 dependencies = [
  "carrel-core",
+ "carrel-state",
  "criterion",
  "ignore",
  "image",
@@ -188,6 +189,13 @@ dependencies = [
  "unicode-linebreak",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "carrel-state"
+version = "2026.10.21"
+dependencies = [
+ "carrel-core",
 ]
 
 [[package]]
