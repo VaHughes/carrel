@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-21
+Last updated: 2026-10-31
 
 ## Current state
 
@@ -11,9 +11,13 @@ Last updated: 2026-10-21
   artifacts after `release.yml`'s `--target` hit a 403 (fixed on `main`, unproven until
   the next tag). Its nix build fails one test that assumed `/tmp`; fixed on `main`, so
   the nixpkgs PR should wait for the next release.
+- **Unreleased on `main` (2026-10-31):** the GUI-preparation work from Q29/Q33 and three
+  known limits cleared — see the first entry below. The next release is the first with
+  three crates, so it is also the first test of `publish.yml` publishing `carrel-state`
+  (not yet on crates.io; the name was free on 2026-10-31).
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
   reader-beside-an-agent slate.
-- All five local gates passed on 2026-10-21: **1,307 tests**, zero-warning clippy,
+- All five local gates passed on 2026-10-31: **1,380 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
 - **Decisions made 2026-10-08:** a click outside an open pane closes it and does nothing
@@ -30,6 +34,35 @@ Last updated: 2026-10-21
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-10-31) — **ready for a second frontend, and three limits cleared.**
+  - *A third crate, `carrel-state`*, for what every frontend shares above the model:
+    `Intent` (109 document-addressed intents; the terminal's 24 chrome actions stay in its
+    `Action`, converted by exhaustive matches both ways), and persistence and file
+    discovery (`config`, `state`, `scan`, `grep`, `tags`, `links`, `wiki`, `fuzzy`,
+    `marginalia`, re-exported by `carrel` under their old names). Published between core
+    and carrel; every in-workspace pin is exact and checked.
+  - *Rule 6 checks the closure.* `app`, `footer` and `menu` had reached crossterm through
+    `keys` since the first release while the direct-import grep passed. What the keys are
+    called is data in `keymap.rs` now (the help tables carry the action a clicked row runs,
+    held to the dispatcher by a test); rule 6 fails on any terminal crate named in a listed
+    module or any `crate::` edge off the list; rule 7 holds `carrel-state` to no UI
+    dependency and no terminal geometry. Every check break-checked.
+  - *Positions and bookmarks are source places* (`state::Place`, `s1024+16`): exact under
+    the core that saved them, in the right run under another; the old form still reads.
+    Found on the way, a shipped bug: `open_path` loaded bookmarks before setting `file`, so
+    a reopened document had none and the next one opened showed (and on `m` saved) the
+    previous one's.
+  - *The config-key split* is written in `config.rs`: shared keys bare, terminal keys keep
+    their names, GUI keys get a `gtk.` prefix.
+  - *Footnote box keys*: the page's scroll keys scroll the box exactly while it shows there
+    is more, and stop at its ends.
+  - *`--plain` and `--render` keep the width* (`carrel_core::Division`): no word divided,
+    nothing added, and only a run wider than the row runs past it, on a line of its own;
+    styled `--render` cuts such a run as the screen does, with a faint mark.
+  - *Home search finds what the reader finds* (`carrel_core::SourceFilter`): entities,
+    markup, list and table structure, and rendered inline math; four workers, and faster
+    than before on every query measured.
 
 - 2026.10.21 (released 2026-10-21) — **publishing after the tag moved into CI, and the
   release that proved it.** `.github/workflows/publish.yml` runs when `Release` succeeds:
@@ -273,12 +306,12 @@ planned:
   and Catalan patterns are LPPL-only and stay out. Dutch was relicensed to MIT upstream
   in 2021 with no recorded author consent; it is kept, and it is the one to drop if that
   ever matters.
-- The footnote box draws display math and wide tables like the page, but has no keyboard
-  scrolling (the box owns no keys; the wheel scrolls it).
 - Only the first 1 MiB of a file is read for tags; nested tags deeper than heading level 6
   list side by side.
-- Home search misses a match spelled only through an entity or across markup.
-- `--plain` and `--render` never divide a word, so a long run exceeds the width.
+- `--plain` and `--render` keep the width except for one run wider than the whole row;
+  aligned tables in them can still exceed it, and a URL may wrap after a `/` (nothing is
+  added, but it lands on two lines). Code lines are never cut in either, styled or not.
+- Home search keeps each file's inline-math view until the file's mtime or length changes.
 - In help and the outline, `q` is typed into the filter rather than closing the pane (by
   design: letters are the filter; the border says `esc close`).
 - The lightbox and the notes pane cover the whole frame, `≡` and the lamp included (by
@@ -287,16 +320,34 @@ planned:
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
-Architecture follow-ups from Q29/Q33 (answered 2026-10-19 in the private notes'
-`research.md`), not yet scheduled: the TUI state layer is cell-shaped (`App::new` takes
-`u16` sizes; `Action` carries cell coordinates; `app.rs` imports `keys`, which imports
-crossterm), so rule 6's grep passes while the GUI could not reuse it verbatim. Recommended
-order: widen the discipline grep, move the state layer to its own crate, split `Action`
-into shared intents and TUI chrome, save positions and bookmarks as `SrcByte` (a
-`DocByte` drifts when flattening changes between releases), document the config-key split.
-The GTK4 GUI phase is not started and has no date.
+Known defects, found 2026-10-31 and not yet fixed:
+
+- **A run of only dashes and spaces can cut to a blank row.** `"—  —"` at width 2 is one
+  unit (UAX #14 LB17 forbids breaks in an em dash, spaces, em dash sequence), and
+  `units::split` cuts inside its whitespace, giving the screen a row of one space with a
+  `↩`. The existing proptest `a_marked_cut_elides_nothing` finds it at 20,000 cases; it
+  predates this work. Fix in `units::split`.
+- **`q` with a footnote box open closes the box and then the document** (`q` is "any other
+  key" to a box). Every pane closes on `q`, so a reader may expect it to close only the
+  box. Owner's call; one line in `key_action` either way.
+
+The Q29/Q33 architecture follow-ups are done (see Recently completed). What a GTK frontend
+would still find: the TUI's `App` is sized in cells and stays in `carrel`, deliberately — a
+GUI shares `carrel-core`, `carrel-state` and the `Intent` vocabulary, and writes its own
+state machine over them, dispatching on `Intent` with one explicit arm for what it does not
+implement. The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
+
+- 2026-10-31: **the shared layer is `carrel-state`, and `App` is not in it.** `App` is
+  shaped by cells; moving it would have repeated Helix's mistake one crate over. What
+  moved is what carries no geometry: intents, persistence, discovery.
+- 2026-10-31: **a saved place is a source byte plus a correction**, not a source byte:
+  provenance is per run, so a source byte alone resumed a rewritten paragraph at its top.
+- 2026-10-31: **a footnote box borrows the page's scroll keys only while it says there is
+  more**, and stops at its ends; a box that fits takes none.
+- 2026-10-31: **linear output divides no word to fill a row**, and a run wider than the
+  row stands alone; only styled `--render` cuts it, faintly marked.
 
 - 2026-10-21: **everything after the tag is CI's** (`publish.yml`). By hand: docs sweep,
   release commit, tag, watching runs by SHA. Secrets `CARGO_REGISTRY_TOKEN`,

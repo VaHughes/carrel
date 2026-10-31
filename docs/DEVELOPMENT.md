@@ -174,8 +174,8 @@ The ordered runbook is `RELEASING.md` in the private notes repo. Its shape: docu
 sweep (step 0 — grep for version strings, moved keys, counts, roadmap entries) → local gate →
 version bump **and recipe version stamps in the release commit, before the tag** →
 tag `v{version}` → watch CI by SHA. Everything after the tag is CI: `release.yml` builds
-the GitHub Release, `deb.yml` attaches the `.deb`s, and `publish.yml` publishes both
-crates (core first), pushes the Homebrew formula, computes the nix hashes, commits the
+the GitHub Release, `deb.yml` attaches the `.deb`s, and `publish.yml` publishes all three
+crates in dependency order (core, state, carrel), pushes the Homebrew formula, computes the nix hashes, commits the
 checksum stamp to `main` and runs the COPR build. Its secrets are `CARGO_REGISTRY_TOKEN`,
 `HOMEBREW_TAP_DEPLOY_KEY` (a write deploy key on the tap) and `COPR_CONFIG` (the COPR
 token expires 2027-02-12). Pull after a release: the stamp commit lands on `main` from CI. Packaging details, the COPR command that actually works, `.SRCINFO`
@@ -197,7 +197,7 @@ Gotchas:
   `carrel-core/src/hyphen/` is MIT, BSD-3-Clause and all-permissive (the Portuguese
   BSD-3-Clause wants its notice in the materials shipped with a binary), so the file is in
   dist's `include`, the `.deb` assets, `%license`, both PKGBUILDs, the nix expression, and
-  — as symlinks, which `cargo package` turns into files — in both crates. The licence
+  — as symlinks, which `cargo package` turns into files — in all three crates. The licence
   expression in `Cargo.toml` is repeated in every recipe. `check-packaging.sh` checks
   both, recipe by recipe. Each `hyph-*.txt` is hyph-utf8's txt file verbatim under a `%`
   header (upstream commit + the .tex source's header); the loader skips `%` lines, and the

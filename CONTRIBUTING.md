@@ -11,8 +11,9 @@ stay that way.
 
 Every design decision follows from that sentence. The mechanical consequences are what
 `./scripts/check-discipline.sh` enforces: no UI dependency in the core, no ANSI escapes leaving
-it, no width-dependent quantity in its public API, positions as byte offsets everywhere, and a
-state layer free of ratatui. Colour is a convention rather than a check — the core emits
+it, no width-dependent quantity in its public API, positions as byte offsets everywhere, a
+terminal-free state machine (checked over everything it reaches, not only what it imports), and
+a shared `carrel-state` crate with no UI dependency and no terminal geometry in its API. Colour is a convention rather than a check — the core emits
 semantic scopes and the frontend resolves them — so nothing mechanical stops an RGBA value
 being added to the core's API. Don't.
 

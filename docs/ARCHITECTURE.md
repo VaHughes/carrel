@@ -1,13 +1,20 @@
 # Architecture
 
-Carrel is a markdown **reader** (not an editor) built as one shared core crate and one
+Carrel is a markdown **reader** (not an editor) built as two shared crates and one
 terminal frontend, with a GTK4 + WebKitGTK frontend designed for but not written.
 
 ```
 crates/carrel-core/   document model · search · layout primitives.  NO UI DEPENDENCIES, EVER.
+crates/carrel-state/  what every frontend shares above the model: the intents a reader can
+                      ask for, persistence, file discovery.  No UI dependencies, no terminal
+                      geometry in its API.
 crates/carrel/        the terminal frontend (ratatui).  The only frontend that exists today.
                       A GTK4 + WebKitGTK frontend will sit ALONGSIDE it, never inside it.
 ```
+
+All three link in-process and release in lockstep from one tag, each pinning the others
+exactly — the shape research.md Q29/Q33 (private notes) found holding up wherever two
+frontends ship.
 
 The full spec (position types, data structures, algorithms, the resize path, a 20-item
 "do not do this" list keyed to failures in real editors) is `architecture.md` in the private
@@ -38,18 +45,35 @@ records exactly this). Hence:
 2. **Positions are byte offsets.** Never line numbers, never pixels. Scroll position is a
    `DocByte` anchor; the row is a derived cache.
 3. **The core emits semantic scopes and tokens, never ANSI and never RGBA.** Each frontend maps.
-4. **Share an `Action` intent enum**, bind keys and mouse per frontend. Keys and pointer
-   events both become `Action` values before the state machine sees them.
+4. **Share the intents, bind keys and pointer per frontend.** The shared vocabulary is
+   `carrel_state::intent::Intent`: everything a reader can ask for, addressed by the document
+   (a doc byte, a block, a heading, a link, an index into a list the document or library
+   defines). The terminal's `Action` is every intent plus its own chrome — anything carrying
+   a cell, a visual row or a row count, or driving a surface only the terminal draws (its
+   menus, the scrim, the hint row, the key sheet, the settings rows, the palettes, the
+   measure in cells). `From<Intent>` and `Action::intent()` are exhaustive both ways, so a
+   new action does not compile until it is classified.
 5. **Never let the TUI dictate a core type.**
-6. **The TUI's state layer is ratatui-free.** `action`, `app`, `layout`, `view`, `plain`,
-   `config`, `scan`, `home`, `images`, `state`, `wiki`, `grep`, `diagrams`, `footer`,
-   `breadcrumb`, `menu`, `marginalia`, `annotation_state`, `tags`, `cli`, `status`, `peek` never import ratatui, so behavior is tested with no terminal and a
-   GTK frontend can reuse them verbatim.
+6. **The TUI's state machine is terminal-free.** `action`, `app`, `layout`, `view`, `home`,
+   `keymap`, `menu`, `footer`, `breadcrumb`, `status`, `peek`, `cli`, `plain`, `ansi`,
+   `images`, `diagrams`, `math_art` and `annotation_state` compile without ratatui or
+   crossterm, so behavior is tested with no terminal. They are still shaped by it (`App` is
+   sized in cells), which is why they are not in `carrel-state`: a crate boundary blocks
+   dependencies, not shapes. What the keys are called is data in `keymap.rs`; `keys.rs` is
+   only the key-event dispatcher.
+7. **`carrel-state` is UI-free and geometry-free.** No UI or frontend dependency, no ANSI, no
+   cell pair, rectangle or `u16` named for a cell, and no `u16` at all in the intents. The one
+   exemption is a terminal config key stored in the shared file in the terminal's unit, and
+   it is marked where it is (`// discipline: terminal key`).
 
-`./scripts/check-discipline.sh` enforces 1–4 and 6 mechanically (UI crates, ANSI escapes,
-width-dependent public API, char/byte conversion, ratatui in the state layer). It has been
-verified to fail on injected violations. It skips comment lines, because the docs necessarily
-name what the rules forbid. Color (rule 3's RGBA half) is a convention, not a check.
+`./scripts/check-discipline.sh` enforces 1–4, 6 and 7 mechanically. Rule 6 checks the whole
+closure, not only direct imports: no terminal crate named on any non-comment line of a listed
+module, and every `crate::` edge from one lands on another (or on a name re-exported from
+`carrel-state`). Until 2026-10-31 it grepped for a direct `use ratatui` and passed while `app`,
+`footer` and `menu` reached crossterm through `keys` (research.md Q29). Every check has been
+verified to fail on an injected violation. Comment lines are skipped, because the docs
+necessarily name what the rules forbid. Color (rule 3's RGBA half) is a convention, not a
+check.
 
 ## Decisions already made — do not relitigate
 
@@ -186,26 +210,39 @@ Key facts that are easy to get wrong:
 - **After reflow the anchor is usually mid-row.** The row containing it begins earlier at the
   new width. That is correct, not drift.
 
+## carrel-state (shared)
+
+| Module | What it is |
+|---|---|
+| `intent.rs` | `Intent` and the small enums it needs (`Span`, `Where`, `Direction`, `SearchKey`, `NoteKey`, `Edge`). See discipline 4. |
+| `state.rs`, `config.rs` | XDG state (reading positions, bookmarks, collapsed sections) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. Positions and bookmarks are saved as a `Place`: a source byte plus a signed correction (`s1024+16`), exact under the core that saved it and still in the right run under another; a bare number is a display byte from 2026.10.21 or earlier (`Place::Legacy`). `config.rs` documents which keys are shared and which belong to one frontend. |
+| `scan.rs`, `grep.rs`, `fuzzy.rs` | The library walk (streamed, `.gitignore`-aware via the `ignore` crate with `require_git(false)`, cached index), multi-file content search (the source is only a prefilter, `carrel_core::SourceFilter`, which never passes over a file the reader matches; a file that passes is parsed and counted by the reader's own `search`, so the home count is what opening the file finds; four workers, hits sent in entry order; inline-math views kept per file by mtime and length), and the filter's fuzzy match. |
+| `tags.rs` | Tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads every scanned entry (to 1 MiB), finds its frontmatter by the core's own rule (`carrel_core::frontmatter`) and its key lines by `meta_split` — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and its inline `#tags` by the core's own parse (`Document::tags`), run only when a byte scan cannot rule one out. `groups` nests `a/b` under `a` (a parent's count includes its children) and `render` writes a section per tag, nested tags as subsections, with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. |
+| `links.rs`, `wiki.rs` | Forward links and backlinks with no index; `[[wikilink]]` resolution. |
+| `marginalia.rs` | Quote/context-anchored notes and highlights, atomic sidecars, Markdown export. |
+
+`crates/carrel` re-exports these under the names it always used (`pub use carrel_state::{config,
+…}` in `lib.rs`), so `crate::state` and `carrel::scan` still resolve.
+
 ## carrel (the TUI)
 
 | Module | What it is |
 |---|---|
 | `main.rs` | Entry, `USAGE`, `key_action` (the ONE key dispatcher, called by both loops), the event loop (`run_loop`, shared by the file, piped and `--tutorial` entries), `paint` (every frame inside a DEC 2026 synchronized update plus the OSC 8 post-draw pass), mtime `Reloader`, rescan timer, signal handling, `init_terminal` and the hang-up watch. |
 | `app.rs` | The state machine — `App`, `update()`, folding, bookmarks, links, `reveal_byte`, `adapt` (the single funnel every parse goes through for diff detection), `text_size`/`text_x`/`text_y`, the settings rows (`settings_rows`, derived per call, never stored), and `WELCOME` (`welcome.md`, embedded with `include_str!` and opened pathless like a pipe). |
-| `action.rs` | The shared `Action` intent enum and the per-frame click-target registry (`Targets`). |
-| `keys.rs` | Vim motion set with a count register, plus the beginner bindings — which by rule only ever claim keys that were **already unbound**, so the vim set is never diminished. Help tables and footer hint tables with drift guards. |
+| `action.rs` | The terminal's `Action` (every `Intent` plus its chrome, with the exhaustive conversions) and the per-frame click-target registry (`Targets`). |
+| `keys.rs` | The key-event dispatcher: vim motion set with a count register, plus the beginner bindings — which by rule only ever claim keys that were **already unbound**, so the vim set is never diminished. Its tests are the drift guards that hold `keymap.rs` to it. The one module of the state machine's neighbours that names crossterm. |
+| `keymap.rs` | What the keys are called, as data: the help tables (key, description, and the action a click on the row runs), the footer hint tables, `accel` for menu rows, `upward`, and `MENU_KEYS`. Read by `app`, `footer` and `menu` without a dispatcher. |
 | `view.rs`, `layout.rs` | Viewport (a `DocByte` anchor) and the frontend-side layout (`Layout::with_hidden`, `block_width(kind)` — exhaustive match over `NodeKind`). |
 | `render.rs` | Paints rows into the `Buffer`; never uses `Paragraph`/`Wrap`. Highlights by `Buffer::set_style` over a rect, never by splitting spans. `declare_wide_cells` works around ratatui#2651. |
 | `theme.rs` | The only file with a color. 17 palettes plus `omarchy` (derived from the desktop's `colors.toml`, `omarchy.rs`). |
-| `home.rs`, `scan.rs`, `grep.rs`, `fuzzy.rs` | The home screen: streamed `.gitignore`-aware scan (`ignore` crate, `require_git(false)`), cached index, 2 s rescan while listed, directory picker with path completion and remembered places, fuzzy filter, multi-file content search (the source is only a prefilter, `carrel_core::SourceFilter`, which never passes over a file the reader matches; a file that passes is parsed and counted by the reader's own `search`, so the home count is what opening the file finds; four workers, hits sent in entry order; inline-math views kept per file by mtime and length), frontmatter titles. |
-| `tags.rs` | Tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads every scanned entry (to 1 MiB), finds its frontmatter by the core's own rule (`carrel_core::frontmatter`) and its key lines by `meta_split` — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and its inline `#tags` by the core's own parse (`Document::tags`), run only when a byte scan cannot rule one out. `groups` nests `a/b` under `a` (a parent's count includes its children) and `render` writes a section per tag, nested tags as subsections, with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. No UI dependencies. |
+| `home.rs` | The home screen over `carrel-state`'s scan and search: 2 s rescan while listed, directory picker with path completion and remembered places, filter and content-search modes, frontmatter titles. |
 | `menu.rs`, `footer.rs`, `breadcrumb.rs`, `status.rs` | Pure selectors for the right-click/`≡` menus, the lamplight hint row, the sticky heading band, and the reader's status row (the trail at its left, the chips at its right, and what each drops when the row is short). |
 | `peek.rs` | The footnote peek: the whole definition (`Document::footnote_def_range`, recorded at parse), wrapped by the core's `wrap` at the box's width with the definition's own inset taken off, and its box geometry. Every row is a slice of the text, so `render::paint_peek_row` reuses the reader's text, footnote-mark and search-hit stages; links and marks inside are buttons at the box's layer. Its scroll position is a doc byte, moved by `PeekScroll` (rows): the wheel over the box, its painted `↑/↓` buttons, and the page's scroll keys. Not a pane — whatever the reader does next closes it and then happens, with two exceptions: `Enter` goes to the footnote, and **while `Peek::scrolls` says the box is drawn and the footnote longer than it**, `App::peek_key` turns the reader keymap's `Scroll`/`GoToStart`/`GoToEnd` into `PeekScroll` (clamped at both ends, never spilling onto the page). Ownership is a fact of the box's size, never of the scroll position; the footer shows `◎ footnote` with its own chips exactly then, so a chip and its key cannot disagree. A box that fits takes no scroll key. A resize closes it (it is drawn at the cell its mark was clicked at); auto-read waits while it is open. Display math and mermaid show as source in it, and a table without its rules. |
 | `cli.rs` | What the command line meant where that takes judgment: `FILE:LINE` / `FILE#section` (a path that exists is never split), the nearest option or file to a mistyped one, the newest document, and a pasted or dropped path in whatever form the terminal handed it over. |
-| `marginalia.rs`, `annotation_state.rs`, `annotation_render.rs` | Quote/context-anchored notes and highlights, atomic sidecars and Markdown export, modal list/editor state, and the terminal notes pane. The first two modules have no UI dependencies. |
-| `state.rs`, `config.rs` | XDG state (reading positions, bookmarks) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. |
+| `annotation_state.rs`, `annotation_render.rs` | Modal list/editor state for notes and highlights (terminal-free), and the terminal notes pane. |
 | `stream.rs` | stdin on a thread with UTF-8 carry across chunks; keys arrive via `/dev/tty` (crossterm's native fallback). |
-| `images.rs`, `diagrams.rs`, `math_art.rs`, `wiki.rs`, `links.rs`, `plain.rs`, `ansi.rs` | Image sizing (kitty/halfblock via `ratatui-image`), mermaid box art (`merman`), TeX-lite math boxes, `[[wikilink]]` resolution, forward/backlinks with no index, `--plain` and `--render` output. |
+| `images.rs`, `diagrams.rs`, `math_art.rs`, `plain.rs`, `ansi.rs` | Image decoding and sizing (drawn kitty/halfblock via `ratatui-image` in `render`), mermaid box art (`merman`), TeX-lite math boxes, `--plain` and `--render` output. |
 
 Key facts:
 

@@ -2,7 +2,9 @@
 
 Carrel is a free and open-source markdown **reader** for the terminal (not an editor): a
 Rust workspace with `crates/carrel-core` (document model, search, reflow layout — no UI
-dependencies, ever) and `crates/carrel` (the ratatui frontend). A GTK4 + WebKitGTK frontend
+dependencies, ever), `crates/carrel-state` (what every frontend shares above it: intents,
+persistence, file discovery — no UI dependencies, no terminal geometry) and `crates/carrel`
+(the ratatui frontend). A GTK4 + WebKitGTK frontend
 is designed for but not written. Search survives reflow by construction because every
 position is a byte offset into one flattened display text. Published to crates.io, GitHub
 releases, Homebrew and Fedora COPR under CalVer.

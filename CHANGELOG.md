@@ -29,6 +29,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   the same over-long line. Styled `--render` cuts such a run the way the
   screen does, and writes its `-` or `↩` faint. With `NO_COLOR` it is still
   byte-for-byte `--plain`.
+- **Content search on the file list finds every file the reader would.** A
+  match spelled through an entity (`&ndash;`, `&#8212;`), across markup
+  (`**foo** bar`, a link, a code span, inline HTML), across list markers or
+  table cells, or in rendered inline math (`$x^2$` reads `x²`) was missed until
+  the file was opened. Searching a large folder is also faster: files are
+  read and filtered on up to four threads, and results arrive in the same
+  order as before.
 - **For contributors: a third crate, `carrel-state`**, holds what every
   frontend shares above the document model: the reader's intents (the
   terminal's actions minus its chrome) and, from this release, persistence and

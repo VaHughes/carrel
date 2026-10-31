@@ -410,23 +410,29 @@ To go back to the packaged binary, remove the symlink and reinstall by whichever
 
 ## Architecture
 
-Two crates, one seam.
+Two shared crates, one frontend.
 
 ```
 carrel-core/   document model, search, layout primitives.  NO UI DEPENDENCIES, EVER.
+carrel-state/  what every frontend shares above the model: the intents a reader can ask
+               for, persistence, file discovery.  no UI dependencies, no terminal geometry.
 carrel/        the terminal frontend (ratatui).  the only frontend that exists today.
 ```
 
 A GTK4 + WebKitGTK frontend is intended to sit *alongside* `carrel/`, never inside it. None of it
 is written — what exists today is the discipline that keeps it possible: `carrel-core` has no UI
-dependency, emits semantic scopes rather than ANSI, and exposes no width-dependent type. Every
+dependency, emits semantic scopes rather than ANSI, and exposes no width-dependent type, and
+`carrel-state` carries no terminal cell, row or rectangle in its API. Every
 project surveyed during research that planned a second frontend for "later" never got one, so
 those constraints are treated as load-bearing rather than aspirational.
 
-Clicks go through the same seam. Keys and pointer events both become values of one shared
-`Action` enum before anything downstream sees them, so the state machine has never heard of
-either — which is what lets a second frontend produce the same intents from menu items and
-`GtkEventControllerKey`. For chrome whose position depends on what is being drawn (the hint
+Clicks go through the same seam. Keys and pointer events both become an `Action` before
+anything downstream sees them, so the state machine has never heard of either. Every action
+that is addressed by the document (a byte, a block, a heading, a link) is also a shared
+`Intent`, which is what a second frontend produces from menu items and
+`GtkEventControllerKey`. The rest (a cell under the pointer, a row, a menu the terminal draws)
+is the terminal's own chrome, and the two convert by exhaustive match, so a new action does
+not compile until someone decides which it is. For chrome whose position depends on what is being drawn (the hint
 row elides right to left as the terminal narrows), the paint pass **records** where it put
 each thing and the event loop reads that back, rather than a hit-test re-deriving geometry
 the painter already computed. Re-derivation is how a click ends up one cell off its glyph,
