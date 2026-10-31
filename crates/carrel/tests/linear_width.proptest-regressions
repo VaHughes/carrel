@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc da9e8090bc8a1f707fcffb1621b3c87ec48be3546e30180484a06a6d5fe7ed16 # shrinks to c = Case { words: ["a", "a0a0\u{ad}0aa\u{ad}0aa0a0a0\u{ad}aaaa", "00aa\u{ad}aa0aaaaa0\u{ad}00a"], kind: 1 }, width = 29
+cc a14273d956362c7fba1c77def3b1029107543d3a3b4ac9bf05e6bb3cf534d71e # shrinks to c = Case { words: ["a00aaa0\u{ad}0a0aaa0\u{ad}aaaaaa", "aa0a000aa\u{ad}0a0aaaa00\u{ad}0aaaa"], kind: 1 }, width = 33
+cc 8b001718d7e5b9b2fe6f243c7cf76fd0e73f7ef68f676ed5276a4614d1557943 # shrinks to c = Case { words: ["aaa\u{ad}a00000a\u{ad}0a0a0a\u{ad}aa00aaa"], kind: 0 }, width = 20

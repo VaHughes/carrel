@@ -51,9 +51,9 @@ pub use document::{
 pub use highlight::{Token, TokenKind};
 pub use hyphen::{Hyphenation, hyphenation_for};
 pub use layout::{
-    CHUNK_BYTES, CONTINUATION_COLS, Row, RowKind, WidthFn, chunk_count, cluster_at_col,
+    CHUNK_BYTES, CONTINUATION_COLS, Division, Row, RowKind, WidthFn, chunk_count, cluster_at_col,
     cluster_width, cols_for_doc_range, cols_for_doc_ranges, display_width, wrap, wrap_chunk,
-    wrap_range, wrap_with,
+    wrap_divided, wrap_range, wrap_with,
 };
 pub use math::{MathClass, MathExpr, MatrixDelim};
 pub use position::{Affinity, BlockIdx, DocByte, NodeId, SrcByte};

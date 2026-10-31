@@ -116,8 +116,12 @@ for this one.
 .TP
 .B \-\-render
 Styled linear text for embedding in another tool's output: weight, slant,
-strike and OSC 8 hyperlinks, but never an SGR colour. With NO_COLOR set it
-is exactly
+strike and OSC 8 hyperlinks, but never an SGR colour. Lines break where
+.BR \-\-plain 's
+do, except that a run too long for the whole row is cut as the screen cuts it,
+and the hyphen or
+.B \[u21A9]
+added there is written faint. With NO_COLOR set it is exactly
 .BR \-\-plain .
 .TP
 .B \-\-tutorial
@@ -838,12 +842,14 @@ except in code, whose continued lines start with
 .BR \[u21B3] .
 The hyphen and the mark are drawn, not written, and the author's soft hyphen
 is invisible to searching, selecting and copying: all three see the word
-whole, and
+whole.
 .B \-\-plain
-and
+divides no word and adds no character: every line fits the width except one
+holding a single run too long for the whole row, which stands on a line of its
+own and runs past, and a word with soft hyphens moves to the next line whole.
 .B \-\-render
-never divide one, nor cut a run too long for the row: such a line runs past
-the width instead. The settings pane
+breaks its lines in the same places but cuts such a run as the screen does,
+with a faint mark; neither cuts a code line. The settings pane
 .RB ( , )
 changes it.
 .TP

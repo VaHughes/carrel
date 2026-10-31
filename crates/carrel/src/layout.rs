@@ -16,8 +16,8 @@
 use std::collections::HashMap;
 
 use carrel_core::{
-    Affinity, BlockIdx, Document, Hyphenation, Node, NodeKind, Row, RowKind, cluster_width,
-    display_width, wrap_range, wrap_with,
+    Affinity, BlockIdx, Division, Document, Hyphenation, Node, NodeKind, Row, RowKind,
+    cluster_width, display_width, wrap_divided, wrap_range,
 };
 
 /// One blank row between blocks. Markdown renders with paragraph spacing
@@ -61,6 +61,10 @@ pub struct Layout {
     /// and the row pass must wrap identically, and a layout that answers for
     /// itself cannot be asked two different ways.
     hyphenation: Hyphenation,
+    /// What may happen inside a word: [`Division::Fill`] for the screen,
+    /// the other two for linear output ([`Self::linear`]). Held for the
+    /// reason `hyphenation` is.
+    division: Division,
 }
 
 impl Layout {
@@ -131,6 +135,51 @@ impl Layout {
         hidden: &std::collections::HashSet<BlockIdx>,
         hyphenation: Hyphenation,
     ) -> Self {
+        Self::build(
+            doc,
+            width,
+            measure,
+            block_rows,
+            wrap_tables,
+            hidden,
+            hyphenation,
+            Division::Fill,
+        )
+    }
+
+    /// The layout of linear output — `--plain`, `--render`: one width, no
+    /// overrides or folds, aligned tables (a card's labels exist only in
+    /// paint), and `division` for what may happen inside a word.
+    #[must_use]
+    pub fn linear(
+        doc: &Document,
+        width: u16,
+        hyphenation: Hyphenation,
+        division: Division,
+    ) -> Self {
+        Self::build(
+            doc,
+            width,
+            width,
+            HashMap::new(),
+            true,
+            &std::collections::HashSet::new(),
+            hyphenation,
+            division,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        doc: &Document,
+        width: u16,
+        measure: u16,
+        block_rows: HashMap<BlockIdx, u32>,
+        wrap_tables: bool,
+        hidden: &std::collections::HashSet<BlockIdx>,
+        hyphenation: Hyphenation,
+        division: Division,
+    ) -> Self {
         let mut block_row_start = Vec::with_capacity(doc.block_count() + 1);
         let mut acc = 0u32;
         block_row_start.push(0);
@@ -155,7 +204,15 @@ impl Layout {
                     card_rows(doc, b, width, |_| {})
                 } else {
                     let shift = nest_shift(node.indent, bw);
-                    wrap_with(doc, b, bw + shift, &cluster_width, hyphenation, |_| {})
+                    wrap_divided(
+                        doc,
+                        b,
+                        bw + shift,
+                        &cluster_width,
+                        hyphenation,
+                        division,
+                        |_| {},
+                    )
                 }
             };
             acc = acc
@@ -170,6 +227,7 @@ impl Layout {
             block_rows,
             wrap_tables,
             hyphenation,
+            division,
         }
     }
 
@@ -276,12 +334,13 @@ impl Layout {
                 // minimum width. Every consumer reads `indent` from these
                 // rows — paint, hit-testing, highlights — so they all agree.
                 let shift = nest_shift(node.indent, bw);
-                wrap_with(
+                wrap_divided(
                     doc,
                     b,
                     bw + shift,
                     &cluster_width,
                     self.hyphenation,
+                    self.division,
                     |mut r| {
                         r.indent = r.indent.saturating_sub(shift);
                         out.push(r);

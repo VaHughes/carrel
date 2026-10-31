@@ -61,3 +61,68 @@ fn plain_dash_reads_stdin_at_a_width() {
         "respects the width: {out}"
     );
 }
+
+/// The binary on `args`, with `input` piped in, `NO_COLOR` as given, and
+/// every XDG directory in a scratch dir.
+fn run_linear(args: &[&str], input: &str, no_color: bool) -> String {
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_carrel"));
+    cmd.args(args)
+        .env("XDG_CONFIG_HOME", scratch.path())
+        .env("XDG_STATE_HOME", scratch.path())
+        .env("XDG_CACHE_HOME", scratch.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if no_color {
+        cmd.env("NO_COLOR", "1");
+    } else {
+        cmd.env_remove("NO_COLOR");
+    }
+    let mut child = cmd.spawn().expect("binary runs");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(input.as_bytes())
+        .expect("write the document");
+    let out = child.wait_with_output().expect("binary exits");
+    assert!(out.status.success(), "{args:?} failed");
+    String::from_utf8(out.stdout).expect("utf-8 output")
+}
+
+/// `--plain -` and `--render -` lay out with the same code a file gets: an
+/// over-long run stands alone, unmarked in plain and unstyled output, cut
+/// with a faint mark in styled output — read from a pipe or from a path.
+#[test]
+fn piped_linear_output_keeps_the_width_contract_a_file_gets() {
+    let hash = "0123456789abcdef0123456789abcdef0123456789abcdef";
+    let src = format!("A hash {hash} and more words after it.\n");
+    let doc = carrel_core::Document::parse(&src);
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let file = dir.path().join("h.md");
+    std::fs::write(&file, &src).expect("write the file");
+    let file = file.to_str().expect("utf-8 path");
+
+    let want = carrel::plain::render(&doc, 30);
+    assert_eq!(want, format!("A hash\n{hash}\nand more words after it.\n"));
+    for args in [
+        &["--plain", "-", "30"][..],
+        &["--plain", file, "30"],
+        &["--render", "-", "30"],
+        &["--render", file, "30"],
+    ] {
+        assert_eq!(
+            run_linear(args, &src, true),
+            want,
+            "{args:?} under NO_COLOR"
+        );
+    }
+    assert_eq!(run_linear(&["--plain", "-", "30"], &src, false), want);
+
+    let styled = carrel::ansi::render_with(&doc, 30, true);
+    assert!(styled.contains("\u{1b}[2m↩\u{1b}[0m"), "{styled:?}");
+    for args in [&["--render", "-", "30"][..], &["--render", file, "30"]] {
+        assert_eq!(run_linear(args, &src, false), styled, "{args:?}");
+    }
+}

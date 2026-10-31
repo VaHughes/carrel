@@ -174,6 +174,36 @@ pub struct Row {
     pub kind: RowKind,
 }
 
+/// What a layout may do inside a word: the one way output that leaves the
+/// screen lays out differently from the screen.
+///
+/// Linear output — a pipe, a screen reader, another tool's pane — is text
+/// someone else will read, grep or paste, so it divides nothing it does not
+/// have to. Every mode breaks at the same UAX #14 opportunities between
+/// words; they differ only in the author's soft hyphens, the optional
+/// division that fills a ragged row, and a run wider than a whole row.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Division {
+    /// The screen. A soft hyphen is a break opportunity, a word may be
+    /// divided to fill a row where the [`Hyphenation`] allows, and a run
+    /// wider than a whole row is cut until what is left fits.
+    #[default]
+    Fill,
+    /// Linear output that can draw a mark. A soft hyphen is not a break
+    /// opportunity and no word is divided to fill a row, so the lines break
+    /// where [`Division::Never`]'s do — except that a run wider than a whole
+    /// row is cut as the screen cuts it: at its soft hyphens or its
+    /// language's points with a hyphen, otherwise with a continuation mark
+    /// (`RowKind::Text::hyphen` / `split`). A code line is never cut: its
+    /// mark belongs at the start of the next row, in what linear output
+    /// prints as the code's own indentation.
+    Overwide,
+    /// Linear text, `fmt`'s rule: nothing is divided and nothing is added.
+    /// A run wider than a whole row is placed whole on a row of its own and
+    /// overhangs; no row is ever marked.
+    Never,
+}
+
 /// Byte offsets at which each layout chunk of `text` starts.
 ///
 /// A boundary is the first break opportunity at or after each [`CHUNK_BYTES`]
@@ -186,8 +216,10 @@ fn chunk_starts(text: &str) -> Vec<u32> {
     }
     let mut target = CHUNK_BYTES;
     for (pos, _) in unicode_linebreak::linebreaks(text) {
-        let pos = pos as u32;
-        if pos >= target && (pos as usize) < text.len() {
+        // Never after an author's soft hyphen: linear output does not break
+        // there ([`Division::Never`]), and a chunk boundary is a break.
+        if pos as u32 >= target && pos < text.len() && !text[..pos].ends_with('\u{AD}') {
+            let pos = pos as u32;
             starts.push(pos);
             target = pos.saturating_add(CHUNK_BYTES);
         }
@@ -247,6 +279,7 @@ pub fn wrap_chunk<F: FnMut(Row)>(
         code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
         meta: meta_value_col(&node.kind),
         soft: soft_breaks(doc, block, hyphenation),
+        division: Division::Fill,
     };
     wrap_slice(&text[r], &at, w, first, &mut sink)
 }
@@ -282,6 +315,7 @@ pub fn wrap_range<F: FnMut(Row)>(
         code: false,
         meta: None,
         soft: None,
+        division: Division::Fill,
     };
     wrap_slice(text, &at, w, first, &mut sink)
 }
@@ -293,10 +327,10 @@ pub fn wrap_range<F: FnMut(Row)>(
 /// disagree.
 ///
 /// Never divides a word by its language's patterns; [`wrap_with`] is the one
-/// that may. This is the form for output that leaves the screen — a hyphen
-/// written into a pipe is a character somebody downstream has to take back
-/// out. (A row may still end at an author's own soft hyphen, which is in the
-/// text already.)
+/// that may. A row may still end at an author's own soft hyphen, or inside a
+/// run wider than the row — output that leaves the screen, where a hyphen is
+/// a character somebody downstream has to take back out, wants
+/// [`wrap_divided`] instead.
 pub fn wrap<F: FnMut(Row)>(
     doc: &Document,
     block: BlockIdx,
@@ -333,6 +367,25 @@ pub fn wrap_with<F: FnMut(Row)>(
     width: u16,
     w: &WidthFn,
     hyphenation: Hyphenation,
+    sink: F,
+) -> u32 {
+    wrap_divided(doc, block, width, w, hyphenation, Division::Fill, sink)
+}
+
+/// [`wrap_with`], with what may happen inside a word chosen by `division`.
+/// [`Division::Fill`] is [`wrap_with`] exactly; the other two are for
+/// output that leaves the screen.
+///
+/// Under [`Division::Overwide`], `hyphenation` decides only where a run
+/// wider than a whole row may be divided; under [`Division::Never`] it is
+/// not consulted.
+pub fn wrap_divided<F: FnMut(Row)>(
+    doc: &Document,
+    block: BlockIdx,
+    width: u16,
+    w: &WidthFn,
+    hyphenation: Hyphenation,
+    division: Division,
     mut sink: F,
 ) -> u32 {
     let node = doc.node_for_block(block);
@@ -357,6 +410,7 @@ pub fn wrap_with<F: FnMut(Row)>(
             code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
             meta: meta_value_col(&node.kind),
             soft: soft_breaks(doc, block, hyphenation),
+            division,
         };
         rows = rows.saturating_add(wrap_slice(
             &text[*start as usize..end],
@@ -399,6 +453,8 @@ struct Slice<'a> {
     /// the block's style runs, which say which of them may not. See
     /// [`soft_breaks`].
     soft: Option<(Hyphenation, &'a [Inline])>,
+    /// What may happen inside a word. See [`Division`].
+    division: Division,
 }
 
 /// The `value_col` and dialect of a frontmatter card, or `None` for every
@@ -575,22 +631,43 @@ fn wrap_slice<F: FnMut(Row)>(
             language: *language,
             fixed,
         });
-        let mut divide =
-            |u: &units::Unit, room: u16| units::divide(u, line, room, w, soft.as_ref()?);
+        let fill = at.division == Division::Fill;
+        let mut divide = |u: &units::Unit, room: u16| {
+            fill.then_some(())?;
+            units::divide(u, line, room, w, soft.as_ref()?)
+        };
         // A code line's continuation row carries `↳`; marking the row it
-        // leaves too would say the same thing twice.
-        let mut split =
-            |u: &units::Unit, avail: u16| units::split(u, line, avail, w, !at.code, soft.as_ref());
-        rows = rows.saturating_add(pack::pack(
-            units::units(line, w),
-            line_base,
-            at.block,
-            &fit,
-            first,
-            sink,
-            &mut divide,
-            &mut split,
-        ));
+        // leaves too would say the same thing twice. Linear output has no
+        // `↳` to draw, so it does not cut a code line at all.
+        let mut split = |u: &units::Unit, avail: u16| match at.division {
+            Division::Fill => units::split(u, line, avail, w, !at.code, soft.as_ref()),
+            Division::Overwide if !at.code => units::split_whole(u, line, avail, w, soft.as_ref()),
+            Division::Overwide | Division::Never => None,
+        };
+        let packed = if fill {
+            pack::pack(
+                units::units(line, w),
+                line_base,
+                at.block,
+                &fit,
+                first,
+                sink,
+                &mut divide,
+                &mut split,
+            )
+        } else {
+            pack::pack(
+                units::whole_words(units::units(line, w)),
+                line_base,
+                at.block,
+                &fit,
+                first,
+                sink,
+                &mut divide,
+                &mut split,
+            )
+        };
+        rows = rows.saturating_add(packed);
         offset += line.len();
     }
 
@@ -652,6 +729,7 @@ pub(crate) fn wrap_text_soft<F: FnMut(Row)>(
             code: false,
             meta: None,
             soft: soft.then_some((Hyphenation::English, &[][..])),
+            division: Division::Fill,
         };
         rows = rows.saturating_add(wrap_slice(
             &text[*start as usize..end],
@@ -662,6 +740,32 @@ pub(crate) fn wrap_text_soft<F: FnMut(Row)>(
         ));
     }
     rows
+}
+
+/// Wrap a raw slice as one logical block of prose (or `code`), unchunked,
+/// under `division` — English patterns when `soft`, none otherwise. Test
+/// entry point for [`Division`].
+#[cfg(test)]
+pub(crate) fn wrap_text_divided<F: FnMut(Row)>(
+    text: &str,
+    width: u16,
+    code: bool,
+    soft: bool,
+    division: Division,
+    mut sink: F,
+) -> u32 {
+    let at = Slice {
+        doc_base: 0,
+        block: BlockIdx(0),
+        width,
+        indent: 0,
+        code,
+        meta: None,
+        soft: soft.then_some((Hyphenation::English, &[][..])),
+        division,
+    };
+    let mut first = true;
+    wrap_slice(text, &at, &cluster_width, &mut first, &mut sink)
 }
 
 /// Convert a doc-byte sub-range of a row into a `[start_col, end_col)` cell range.
@@ -1279,18 +1383,147 @@ mod tests {
     }
 
     /// Wrap raw text as if it were a block of the given kind.
-    fn wrap_text_kind<F: FnMut(Row)>(text: &str, width: u16, code: bool, mut sink: F) {
-        let at = Slice {
-            doc_base: 0,
-            block: BlockIdx(0),
-            width,
-            indent: 0,
-            code,
-            meta: None,
-            soft: None,
-        };
-        let mut first = true;
-        wrap_slice(text, &at, &cluster_width, &mut first, &mut sink);
+    fn wrap_text_kind<F: FnMut(Row)>(text: &str, width: u16, code: bool, sink: F) {
+        wrap_text_divided(text, width, code, false, Division::Fill, sink);
+    }
+
+    /// `(row text, hyphen, split)` under `division`, as unstyled prose.
+    fn divided(text: &str, width: u16, code: bool, division: Division) -> Vec<(&str, bool, bool)> {
+        let mut out = Vec::new();
+        wrap_text_divided(text, width, code, false, division, |r| {
+            let RowKind::Text { hyphen, split, .. } = r.kind else {
+                unreachable!()
+            };
+            out.push((
+                &text[r.doc.start as usize..r.doc.end as usize],
+                hyphen,
+                split,
+            ));
+        });
+        out
+    }
+
+    #[test]
+    fn never_places_a_run_wider_than_the_row_whole_and_alone() {
+        let text = "ab 0123456789abcdef cd ef";
+        assert_eq!(
+            divided(text, 8, false, Division::Never),
+            [
+                ("ab", false, false),
+                ("0123456789abcdef", false, false),
+                ("cd ef", false, false),
+            ],
+            "the text after the run starts a row of its own"
+        );
+        // The screen cuts the same run, with a mark, and fills after it.
+        let fill = divided(text, 8, false, Division::Fill);
+        assert!(fill.iter().any(|r| r.2), "{fill:?}");
+    }
+
+    #[test]
+    fn linear_layouts_do_not_break_at_a_soft_hyphen() {
+        // `aaaa bb` and its hyphen fill eight cells exactly: the screen ends
+        // the row there. Linear output, which would have to rejoin the word
+        // on one line, moves it down whole.
+        let text = "aaaa bb\u{AD}cc dd";
+        assert_eq!(
+            divided(text, 8, false, Division::Fill)[0],
+            ("aaaa bb\u{AD}", true, false)
+        );
+        for d in [Division::Overwide, Division::Never] {
+            assert_eq!(
+                divided(text, 8, false, d),
+                [("aaaa", false, false), ("bb\u{AD}cc dd", false, false)],
+                "{d:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn overwide_cuts_at_the_latest_soft_hyphen_that_fits_and_marks_the_rest() {
+        let text = "x super\u{AD}cali\u{AD}fragilistic y";
+        assert_eq!(
+            divided(text, 10, false, Division::Overwide),
+            [
+                ("x", false, false),
+                ("super\u{AD}cali\u{AD}", true, false),
+                ("fragilist", false, true),
+                ("ic y", false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_code_line_is_never_cut_in_a_linear_layout() {
+        let text = "let x = \"0123456789abcdef\";";
+        for d in [Division::Overwide, Division::Never] {
+            let rows = divided(text, 10, true, d);
+            assert!(
+                rows.iter().all(|r| !r.1 && !r.2),
+                "{d:?} marked a code row: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|r| r.0 == "\"0123456789abcdef\";"),
+                "{d:?} cut the literal: {rows:?}"
+            );
+        }
+        // The screen does cut it: its `↳` says so on the next row.
+        let fill = divided(text, 10, true, Division::Fill);
+        assert!(
+            !fill.iter().any(|r| r.0 == "\"0123456789abcdef\";"),
+            "{fill:?}"
+        );
+    }
+
+    #[test]
+    fn a_chunk_boundary_never_falls_at_a_soft_hyphen() {
+        // `a ` × 32767 is 65534 bytes, so the first break at or past
+        // CHUNK_BYTES is the one after the soft hyphen, at 65538.
+        let src = format!("{}xx\u{AD}yy zz\n", "a ".repeat(32767));
+        let doc = Document::parse(&src);
+        assert!(doc.block_text(BlockIdx(0)).len() > CHUNK_BYTES as usize);
+        let mut rows = Vec::new();
+        wrap_divided(
+            &doc,
+            BlockIdx(0),
+            80,
+            &cluster_width,
+            Hyphenation::Off,
+            Division::Never,
+            |r| rows.push(doc.text[r.doc.start as usize..r.doc.end as usize].to_string()),
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("xx\u{AD}yy")),
+            "the word was divided at a chunk boundary: {:?}",
+            &rows[rows.len().saturating_sub(2)..]
+        );
+    }
+
+    #[test]
+    fn fill_is_wrap_with_exactly() {
+        // `wrap_with` delegates; nothing about the screen moved.
+        let doc = Document::parse(
+            "A para\u{AD}graph of some docu\u{AD}mentation with 0123456789abcdef0123 in it.\n",
+        );
+        for width in 4..40 {
+            for h in [Hyphenation::Off, Hyphenation::English] {
+                let mut a = Vec::new();
+                let mut b = Vec::new();
+                wrap_with(&doc, BlockIdx(0), width, &cluster_width, h, |r| {
+                    a.push((r.doc, r.indent, r.kind));
+                });
+                wrap_divided(
+                    &doc,
+                    BlockIdx(0),
+                    width,
+                    &cluster_width,
+                    h,
+                    Division::Fill,
+                    |r| b.push((r.doc, r.indent, r.kind)),
+                );
+                assert_eq!(a, b, "width {width} {h:?}");
+            }
+        }
     }
 
     #[test]

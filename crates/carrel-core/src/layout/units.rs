@@ -93,6 +93,34 @@ pub(super) fn units<'a>(text: &'a str, w: &'a WidthFn) -> impl Iterator<Item = U
     })
 }
 
+/// [`units`] with the author's soft hyphens taken out of the break
+/// opportunities, for linear output ([`super::Division::Overwide`] and
+/// [`super::Division::Never`]): a run joined across them is one unit.
+///
+/// The screen breaks at a soft hyphen because it can draw the hyphen there
+/// and nowhere else. Linear output that rejoins the word on one line — the
+/// only honest thing it can do with a division it may not write — would
+/// leave a row the packer had filled to the brim holding the whole word, so
+/// the word must be packed whole instead. Width-independent, like [`units`].
+pub(super) fn whole_words(mut units: impl Iterator<Item = Unit>) -> impl Iterator<Item = Unit> {
+    std::iter::from_fn(move || {
+        let mut u = units.next()?;
+        // A soft unit has no trailing whitespace, so its width is content.
+        while u.soft_hyphen && !u.mandatory {
+            let Some(next) = units.next() else { break };
+            u = Unit {
+                range: u.range.start..next.range.end,
+                width: u.width.saturating_add(next.width),
+                trailing_ws: next.trailing_ws,
+                trailing_ws_bytes: next.trailing_ws_bytes,
+                mandatory: next.mandatory,
+                soft_hyphen: next.soft_hyphen,
+            };
+        }
+        Some(u)
+    })
+}
+
 /// U+00AD, the author's own division point: UAX #14 breaks after it, and
 /// it is drawn only where it does.
 const SOFT_HYPHEN: char = '\u{AD}';
@@ -213,6 +241,43 @@ pub(super) fn split(
         Cut::Plain
     };
     Some(halves(u, at as u32, col, cut))
+}
+
+/// [`split`] for a unit [`whole_words`] joined across the author's soft
+/// hyphens: cut first at the latest soft hyphen whose head fits the row
+/// with its hyphen, which is where the screen — breaking at every one —
+/// would have ended the row; failing that, as [`split`] cuts, marked.
+///
+/// The walk stops once the head is wider than the row, so a run tens of
+/// kilobytes long costs one row's worth of clusters per cut.
+pub(super) fn split_whole(
+    u: &Unit,
+    text: &str,
+    avail: u16,
+    w: &WidthFn,
+    soft: Option<&Soft>,
+) -> Option<(Unit, Unit, Cut)> {
+    let start = u.range.start as usize;
+    let end = u.content_end() as usize;
+    let max_head = u32::from(avail.saturating_sub(MARK_COLS));
+    let mut col = 0u32;
+    let mut best = None;
+    for (off, g) in text[start..end].grapheme_indices(true) {
+        col = col.saturating_add(u32::from(w(g)));
+        if col > max_head {
+            break;
+        }
+        let at = start + off + g.len();
+        // A head must show something: a soft hyphen at the very start of
+        // the run would make a row of nothing but its hyphen.
+        if g == "\u{AD}" && col > 0 && at < end {
+            best = Some((at, col));
+        }
+    }
+    if let Some((at, head_width)) = best {
+        return Some(halves(u, at as u32, head_width, Cut::Hyphen));
+    }
+    split(u, text, avail, w, true, soft)
 }
 
 /// `u` cut at byte `at`, the head `head_width` cells wide.
@@ -381,6 +446,24 @@ mod tests {
         let strs = [head, tail].map(|p| &text[p.range.start as usize..p.range.end as usize]);
         assert_eq!(strs, ["e\u{301}", "e\u{301}"]);
         assert_eq!(cut, Cut::Plain, "one cell has no room for a mark");
+    }
+
+    #[test]
+    fn whole_words_joins_across_soft_hyphens_and_nowhere_else() {
+        let text = "ab\u{AD}cd\u{AD}ef gh\u{AD} ij\u{AD}";
+        let us: Vec<Unit> = whole_words(units(text, &cluster_width)).collect();
+        let strs: Vec<&str> = us
+            .iter()
+            .map(|u| &text[u.range.start as usize..u.range.end as usize])
+            .collect();
+        // A soft hyphen before a space, or at the end, was never a break.
+        assert_eq!(strs, ["ab\u{AD}cd\u{AD}ef ", "gh\u{AD} ", "ij\u{AD}"]);
+        assert_eq!(
+            us[0].width, 7,
+            "six letters and the space, zero for each soft hyphen"
+        );
+        assert_eq!(us[0].trailing_ws, 1);
+        assert!(!us[0].soft_hyphen && us[2].mandatory);
     }
 
     #[test]
