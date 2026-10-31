@@ -1,8 +1,11 @@
 //! Key events to [`Action`]s, with vim's count register.
 //!
 //! Binding lives here and nowhere else — discipline #4: a GTK frontend
-//! produces the same [`Action`]s from entirely different input, so nothing
-//! downstream of this file knows a keyboard exists.
+//! produces the same intents from entirely different input, so nothing
+//! downstream of this file knows a keyboard exists. This is the one module
+//! of the terminal frontend that maps key EVENTS; what the keys are called
+//! and what the printed tables say they do is data, in [`crate::keymap`],
+//! which the state layer reads without compiling against crossterm.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -581,288 +584,6 @@ impl Keys {
     }
 }
 
-/// The key a menu row advertises for an action, or `None` when the action
-/// has no keyboard binding at all.
-///
-/// **The match is exhaustive**, so a new `Action` fails to compile until
-/// someone decides which key documents it — the same discipline the help
-/// tables are held to, and for the same reason: a shortcut printed beside a
-/// menu item teaches a key, and teaching the wrong one is worse than
-/// teaching none. Where several keys reach an action the FORWARD one is
-/// named, which is the rule `Hint::click` already follows.
-///
-/// Multi-key rows read as they do in the help sheet (`"j k"`, `"h F1"`);
-/// [`first`] takes the one a menu should print.
-#[must_use]
-#[allow(clippy::too_many_lines)] // one arm per Action; that IS the guarantee
-#[allow(clippy::match_same_arms)] // the same key documenting reader + home is the point
-pub const fn accel(a: Action) -> Option<&'static str> {
-    use Action as A;
-    Some(match a {
-        A::Scroll(..) => "j k",
-        A::HomePage(_) => "PgDn PgUp",
-        A::SettingsToggle => ",",
-        // A button, not a key: nothing to press, so nothing to print.
-        A::WelcomeOpen | A::ImageOpen(_) | A::ImageStep(_) => return None,
-        A::SettingsMove(_) => "j k",
-        A::SettingsAdjust(_) | A::SettingsPickAt(_) => "\u{21b5}",
-        A::MeasureStep(_) => "+ -",
-        A::GoToStart => "gg",
-        A::GoToEnd => "G",
-        A::GoToRow(_) => "42G",
-        A::BlockStep(_) => "{ }",
-        A::Recenter(_) => "zz",
-        A::SearchOpen(_) => "/ ?",
-        A::MatchStep(_) => "n N",
-        A::LinkStep(_) => "Tab",
-        A::LinkFollow => "Enter",
-        A::Back => "Ctrl-O",
-        A::Dismiss => "Esc",
-        A::CloseFile => "q",
-        A::ThemeCycle => "T",
-        A::HighlightAdd | A::HighlightAt(_) => "v",
-        A::NoteEdit | A::NoteAt(_) => "a",
-        A::NotesToggle => "V",
-        A::NoteNext => "M",
-        A::NotesExport | A::NotesCopy => return None,
-        A::NoteMove(_) | A::NoteSelect(_) | A::NoteJump | A::NoteDelete | A::NoteInput(_) => {
-            return None;
-        }
-        A::TableToggle => "t",
-        A::TableScroll { delta, .. } => {
-            if delta < 0 {
-                "Shift-←"
-            } else {
-                "Shift-→"
-            }
-        }
-        A::RenderedToggle => "r",
-        A::MarkToggle => "m",
-        A::MarkNext => "'",
-        A::MarkListToggle => "\"",
-        A::MarkListMove(_) | A::MarkListJump => "\"",
-        A::FootnoteJump => "%",
-        A::FollowToggle => "F",
-        A::AutoToggle => "A",
-        A::AutoTick => return None,
-        A::CodeStep(_) => "] [",
-        A::TaskStep(_) => "X",
-        A::ChangeStep(_) => "c",
-        A::YankBlock => "y",
-        A::HelpToggle => "h F1",
-        A::HintsToggle => "H",
-        A::BreadcrumbToggle => "B",
-        A::InfoToggle => "I",
-        A::FocusToggle => "S",
-        A::FoldToggle => "za",
-        A::FoldAll => "zM",
-        A::UnfoldAll => "zR",
-        A::OutlineToggle => "o",
-        A::Quit => "Q",
-        A::HomeMove(_) => "j k",
-        A::HomeGo(_) => "gg",
-        A::HomeOpen => "Enter",
-        A::HomeFilterMode => "i",
-        A::HomeSearchMode => "/",
-        A::HomeTags => "#",
-        A::HomeSort => "s",
-        A::HomeResume(_) => "1 2 3",
-        A::HomeUp => "Backspace",
-        A::PickerOpen => "d",
-        A::OutlineJumpTo(_) => "click",
-        A::BacklinksToggle => "L",
-        A::BacklinksMove(_) | A::BacklinksOpen => "L",
-        A::ForwardToggle => "l",
-        A::ForwardMove(_) | A::ForwardOpen => "l",
-        // No key of their own: internal, pointer-driven, or reachable only
-        // through the menu that names them in words.
-        A::SearchKey(_)
-        | A::LinkOpen(_)
-        | A::LinkCopy
-        | A::FoldAt(_)
-        | A::FootnoteJumpAt(_)
-        | A::BacklinksOpenAt(_)
-        | A::ForwardOpenAt(_)
-        | A::MarkListJumpAt(_)
-        | A::OutlineJumpAt(_)
-        | A::Absorb
-        | A::PaneClose
-        | A::Hover(_)
-        | A::HomeCrumb(_)
-        | A::GoHome
-        | A::MenuOpen { .. }
-        | A::MenuMove(_)
-        | A::MenuHover(_)
-        | A::MenuChoose
-        | A::MenuPick(_)
-        | A::MenuClose
-        | A::HomeSelect(_)
-        | A::PickerSelect(_)
-        | A::CrumbJump(_)
-        | A::HomeKey(_)
-        | A::HelpKey(_)
-        | A::OutlineKey(_)
-        | A::OutlineMove(_)
-        | A::OutlineJump
-        | A::ScrollTo(_)
-        | A::SelectAnchor(_)
-        | A::SelectDrag(_)
-        | A::SelectRelease
-        | A::SelectWord(_)
-        | A::SelectBlock(_)
-        | A::HomeOpenTags
-        | A::TagOpen(_)
-        | A::Forward
-        | A::HelpRun(_)
-        | A::SiblingOpen
-        | A::BackTo(_)
-        | A::FootnotePeek { .. }
-        | A::PeekGo
-        | A::PeekScroll(_)
-        | A::TaskOpen
-        | A::YankBlockAt(_)
-        | A::CopyRef(_)
-        | A::CopySection(_)
-        | A::CopyQuote
-        | A::HomeNormalMode
-        | A::PickerChoose
-        | A::PickerDescend
-        | A::PickerUp
-        | A::HomeOpenResults
-        | A::PickerCancel => return None,
-    })
-}
-
-/// Does an open menu take this printed key for itself? A single
-/// character pressed through [`Keys::map_menu`] — `q`, which closes the
-/// menu. A menu row must not print such a key (`menu::printable`).
-#[must_use]
-pub fn menu_takes(key: &str) -> bool {
-    let mut chars = key.chars();
-    match (chars.next(), chars.next()) {
-        (Some(c), None) => {
-            Keys::map_menu(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)).is_some()
-        }
-        _ => false,
-    }
-}
-
-/// The one key a menu prints from an [`accel`] row: the first.
-#[must_use]
-pub fn first(keys: &str) -> &str {
-    keys.split_whitespace().next().unwrap_or(keys)
-}
-
-/// The help sheet, reader side. A `§` row opens a group. The drift test
-/// below holds this table and the dispatcher together; edit them as one.
-pub const READER_HELP: &[(&str, &str)] = &[
-    ("§", "moving"),
-    ("↓ ↑ j k", "line down / up"),
-    ("Ctrl-E Ctrl-Y", "line down / up"),
-    ("Ctrl-D Ctrl-U", "half page"),
-    ("Space PgDn PgUp b", "page down / up"),
-    ("Ctrl-F Ctrl-B", "page"),
-    ("{ }", "previous / next paragraph"),
-    ("gg G Home End", "start / end"),
-    ("42G", "go to line 42"),
-    ("§", "search"),
-    ("/ ?", "search forward / backward"),
-    ("n N F3", "next / previous match"),
-    ("zz zt zb", "match to middle/top/bottom"),
-    ("§", "links"),
-    ("Tab Shift-Tab", "select next / previous link"),
-    ("Enter", "follow the selected link"),
-    ("Ctrl-O", "back to the previous document"),
-    ("Esc", "clear selection and search"),
-    ("§", "view"),
-    ("o", "outline: jump to a section"),
-    ("za", "collapse this section"),
-    ("zM zR", "collapse all / expand all"),
-    ("v", "highlight selection/paragraph"),
-    ("a", "add or edit a note"),
-    ("V", "notes and highlights"),
-    ("M", "next note or highlight"),
-    ("t", "wide tables: cards or columns"),
-    ("Shift-← Shift-→", "scroll a wide table sideways"),
-    ("r", "diagrams, math: drawn or text"),
-    ("T", "next theme"),
-    (",", "settings"),
-    ("h F1", "this help"),
-    ("H", "hide / show the hint row"),
-    ("B", "hide / show the heading bar"),
-    ("I", "document info"),
-    ("S", "dim all but this paragraph"),
-    ("q", "close file (or quit)"),
-    ("Q Ctrl-C", "quit"),
-    ("m '", "bookmark here / go to next"),
-    ("\"", "list bookmarks — enter jumps"),
-    ("%", "footnote ↔ its text"),
-    ("#", "tags, and their documents"),
-    ("c", "next change after a reload"),
-    ("L", "what links here"),
-    ("l", "what this points at"),
-    ("] [", "next / previous code block"),
-    ("X", "jump to the next task"),
-    ("y", "copy the code block"),
-    ("click copy", "under a code block: copy it"),
-    ("F", "keep up as it arrives"),
-    ("A", "scroll slowly on its own"),
-    ("§", "mouse"),
-    ("drag", "select — copies on release"),
-    ("2× click", "select word, 3× the block"),
-    ("wheel", "scroll; drag the bar to jump"),
-    ("right-click", "a menu for what is under it"),
-    ("menu button", "the ≡ on the status row"),
-    ("hover", "the thing under it lights"),
-    ("click a section", "of the heading bar: go there"),
-    ("click a name", "on the status row: go back"),
-    ("click a [^mark]", "its footnote, in place"),
-    ("click a tag", "on the card: the tags page"),
-    ("click a row", "of this sheet: do it"),
-    ("click beside", "an open pane: close it"),
-    // Carrel copies through OSC 52, which it writes blind: there is no
-    // reply to read, so it CANNOT know whether the terminal took it. It
-    // said "copied" either way, and a reader whose terminal drops the
-    // sequence — default tmux, some GNOME Terminal builds — was left with
-    // a success message and an empty clipboard and no way to tell why.
-    ("§", "copying"),
-    ("how it works", "carrel asks the terminal"),
-    ("if nothing pastes", "your terminal refused it"),
-];
-
-/// The help sheet, home-screen side.
-pub const HOME_HELP: &[(&str, &str)] = &[
-    ("§", "moving"),
-    ("j k ↓ ↑", "move"),
-    ("Ctrl-N/P Ctrl-J/K", "move while typing"),
-    ("gg G Home End", "first / last"),
-    ("Enter", "open"),
-    // Prose, not a binding — the mouse rows are documented the same way the
-    // reader's drag/double-click gestures are, and the honesty test skips
-    // them because there is no key to press.
-    ("click", "select a file"),
-    ("double-click", "open it"),
-    ("1 2 3", "continue reading"),
-    ("§", "finding"),
-    ("i", "filter by name: just type"),
-    ("/", "search inside files"),
-    ("Tab", "open the results as a page"),
-    ("#", "tags, and their documents"),
-    ("s", "sort: newest, name, read"),
-    ("Esc", "clear the filter, then close"),
-    ("§", "other"),
-    ("d", "choose another folder"),
-    ("Tab →", "go into the folder"),
-    ("← Backspace", "up one folder"),
-    ("click a segment", "of the path row: go there"),
-    ("right-click", "a menu, anywhere"),
-    ("T", "next theme"),
-    (",", "settings"),
-    ("h F1", "this help (F1 while typing)"),
-    ("H", "hide / show the hint row"),
-    ("q Q Ctrl-C", "quit"),
-];
-
 /// The key presses a help row's FIRST key is, or `None` for a row that
 /// describes a gesture or states a fact rather than naming a key.
 ///
@@ -928,8 +649,9 @@ pub fn help_row_keys(key: &str) -> Option<Vec<KeyEvent>> {
 }
 
 /// What clicking a help row does: the action its first key maps to, through
-/// the same dispatcher a real key press goes through — so a row can never
-/// run something its key does not.
+/// the same dispatcher a real key press goes through. The help tables carry
+/// the answer as their third column ([`HelpRow`]); this is the oracle the
+/// test `every_help_row_runs_what_its_key_does` holds that column to.
 #[must_use]
 pub fn help_row_action(key: &str, home: bool) -> Option<Action> {
     // A row whose first word is not a key is a sentence, all of it:
@@ -961,233 +683,6 @@ pub fn help_row_action(key: &str, home: bool) -> Option<Action> {
     }
     None
 }
-
-/// Indices into a help table surviving `filter`: fuzzy over "key
-/// description", best first — the home filter's rule, so the two pickers
-/// feel like one. `§` group headers never match; with a filter up they drop
-/// out and the survivors read flat. An empty filter is every row, groups
-/// and all.
-#[must_use]
-pub fn help_matching(table: &[(&str, &str)], filter: &str) -> Vec<usize> {
-    let needle = filter.trim().to_lowercase();
-    if needle.is_empty() {
-        return (0..table.len()).collect();
-    }
-    let mut scored: Vec<(i32, usize)> = table
-        .iter()
-        .enumerate()
-        .filter(|(_, (key, _))| *key != "§")
-        .filter_map(|(i, (key, desc))| {
-            crate::fuzzy::score(&format!("{key} {desc}"), &needle).map(|s| (s, i))
-        })
-        .collect();
-    scored.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
-    scored.into_iter().map(|(_, i)| i).collect()
-}
-
-/// Lamplight footer hints — one table per state, selected by `footer::of`.
-/// Same shape as the help tables. `("type", …)` entries are prose, exempt
-/// from the honesty test's probe; every other key is fed back through the
-/// real dispatcher, so a hinted key that would be inert fails the build.
-/// One footer hint: the key, what it does, and what a CLICK on it does.
-///
-/// The third column is what makes the footer a row of buttons rather than a
-/// row of advice. **A hint's click does what its FIRST key does** — `j/k`
-/// scrolls down, `n/N` goes to the next match — because the first key listed
-/// is the forward one, and a button has to pick. `click: None` is for a row
-/// that names no key at all: `("type", "narrow")` is a sentence, not a button.
-///
-/// `every_footer_hint_key_acts_in_its_own_state` presses the key through the
-/// real dispatcher and asserts it produces exactly this action, so the two
-/// columns cannot drift apart.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Hint {
-    pub key: &'static str,
-    pub label: &'static str,
-    pub click: Option<Action>,
-}
-
-const fn hint(key: &'static str, label: &'static str, click: Action) -> Hint {
-    Hint {
-        key,
-        label,
-        click: Some(click),
-    }
-}
-
-/// A hint that is prose: it names no key, so there is nothing to click.
-const fn says(key: &'static str, label: &'static str) -> Hint {
-    Hint {
-        key,
-        label,
-        click: None,
-    }
-}
-
-/// The `↑` half of a `↑/↓` hint, whose `click` is the `↓` half.
-///
-/// A pane's border paints the two arrows as two buttons; this is what the
-/// up arrow does, and the honesty test presses `Up` through the real
-/// dispatcher to prove it. `None` for an action with no direction.
-#[must_use]
-pub const fn upward(a: Action) -> Option<Action> {
-    Some(match a {
-        Action::Scroll(span, n) => Action::Scroll(span, -n),
-        Action::NoteMove(n) => Action::NoteMove(-n),
-        Action::BacklinksMove(n) => Action::BacklinksMove(-n),
-        Action::ForwardMove(n) => Action::ForwardMove(-n),
-        Action::MarkListMove(n) => Action::MarkListMove(-n),
-        Action::HomeMove(n) => Action::HomeMove(-n),
-        Action::SettingsMove(n) => Action::SettingsMove(-n),
-        _ => return None,
-    })
-}
-
-pub const HINT_READING: &[Hint] = &[
-    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
-    hint("spc", "page", Action::Scroll(Span::Page, 1)),
-    hint("/", "search", Action::SearchOpen(Direction::Forward)),
-    hint("o", "outline", Action::OutlineToggle),
-    hint("h", "help", Action::HelpToggle),
-];
-pub const HINT_SEARCH_TYPING: &[Hint] = &[
-    hint("enter", "jump", Action::SearchKey(SearchKey::Accept)),
-    hint("esc", "cancel", Action::SearchKey(SearchKey::Cancel)),
-];
-pub const HINT_STREAMING: &[Hint] = &[
-    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
-    hint("F", "keep up", Action::FollowToggle),
-    hint("y", "copy code", Action::YankBlock),
-    hint("h", "help", Action::HelpToggle),
-];
-pub const HINT_FOLLOWING: &[Hint] = &[
-    hint("F", "stop", Action::FollowToggle),
-    hint("↑", "step back", Action::Scroll(Span::Line, -1)),
-    hint("y", "copy code", Action::YankBlock),
-    hint("h", "help", Action::HelpToggle),
-];
-pub const HINT_MATCHES: &[Hint] = &[
-    hint("n/N", "next / previous", Action::MatchStep(1)),
-    hint("zz", "center", Action::Recenter(Where::Middle)),
-    hint("esc", "clear", Action::Dismiss),
-];
-pub const HINT_LINK: &[Hint] = &[
-    hint("tab", "next", Action::LinkStep(1)),
-    hint("enter", "follow", Action::LinkFollow),
-    hint("esc", "clear", Action::Dismiss),
-];
-pub const HINT_OUTLINE: &[Hint] = &[
-    says("type", "to filter"),
-    hint("enter", "go", Action::OutlineJump),
-    hint("esc", "close", Action::OutlineKey(SearchKey::Cancel)),
-];
-// The five list panes. Each used to fall through to the READING hints, whose
-// `/ search`, `o outline` and `h help` chips are openers the open pane now
-// refuses — buttons that did nothing (and, before the one-pane rule, opened a
-// second pane under or over the first).
-pub const HINT_SETTINGS: &[Hint] = &[
-    hint("↑/↓", "move", Action::SettingsMove(1)),
-    hint("enter", "change", Action::SettingsAdjust(1)),
-    hint("esc", "close", Action::SettingsToggle),
-];
-pub const HINT_MARKS: &[Hint] = &[
-    hint("↑/↓", "move", Action::MarkListMove(1)),
-    hint("enter", "go", Action::MarkListJump),
-    hint("esc", "close", Action::MarkListToggle),
-];
-pub const HINT_BACKLINKS: &[Hint] = &[
-    hint("↑/↓", "move", Action::BacklinksMove(1)),
-    hint("enter", "open", Action::BacklinksOpen),
-    hint("esc", "close", Action::BacklinksToggle),
-];
-pub const HINT_FORWARD: &[Hint] = &[
-    hint("↑/↓", "move", Action::ForwardMove(1)),
-    hint("enter", "open", Action::ForwardOpen),
-    hint("esc", "close", Action::ForwardToggle),
-];
-pub const HINT_INFO: &[Hint] = &[
-    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
-    hint("esc", "close", Action::InfoToggle),
-];
-// The three panes that once fell through to the reading hints as well. The
-// lightbox covers the whole screen and paints no footer, but `footer::of`
-// still answers for it, and the answer should be true.
-pub const HINT_NOTES: &[Hint] = &[
-    hint("↑/↓", "move", Action::NoteMove(1)),
-    hint("enter", "go", Action::NoteJump),
-    hint("e", "edit", Action::NoteEdit),
-    hint("esc", "close", Action::NotesToggle),
-];
-pub const HINT_NOTE_DRAFT: &[Hint] = &[
-    says("type", "the note"),
-    hint(
-        "enter",
-        "save",
-        Action::NoteInput(crate::action::NoteKey::Save),
-    ),
-    hint(
-        "esc",
-        "cancel",
-        Action::NoteInput(crate::action::NoteKey::Cancel),
-    ),
-];
-pub const HINT_LIGHTBOX: &[Hint] = &[
-    hint("→", "next image", Action::ImageStep(1)),
-    hint("esc", "close", Action::Dismiss),
-];
-// A click outside an open menu closes it, so a chip under one can only ever
-// close it: `esc close` is the one button that tells the truth. Moving and
-// choosing are said, not offered.
-pub const HINT_MENU: &[Hint] = &[
-    says("click", "a row"),
-    hint("esc", "close", Action::MenuClose),
-];
-pub const HINT_HELP: &[Hint] = &[
-    says("type", "to filter"),
-    hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),
-    hint("esc", "close", Action::HelpKey(SearchKey::Cancel)),
-];
-pub const HINT_HOME_BROWSE: &[Hint] = &[
-    hint("↑/↓", "move", Action::HomeMove(1)),
-    hint("enter", "open", Action::HomeOpen),
-    hint("d", "folder", Action::PickerOpen),
-    hint("i", "filter", Action::HomeFilterMode),
-    hint("/", "search", Action::HomeSearchMode),
-    hint("h", "help", Action::HelpToggle),
-];
-pub const HINT_HOME_FILTER: &[Hint] = &[
-    says("type", "to filter"),
-    hint("enter", "open", Action::HomeOpen),
-    hint("esc", "close", Action::HomeKey(SearchKey::Cancel)),
-];
-pub const HINT_HOME_SEARCH: &[Hint] = &[
-    says("type", "to search"),
-    hint("enter", "open first", Action::HomeOpen),
-    hint("tab", "results", Action::HomeOpenResults),
-    hint("esc", "close", Action::HomeKey(SearchKey::Cancel)),
-];
-/// The one-time invitation, shown on the first launch that has never
-/// remembered a reading position — and replaced by the ordinary hints the
-/// moment the reader does anything at all.
-///
-/// herdr greets a new session with one line of the same shape. For the
-/// reader this design is for — someone whose way into a terminal was an AI
-/// agent, with a `PLAN.md` to read and no reason to think a terminal
-/// program has menus — this single line is the difference between a reader
-/// and a `cat`.
-pub const HINT_FIRST_RUN: &[Hint] = &[says("click", "anything"), says("right-click", "for a menu")];
-pub const HINT_HOME_PICKER: &[Hint] = &[
-    says("type", "to filter"),
-    // The arrows, not `^j/^k`, even though the Ctrl pair is the less
-    // guessable one: whoever is reading the footer is reading it because
-    // they do not know what to do, and a cryptic key there leaves them
-    // unsure the obvious one even works. A vim user who presses `j`, watches
-    // it land in the filter, and opens help finds `Ctrl-J`/`Ctrl-K` at once.
-    hint("↑/↓", "move", Action::HomeMove(1)),
-    hint("→", "go in", Action::PickerDescend),
-    hint("enter", "open", Action::PickerChoose),
-    hint("esc", "close", Action::HomeKey(SearchKey::Cancel)),
-];
 
 /// The scrollbar thumb's `(top, len)` in bar rows.
 ///
@@ -1239,6 +734,7 @@ pub fn drag_target(
 
 #[cfg(test)]
 mod tests {
+    use crate::keymap::*;
     #[test]
     fn ctrl_c_quits_from_every_dispatcher() {
         // Raw mode clears ISIG, so the terminal never generates SIGINT and a
@@ -1873,18 +1369,58 @@ mod tests {
         );
     }
 
+    /// The help tables' third column is what a click on the row runs, and
+    /// the state layer reads it without a dispatcher (`keymap::HelpRow`).
+    /// Here it is held to the dispatcher: every row's column is exactly
+    /// what pressing its keys produces, in the screen the table is for.
+    #[test]
+    fn every_help_row_runs_what_its_key_does() {
+        let mut buttons = 0;
+        for (table, home) in [(READER_HELP, false), (HOME_HELP, true)] {
+            for &(key, desc, runs) in table {
+                let pressed = if key == "§" {
+                    None
+                } else {
+                    help_row_action(key, home)
+                };
+                assert_eq!(
+                    runs,
+                    pressed,
+                    "{key:?} ({desc}) on the {} sheet",
+                    if home { "home" } else { "reader" }
+                );
+                buttons += usize::from(runs.is_some());
+            }
+        }
+        assert!(buttons > 40, "the column must be read, got {buttons}");
+    }
+
+    /// [`MENU_KEYS`] is what the menu builder asks instead of pressing a key
+    /// through [`Keys::map_menu`]; it must name every printable key the menu
+    /// takes, and nothing else.
+    #[test]
+    fn every_printable_key_the_menu_takes_is_listed() {
+        let printable = (' '..='~').chain("éßж→↓".chars());
+        for c in printable {
+            let takes = Keys::map_menu(k(c)).is_some();
+            assert_eq!(MENU_KEYS.contains(&c), takes, "{c:?}");
+            assert_eq!(menu_takes(&c.to_string()), takes, "{c:?}");
+        }
+        assert!(!menu_takes("qq"), "a key name, not a key");
+    }
+
     /// Every row of the sheet is either a button or a sentence, and which
     /// is which is written down. A new row that names a key the parser
     /// cannot read would otherwise be a row that looks like the others and
     /// does nothing when clicked.
     #[test]
     fn every_help_row_runs_its_key_or_is_known_to_be_a_sentence() {
-        let inert = |table: &[(&'static str, &'static str)], home: bool| -> Vec<&'static str> {
+        let inert = |table: &[HelpRow], home: bool| -> Vec<&'static str> {
             table
                 .iter()
-                .filter(|(key, _)| *key != "§")
-                .filter(|(key, _)| help_row_action(key, home).is_none())
-                .map(|(key, _)| *key)
+                .filter(|(key, _, _)| *key != "§")
+                .filter(|(key, _, _)| help_row_action(key, home).is_none())
+                .map(|(key, _, _)| *key)
                 .collect()
         };
         assert_eq!(
@@ -1953,7 +1489,7 @@ mod tests {
         // the limit of 29 lost its last letter while this test passed.
         // `tests/help_sheet.rs` checks the painted cells, which is the
         // check that cannot be wrong about what was painted.)
-        for (key, desc) in READER_HELP.iter().chain(HOME_HELP) {
+        for (key, desc, _) in READER_HELP.iter().chain(HOME_HELP) {
             if *key == "§" {
                 continue;
             }
@@ -2024,7 +1560,7 @@ mod tests {
         let all_rows: String = READER_HELP
             .iter()
             .chain(HOME_HELP)
-            .map(|(key, _)| *key)
+            .map(|(key, _, _)| *key)
             .collect::<Vec<_>>()
             .join(" | ");
         // One representative per documented variant must appear in a table.

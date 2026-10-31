@@ -549,7 +549,7 @@ fn a_narrow_pane_border_drops_whole_hints_and_keeps_the_close_hint_longest() {
                 continue; // too small for a card: the compact panel has no border row
             };
             checked += 1;
-            let whole = |h: &carrel::keys::Hint| format!("{} {}", h.key, h.label);
+            let whole = |h: &carrel::keymap::Hint| format!("{} {}", h.key, h.label);
             for h in hints {
                 let key_shown = border.contains(&format!("{} ", h.key))
                     || border.trim_end_matches(['─', ' ']).ends_with(h.key)

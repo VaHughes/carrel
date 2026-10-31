@@ -4121,18 +4121,16 @@ fn open_image(app: &mut App, requested: Option<BlockIdx>) -> Outcome {
 fn help_update(app: &mut App, action: Action) -> Outcome {
     match action {
         // A click on a row: the sheet closes and the row's key is pressed.
-        // The action comes from the real dispatcher, so what runs is what
-        // the key beside the description would have run.
+        // The table carries what that key does (`keymap::HelpRow`), held to
+        // the real dispatcher by a test, so what runs is what the key beside
+        // the description would have run.
         Action::HelpRun(i) => {
             let table = if app.is_home() {
-                crate::keys::HOME_HELP
+                crate::keymap::HOME_HELP
             } else {
-                crate::keys::READER_HELP
+                crate::keymap::READER_HELP
             };
-            let Some(run) = table
-                .get(i as usize)
-                .and_then(|(key, _)| crate::keys::help_row_action(key, app.is_home()))
-            else {
+            let Some(run) = table.get(i as usize).and_then(|&(_, _, run)| run) else {
                 return Outcome::Idle; // a sentence, not a key
             };
             app.help = None;

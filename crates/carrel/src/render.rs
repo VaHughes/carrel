@@ -1136,16 +1136,16 @@ fn paint_outline(frame: &mut Frame, app: &App, targets: &mut Targets) {
 /// The key-binding sheet: a centred panel over the page. Content comes from
 /// `keys::{READER_HELP, HOME_HELP}` — the drift test in keys.rs keeps those
 /// tables honest, so this painter never lies either. Typing narrows the rows
-/// through [`keys::help_matching`]; the state's scroll saturates, and the
+/// through [`keymap::help_matching`]; the state's scroll saturates, and the
 /// CLAMP against the sheet's length happens here, where the content lives.
 fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let table = if app.is_home() {
-        crate::keys::HOME_HELP
+        crate::keymap::HOME_HELP
     } else {
-        crate::keys::READER_HELP
+        crate::keymap::READER_HELP
     };
     let filter = app.help.as_ref().map_or("", |h| h.filter.as_str());
-    let rows = crate::keys::help_matching(table, filter);
+    let rows = crate::keymap::help_matching(table, filter);
     let area = pane_area(frame, app);
     if area.width < 12 || area.height < 3 {
         small_panel(frame, targets, "help", Action::Dismiss);
@@ -1191,7 +1191,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     // names a key that can be pressed for it.
     let mut lines: Vec<(String, bool, Option<u32>)> = Vec::new();
     for &r in &rows {
-        let (key, desc) = table[r];
+        let (key, desc, runs) = table[r];
         let heading = key == "§";
         let label = if heading {
             desc.to_string()
@@ -1205,8 +1205,7 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
         } else {
             format!("{key}  {desc}")
         };
-        let run = (!heading && crate::keys::help_row_action(key, app.is_home()).is_some())
-            .then(|| u32::try_from(r).unwrap_or(u32::MAX));
+        let run = (!heading && runs.is_some()).then(|| u32::try_from(r).unwrap_or(u32::MAX));
         if w >= 52 {
             lines.push((label, heading, run));
         } else {
@@ -3287,7 +3286,7 @@ fn lamp_z(app: &App) -> u8 {
 /// doing what the key does: the hints are the footer's own tables
 /// (`footer::of`), so the honesty test that presses each key through the
 /// real dispatcher covers these buttons too. `↑/↓` is two buttons, the up
-/// one through [`crate::keys::upward`]. Prose (`type to filter`) is plain.
+/// one through [`crate::keymap::upward`]. Prose (`type to filter`) is plain.
 ///
 /// The border used to say `I close` and `↵ jump` as text: it looked like a
 /// row of keys to click and none of it answered a click.
@@ -3297,7 +3296,7 @@ pub(crate) fn paint_hint_run(
     x: &mut u16,
     y: u16,
     right: u16,
-    hints: &[crate::keys::Hint],
+    hints: &[crate::keymap::Hint],
     z: u8,
 ) {
     for (i, h) in hints.iter().enumerate() {
@@ -3311,7 +3310,7 @@ pub(crate) fn paint_hint_run(
             continue;
         };
         if h.key == "↑/↓"
-            && let Some(up) = crate::keys::upward(action)
+            && let Some(up) = crate::keymap::upward(action)
         {
             push_button(buf, targets, x, y, right, "↑", up, z);
             put(buf, x, y, right, "/", theme::status());
@@ -3359,9 +3358,9 @@ fn paint_pane_foot(
 /// pinned so it goes last — it is the one a reader stuck in a pane needs.
 /// When even that does not fit, nothing: the border's `×` still closes,
 /// and a clipped `esc clo` would only say less than nothing.
-fn pane_foot_hints(hints: &[crate::keys::Hint], room: usize) -> Vec<crate::keys::Hint> {
+fn pane_foot_hints(hints: &[crate::keymap::Hint], room: usize) -> Vec<crate::keymap::Hint> {
     use carrel_core::display_width;
-    let width = |run: &[crate::keys::Hint]| -> usize {
+    let width = |run: &[crate::keymap::Hint]| -> usize {
         run.iter()
             .map(|h| usize::from(display_width(h.key)) + 1 + usize::from(display_width(h.label)))
             .sum::<usize>()
@@ -3416,7 +3415,7 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
     let f = crate::footer::of(app);
     let w = area.width as usize;
     let pinned = f.hints.last().is_some_and(|h| h.key == "h");
-    let shown = |keep: usize| -> Vec<crate::keys::Hint> {
+    let shown = |keep: usize| -> Vec<crate::keymap::Hint> {
         if pinned && keep >= 1 {
             let mut v: Vec<_> = f.hints[..keep - 1].to_vec();
             v.push(*f.hints.last().unwrap());
@@ -3425,10 +3424,10 @@ fn paint_footer(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
             f.hints[..keep].to_vec()
         }
     };
-    let is_chip = |h: &crate::keys::Hint| h.click.is_some();
+    let is_chip = |h: &crate::keymap::Hint| h.click.is_some();
     // The gap before a hint: two sentences keep their ` · `; anything next to
     // a chip gets the one bare cell that separates one button from the next.
-    let gap = |prev: &crate::keys::Hint, h: &crate::keys::Hint| -> usize {
+    let gap = |prev: &crate::keymap::Hint, h: &crate::keymap::Hint| -> usize {
         if is_chip(prev) || is_chip(h) { 1 } else { 3 }
     };
     let width_of = |keep: usize, pad: bool, word: bool| -> usize {
@@ -4961,7 +4960,7 @@ mod tests {
         // last entry so this test tracks the table instead of guessing at
         // what happens to sit near the bottom (it broke once when the mouse
         // group grew the table).
-        let (_, last_desc) = crate::keys::READER_HELP.last().unwrap();
+        let (_, last_desc, _) = crate::keymap::READER_HELP.last().unwrap();
         assert!(
             text.contains(last_desc),
             "clamped view must show the table's last row {last_desc:?}:\n{text}"
@@ -6117,7 +6116,7 @@ mod pane_frame_tests {
                 for h in crate::footer::of(&app).hints {
                     let Some(a) = h.click else { continue };
                     if h.key == "↑/↓" {
-                        want.insert("↑".into(), crate::keys::upward(a).unwrap());
+                        want.insert("↑".into(), crate::keymap::upward(a).unwrap());
                         want.insert("↓".into(), a);
                     } else {
                         want.insert(h.key.into(), a);

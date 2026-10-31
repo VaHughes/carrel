@@ -102,7 +102,7 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let (title, hints): (String, Vec<_>) = if drafting {
         (
             "Note · ".into(),
-            crate::keys::HINT_NOTE_DRAFT
+            crate::keymap::HINT_NOTE_DRAFT
                 .iter()
                 .filter(|h| h.click.is_some())
                 .copied()
@@ -111,7 +111,7 @@ pub fn paint(frame: &mut Frame, app: &App, targets: &mut Targets) {
     } else {
         (
             app.notes.title(),
-            crate::keys::HINT_NOTES
+            crate::keymap::HINT_NOTES
                 .iter()
                 .filter(|h| h.key == "esc")
                 .copied()

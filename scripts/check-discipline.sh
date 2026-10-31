@@ -69,29 +69,108 @@ else
   ok "positions are byte offsets throughout"
 fi
 
-# --- Rule 6: the TUI's state layer stays frontend-agnostic. -----------------
-# action/app/layout/view are the modules a GTK frontend reuses verbatim. If
-# ratatui reaches them, the second frontend is dead and nobody notices for a
-# year — which is exactly what Helix's architecture doc records happening to
-# its "frontend-agnostic" view layer.
+# --- Rule 6: the TUI's terminal-free modules stay terminal-free. ----------
+# These are the modules the state machine is built from: testable with no
+# terminal, and what a second frontend can read for how carrel behaves. If a
+# terminal library reaches them, nobody notices for a year — which is exactly
+# what Helix's architecture doc records happening to its "frontend-agnostic"
+# view layer.
+#
+# Until 2026-10-31 this rule was one grep for `^\s*use\s+ratatui` over this
+# list, and it passed while `app`, `footer` and `menu` reached crossterm
+# through `crate::keys` (research.md Q29): a grep sees direct imports only.
+# So it is two checks now, and together they cover the closure:
+#   6a. no file on the list names a terminal crate on any non-comment line,
+#       in a `use` or inline (`ratatui::crossterm::event::KeyCode`);
+#   6b. every module a listed file reaches through `crate::` is itself on
+#       the list — so nothing on it can reach a terminal crate second-hand.
 echo
-echo "carrel state-layer discipline check"
-PURE="crates/carrel/src/action.rs crates/carrel/src/app.rs crates/carrel/src/plain.rs \
-      crates/carrel/src/layout.rs crates/carrel/src/view.rs \
-      crates/carrel/src/config.rs crates/carrel/src/scan.rs \
-      crates/carrel/src/home.rs crates/carrel/src/images.rs \
-      crates/carrel/src/state.rs crates/carrel/src/wiki.rs \
-      crates/carrel/src/grep.rs crates/carrel/src/diagrams.rs \
-      crates/carrel/src/footer.rs crates/carrel/src/breadcrumb.rs \
-      crates/carrel/src/menu.rs crates/carrel/src/marginalia.rs \
-      crates/carrel/src/annotation_state.rs crates/carrel/src/tags.rs \
-      crates/carrel/src/cli.rs crates/carrel/src/status.rs \
-      crates/carrel/src/peek.rs"
-hits=$(grep -nE '^\s*use\s+ratatui' $PURE 2>/dev/null)
-if [ -n "$hits" ]; then
-  note "carrel's state layer imports ratatui"; echo "$hits"
+echo "carrel terminal-free module check"
+SRC=crates/carrel/src
+PURE="action annotation_state ansi app breadcrumb cli config diagrams footer \
+      fuzzy grep home images keymap layout links marginalia math_art menu \
+      peek plain scan state status tags view wiki"
+TERM_CRATES='ratatui|ratatui_core|ratatui_image|crossterm|termion|termwiz|signal_hook'
+deps() {
+  # The top-level modules a file reaches through `crate::`, comments
+  # stripped, `use crate::{a, b::{c, d}}` groups included.
+  perl -e '
+    local $/; my $s = <STDIN>;
+    $s =~ s{//[^\n]*}{}g; $s =~ s{/\*.*?\*/}{}gs;
+    my %m;
+    while ($s =~ /\bcrate::(\{|[a-z_][a-z0-9_]*)/g) {
+      if ($1 ne "{") { $m{$1} = 1; next }
+      my ($d, $i, $tok, @top) = (1, pos($s), "");
+      while ($d > 0 && $i < length $s) {
+        my $c = substr($s, $i++, 1);
+        if ($c eq "{") { push @top, $tok if $d == 1; $tok = ""; $d++; next }
+        if ($c eq "}") { push @top, $tok if $d == 1; $tok = ""; $d--; next }
+        if ($c eq "," && $d == 1) { push @top, $tok; $tok = ""; next }
+        $tok .= $c if $d == 1;
+      }
+      for (@top) { $m{$1} = 1 if /^\s*([a-z_][a-z0-9_]*)/ }
+    }
+    print "$_\n" for sort keys %m;' < "$1"
+}
+leak=""; reach=""
+for m in $PURE; do
+  f="$SRC/$m.rs"
+  [ -f "$f" ] || { note "rule 6 lists $m, which does not exist — update the list"; continue; }
+  h=$(grep -nE "\b($TERM_CRATES)::|\buse\s+($TERM_CRATES)\b" "$f" \
+      | grep -vP '^[0-9]+:\s*(//|/\*|\*)' | sed "s|^|$f:|")
+  [ -n "$h" ] && leak="$leak$h"$'\n'
+  for d in $(deps "$f"); do
+    case " $(echo $PURE) " in *" $d "*) ;; *) reach="$reach  $m -> crate::$d"$'\n' ;; esac
+  done
+done
+if [ -n "$leak" ]; then
+  note "a terminal-free module names a terminal crate"; printf '%s' "$leak"
 else
-  ok "the state layer (action/app/layout/view/config/scan/home) is ratatui-free"
+  ok "no terminal crate named in the terminal-free modules"
+fi
+if [ -n "$reach" ]; then
+  note "a terminal-free module reaches a module that is not (list it, or cut the edge)"
+  printf '%s' "$reach"
+else
+  ok "the terminal-free modules reach only each other"
+fi
+
+# --- Rule 7: carrel-state is shared, so it is UI-free and geometry-free. ---
+# The crate every frontend links (Q29: in-process core + an app per toolkit).
+# The compiler holds its dependencies, given this Cargo.toml; the script
+# holds the Cargo.toml, and the SHAPES no compiler sees — Helix's shared
+# crate had no terminal dependency and still defined `Rect { width: u16 }`.
+echo
+echo "carrel-state discipline check"
+STATE=crates/carrel-state
+if grep -nE "^\s*(ratatui|ratatui-core|ratatui-image|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui|carrel)\s*(=|\.workspace)" \
+     "$STATE/Cargo.toml" >/dev/null 2>&1; then
+  note "carrel-state declares a UI (or frontend) dependency in Cargo.toml"
+  grep -nE "^\s*(ratatui|ratatui-core|ratatui-image|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui|carrel)\s*(=|\.workspace)" "$STATE/Cargo.toml"
+else
+  ok "no UI or frontend dependency declared"
+fi
+sscan() { grep -rnE "$1" "$STATE/src" 2>/dev/null | grep -vP '^[^:]+:[0-9]+:\s*(//|/\*|\*)'; }
+hits=$(sscan '\\x1[bB]|\\033|\\e\[')
+if [ -n "$hits" ]; then
+  note "carrel-state contains an ANSI escape sequence"; echo "$hits"
+else
+  ok "no ANSI escapes"
+fi
+# A terminal cell is a pair of u16s, a rectangle, or a u16 named for a cell.
+hits=$(sscan '\(\s*u16\s*,\s*u16\s*\)|\bRect\b|\b(col|cols|row|rows|x|y|width|height|w|h)\s*:\s*(Option<)?u16\b')
+if [ -n "$hits" ]; then
+  note "carrel-state carries terminal geometry"; echo "$hits"
+else
+  ok "no cells, rows or rectangles"
+fi
+# The intents a GUI inherits carry no u16 of any kind: every number in them
+# is a doc byte, a list index, or a signed step.
+hits=$(grep -nE '\bu16\b' "$STATE/src/intent.rs" | grep -vP '^[0-9]+:\s*(//|/\*|\*)')
+if [ -n "$hits" ]; then
+  note "an intent carries a u16 — a cell, not a document position"; echo "$hits"
+else
+  ok "intents are addressed by the document"
 fi
 
 echo

@@ -1156,7 +1156,7 @@ fn the_man_page_documents_every_key_the_help_overlay_does() {
     }
 
     let mut missing: Vec<&str> = Vec::new();
-    for (key, _) in carrel::keys::READER_HELP {
+    for (key, _, _) in carrel::keymap::READER_HELP {
         if *key == "§" || NOT_IN_MAN.contains(key) {
             continue;
         }

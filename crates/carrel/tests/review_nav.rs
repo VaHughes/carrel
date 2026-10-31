@@ -439,9 +439,9 @@ fn the_help_rows_for_quit_quit() {
     use carrel::app::Outcome;
     let d = tempfile::tempdir().unwrap();
     let mut app = file_app(d.path(), "a.md", "# A\n\ntext\n");
-    let row = carrel::keys::READER_HELP
+    let row = carrel::keymap::READER_HELP
         .iter()
-        .position(|(key, _)| key.split_whitespace().next() == Some("Q"))
+        .position(|(key, _, _)| key.split_whitespace().next() == Some("Q"))
         .expect("a row for Q");
     update(&mut app, Action::HelpToggle);
     assert_eq!(

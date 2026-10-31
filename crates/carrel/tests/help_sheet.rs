@@ -6,7 +6,7 @@
 
 use carrel::action::{Action, SearchKey, Zone};
 use carrel::app::{App, Outcome, update};
-use carrel::keys::{HOME_HELP, READER_HELP};
+use carrel::keymap::{HOME_HELP, READER_HELP};
 use carrel_core::Document;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -45,7 +45,7 @@ fn under(buf: &Buffer, z: Zone) -> String {
 }
 
 fn row_of(key: &str) -> u32 {
-    u32::try_from(READER_HELP.iter().position(|(k, _)| *k == key).unwrap()).unwrap()
+    u32::try_from(READER_HELP.iter().position(|(k, _, _)| *k == key).unwrap()).unwrap()
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn each_button_sits_on_the_row_it_runs() {
     let (buf, rows) = frame(&app, 80, 60);
     assert!(rows.len() > 20, "most of the sheet is keys: {}", rows.len());
     for (i, zone) in &rows {
-        let (key, desc) = READER_HELP[*i as usize];
+        let (key, desc, _) = READER_HELP[*i as usize];
         let text = under(&buf, *zone);
         assert!(
             text.contains(key) && text.contains(desc),
@@ -157,7 +157,7 @@ fn the_file_lists_sheet_runs_the_file_lists_keys() {
     let d = tempfile::tempdir().unwrap();
     let mut app = App::new_home(d.path().into(), Vec::new(), 80, 40);
     update(&mut app, Action::HelpToggle);
-    let i = u32::try_from(HOME_HELP.iter().position(|(k, _)| *k == "d").unwrap()).unwrap();
+    let i = u32::try_from(HOME_HELP.iter().position(|(k, _, _)| *k == "d").unwrap()).unwrap();
     update(&mut app, Action::HelpRun(i));
     assert!(app.help.is_none());
     assert_eq!(

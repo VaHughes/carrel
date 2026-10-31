@@ -17,7 +17,7 @@
 //!
 //! # Where the accelerators come from
 //!
-//! [`crate::keys::accel`], never a literal. It is an exhaustive match over
+//! [`crate::keymap::accel`], never a literal. It is an exhaustive match over
 //! `Action`, so the key a menu row advertises is the key the dispatcher
 //! actually binds, and a rebinding moves both at once. A menu that lies
 //! about its shortcut teaches the wrong key to exactly the reader who was
@@ -27,7 +27,7 @@ use carrel_core::{DocByte, LinkId, NodeKind};
 
 use crate::action::{Action, Direction, Zone};
 use crate::app::App;
-use crate::keys;
+use crate::keymap;
 
 /// The floor on a menu's width, herdr's: a two-item menu of short labels
 /// still reads as a box rather than as a sliver.
@@ -46,7 +46,7 @@ const GAP: u16 = 2;
 /// menu is fine: an accelerator column is the key that does it once the
 /// menu is gone. A key that does something ELSE is not printed.
 fn printable(key: &'static str) -> &'static str {
-    if keys::menu_takes(key) { "" } else { key }
+    if keymap::menu_takes(key) { "" } else { key }
 }
 
 /// One row of a menu.
@@ -69,7 +69,7 @@ impl Item {
     fn new(label: &'static str, action: Action) -> Self {
         Self {
             label,
-            accel: printable(keys::accel(action).map_or("", keys::first)),
+            accel: printable(keymap::accel(action).map_or("", keymap::first)),
             action: Some(action),
             enabled: true,
         }
@@ -83,7 +83,7 @@ impl Item {
     fn like(label: &'static str, keyed: Action, action: Action) -> Self {
         Self {
             label,
-            accel: printable(keys::accel(keyed).map_or("", keys::first)),
+            accel: printable(keymap::accel(keyed).map_or("", keymap::first)),
             action: Some(action),
             enabled: true,
         }
@@ -706,10 +706,10 @@ mod tests {
     #[test]
     fn every_accelerator_a_menu_prints_is_a_key_the_help_sheet_names() {
         let a = app("# T\n\nsee [x](notes.md) and `code`\n");
-        let rows: String = keys::READER_HELP
+        let rows: String = keymap::READER_HELP
             .iter()
-            .chain(keys::HOME_HELP)
-            .map(|(k, _)| *k)
+            .chain(keymap::HOME_HELP)
+            .map(|(k, _, _)| *k)
             .collect::<Vec<_>>()
             .join(" | ");
         let mut checked = 0;
@@ -719,8 +719,8 @@ mod tests {
                 // menu takes it for something else (`printable`).
                 assert!(
                     item.action.is_none()
-                        || keys::accel(item.action.unwrap())
-                            .is_none_or(|k| keys::menu_takes(keys::first(k))),
+                        || keymap::accel(item.action.unwrap())
+                            .is_none_or(|k| keymap::menu_takes(keymap::first(k))),
                     "{}: has a key but does not print it",
                     item.label
                 );
@@ -787,7 +787,7 @@ mod tests {
         assert_eq!(fold.label, "Collapse this section");
         assert_eq!(
             fold.accel,
-            keys::first(keys::accel(Action::FoldToggle).unwrap())
+            keymap::first(keymap::accel(Action::FoldToggle).unwrap())
         );
     }
 
@@ -850,7 +850,7 @@ mod tests {
             }
             printed += 1;
             assert!(
-                !keys::menu_takes(item.accel),
+                !keymap::menu_takes(item.accel),
                 "the row {:?} prints `{}`, which the open menu takes for itself",
                 item.label,
                 item.accel
@@ -1068,7 +1068,7 @@ mod tests {
             A::MarkNext => KeyboardOnly, // `Bookmarks…` lists them
             // The three list panes' `↑/↓ move` and `enter open`/`go` are
             // buttons, on the footer and on the pane's own bottom border
-            // (`paint_hint_run`; the `↑` through `keys::upward`). A click on a
+            // (`paint_hint_run`; the `↑` through `keymap::upward`). A click on a
             // row is still the direct way; these are there because the frame
             // names the keys, and a key named on screen answers a click.
             A::BacklinksMove(_) | A::ForwardMove(_) | A::MarkListMove(_) => Chrome,

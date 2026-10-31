@@ -7,7 +7,7 @@
 
 use crate::app::{App, Pane, Screen};
 use crate::home::HomeMode;
-use crate::keys;
+use crate::keymap;
 
 #[derive(Debug)]
 pub struct Footer {
@@ -16,7 +16,7 @@ pub struct Footer {
     /// `●` steady · `◉` focused typing · `◎` overlay up · `○` off.
     pub bulb: char,
     pub word: &'static str,
-    pub hints: &'static [keys::Hint],
+    pub hints: &'static [keymap::Hint],
 }
 
 /// Precedence (spec §2): help > outline > typing a search > link selected >
@@ -36,57 +36,57 @@ pub fn of(app: &App) -> Footer {
     // `o outline` and `h help`, which are not the pane's to offer.
     // The notes pane, a menu and the lightbox did exactly that.
     match app.pane() {
-        Some(Pane::Help) => return f('◎', "help", keys::HINT_HELP),
-        Some(Pane::Settings) => return f('◎', "settings", keys::HINT_SETTINGS),
-        Some(Pane::Marks) => return f('◎', "bookmarks", keys::HINT_MARKS),
-        Some(Pane::Backlinks) => return f('◎', "links here", keys::HINT_BACKLINKS),
-        Some(Pane::Forward) => return f('◎', "links", keys::HINT_FORWARD),
-        Some(Pane::Info) => return f('◎', "document", keys::HINT_INFO),
-        Some(Pane::Outline) => return f('◎', "outline", keys::HINT_OUTLINE),
-        Some(Pane::Search) => return f('◉', "searching", keys::HINT_SEARCH_TYPING),
-        Some(Pane::Picker) => return f('◎', "choose", keys::HINT_HOME_PICKER),
-        Some(Pane::Menu) => return f('◎', "menu", keys::HINT_MENU),
-        Some(Pane::Lightbox) => return f('◎', "image", keys::HINT_LIGHTBOX),
+        Some(Pane::Help) => return f('◎', "help", keymap::HINT_HELP),
+        Some(Pane::Settings) => return f('◎', "settings", keymap::HINT_SETTINGS),
+        Some(Pane::Marks) => return f('◎', "bookmarks", keymap::HINT_MARKS),
+        Some(Pane::Backlinks) => return f('◎', "links here", keymap::HINT_BACKLINKS),
+        Some(Pane::Forward) => return f('◎', "links", keymap::HINT_FORWARD),
+        Some(Pane::Info) => return f('◎', "document", keymap::HINT_INFO),
+        Some(Pane::Outline) => return f('◎', "outline", keymap::HINT_OUTLINE),
+        Some(Pane::Search) => return f('◉', "searching", keymap::HINT_SEARCH_TYPING),
+        Some(Pane::Picker) => return f('◎', "choose", keymap::HINT_HOME_PICKER),
+        Some(Pane::Menu) => return f('◎', "menu", keymap::HINT_MENU),
+        Some(Pane::Lightbox) => return f('◎', "image", keymap::HINT_LIGHTBOX),
         Some(Pane::Notes) if app.notes.draft.is_some() => {
-            return f('◉', "writing", keys::HINT_NOTE_DRAFT);
+            return f('◉', "writing", keymap::HINT_NOTE_DRAFT);
         }
-        Some(Pane::Notes) => return f('◎', "notes", keys::HINT_NOTES),
+        Some(Pane::Notes) => return f('◎', "notes", keymap::HINT_NOTES),
         None => {}
     }
     if let Screen::Home(h) = &app.screen {
         return match h.mode {
             // Answered above, as the pane it is.
-            HomeMode::Picker => f('◎', "choose", keys::HINT_HOME_PICKER),
-            HomeMode::Filter => f('◉', "filter", keys::HINT_HOME_FILTER),
-            HomeMode::Search => f('◉', "search", keys::HINT_HOME_SEARCH),
+            HomeMode::Picker => f('◎', "choose", keymap::HINT_HOME_PICKER),
+            HomeMode::Filter => f('◉', "filter", keymap::HINT_HOME_FILTER),
+            HomeMode::Search => f('◉', "search", keymap::HINT_HOME_SEARCH),
             // The invitation, on the screen a bare `carrel` opens on.
-            HomeMode::Normal if app.first_run => f('●', "browse", keys::HINT_FIRST_RUN),
-            HomeMode::Normal => f('●', "browse", keys::HINT_HOME_BROWSE),
+            HomeMode::Normal if app.first_run => f('●', "browse", keymap::HINT_FIRST_RUN),
+            HomeMode::Normal => f('●', "browse", keymap::HINT_HOME_BROWSE),
         };
     }
     if app.selected_link.is_some() {
-        return f('●', "link picked", keys::HINT_LINK);
+        return f('●', "link picked", keymap::HINT_LINK);
     }
     if app.matches.is_some() {
-        return f('●', "found", keys::HINT_MATCHES);
+        return f('●', "found", keymap::HINT_MATCHES);
     }
     // Following outranks ambient streaming: it is a mode the reader chose,
     // and its keys differ — detaching is the thing they will want next.
     if app.following {
-        return f('◉', "keeping up", keys::HINT_FOLLOWING);
+        return f('◉', "keeping up", keymap::HINT_FOLLOWING);
     }
     // Ambient, not a mode: every mode above outranks it, and the keys are
     // the ordinary reading set — only the lamp says content is arriving.
     if app.streaming {
-        return f('◉', "arriving", keys::HINT_STREAMING);
+        return f('◉', "arriving", keymap::HINT_STREAMING);
     }
     // Lowest precedence of all: every mode above knows something more
     // specific to say, and `streaming` in particular has `F`, which exists
     // only while a document is growing.
     if app.first_run {
-        return f('●', "reading", keys::HINT_FIRST_RUN);
+        return f('●', "reading", keymap::HINT_FIRST_RUN);
     }
-    f('●', "reading", keys::HINT_READING)
+    f('●', "reading", keymap::HINT_READING)
 }
 
 #[cfg(test)]
@@ -110,7 +110,7 @@ pub(crate) mod tests {
         // different weather". It shows its own now, because `F` exists ONLY
         // while a document is growing and the footer is the one place anyone
         // would find it.
-        assert_eq!(f.hints, keys::HINT_STREAMING);
+        assert_eq!(f.hints, keymap::HINT_STREAMING);
         assert!(f.hints.iter().any(|h| h.key == "F"));
 
         // A mode still outranks the ambient stream…
@@ -133,7 +133,7 @@ pub(crate) mod tests {
         let mut a = reader();
         let f = of(&a);
         assert_eq!((f.bulb, f.word), ('●', "reading"));
-        assert_eq!(f.hints, keys::HINT_READING);
+        assert_eq!(f.hints, keymap::HINT_READING);
 
         update(&mut a, Action::SearchOpen(Direction::Forward));
         assert_eq!((of(&a).bulb, of(&a).word), ('◉', "searching"));
@@ -156,16 +156,16 @@ pub(crate) mod tests {
     fn the_first_run_invitation_shows_once_and_goes_when_you_act() {
         let mut a = reader();
         a.first_run = true;
-        assert_eq!(of(&a).hints, keys::HINT_FIRST_RUN);
+        assert_eq!(of(&a).hints, keymap::HINT_FIRST_RUN);
         assert_eq!(of(&a).word, "reading", "the lamp still says where you are");
 
         // Moving the pointer is not acting: the invitation is what tells you
         // moving it is worth anything.
         update(&mut a, Action::Hover((3, 4)));
-        assert_eq!(of(&a).hints, keys::HINT_FIRST_RUN);
+        assert_eq!(of(&a).hints, keymap::HINT_FIRST_RUN);
 
         update(&mut a, Action::Scroll(crate::action::Span::Line, 1));
-        assert_eq!(of(&a).hints, keys::HINT_READING, "acting retires it");
+        assert_eq!(of(&a).hints, keymap::HINT_READING, "acting retires it");
     }
 
     #[test]
@@ -173,10 +173,10 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut a = App::new_home(d.path().into(), vec![], 60, 16);
         a.first_run = true;
-        assert_eq!(of(&a).hints, keys::HINT_FIRST_RUN);
+        assert_eq!(of(&a).hints, keymap::HINT_FIRST_RUN);
         // …and never over a mode that has something more specific to say.
         update(&mut a, Action::HomeFilterMode);
-        assert_eq!(of(&a).hints, keys::HINT_HOME_FILTER);
+        assert_eq!(of(&a).hints, keymap::HINT_HOME_FILTER);
     }
 
     #[test]
@@ -186,7 +186,7 @@ pub(crate) mod tests {
         a.first_run = true;
         assert_eq!(
             of(&a).hints,
-            keys::HINT_STREAMING,
+            keymap::HINT_STREAMING,
             "`F` exists only while a document is growing; the invitation can wait"
         );
     }
@@ -220,12 +220,12 @@ pub(crate) mod tests {
         update(&mut a, Action::PickerOpen);
         let f = of(&a);
         assert_eq!((f.bulb, f.word), ('◎', "choose"));
-        assert_eq!(f.hints, keys::HINT_HOME_PICKER);
+        assert_eq!(f.hints, keymap::HINT_HOME_PICKER);
         // The picker is an input: its hints must say so wherever the
         // highlight sits, because `j` types there rather than moving.
         let n = i32::try_from(a.home().unwrap().picker.roots.len()).unwrap();
         update(&mut a, Action::HomeMove(n));
-        assert_eq!(of(&a).hints, keys::HINT_HOME_PICKER);
+        assert_eq!(of(&a).hints, keymap::HINT_HOME_PICKER);
     }
 
     /// Every face of every pane `App::pane` can answer, each with the state
