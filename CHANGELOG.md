@@ -21,6 +21,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   `Space`, `Ctrl-D`, `End`…) scroll the box instead, and stop at its ends. The
   box's `↑`/`↓` are buttons, and the hint row says `◎ footnote`. A footnote
   that fits is unchanged: `↓` closes it and reads on.
+- **`--plain` and `--render` keep to the width you give them.** A word is
+  never divided and nothing is added. The only line that runs past the width
+  is one holding a single run too long for the whole row (a hash, a long
+  token, a long string in code), and that run now gets a line of its own.
+  Before, the text after it, and any word with a soft hyphen, was pulled onto
+  the same over-long line. Styled `--render` cuts such a run the way the
+  screen does, and writes its `-` or `↩` faint. With `NO_COLOR` it is still
+  byte-for-byte `--plain`.
 - **For contributors: a third crate, `carrel-state`**, holds what every
   frontend shares above the document model: the reader's intents (the
   terminal's actions minus its chrome) and, from this release, persistence and
