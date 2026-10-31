@@ -2719,7 +2719,7 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(peek) = &app.peek else { return };
     let area = frame.area();
     let z = peek.zone(&app.doc, app.peek_fit(), area.width, area.height);
-    if z.w < 8 || z.h < 4 {
+    if !crate::peek::is_drawn(z) {
         return; // no room to say anything; the next action closes it
     }
     targets.push(Action::Absorb, z, Z_MENU);
@@ -2790,8 +2790,11 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
         }
         paint_peek_row(frame, app, &row, first, inset, text, y, targets);
     }
-    // The long way round, on the box's last inner row — and beside it, how
-    // much of the footnote the box is not showing.
+    // The long way round, on the box's last inner row — and beside it, for
+    // a footnote longer than the box, `↑/↓` as two buttons doing what the
+    // keys do while the box is up (`App::peek_key`), and how much of the
+    // footnote it is not showing. The arrows are what tell a keyboard
+    // reader the keys are the box's; the footer says it again.
     let y = z.y + z.h - 2;
     let label = "[ go to it ]";
     let w = u16::try_from(label.len()).unwrap_or(u16::MAX);
@@ -2805,9 +2808,43 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
         room = room.saturating_sub(w + 1);
     }
     if let Some(more) = crate::peek::more(&view) {
-        frame
-            .buffer_mut()
-            .set_stringn(text.x, y, more, usize::from(room), theme::dim());
+        // `more` is this view's overflow, and a box too small to draw has
+        // already returned: these are the box's keys, by `Peek::scrolls`.
+        debug_assert!(app.peek_scrolls().is_some());
+        paint_peek_scroll(frame.buffer_mut(), targets, &more, text.x, y, room);
+    }
+}
+
+/// A long footnote box's `↑/↓` — two buttons doing what `↑` and `↓` do
+/// while it is up (`App::peek_key`) — and its count, from `x` on row `y`
+/// in `room` cells. `↑/↓ 74 more`, else `↑↓ 74 more`, else the arrows
+/// alone: in a narrow box the count gives way whole, never cut mid-word,
+/// and the buttons stay.
+fn paint_peek_scroll(
+    buf: &mut Buffer,
+    targets: &mut Targets,
+    more: &str,
+    mut x: u16,
+    y: u16,
+    room: u16,
+) {
+    let right = x.saturating_add(room);
+    let w = carrel_core::display_width(more);
+    let (sep, count) = if w.saturating_add(4) <= room {
+        ("/", true)
+    } else if w.saturating_add(3) <= room {
+        ("", true)
+    } else {
+        ("/", false)
+    };
+    let up = Action::PeekScroll(-1);
+    push_button(buf, targets, &mut x, y, right, "\u{2191}", up, Z_MENU);
+    put(buf, &mut x, y, right, sep, theme::dim());
+    let down = Action::PeekScroll(1);
+    push_button(buf, targets, &mut x, y, right, "\u{2193}", down, Z_MENU);
+    if count {
+        put(buf, &mut x, y, right, " ", theme::dim());
+        put(buf, &mut x, y, right, more, theme::dim());
     }
 }
 
@@ -6334,5 +6371,99 @@ mod pane_frame_tests {
             }
         }
         assert!(fails.is_empty(), "{fails:#?}");
+    }
+
+    /// A footnote longer than its box says so with `↑/↓` beside the count,
+    /// and each arrow is a button doing what its key does while the box is
+    /// up — `PeekScroll(∓1)`, which is what `App::peek_key` makes of `↑`
+    /// and `↓`. A box that fits shows neither arrow nor button: its keys
+    /// are the page's, and an arrow there would promise otherwise.
+    #[test]
+    fn a_long_footnote_box_paints_its_arrows_as_buttons_and_a_short_one_none() {
+        let open = |lines: usize, cols: u16, rows: u16| {
+            let note = (0..lines)
+                .map(|i| format!("note line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n\n    ");
+            let src = format!("Body[^n] text.\n\n[^n]: {note}\n");
+            let mut a = App::new(
+                "t.md".into(),
+                carrel_core::Document::parse(&src),
+                cols,
+                rows,
+            );
+            let byte = u32::try_from(a.doc.text.find("[^n]").unwrap()).unwrap();
+            update(&mut a, Action::FootnotePeek { at: (4, 0), byte });
+            a
+        };
+        // In the box: the footer, which names the box too, has its own chip.
+        let peek_buttons = |painted: &Painted| -> Vec<Action> {
+            painted
+                .targets
+                .as_slice()
+                .iter()
+                .filter(|t| matches!(t.action, Action::PeekScroll(_)) && t.z == Z_MENU)
+                .map(|t| t.action)
+                .collect()
+        };
+        // `↑/↓ N more` wide; `↑↓ N more` at 30 columns, where the slash was
+        // what cut the word to `mor`; at 26 the count gives way whole.
+        for (cols, rows, counted) in [
+            (60, 20, true),
+            (80, 24, true),
+            (30, 8, true),
+            (26, 8, false),
+        ] {
+            let a = open(40, cols, rows);
+            assert!(a.peek_scrolls().is_some(), "{cols}x{rows}");
+            let (buf, painted) = paint(&a);
+            let z = a
+                .peek
+                .as_ref()
+                .unwrap()
+                .zone(&a.doc, a.peek_fit(), cols, rows);
+            let y = z.y + z.h - 2;
+            let row = row_text(&buf, y, z.x, z.x + z.w);
+            for (glyph, want) in [
+                ("\u{2191}", Action::PeekScroll(-1)),
+                ("\u{2193}", Action::PeekScroll(1)),
+            ] {
+                let (x, _) = row
+                    .iter()
+                    .find(|(_, s)| s == glyph)
+                    .unwrap_or_else(|| panic!("{cols}x{rows}: no {glyph} in {row:?}"));
+                assert_eq!(
+                    painted.targets.hit(*x, y).map(|h| h.action),
+                    Some(want),
+                    "{cols}x{rows}: {glyph} is a button for its key"
+                );
+            }
+            let text: String = row.iter().map(|(_, s)| s.as_str()).collect();
+            if counted {
+                assert!(
+                    text.contains("more"),
+                    "{cols}x{rows}: the count stays, whole: {text:?}"
+                );
+            } else {
+                assert!(
+                    !text.contains("mor") && !text.contains(" 7"),
+                    "{cols}x{rows}: no count rather than a cut one: {text:?}"
+                );
+            }
+            assert_eq!(peek_buttons(&painted).len(), 2, "{cols}x{rows}");
+        }
+        let a = open(1, 60, 20);
+        assert_eq!(a.peek_scrolls(), None);
+        let (buf, painted) = paint(&a);
+        let z = a.peek.as_ref().unwrap().zone(&a.doc, a.peek_fit(), 60, 20);
+        for y in z.y..z.y + z.h {
+            for (_, s) in row_text(&buf, y, z.x, z.x + z.w) {
+                assert!(
+                    s != "\u{2191}" && s != "\u{2193}",
+                    "an arrow over a box that fits"
+                );
+            }
+        }
+        assert!(peek_buttons(&painted).is_empty());
     }
 }

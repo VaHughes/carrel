@@ -1624,3 +1624,75 @@ fn live_resize_preserves_search_selection_notes_and_menu_input() {
         );
     }
 }
+
+/// A footnote longer than its box, read on by KEY, end to end: a click on
+/// the `[^n]` mark opens the box, `j` scrolls the footnote inside it, and
+/// the paragraph that was below the box's last row is painted. The
+/// controls: the same click with no key never paints that paragraph, and
+/// the same `j` with no box open scrolls the page and never paints it
+/// either — so it is the box that moved, and the key that moved it.
+///
+/// The footnote is twenty one-line paragraphs, each its own row with a
+/// blank between, so the box (twelve rows) opens on the first six and a
+/// step of one row lands on the second and brings the seventh in. The
+/// definition sits after forty filler paragraphs, far below the 20-row
+/// window, so the only way the seventh can reach the screen is through the
+/// box.
+///
+/// The seventh is `QQQQQQ` and no other row holds a `Q`: ratatui writes
+/// only the cells that changed, and rows that share a prefix (`Para06`
+/// replacing `Para05`) reach the pty as one rewritten digit — the first
+/// draft of this test looked for `Para06` and could never have found it.
+#[test]
+fn a_scroll_key_reads_on_in_a_long_footnote_box() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let note = [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "QQQQQQ", "hotel", "india",
+        "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "uniform", "romeo",
+        "sierra", "tango",
+    ]
+    .join("\n\n    ");
+    let filler = (0..40)
+        .map(|i| format!("Filler paragraph {i}.\n\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let src = format!("Body[^n] text.\n\n{filler}[^n]: {note}\n");
+    let run = |keys: &str| {
+        // A folder each: a run that quits writes a reading position, and
+        // the next would open somewhere else.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("doc.md"), &src).unwrap();
+        pty_run("doc.md", keys, d.path())
+    };
+    // The mark is on the first text row; a click on its `[`.
+    let click = r"\033[<0;7;2M\033[<0;7;2m";
+
+    let opened = run(&format!("{click}q"));
+    assert!(
+        opened.contains("alpha") && opened.contains("foxtrot"),
+        "the click opens the box on the footnote's first rows"
+    );
+    assert!(
+        opened.contains("more") && opened.contains("footnote"),
+        "and the box says there is more, and the footer whose keys these are"
+    );
+    assert!(
+        !opened.contains("QQQQQQ"),
+        "the control: the box alone never shows the row below it"
+    );
+
+    let scrolled = run(&format!("{click}jq"));
+    assert!(
+        scrolled.contains("QQQQQQ"),
+        "`j` over the box scrolls the footnote: the next paragraph is painted"
+    );
+
+    let page = run("jq");
+    assert!(
+        !page.contains("alpha") && !page.contains("QQQQQQ"),
+        "the control: `j` with no box open scrolls the page and shows no footnote"
+    );
+}

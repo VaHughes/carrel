@@ -971,7 +971,7 @@ mod tests {
             A::FoldAt(_) => Doc,
             A::FootnotePeek { .. } => Doc, // a click on a `[^mark]`
             A::PeekGo => Pane,             // the peek's own button
-            A::PeekScroll(_) => Pane,      // the wheel over the peek
+            A::PeekScroll(_) => Pane,      // the wheel over the peek, its ↑/↓
             A::HelpRun(_) => Pane,         // a row of the help sheet
             A::OutlineJumpTo(_) => Doc,    // the margin outline
             A::ScrollTo(_) => Doc,         // the scrollbar

@@ -19,8 +19,8 @@ pub struct Footer {
     pub hints: &'static [keymap::Hint],
 }
 
-/// Precedence (spec §2): help > outline > typing a search > link selected >
-/// matches live > reading; on home, help > picker > filter > search > browse.
+/// Precedence (spec §2): help > outline > typing a search > a footnote box
+/// that scrolls > link selected > matches live > reading; on home, help > picker > filter > search > browse.
 #[must_use]
 pub fn of(app: &App) -> Footer {
     let f = |bulb, word, hints| Footer {
@@ -63,6 +63,13 @@ pub fn of(app: &App) -> Footer {
             HomeMode::Normal if app.first_run => f('●', "browse", keymap::HINT_FIRST_RUN),
             HomeMode::Normal => f('●', "browse", keymap::HINT_HOME_BROWSE),
         };
+    }
+    // A footnote box that takes the scroll keys says so, and its chips are
+    // its own: the reading row's `↑/↓` would scroll the page from a click
+    // while the key scrolls the box. A box that fits takes no scroll key,
+    // so the reading row stays — and stays true.
+    if app.peek_scrolls().is_some() {
+        return f('◎', "footnote", keymap::HINT_PEEK);
     }
     if app.selected_link.is_some() {
         return f('●', "link picked", keymap::HINT_LINK);

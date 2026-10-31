@@ -1437,6 +1437,7 @@ mod tests {
                 "click a section",
                 "click a name",
                 "click a [^mark]",
+                "in a footnote box",
                 "click a tag",
                 "click a row",
                 "click beside",
