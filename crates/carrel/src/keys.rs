@@ -817,6 +817,7 @@ pub const READER_HELP: &[(&str, &str)] = &[
     ("click a section", "of the heading bar: go there"),
     ("click a name", "on the status row: go back"),
     ("click a [^mark]", "its footnote, in place"),
+    ("in a footnote box", "scroll keys scroll a long one"),
     ("click a tag", "on the card: the tags page"),
     ("click a row", "of this sheet: do it"),
     ("click beside", "an open pane: close it"),
@@ -1039,6 +1040,7 @@ pub const fn upward(a: Action) -> Option<Action> {
         Action::MarkListMove(n) => Action::MarkListMove(-n),
         Action::HomeMove(n) => Action::HomeMove(-n),
         Action::SettingsMove(n) => Action::SettingsMove(-n),
+        Action::PeekScroll(n) => Action::PeekScroll(-n),
         _ => return None,
     })
 }
@@ -1130,6 +1132,17 @@ pub const HINT_NOTE_DRAFT: &[Hint] = &[
         "cancel",
         Action::NoteInput(crate::action::NoteKey::Cancel),
     ),
+];
+// A footnote box too long for itself, which takes the scroll keys while it
+// is up (`App::peek_key`). A box that fits takes none, and the footer keeps
+// the reading row, which is then true. Not in the honesty test below: these
+// keys are decided by `main.rs::key_action` with a box open, so its own
+// test (`every_footer_chip_over_a_long_footnote_does_what_its_key_does`)
+// presses them through that dispatcher.
+pub const HINT_PEEK: &[Hint] = &[
+    hint("↑/↓", "scroll", Action::PeekScroll(1)),
+    hint("enter", "go to it", Action::PeekGo),
+    hint("esc", "close", Action::Dismiss),
 ];
 pub const HINT_LIGHTBOX: &[Hint] = &[
     hint("→", "next image", Action::ImageStep(1)),
@@ -1901,6 +1914,7 @@ mod tests {
                 "click a section",
                 "click a name",
                 "click a [^mark]",
+                "in a footnote box",
                 "click a tag",
                 "click a row",
                 "click beside",

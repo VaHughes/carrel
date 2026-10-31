@@ -2482,8 +2482,10 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
     {
         return Some(carrel::action::Action::SelectRelease);
     }
-    // A peek offers exactly one thing of its own; every other key closes it
-    // and then does what it always does.
+    // A peek's own key is Enter. Its others are the page's scroll keys,
+    // read in the reader's arm below and only while the box says there is
+    // more (`App::peek_key`); every other key closes it and then does what
+    // it always does.
     if app.peek.is_some() && k.code == KeyCode::Enter {
         return Some(carrel::action::Action::PeekGo);
     }
@@ -2517,7 +2519,9 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
                 let mode = app.home().map_or(home::HomeMode::Filter, |h| h.mode);
                 keys.map_home(k, mode)
             } else {
-                keys.map(k, app.searching())
+                // Through the reader's own map, so a count (`3j`) and a
+                // prefix (`gg`) work in the box exactly as on the page.
+                keys.map(k, app.searching()).map(|a| app.peek_key(a))
             }
         }
     }
@@ -3669,6 +3673,280 @@ mod tests {
             matches!(beside, Some(Action::Scroll(Span::Line, _))),
             "{beside:?}"
         );
+    }
+
+    /// A document whose footnote has `lines` paragraphs, with the peek open
+    /// on it, and a page long enough to scroll on its own.
+    fn long_peek(lines: usize, cols: u16, rows: u16) -> App {
+        use carrel::action::Action;
+        let src = long_src(lines);
+        let mut app = App::new(
+            "t.md".into(),
+            carrel_core::Document::parse(&src),
+            cols,
+            rows,
+        );
+        let byte = u32::try_from(app.doc.text.find("[^n]").unwrap()).unwrap();
+        update(&mut app, Action::FootnotePeek { at: (4, 0), byte });
+        assert!(app.peek.is_some());
+        app
+    }
+
+    fn long_src(lines: usize) -> String {
+        let filler = (0..60)
+            .map(|i| format!("Filler paragraph {i}.\n\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let note = (0..lines)
+            .map(|i| format!("note line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n\n    ");
+        format!("Body[^n] text.\n\n{filler}[^n]: {note}\n")
+    }
+
+    fn press(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    /// **The defect**: the box said how much more there was and only the
+    /// wheel could show it — every key closed the box. While the box says
+    /// there is more, the page's own scroll keys scroll the box by the
+    /// box's measure; the box keeps its keys at both ends (a further `↓` at
+    /// the bottom stays put); Enter still goes to the footnote, and any
+    /// other key closes it and acts. Through the real dispatcher, so the
+    /// key is the key.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one table of keys, then one walk
+    fn the_scroll_keys_scroll_a_long_footnote_and_stop_at_its_ends() {
+        use carrel::action::{Action, Direction};
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        let mut app = long_peek(40, 60, 20);
+        let shown = app.peek_scrolls().expect("a box with more in it");
+        let page = i32::try_from(shown).unwrap();
+        let max = i32::MAX;
+        let g = press(KeyCode::Char('g'), none);
+        for (keys, want) in [
+            (vec![press(KeyCode::Down, none)], Action::PeekScroll(1)),
+            (vec![press(KeyCode::Char('j'), none)], Action::PeekScroll(1)),
+            (vec![press(KeyCode::Up, none)], Action::PeekScroll(-1)),
+            (
+                vec![press(KeyCode::Char('k'), none)],
+                Action::PeekScroll(-1),
+            ),
+            (vec![press(KeyCode::Char('e'), ctrl)], Action::PeekScroll(1)),
+            (
+                vec![press(KeyCode::Char('y'), ctrl)],
+                Action::PeekScroll(-1),
+            ),
+            (
+                vec![press(KeyCode::Char(' '), none)],
+                Action::PeekScroll(page),
+            ),
+            (
+                vec![press(KeyCode::PageDown, none)],
+                Action::PeekScroll(page),
+            ),
+            (
+                vec![press(KeyCode::PageUp, none)],
+                Action::PeekScroll(-page),
+            ),
+            (
+                vec![press(KeyCode::Char('b'), none)],
+                Action::PeekScroll(-page),
+            ),
+            (
+                vec![press(KeyCode::Char('f'), ctrl)],
+                Action::PeekScroll(page),
+            ),
+            (
+                vec![press(KeyCode::Char('b'), ctrl)],
+                Action::PeekScroll(-page),
+            ),
+            (
+                vec![press(KeyCode::Char('d'), ctrl)],
+                Action::PeekScroll(page / 2),
+            ),
+            (
+                vec![press(KeyCode::Char('u'), ctrl)],
+                Action::PeekScroll(-(page / 2)),
+            ),
+            (vec![press(KeyCode::Home, none)], Action::PeekScroll(-max)),
+            (vec![press(KeyCode::End, none)], Action::PeekScroll(max)),
+            (
+                vec![press(KeyCode::Char('G'), none)],
+                Action::PeekScroll(max),
+            ),
+            (vec![g, g], Action::PeekScroll(-max)),
+            // A count reaches the box through the reader's own map.
+            (
+                vec![
+                    press(KeyCode::Char('3'), none),
+                    press(KeyCode::Char('j'), none),
+                ],
+                Action::PeekScroll(3),
+            ),
+            (vec![press(KeyCode::Enter, none)], Action::PeekGo),
+            // Not scrolls: a line of the document, a search, a dismissal.
+            (
+                vec![
+                    press(KeyCode::Char('4'), none),
+                    press(KeyCode::Char('2'), none),
+                    press(KeyCode::Char('G'), none),
+                ],
+                Action::GoToRow(41),
+            ),
+            (
+                vec![press(KeyCode::Char('/'), none)],
+                Action::SearchOpen(Direction::Forward),
+            ),
+            (vec![press(KeyCode::Esc, none)], Action::Dismiss),
+        ] {
+            let mut k = Keys::new();
+            let got = keys.iter().fold(None, |_, e| key_action(&mut k, &app, *e));
+            assert_eq!(got, Some(want), "{keys:?}");
+        }
+
+        // Pressed for real: the box moves and the page does not.
+        let page_at = |a: &App| (a.view.anchor, a.view.scroll_row);
+        let before = page_at(&app);
+        let top = |a: &App| a.peek.as_ref().map(|p| p.top);
+        let def = app.peek.as_ref().map(|p| p.def);
+        let mut keys = Keys::new();
+        let mut hit = |app: &mut App, code: KeyCode| {
+            let a = key_action(&mut keys, app, press(code, none)).expect("a key that acts");
+            update(app, a);
+        };
+        hit(&mut app, KeyCode::Down);
+        assert!(app.peek.is_some(), "a scroll key keeps the box");
+        assert_ne!(top(&app), def, "and moves the footnote in it");
+        assert_eq!(page_at(&app), before, "not the page under it");
+
+        // At the bottom, a further ↓ stays: the box neither closes nor
+        // hands the key on to the page.
+        hit(&mut app, KeyCode::End);
+        let bottom = top(&app);
+        let v = app
+            .peek
+            .as_ref()
+            .unwrap()
+            .view(&app.doc, app.peek_fit(), app.cols, app.rows);
+        assert_eq!(v.below, 0, "End reaches the footnote's end");
+        for _ in 0..3 {
+            hit(&mut app, KeyCode::Down);
+            hit(&mut app, KeyCode::Char(' '));
+        }
+        assert_eq!(top(&app), bottom, "clamped at the end");
+        assert_eq!(page_at(&app), before, "the page never moved");
+
+        // At the top, likewise.
+        hit(&mut app, KeyCode::Home);
+        assert_eq!(top(&app), def);
+        hit(&mut app, KeyCode::Up);
+        assert_eq!(top(&app), def, "clamped at the top");
+        assert_eq!(page_at(&app), before);
+
+        // Anything else still closes it and then happens.
+        hit(&mut app, KeyCode::Char('/'));
+        assert!(app.peek.is_none(), "a search closes the box");
+        assert!(app.searching(), "and opens");
+    }
+
+    /// A footnote that fits its box owns no scroll key: `↓` closes it and
+    /// reads on down the page, as it always did. The rule is the box's
+    /// size, never a mode the reader has to notice.
+    #[test]
+    fn a_short_footnote_box_takes_no_scroll_key() {
+        use carrel::action::{Action, Span};
+        let down = press(KeyCode::Down, KeyModifiers::NONE);
+        let mut app = long_peek(1, 60, 20);
+        assert_eq!(app.peek_scrolls(), None);
+        let mut keys = Keys::new();
+        let a = key_action(&mut keys, &app, down);
+        assert_eq!(a, Some(Action::Scroll(Span::Line, 1)));
+        let before = app.view.scroll_row;
+        update(&mut app, a.unwrap());
+        assert!(app.peek.is_none(), "closed");
+        assert_ne!(app.view.scroll_row, before, "and the page scrolled");
+        // Enter is still its own.
+        let app = long_peek(1, 60, 20);
+        assert_eq!(
+            key_action(&mut keys, &app, press(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Action::PeekGo)
+        );
+        // A long footnote in a window too narrow to draw its box: the box
+        // is not on screen, so the key is the page's.
+        let app = long_peek(40, 7, 20);
+        assert!(app.peek.is_some());
+        assert_eq!(app.peek_scrolls(), None, "no box is drawn at 7 columns");
+        assert_eq!(
+            key_action(&mut keys, &app, down),
+            Some(Action::Scroll(Span::Line, 1))
+        );
+    }
+
+    /// A resize closes the box (it is drawn at the cell its mark was
+    /// clicked at), scrolled or not, and a reload closes it; after either
+    /// the next `↓` is the page's.
+    #[test]
+    fn a_scrolled_box_closes_on_resize_and_reload_and_hands_the_keys_back() {
+        use carrel::action::{Action, Span};
+        let down = press(KeyCode::Down, KeyModifiers::NONE);
+        let mut keys = Keys::new();
+        let mut app = long_peek(40, 60, 20);
+        update(&mut app, Action::PeekScroll(5));
+        assert!(app.peek.as_ref().is_some_and(|p| p.top != p.def));
+        app.on_resize(50, 14);
+        assert!(app.peek.is_none(), "a resize closes it");
+        assert_eq!(
+            key_action(&mut keys, &app, down),
+            Some(Action::Scroll(Span::Line, 1))
+        );
+
+        let mut app = long_peek(40, 60, 20);
+        update(&mut app, Action::PeekScroll(5));
+        app.reload_from(&long_src(40));
+        assert!(app.peek.is_none(), "a reload closes it");
+        assert_eq!(
+            key_action(&mut keys, &app, down),
+            Some(Action::Scroll(Span::Line, 1))
+        );
+    }
+
+    /// The footer over a box that takes the scroll keys is the box's, and
+    /// every chip on it does what its key does through the REAL dispatcher
+    /// — the honesty rule (`keys::every_footer_hint_key_acts_in_its_own_state`)
+    /// for the one state whose keys are decided here rather than in a
+    /// keymap. The reading row's `↑/↓` chip would have scrolled the page
+    /// from a click while the key scrolled the box.
+    #[test]
+    fn every_footer_chip_over_a_long_footnote_does_what_its_key_does() {
+        let app = long_peek(40, 60, 20);
+        let f = carrel::footer::of(&app);
+        assert_eq!(f.word, "footnote");
+        let mut checked = 0;
+        for h in f.hints {
+            let Some(click) = h.click else { continue };
+            let code = match h.key {
+                "↑/↓" => KeyCode::Down,
+                "enter" => KeyCode::Enter,
+                "esc" => KeyCode::Esc,
+                other => panic!("unmapped footnote hint {other:?}"),
+            };
+            let mut keys = Keys::new();
+            let got = key_action(&mut keys, &app, press(code, KeyModifiers::NONE));
+            assert_eq!(got, Some(click), "{} {}", h.key, h.label);
+            if h.key == "↑/↓" {
+                let up = key_action(&mut keys, &app, press(KeyCode::Up, KeyModifiers::NONE));
+                assert_eq!(up, carrel::keys::upward(click), "↑");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 3);
+        // A box that fits keeps the reading row, which is then true: its
+        // `↓` closes the box and scrolls the page, and so does the key.
+        let short = long_peek(1, 60, 20);
+        assert_eq!(carrel::footer::of(&short).word, "reading");
     }
 
     /// The scrollbar is as tall as the text, not as tall as the terminal.

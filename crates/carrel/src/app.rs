@@ -69,7 +69,9 @@ pub enum FoldTarget {
 /// up, and nothing else may open until it closes. See [`App::pane`].
 ///
 /// A footnote peek is deliberately NOT one: it is a parenthesis that
-/// whatever happens next closes, and it never refuses anything.
+/// whatever happens next closes, and it never refuses anything. (A long
+/// one borrows the page's scroll keys while it is up — [`App::peek_key`] —
+/// which is reading on in it, not something it refuses.)
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Pane {
     Lightbox,
@@ -2850,6 +2852,47 @@ impl App {
         }
     }
 
+    /// How many rows the open footnote box shows, when it is drawn and the
+    /// footnote is longer than it — the one condition under which the
+    /// scroll keys are the box's ([`crate::peek::Peek::scrolls`]).
+    #[must_use]
+    pub fn peek_scrolls(&self) -> Option<usize> {
+        self.peek
+            .as_ref()?
+            .scrolls(&self.doc, self.peek_fit(), self.cols, self.rows)
+    }
+
+    /// `a`, an action the reader's keymap made of a key, as an open
+    /// footnote box reads it.
+    ///
+    /// While the box says there is more of the footnote, the keys that
+    /// scroll the page scroll the box instead, by the box's own measure: a
+    /// line is a row, a page is the rows it shows, half a page half that,
+    /// and the start and end are the footnote's. The ends clamp — a further
+    /// `↓` at the bottom stays put rather than closing the box and moving
+    /// the page, which a held key would otherwise do the instant the
+    /// footnote ran out. Everything else, and every key over a box that
+    /// fits, is returned as it came: it closes the box and then happens.
+    ///
+    /// `42G` is not a scroll but a destination — a line of the document —
+    /// so it goes there. Keyboard only: the wheel and the scrollbar beside
+    /// the box are the page's, and never come through here.
+    #[must_use]
+    pub fn peek_key(&self, a: Action) -> Action {
+        let Some(shown) = self.peek_scrolls() else {
+            return a;
+        };
+        let page = i32::try_from(shown).unwrap_or(i32::MAX).max(1);
+        Action::PeekScroll(match a {
+            Action::Scroll(Span::Line, n) => n,
+            Action::Scroll(Span::HalfPage, n) => n.saturating_mul((page / 2).max(1)),
+            Action::Scroll(Span::Page, n) => n.saturating_mul(page),
+            Action::GoToStart => -i32::MAX,
+            Action::GoToEnd => i32::MAX,
+            _ => return a,
+        })
+    }
+
     fn math_rows(&self, block: BlockIdx, avail: u16) -> Option<u32> {
         let art = self.math_art.get(&block)?;
         match self.math_form(block, avail) {
@@ -3531,7 +3574,9 @@ fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
                 return Some(Outcome::Redraw);
             }
             Action::Dismiss => return Some(Outcome::Redraw),
-            // The wheel over the box reads on in it; the box stays.
+            // The wheel over the box, its arrows, or a scroll key while it
+            // says there is more (`App::peek_key`) reads on in it; the box
+            // stays.
             Action::PeekScroll(delta) => {
                 let mut peek = peek;
                 let fit = crate::peek::Fit {

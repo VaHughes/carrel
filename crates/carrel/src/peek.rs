@@ -6,11 +6,21 @@
 //! steps for a parenthesis. A peek is the parenthesis: click the mark, read
 //! the text in place, carry on.
 //!
-//! It is not a pane. It owns no keyboard and blocks nothing: whatever the
-//! reader does next closes it and then happens. The two things it offers
-//! are the long way round — `Enter`, or its button, goes to the footnote
-//! itself — and the wheel over the box, which scrolls a footnote too long
-//! for it.
+//! It is not a pane. It blocks nothing: whatever the reader does next
+//! closes it and then happens. What it offers is the long way round —
+//! `Enter`, or its button, goes to the footnote itself — and, for a
+//! footnote too long for it, a way to read on: the wheel over the box, its
+//! `↑`/`↓` buttons, and the keys that scroll the page.
+//!
+//! **The scroll keys are the box's exactly while it says there is more**
+//! ([`Peek::scrolls`]). A footnote that fits owns no key but `Enter`, so
+//! `↓` after a short footnote closes it and reads on down the page, as it
+//! always did; one that does not fit takes the page's own scroll keys —
+//! line, half page, page, start and end — and stops at either end rather
+//! than spilling over into the page. Ownership is a fact of the box's size,
+//! never of where in the footnote it is, so the same key does the same
+//! thing for the whole life of a box, and the count beside its arrows is
+//! what says which kind of box this is.
 //!
 //! **It shows the whole footnote**: every paragraph, list, quote and code
 //! block in the definition, wrapped by the core's own `wrap_with` at the
@@ -300,6 +310,27 @@ impl Peek {
         }
     }
 
+    /// How many rows of footnote the box shows, when it is drawn and does
+    /// not hold the whole footnote — which is exactly when the scroll keys
+    /// are the box's — else `None`. One answer for the keys, the footer
+    /// and the painted `↑/↓`, so none of them can offer a scroll the others
+    /// do not.
+    #[must_use]
+    pub fn scrolls<'a>(
+        &self,
+        doc: &Document,
+        fit: impl Into<Fit<'a>>,
+        cols: u16,
+        rows: u16,
+    ) -> Option<usize> {
+        let fit = fit.into();
+        if !is_drawn(self.zone(doc, fit, cols, rows)) {
+            return None;
+        }
+        let v = self.view(doc, fit, cols, rows);
+        (v.above + v.below > 0).then_some(v.lines.len())
+    }
+
     /// The box, clamped into a `cols × rows` viewport: under the mark, or
     /// above it when there is no room below — the menu's rule, for the
     /// menu's reason.
@@ -350,14 +381,23 @@ fn nearest_row(lines: &[Line], to: usize, back: bool) -> Option<usize> {
 }
 
 /// What the button row says about rows the box is not showing, or nothing
-/// when it shows them all.
+/// when it shows them all. The painter puts it after the box's `↑/↓`
+/// buttons, which are what an arrow here used to only describe.
 #[must_use]
 pub fn more(view: &View) -> Option<String> {
     match (view.above, view.below) {
         (0, 0) => None,
-        (above, 0) => Some(format!("\u{2191} {above} above")),
-        (_, below) => Some(format!("\u{2193} {below} more")),
+        (above, 0) => Some(format!("{above} above")),
+        (_, below) => Some(format!("{below} more")),
     }
+}
+
+/// Whether a box of this size is drawn at all. Narrower than 8 cells or
+/// shorter than 4 rows there is no room to say anything, so the painter
+/// leaves it out — and a box nobody can see owns no keys.
+#[must_use]
+pub const fn is_drawn(z: Zone) -> bool {
+    z.w >= 8 && z.h >= 4
 }
 
 #[cfg(test)]
@@ -486,7 +526,7 @@ mod tests {
         assert_eq!(v.lines.len(), MAX_LINES);
         assert_eq!(v.above, 0);
         assert!(v.below > 900, "{}", v.below);
-        assert_eq!(more(&v), Some(format!("\u{2193} {} more", v.below)));
+        assert_eq!(more(&v), Some(format!("{} more", v.below)));
 
         p.scroll(&doc, Hyphenation::Off, 1, 80, 40);
         let v = p.view(&doc, Hyphenation::Off, 80, 40);
@@ -502,9 +542,46 @@ mod tests {
         let v = p.view(&doc, Hyphenation::Off, 80, 40);
         assert_eq!(v.below, 0);
         assert_eq!(texts(&doc, &v).last().map(String::as_str), Some("line 499"));
-        assert_eq!(more(&v), Some(format!("\u{2191} {} above", v.above)));
+        assert_eq!(more(&v), Some(format!("{} above", v.above)));
         p.scroll(&doc, Hyphenation::Off, -10_000, 80, 40);
         assert_eq!(p.top, p.def);
+    }
+
+    /// The scroll keys are the box's exactly when it is drawn and says
+    /// there is more: never for a footnote that fits, never for a box too
+    /// small to be painted, and still at the end of a long one — where the
+    /// count says "above" — so ownership never changes under the reader.
+    #[test]
+    fn the_box_scrolls_only_when_it_is_drawn_and_does_not_fit() {
+        let short = doc_with("a short footnote");
+        assert_eq!(
+            peek(&short, (0, 0)).scrolls(&short, Hyphenation::Off, 80, 24),
+            None
+        );
+
+        let body = (0..40)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n\n    ");
+        let long = doc_with(&body);
+        let mut p = peek(&long, (0, 0));
+        assert_eq!(p.scrolls(&long, Hyphenation::Off, 80, 24), Some(MAX_LINES));
+        p.scroll(&long, Hyphenation::Off, 10_000, 80, 24);
+        let v = p.view(&long, Hyphenation::Off, 80, 24);
+        assert_eq!(v.below, 0, "at the end");
+        assert_eq!(
+            p.scrolls(&long, Hyphenation::Off, 80, 24),
+            Some(MAX_LINES),
+            "still the box's at the end"
+        );
+        // A window the painter draws no box in: a box nobody can see owns
+        // nothing, though the footnote is as long as ever.
+        let tiny = p.zone(&long, Hyphenation::Off, 7, 24);
+        assert!(!is_drawn(tiny), "{tiny:?}");
+        assert_eq!(p.scrolls(&long, Hyphenation::Off, 7, 24), None);
+        let flat = p.zone(&long, Hyphenation::Off, 80, 3);
+        assert!(!is_drawn(flat), "{flat:?}");
+        assert_eq!(p.scrolls(&long, Hyphenation::Off, 80, 3), None);
     }
 
     /// The step off a blank always lands, whatever the blanks around it.
