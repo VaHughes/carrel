@@ -161,7 +161,15 @@ fn a_generated_page_does_not_show_the_last_files_bookmarks() {
     let state = tempfile::tempdir().unwrap();
     let mut app = file_app(d.path(), "a.md", &long_doc(60));
     app.state_dir = Some(state.path().to_path_buf());
-    carrel::state::save_marks_in(state.path(), &d.path().join("a.md"), &[2000, 2300]).unwrap();
+    carrel::state::save_marks_in(
+        state.path(),
+        &d.path().join("a.md"),
+        &[
+            carrel::state::Place::Legacy(2000),
+            carrel::state::Place::Legacy(2300),
+        ],
+    )
+    .unwrap();
     tags_ready(&mut app, d.path());
     assert!(app.marks.is_empty(), "{:?}", app.marks);
 }
@@ -473,4 +481,38 @@ fn a_peek_does_not_outlive_the_frame_it_was_placed_in() {
     // A resize moves the mark; the box goes.
     app.on_resize(100, 30);
     assert!(app.peek.is_none());
+}
+
+/// Bookmarks come back with the document they were set in, by every route a
+/// document opens — and only with it. Until 2026.10.21 the loader ran before
+/// the opener said which file it was opening, so a reopened file came back
+/// with no marks, and the next file opened showed the previous one's (and
+/// saved them under its own name on the first `m`).
+#[test]
+fn bookmarks_come_back_with_their_own_document_and_no_other() {
+    let d = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let mut app = file_app(d.path(), "a.md", &long_doc(60));
+    app.state_dir = Some(state.path().to_path_buf());
+    update(&mut app, Action::Scroll(carrel::action::Span::Line, 20));
+    update(&mut app, Action::MarkToggle);
+    let marks = app.marks.clone();
+    assert_eq!(marks.len(), 1);
+
+    // Opened directly, as `carrel a.md` does.
+    let mut direct = file_app(d.path(), "a.md", &long_doc(60));
+    direct.state_dir = Some(state.path().to_path_buf());
+    direct.restore_position();
+    assert_eq!(direct.marks, marks, "a direct open");
+
+    // Opened from another document, then left for a third.
+    let mut other = file_app(d.path(), "b.md", "# b\n\nx\n");
+    other.state_dir = Some(state.path().to_path_buf());
+    other.open_path(&d.path().join("a.md")).unwrap();
+    assert_eq!(other.marks, marks, "followed from b");
+    other.open_path(&d.path().join("b.md")).unwrap();
+    assert!(other.marks.is_empty(), "b has none: {:?}", other.marks);
+    update(&mut other, Action::MarkToggle);
+    other.open_path(&d.path().join("a.md")).unwrap();
+    assert_eq!(other.marks, marks, "b's mark did not land on a");
 }

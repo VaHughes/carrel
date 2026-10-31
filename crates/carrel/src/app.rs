@@ -1156,10 +1156,14 @@ impl App {
             let _ = crate::state::save_folds_in(dir, file, &self.fold_keys());
             // The progress numbers are the status bar's own, saved alongside
             // so the home screen can show them without opening the file.
+            // The place, not the display byte: see `state::Place`. The top
+            // of the file is the default, so it is not remembered at all.
+            let place = (self.view.anchor > 0)
+                .then(|| crate::state::Place::of(&self.doc, DocByte(self.view.anchor)));
             let _ = crate::state::save_position_in(
                 dir,
                 file,
-                self.view.anchor,
+                place,
                 self.permille(),
                 u32::try_from(self.words).unwrap_or(u32::MAX),
             );
@@ -1184,17 +1188,39 @@ impl App {
     /// path to key on — the same contract position saving already has.
     fn save_marks(&self) {
         if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
-            let _ = crate::state::save_marks_in(dir, file, &self.marks);
+            let places: Vec<crate::state::Place> = self
+                .marks
+                .iter()
+                .map(|&m| crate::state::Place::of(&self.doc, DocByte(m)))
+                .collect();
+            let _ = crate::state::save_marks_in(dir, file, &places);
         }
     }
 
-    /// Load the bookmark list for the open file. Called wherever a document
-    /// is opened, beside the position restore.
+    /// Load the bookmark list for the open file. Called from
+    /// [`Self::restore_position`], which every opener calls once `file` is
+    /// the document being opened.
+    ///
+    /// A mark is a block start — the margin paints one where `marks` holds
+    /// the block's first byte, and `m` clears the one it finds there — so a
+    /// place that resolves inside a block, which a document edited since,
+    /// or a core that flattens differently, can make it do, snaps back to
+    /// the start of that block rather than becoming a mark nothing shows.
     fn load_marks(&mut self) {
-        self.marks = match (self.state_dir.as_deref(), self.file.as_deref()) {
+        let places = match (self.state_dir.as_deref(), self.file.as_deref()) {
             (Some(dir), Some(file)) => crate::state::load_marks_in(dir, file),
             _ => Vec::new(),
         };
+        let mut marks: Vec<u32> = places
+            .into_iter()
+            .map(|p| {
+                let b = self.doc.block_at_doc(p.resolve(&self.doc));
+                self.doc.node_for_block(b).doc.start
+            })
+            .collect();
+        marks.sort_unstable();
+        marks.dedup();
+        self.marks = marks;
     }
 
     /// Load a document and switch to the reader.
@@ -1230,7 +1256,6 @@ impl App {
         self.mtime = loaded;
         self.table_offsets.clear();
         self.doc = self.parse_adapting(&src);
-        self.load_marks();
         self.matches = None;
         self.forward = None;
         self.mode = Mode::Normal;
@@ -2158,6 +2183,13 @@ impl App {
     /// note. Called by `open_path` — and by the binary for a direct
     /// `carrel FILE` open, which builds its `App` without `open_path`.
     pub fn restore_position(&mut self) {
+        // The bookmarks are this file's too. Loaded here, where `file` is
+        // already the document being opened, and nowhere earlier: until
+        // 2026.10.21 `open_path` loaded them before it set `file`, so every
+        // opener read the PREVIOUS document's bookmarks — none come back
+        // when a file is reopened, and the first `m` in the next file saved
+        // the last one's marks under its name.
+        self.load_marks();
         // Collapsed sections first: the saved position is a row of the
         // document as it was left, and that document had them collapsed.
         if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
@@ -2168,10 +2200,10 @@ impl App {
         }
         if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref())
             && let Some(saved) = crate::state::load_position_in(dir, file)
-            && saved > 0
+            && let DocByte(at) = saved.resolve(&self.doc)
+            && at > 0
         {
-            let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
-            self.view.anchor = saved.min(last);
+            self.view.anchor = at;
             self.view.restore(&self.doc, &self.layout, self.text_h());
             self.note = Some("resumed where you left off · Home for the top".into());
         }
@@ -7363,13 +7395,105 @@ mod tests {
         );
     }
 
+    /// The position goes to disk as a source place (`state::Place`), and
+    /// comes back to the same display byte — including partway down a
+    /// paragraph whose smart quotes make its provenance one rewritten run,
+    /// where a bare source byte would resume at the paragraph's top.
+    #[test]
+    fn a_resume_inside_a_rewritten_paragraph_lands_on_the_same_row() {
+        let d = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let f = d.path().join("quotes.md");
+        let para = "He said \"this\" and 'that' -- and then --- the end. ".repeat(12);
+        std::fs::write(&f, format!("# Head\n\n{para}\n\n{para}\n")).unwrap();
+        let cached = vec![Entry {
+            path: f.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached.clone(), 30, 8);
+        a.state_dir = Some(state.path().to_path_buf());
+        update(&mut a, Action::HomeOpen);
+        update(&mut a, Action::Scroll(Span::Line, 7));
+        let (anchor, row) = (a.view.anchor, a.view.scroll_row);
+        let para_start = a
+            .doc
+            .node_for_block(a.doc.block_at_doc(DocByte(anchor)))
+            .doc
+            .start;
+        assert!(anchor > para_start, "the fixture must stop mid-paragraph");
+        update(&mut a, Action::Quit);
+        let on_disk = std::fs::read_to_string(state.path().join("positions")).unwrap();
+        assert!(
+            on_disk.starts_with('s'),
+            "saved as a source place: {on_disk:?}"
+        );
+
+        let mut b = App::new_home(d.path().into(), cached, 30, 8);
+        b.state_dir = Some(state.path().to_path_buf());
+        update(&mut b, Action::HomeOpen);
+        assert_eq!((b.view.anchor, b.view.scroll_row), (anchor, row));
+    }
+
+    /// A reading position and bookmarks written by carrel 2026.10.21 or
+    /// earlier — a bare display byte — still resume, and a mark that no
+    /// longer falls on a block's first byte (the file changed, or the core
+    /// flattens it differently now) snaps to the start of its block, where
+    /// the margin paints it and `m` can find it to clear.
+    #[test]
+    fn an_older_carrels_positions_and_bookmarks_still_load() {
+        let d = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let f = d.path().join("old.md");
+        std::fs::write(&f, SRC).unwrap();
+        let doc = Document::parse(SRC);
+        let para = doc.node_for_block(BlockIdx(1)).doc.clone();
+        let two = doc.node_for_block(BlockIdx(3)).doc.start;
+        crate::state::save_position_in(
+            state.path(),
+            &f,
+            Some(crate::state::Place::Legacy(two)),
+            0,
+            0,
+        )
+        .unwrap();
+        crate::state::save_marks_in(
+            state.path(),
+            &f,
+            &[
+                crate::state::Place::Legacy(para.start + 1),
+                crate::state::Place::Legacy(two),
+            ],
+        )
+        .unwrap();
+        let cached = vec![Entry {
+            path: f.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut a = App::new_home(d.path().into(), cached, 20, 6);
+        a.state_dir = Some(state.path().to_path_buf());
+        update(&mut a, Action::HomeOpen);
+        assert_eq!(a.view.anchor, two);
+        assert_eq!(a.marks, vec![para.start, two]);
+        // And they go back out in the new spelling.
+        update(&mut a, Action::MarkToggle);
+        let text = std::fs::read_to_string(state.path().join("bookmarks")).unwrap();
+        assert!(!text.contains("\t5") && text.contains("\ts"), "{text:?}");
+    }
+
     #[test]
     fn a_position_at_the_top_is_not_saved_and_clears_a_stale_one() {
         let d = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
         let f = d.path().join("doc.md");
         std::fs::write(&f, SRC).unwrap();
-        crate::state::save_position_in(state.path(), &f, 7, 0, 0).unwrap();
+        crate::state::save_position_in(
+            state.path(),
+            &f,
+            Some(crate::state::Place::Legacy(7)),
+            0,
+            0,
+        )
+        .unwrap();
 
         let cached = vec![Entry {
             path: f.clone(),
@@ -7393,7 +7517,14 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let f = d.path().join("doc.md");
         std::fs::write(&f, "tiny\n").unwrap();
-        crate::state::save_position_in(state.path(), &f, 10_000, 0, 0).unwrap();
+        crate::state::save_position_in(
+            state.path(),
+            &f,
+            Some(crate::state::Place::Legacy(10_000)),
+            0,
+            0,
+        )
+        .unwrap();
 
         let cached = vec![Entry {
             path: f.clone(),
@@ -7447,10 +7578,9 @@ mod tests {
         assert!(anchor > 0, "revealing the bottom link must scroll");
         update(&mut a, Action::LinkFollow);
         assert_eq!(a.path, "target.md");
-        assert_eq!(
-            crate::state::load_position_in(state.path(), &here),
-            Some(anchor),
-        );
+        let saved = crate::state::load_position_in(state.path(), &here).expect("saved");
+        let doc = Document::parse(&std::fs::read_to_string(&here).unwrap());
+        assert_eq!(saved.resolve(&doc), DocByte(anchor));
     }
 
     #[test]
