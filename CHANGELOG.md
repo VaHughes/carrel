@@ -38,6 +38,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   the file was opened. Searching a large folder is also faster: files are
   read and filtered on up to four threads, and results arrive in the same
   order as before.
+- **`q` closes the bookmark list**, as the man page always said and every other list
+  pane does; it was ignored there.
+- **A word-initial hyphen holds to its word:** `-v` is no longer split into `-` and
+  `v` at the end of a row, on the screen or in `--plain` and `--render` (Unicode's
+  line-breaking rule LB20.1, which the line-breaking library predates).
+- **A long `<script>` or `<style>` block no longer stalls carrel.** Skipping one
+  took time growing with the square of its length — seconds for 200 KB — and the
+  home screen's content search could reach one in any file it opened.
 - **For contributors: a third crate, `carrel-state`**, holds what every
   frontend shares above the document model: the reader's intents (the
   terminal's actions minus its chrome) and, from this release, persistence and

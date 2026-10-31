@@ -88,12 +88,14 @@ const WORKERS: usize = 4;
 /// stamped with `generation`; the caller ignores stale ones. Hits arrive in
 /// `entries` order, whichever worker found them.
 #[must_use]
-pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Receiver<Msg> {
+pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Search {
     let (tx, rx) = mpsc::channel();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancelled = std::sync::Arc::clone(&cancel);
     std::thread::spawn(move || {
         if let Some(q) = Query::new(&needle) {
             let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(WORKERS));
-            let gone = grep_all(&q, &entries, workers, |hit| {
+            let gone = grep_all(&q, &entries, workers, &cancelled, |hit| {
                 tx.send(Msg::Hit(hit, generation)).is_ok()
             });
             if gone {
@@ -102,18 +104,47 @@ pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Receiver<M
         }
         let _ = tx.send(Msg::Done(generation));
     });
-    rx
+    Search { rx, cancel }
+}
+
+/// A running search: read it as the [`Receiver`] it dereferences to, and drop
+/// it to stop it.
+///
+/// A dropped receiver alone was noticed only when the search next tried to
+/// SEND a hit, so a query a newer keystroke replaced, with no hits left to
+/// find, went on reading and filtering the whole tree — on up to four
+/// threads, and typing a needle leaves one such query per keystroke. Dropping
+/// this sets a flag every worker checks before each file.
+#[derive(Debug)]
+pub struct Search {
+    rx: Receiver<Msg>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::ops::Deref for Search {
+    type Target = Receiver<Msg>;
+    fn deref(&self) -> &Receiver<Msg> {
+        &self.rx
+    }
+}
+
+impl Drop for Search {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// [`grep_file`] over `entries` on `workers` threads, each taking the next
 /// file as it finishes one. Hits are handed to `deliver` in `entries` order
 /// — a hit waits for every file before it — up to [`MAX_HITS`]. Returns
-/// `true` when `deliver` refused one (nobody is listening), which stops
-/// every worker at its next file.
+/// `true` when `deliver` refused one (nobody is listening) or `cancel` was
+/// set, either of which stops every worker at its next file.
 fn grep_all(
     q: &Query,
     entries: &[Entry],
     workers: usize,
+    cancel: &std::sync::atomic::AtomicBool,
     mut deliver: impl FnMut(Hit) -> bool,
 ) -> bool {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -124,7 +155,7 @@ fn grep_all(
         for _ in 0..workers {
             let (wtx, next, stop) = (wtx.clone(), &next, &stop);
             s.spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
+                while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(e) = entries.get(i) else { break };
                     if wtx.send((i, grep_file(q, &e.path))).is_err() {
@@ -154,7 +185,7 @@ fn grep_all(
                 }
             }
         }
-        gone
+        gone || cancel.load(Ordering::Relaxed)
     })
 }
 
@@ -781,6 +812,48 @@ mod tests {
         // And the whole thing parses: sections for the outline, links to click.
         let parsed = carrel_core::Document::parse(&doc);
         assert_eq!(parsed.links.len(), 4, "two matches + more + solo: {doc}");
+    }
+
+    /// A cancelled search reads nothing more: every worker checks the flag
+    /// before its next file, so with it set at the start not one of these
+    /// matching files is delivered.
+    #[test]
+    fn a_cancelled_search_reads_no_further_file() {
+        let d = tempfile::tempdir().unwrap();
+        let entries: Vec<Entry> = (0..50)
+            .map(|i| {
+                let p = d.path().join(format!("f{i}.md"));
+                std::fs::write(&p, "needle\n").unwrap();
+                entry(&p)
+            })
+            .collect();
+        let q = Query::new("needle").unwrap();
+        let mut delivered = 0;
+        let live = std::sync::atomic::AtomicBool::new(false);
+        grep_all(&q, &entries, 2, &live, |_| {
+            delivered += 1;
+            true
+        });
+        assert_eq!(delivered, 50, "control: uncancelled, every file is a hit");
+        let mut delivered = 0;
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let gone = grep_all(&q, &entries, 2, &cancelled, |_| {
+            delivered += 1;
+            true
+        });
+        assert_eq!(delivered, 0);
+        assert!(gone, "reported as stopped");
+    }
+
+    /// Dropping the handle — what replacing it with a newer query does — is
+    /// what sets that flag.
+    #[test]
+    fn dropping_a_search_cancels_it() {
+        let search = spawn(Vec::new(), "x".into(), 1);
+        let flag = std::sync::Arc::clone(&search.cancel);
+        assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+        drop(search);
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[test]

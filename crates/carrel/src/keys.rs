@@ -460,7 +460,8 @@ impl Keys {
             KeyCode::Char('j') | KeyCode::Down => Some(Action::MarkListMove(1)),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::MarkListMove(-1)),
             KeyCode::Enter => Some(Action::MarkListJump),
-            KeyCode::Char('"' | '\'') | KeyCode::Esc => Some(Action::MarkListToggle),
+            // `q` too, as the man page says and every other list pane does.
+            KeyCode::Char('"' | '\'' | 'q') | KeyCode::Esc => Some(Action::MarkListToggle),
             _ => None,
         }
     }
@@ -1367,6 +1368,18 @@ mod tests {
             Some(Action::LinkFollow),
             "Enter still follows"
         );
+    }
+
+    /// Every list pane closes on `q`, the way it closes on Esc: the man page
+    /// promises it of each, and the bookmark list alone ignored it.
+    #[test]
+    fn every_list_pane_closes_on_q() {
+        let q = k('q');
+        assert_eq!(Keys::map_marks(q), Some(Action::MarkListToggle));
+        assert_eq!(Keys::map_backlinks(q), Some(Action::BacklinksToggle));
+        assert_eq!(Keys::map_forward(q), Some(Action::ForwardToggle));
+        assert_eq!(Keys::map_info(q), Some(Action::InfoToggle));
+        assert_eq!(Keys::map_settings(q), Some(Action::SettingsToggle));
     }
 
     /// The help tables' third column is what a click on the row runs, and

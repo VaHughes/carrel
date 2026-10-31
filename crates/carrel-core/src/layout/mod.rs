@@ -215,7 +215,7 @@ fn chunk_starts(text: &str) -> Vec<u32> {
         return starts;
     }
     let mut target = CHUNK_BYTES;
-    for (pos, _) in unicode_linebreak::linebreaks(text) {
+    for (pos, _) in units::break_opportunities(text) {
         // Never after an author's soft hyphen: linear output does not break
         // there ([`Division::Never`]), and a chunk boundary is a break.
         if pos as u32 >= target && pos < text.len() && !text[..pos].ends_with('\u{AD}') {

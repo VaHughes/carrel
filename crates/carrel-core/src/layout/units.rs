@@ -75,7 +75,7 @@ impl Unit {
 /// whitespace of the unit it ends.
 pub(super) fn units<'a>(text: &'a str, w: &'a WidthFn) -> impl Iterator<Item = Unit> + 'a {
     let mut prev = 0usize;
-    unicode_linebreak::linebreaks(text).map(move |(pos, op)| {
+    break_opportunities(text).map(move |(pos, op)| {
         let start = prev;
         prev = pos;
         let s = &text[start..pos];
@@ -91,6 +91,42 @@ pub(super) fn units<'a>(text: &'a str, w: &'a WidthFn) -> impl Iterator<Item = U
             soft_hyphen: trailing_ws_bytes == 0 && s.ends_with(SOFT_HYPHEN),
         }
     })
+}
+
+/// UAX #14 break opportunities, with rule LB20.1 applied on top.
+///
+/// `unicode-linebreak` 0.1.5 implements the algorithm from before Unicode
+/// 15.1, which added LB20.1: no break after a hyphen that follows a space
+/// (or the start of the text) and comes before a letter. Without it,
+/// `use the -v flag` could end a row at `-` and start the next with `v`,
+/// dividing a command-line option, which linear output promises never to do
+/// to a word. So a hyphen-minus or U+2010 at the start of a word holds to the
+/// word. A break BEFORE the hyphen, at the space, is untouched.
+///
+/// The one function every layout pass and test asks, so they all agree on
+/// where a row may end.
+pub(crate) fn break_opportunities(
+    text: &str,
+) -> impl Iterator<Item = (usize, BreakOpportunity)> + '_ {
+    unicode_linebreak::linebreaks(text).filter(move |&(pos, op)| {
+        op == BreakOpportunity::Mandatory || pos >= text.len() || !leading_hyphen_before(text, pos)
+    })
+}
+
+/// LB20.1's shape at `pos`: `text[..pos]` ends in a hyphen that starts its
+/// word, and a letter follows.
+fn leading_hyphen_before(text: &str, pos: usize) -> bool {
+    let (before, after) = text.split_at(pos);
+    let mut back = before.chars().rev();
+    if !matches!(back.next(), Some('-' | '\u{2010}')) {
+        return false;
+    }
+    // sot, a space or line break (`is_whitespace` covers both, and the
+    // no-break spaces of class GL), or ZW, before it.
+    let starts_word = back
+        .next()
+        .is_none_or(|c| c.is_whitespace() || c == '\u{200B}');
+    starts_word && after.chars().next().is_some_and(char::is_alphabetic)
 }
 
 /// [`units`] with the author's soft hyphens taken out of the break
@@ -406,7 +442,32 @@ pub(super) fn divide(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::layout::cluster_width;
+
+    /// UAX #14 LB20.1: a hyphen that begins a word holds to it — `-v` is
+    /// one option, not `-` then `v` — while the space before it still
+    /// breaks, and a hyphen inside a word (`e-mail`) still may.
+    #[test]
+    fn a_hyphen_that_starts_a_word_is_not_a_break() {
+        let at = |t: &str| -> Vec<usize> {
+            break_opportunities(t)
+                .map(|(p, _)| p)
+                .filter(|&p| p < t.len())
+                .collect()
+        };
+        let t = "use the -v flag";
+        assert_eq!(at(t), [4, 8, 11], "{t}");
+        assert_eq!(at("-v"), Vec::<usize>::new(), "at the start of the text");
+        assert_eq!(at("a \u{2010}word"), [2], "U+2010 too");
+        assert_eq!(
+            at("a\u{A0}-x"),
+            Vec::<usize>::new(),
+            "after a no-break space"
+        );
+        assert!(at("e-mail").contains(&2), "inside a word, as before");
+        assert!(!at("a -1").contains(&3), "nor, by LB25, does a minus sign");
+    }
 
     fn units_of(s: &str) -> Vec<Unit> {
         units(s, &cluster_width).collect()

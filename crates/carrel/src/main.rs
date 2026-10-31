@@ -1925,7 +1925,7 @@ fn poll_reload(
 /// thread per settled query, only current-generation results applied. A
 /// stale thread's receiver is dropped; it stops on its next send.
 struct Grep {
-    rx: Option<Receiver<carrel::grep::Msg>>,
+    rx: Option<carrel::grep::Search>,
     generation: u64,
     spawned: Option<String>,
     pending: Option<(String, Instant)>,

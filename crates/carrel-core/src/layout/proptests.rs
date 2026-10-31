@@ -339,7 +339,7 @@ fn linear_rows(
 /// An unbreakable run: no UAX #14 break opportunity inside it, the author's
 /// soft hyphen not counting as one — the unit linear output never divides.
 fn unbreakable(s: &str) -> bool {
-    unicode_linebreak::linebreaks(s)
+    super::units::break_opportunities(s)
         .filter(|&(at, _)| at < s.len())
         .all(|(at, _)| s[..at].ends_with('\u{AD}'))
 }
@@ -382,7 +382,7 @@ proptest! {
         }
         // Where two rows meet with no gap, nothing was elided, so the text
         // itself must allow a break there — anything else is a cut word.
-        let breaks: Vec<usize> = unicode_linebreak::linebreaks(&t).map(|(at, _)| at).collect();
+        let breaks: Vec<usize> = super::units::break_opportunities(&t).map(|(at, _)| at).collect();
         for w in rs.windows(2) {
             prop_assert!(w[0].1.end <= w[1].1.start, "overlap: {:?} then {:?}", &w[0].1, &w[1].1);
             prop_assert!(

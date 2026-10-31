@@ -335,6 +335,31 @@ Known defects, found 2026-10-31 and not yet fixed:
   key" to a box). Every pane closes on `q`, so a reader may expect it to close only the
   box. Owner's call; one line in `key_action` either way.
 
+Found by the cold black-box review of 2026-10-31, older than that work, not yet fixed:
+
+- **The bookmark list (`"`) with long labels** wraps the selected label over two rows and
+  repeats it in the third, so the other marks are never visible (three marks, all three rows
+  the selected one), and stray pieces of the page show past its right edge. Short labels
+  render correctly.
+- **A resume saved with a blank gap row at the top** comes back at the start of the
+  paragraph above it, about a screen too early: the view's anchor for a gap row is the
+  previous block's start. A view-anchor question, not a persistence one (the saved place
+  resolves exactly).
+- **At small heights (12–20 rows) the footnote box** covers the status row, the hint row
+  and the mark itself.
+- **The home list's continue-reading row** keeps its percentage from when the list was
+  built, so after reading on and returning with ⌂ the file's own row and its
+  continue-reading row disagree.
+- **A bare `https://…` URL is not a link** (no OSC 8, hover or copy); `www.` and `<https://…>`
+  are. Hand-rolled linkify covers `www.` only.
+- **A position or bookmark saved before the file was edited elsewhere** lands where the
+  edit moved its bytes, possibly another paragraph (a live reload carries bookmarks by
+  content; a cold reopen cannot, having no content to match). The man page already says
+  bookmarks do not survive an edit.
+- **Home search's math-view cache** (`grep::MATH_VIEWS`) is never pruned: files deleted or
+  under an old root keep their entries for the session. Bounded by the files with inline
+  math, so small in practice.
+
 The Q29/Q33 architecture follow-ups are done (see Recently completed). What a GTK frontend
 would still find: the TUI's `App` is sized in cells and stays in `carrel`, deliberately — a
 GUI shares `carrel-core`, `carrel-state` and the `Intent` vocabulary, and writes its own

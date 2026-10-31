@@ -283,14 +283,18 @@ no word and adds no character, because a hyphen would be wrong inside a hash
 or a URL and a screen reader or a copy wants the run whole. Every line fits the
 width except one holding a single run too long for the whole row, which gets a
 line of its own and runs past; the text before it ends the line above, and the
-text after it wraps as usual. The author's soft hyphens are left out, so a word
+text after it wraps as usual. Tables are the other exception: they stay
+aligned, never cards, so a table wider than the width runs past it. The author's soft hyphens are left out, so a word
 that has them moves to the next line whole, like any other. `--render` breaks
 its lines in the same places, except that a run too long for the whole row is
 cut the way the screen cuts it, and the hyphen or `↩` it adds is written faint,
 which is weight rather than color. With `NO_COLOR` set it has no way to show
 that a character was added, so it adds none and is exactly `--plain`. Neither
-cuts a code line: on the screen, a cut code line is marked at the start of its
-next row, where linear output prints the code's own indentation.
+cuts a code line. A long code line is still wrapped at its spaces, as on the
+screen, with its continuation indented two cells past the line's own
+indentation (where the screen draws `↳`); linear output has no mark to draw
+there, so copying a wrapped line from it gets a line break the code did not
+have. A run in code too long for the whole row is never cut.
 
 ### Images, highlights, and notes
 
