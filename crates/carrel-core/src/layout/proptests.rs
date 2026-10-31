@@ -310,3 +310,155 @@ proptest! {
         }
     }
 }
+
+/// Rows under a linear [`super::Division`]: `(row_text, row_range, indent,
+/// hyphen, split)`.
+fn linear_rows(
+    text: &str,
+    width: u16,
+    code: bool,
+    soft: bool,
+    division: super::Division,
+) -> Vec<(String, std::ops::Range<u32>, u16, bool, bool)> {
+    let mut out = Vec::new();
+    super::wrap_text_divided(text, width, code, soft, division, |r| {
+        let RowKind::Text { hyphen, split, .. } = r.kind else {
+            unreachable!("wrap emits only text rows")
+        };
+        out.push((
+            text[r.doc.start as usize..r.doc.end as usize].to_string(),
+            r.doc.clone(),
+            r.indent,
+            hyphen,
+            split,
+        ));
+    });
+    out
+}
+
+/// An unbreakable run: no UAX #14 break opportunity inside it, the author's
+/// soft hyphen not counting as one — the unit linear output never divides.
+fn unbreakable(s: &str) -> bool {
+    unicode_linebreak::linebreaks(s)
+        .filter(|&(at, _)| at < s.len())
+        .all(|(at, _)| s[..at].ends_with('\u{AD}'))
+}
+
+/// A run of letters with the author's division points in it: the case in
+/// which [`super::Division::Overwide`] must cut exactly as the screen does.
+fn soft_run() -> impl Strategy<Value = String> {
+    prop::collection::vec(
+        prop::sample::select(&["a", "bc", "def", "documentation", "\u{AD}"][..]),
+        1..24,
+    )
+    .prop_map(|p| p.concat())
+}
+
+proptest! {
+    /// 10. `fmt`'s rule, which linear output keeps: a row fits the space its
+    ///     indent leaves it, or it is ONE unbreakable run that would not fit
+    ///     an empty row. No row is ever marked, so nothing is added; no row
+    ///     ends at a soft hyphen, so no word is divided; and every
+    ///     non-whitespace byte lands in exactly one row, so nothing is lost.
+    #[test]
+    fn never_divides_and_overhangs_only_with_one_run(
+        t in text(),
+        width in 1u16..=200,
+        code in any::<bool>(),
+    ) {
+        let rs = linear_rows(&t, width, code, false, super::Division::Never);
+        let mut count = vec![0u8; t.len()];
+        for (s, r, indent, hyphen, split) in &rs {
+            prop_assert!(!hyphen && !split, "a linear row was marked: {s:?}");
+            let budget = width.saturating_sub(*indent).max(1);
+            prop_assert!(
+                display_width(s) <= budget || unbreakable(s),
+                "row {s:?} is {} cells in {budget} at width {width} and is not one run",
+                display_width(s),
+            );
+            for i in r.start..r.end {
+                count[i as usize] += 1;
+            }
+        }
+        // Where two rows meet with no gap, nothing was elided, so the text
+        // itself must allow a break there — anything else is a cut word.
+        let breaks: Vec<usize> = unicode_linebreak::linebreaks(&t).map(|(at, _)| at).collect();
+        for w in rs.windows(2) {
+            prop_assert!(w[0].1.end <= w[1].1.start, "overlap: {:?} then {:?}", &w[0].1, &w[1].1);
+            prop_assert!(
+                !(w[0].0.ends_with('\u{AD}') && w[0].1.end == w[1].1.start),
+                "a row ended at a soft hyphen: {:?} then {:?}", &w[0].0, &w[1].0,
+            );
+            if w[0].1.end == w[1].1.start && !w[0].0.is_empty() {
+                prop_assert!(
+                    breaks.contains(&(w[0].1.end as usize)),
+                    "a word was cut between {:?} and {:?}", &w[0].0, &w[1].0,
+                );
+            }
+        }
+        for (i, ch) in t.char_indices() {
+            if !ch.is_whitespace() {
+                prop_assert_eq!(count[i], 1, "byte {} ({:?}) at width {}", i, ch, width);
+            }
+        }
+        let n = super::wrap_text_divided(&t, width, code, false, super::Division::Never, |_| {});
+        prop_assert_eq!(n as usize, rs.len());
+    }
+
+    /// 11. Overwide keeps every invariant of the screen's layout: a row fits
+    ///     WITH its mark (or is a single cluster wider than the row, unmarked),
+    ///     rows are ordered, a marked row elides nothing, and every
+    ///     non-whitespace byte lands in exactly one row.
+    #[test]
+    fn overwide_keeps_every_invariant(
+        t in text(),
+        width in 1u16..=200,
+        soft in any::<bool>(),
+    ) {
+        let rs = linear_rows(&t, width, false, soft, super::Division::Overwide);
+        let mut count = vec![0u8; t.len()];
+        for (s, r, indent, hyphen, split) in &rs {
+            prop_assert!(!(*hyphen && *split), "one mark per row");
+            let marked = *hyphen || *split;
+            let budget = width.saturating_sub(*indent).max(1);
+            let cells = display_width(s) + u16::from(marked);
+            prop_assert!(
+                cells <= budget || (visible_clusters(s) <= 1 && !marked),
+                "row {s:?} (mark {marked}) is {cells} cells in {budget} at width {width}",
+            );
+            for i in r.start..r.end {
+                count[i as usize] += 1;
+            }
+        }
+        for w in rs.windows(2) {
+            prop_assert!(w[0].1.end <= w[1].1.start, "overlap: {:?} then {:?}", &w[0].1, &w[1].1);
+            if w[0].3 || w[0].4 {
+                prop_assert_eq!(w[0].1.end, w[1].1.start, "a marked row left a gap");
+            }
+        }
+        for (i, ch) in t.char_indices() {
+            if !ch.is_whitespace() {
+                prop_assert_eq!(count[i], 1, "byte {} ({:?}) at width {}", i, ch, width);
+            }
+        }
+    }
+
+    /// 12. A run that opens its line and is wider than the row is cut by
+    ///     Overwide exactly where the screen cuts it, with the same marks —
+    ///     its soft hyphens included, though Overwide does not break at one
+    ///     anywhere else.
+    #[test]
+    fn overwide_cuts_a_lone_run_where_the_screen_does(
+        t in soft_run(),
+        width in 1u16..=40,
+        soft in any::<bool>(),
+    ) {
+        let cut = |d| {
+            linear_rows(&t, width, false, soft, d)
+                .into_iter()
+                .map(|(_, r, i, h, s)| (r, i, h, s))
+                .collect::<Vec<_>>()
+        };
+        prop_assert_eq!(cut(super::Division::Overwide), cut(super::Division::Fill));
+    }
+}

@@ -17,9 +17,9 @@
 //! quote bars, indent and prefix for both, after the copies here had already
 //! drifted out from under the `NO_COLOR` promise above. NO RATATUI — rule 6.
 
-use std::collections::HashMap;
-
-use carrel_core::{BlockIdx, Document, Inline, NodeKind, Row, RowKind};
+use carrel_core::{
+    BlockIdx, Division, Document, Hyphenation, Inline, NodeKind, Row, RowKind, hyphenation_for,
+};
 
 use crate::layout::Layout;
 
@@ -102,11 +102,26 @@ pub fn render(doc: &Document, width: u16) -> String {
 
 /// The same, with the `NO_COLOR` decision made by the caller — tests inject
 /// rather than touch the process environment.
+///
+/// Lines break where [`crate::plain::render`]'s do: no word is divided to
+/// fill a line, and the author's soft hyphens are not break points. Styled,
+/// one thing differs — a run wider than its whole row is divided the way
+/// the screen divides it, by the document's own language rules or at a
+/// soft hyphen with a hyphen, otherwise cut and ended with `↩`, and that
+/// mark is written FAINT ([`Division::Overwide`]). Faint is weight, not
+/// colour, so it is the screen's dim mark in a form this contract allows;
+/// and like the screen's, it is not in the text. Unstyled, there is no way
+/// to say a character was added, so nothing is: the run stands whole on a
+/// line of its own, exactly as in plain output ([`Division::Never`]).
 #[must_use]
 pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
     let width = width.max(20);
     // Aligned tables, like plain output: cards exist only on a screen.
-    let layout = Layout::with_images(doc, width, HashMap::new(), true);
+    let layout = if styled {
+        Layout::linear(doc, width, hyphenation_for(doc), Division::Overwide)
+    } else {
+        Layout::linear(doc, width, Hyphenation::Off, Division::Never)
+    };
     let mut out = String::new();
     let mut rows: Vec<Row> = Vec::new();
     let mut pending_blanks = 0u32;
@@ -117,9 +132,6 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
         let heading_bold = matches!(node.kind, NodeKind::Heading { .. });
         layout.rows_for(doc, b, &mut rows);
         let mut first_text = true;
-        // A row ending inside a word carries straight on, as in plain
-        // output: see [`crate::plain::render`].
-        let mut carried: Option<String> = None;
         for row in &rows {
             match row.kind {
                 RowKind::Decoration => pending_blanks += 1,
@@ -128,9 +140,13 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
                     // to decide — see [`crate::plain::open_row`] for why the
                     // duplication this module's header defends stops there.
                     // The prefix comes back unstyled: a bullet needs no weight.
-                    let mut line = carried.take().unwrap_or_else(|| {
-                        crate::plain::open_row(&mut out, &mut pending_blanks, node, row, first_text)
-                    });
+                    let mut line = crate::plain::open_row(
+                        &mut out,
+                        &mut pending_blanks,
+                        node,
+                        row,
+                        first_text,
+                    );
                     let text = &doc.text[row.doc.start as usize..row.doc.end as usize];
                     for seg in segments(
                         text,
@@ -163,25 +179,43 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
                             line.push_str(OSC8_CLOSE);
                         }
                     }
+                    // The mark of a divided run, in the cell the layout kept
+                    // for it — after the link closes, because it is not part
+                    // of the link's text. Only the styled layout, `Overwide`, marks
+                    // a row at all; the test of `styled` says so where it matters.
+                    if styled && let Some(mark) = cut_mark(hyphen, split) {
+                        line.push_str(&mark);
+                    }
                     // Trimmed like plain output's lines, which is half of what
                     // `NO_COLOR` byte-identity needs; a styled line ends in a
                     // reset or a link terminator, so the trim finds nothing.
                     first_text = false;
-                    if hyphen || split {
-                        carried = Some(line);
-                        continue;
-                    }
                     out.push_str(line.trim_end());
                     out.push('\n');
                 }
             }
         }
-        if let Some(line) = carried {
-            out.push_str(line.trim_end());
-            out.push('\n');
-        }
     }
     out
+}
+
+/// The faint mark a row divided inside a run ends with: the hyphen of a
+/// word divided by its language or at its author's soft hyphen, or `↩` for
+/// anything else cut — the screen's two marks (`render::paint_cut_mark`),
+/// dim there and faint here.
+fn cut_mark(hyphen: bool, split: bool) -> Option<String> {
+    let mark = if hyphen {
+        "-"
+    } else if split {
+        "↩"
+    } else {
+        return None;
+    };
+    let faint = Attrs {
+        dim: true,
+        ..Attrs::default()
+    };
+    Some(format!("{}{mark}{RESET}", faint.sgr()))
 }
 
 /// One styled piece of a row: local byte range, attributes, link URL.

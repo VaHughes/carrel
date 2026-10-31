@@ -99,8 +99,8 @@ Key facts that are easy to get wrong:
   `max(4, avail / 8)` cells, never a line's last word, never a third row running — the author's soft hyphens count toward
   that and are never refused for it). Only rows
   narrower than `NARROW_BELOW` (70) are considered, judged per logical line, so a nested list
-  item in a wide window qualifies. Plain `wrap` never divides, and that is the form for output
-  that leaves the screen. Measured: +12% on the height pass at 40 columns, nothing at 80.
+  item in a wide window qualifies. Plain `wrap` never divides by a language's patterns.
+  Measured: +12% on the height pass at 40 columns, nothing at 80.
 - **A run wider than the whole row is cut by the packer, on the packer's terms.** `pack` asks a
   `split` closure only for a unit that misses an EMPTY row, and again for its tail until what is
   left fits; an answer whose head does not fit with its mark, or makes no progress, is not
@@ -109,7 +109,17 @@ Key facts that are easy to get wrong:
   (`hyphen: true`), else cuts at a cluster boundary and reserves a cell for a continuation mark
   (`RowKind::Text { split }`, painted `↩`, dim) — except on a code line, whose next row already
   carries `↳`, and on a one-cell row, which has no cell to give. Like the hyphen, the mark is in
-  no text and the cut leaves no gap. Plain output gets the same rows and paints no mark.
+  no text and the cut leaves no gap.
+- **Output that leaves the screen lays out under a `Division`** (`wrap_divided`). The screen is
+  `Division::Fill` — everything above. `--plain` (and `--render` under `NO_COLOR`) is
+  `Division::Never`, `fmt`'s rule: `units::whole_words` joins units across the author's soft
+  hyphens so a soft-hyphenated word packs whole, no word is divided to fill a row, and `split`
+  answers `None`, so a run wider than an empty row is placed whole on a row of its own and
+  overhangs — no row is ever marked, and nothing is added. Styled `--render` is
+  `Division::Overwide`: the same line breaks, except that a run wider than the whole row is cut
+  as the screen cuts it (`units::split_whole`: its latest soft hyphen that fits with the hyphen,
+  else `split`), and the frontend writes the mark faint. Neither linear mode cuts a code line —
+  its mark is the next row's `↳`, in cells linear output prints as the code's indentation.
 - **Table alignment happens at parse, not at paint.** Column widths are max-content display
   widths (width-independent), cells pad with synthetic spaces in the display text, every visual
   row is one contiguous doc range. The `│` separators are paint-time decoration. The synthetic

@@ -2,8 +2,9 @@
 //!
 //! Linux terminal screen readers (Orca via AT-SPI, BRLTTY) read output in
 //! insertion order; a cell-repainting TUI cannot express itself in that
-//! model. This module renders the SAME reflow rows the screen paints as
-//! honest lines: `carrel --plain doc.md | less` is the screen-reader path,
+//! model. This module renders the core's reflow rows as honest lines —
+//! the screen's layout, except that nothing inside a word is divided (see
+//! [`render`]): `carrel --plain doc.md | less` is the screen-reader path,
 //! and a bare pipe gets it by default.
 //!
 //! ASCII-safe by policy: quote bars are `> `, no box drawing, and never an
@@ -12,9 +13,7 @@
 //! cards — card gutter labels are paint decoration, which plain output by
 //! definition omits). NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
-use std::collections::HashMap;
-
-use carrel_core::{BlockIdx, Document, Node, Row, RowKind};
+use carrel_core::{BlockIdx, Division, Document, Hyphenation, Node, Row, RowKind};
 
 use crate::layout::Layout;
 
@@ -36,8 +35,9 @@ use crate::layout::Layout;
 /// text carried.
 ///
 /// A soft hyphen (U+00AD) goes too: on the screen it is invisible unless a
-/// row ends at it, and neither linear rendering ends a line there. Left in,
-/// a terminal or a screen reader may show it, sound it, or split the word.
+/// row ends at it, and linear output ends a line there only where
+/// [`crate::ansi`] writes its own faint hyphen. Left in, a terminal or a
+/// screen reader may show it, sound it, or split the word.
 pub(crate) fn push_text(out: &mut String, text: &str) {
     out.extend(
         text.chars()
@@ -94,11 +94,21 @@ pub(crate) fn open_row(
 }
 
 /// Render the whole document at `width` as plain text lines.
+///
+/// `fmt`'s rule: no word is divided and no character is added. Every line
+/// fits `width`, except a line holding one run with no break opportunity in
+/// it that is wider than its whole row — indent, quote bars and list prefix
+/// count — which stands on a line of its own and runs past. The author's
+/// soft hyphens are not break points here, so a soft-hyphenated word that
+/// fits moves to the next line whole. A hyphen is wrong inside a hash, a
+/// path or a URL, which is what an over-long run usually is, and a screen
+/// reader or a copy wants the run whole. ([`Division::Never`].)
+///
+/// Tables stay aligned and may run past `width`: they are never cards here.
 #[must_use]
 pub fn render(doc: &Document, width: u16) -> String {
     let width = width.max(20);
-    // wrap_tables = true: aligned tables; a card's labels exist only in paint.
-    let layout = Layout::with_images(doc, width, HashMap::new(), true);
+    let layout = Layout::linear(doc, width, Hyphenation::Off, Division::Never);
     let mut out = String::new();
     let mut rows: Vec<Row> = Vec::new();
     let mut pending_blanks = 0u32;
@@ -108,38 +118,20 @@ pub fn render(doc: &Document, width: u16) -> String {
         let node = doc.node_for_block(b);
         layout.rows_for(doc, b, &mut rows);
         let mut first_text = true;
-        // A row that ends inside a word — at the author's soft hyphen, or
-        // cut because the run is wider than the row — does not end its
-        // line: the next row carries straight on. Plain output never
-        // divides a word, and adds nothing it cannot stand behind: a hyphen
-        // is wrong inside a hash, a path or a URL, which is what a cut run
-        // usually is, and a screen reader or a copy wants the run whole. So
-        // such a line runs past `width` instead.
-        let mut carried: Option<String> = None;
         for row in &rows {
             match row.kind {
                 RowKind::Decoration => pending_blanks += 1,
-                RowKind::Text { hyphen, split, .. } => {
-                    let mut line = carried.take().unwrap_or_else(|| {
-                        open_row(&mut out, &mut pending_blanks, node, row, first_text)
-                    });
+                RowKind::Text { .. } => {
+                    let mut line = open_row(&mut out, &mut pending_blanks, node, row, first_text);
                     push_text(
                         &mut line,
                         &doc.text[row.doc.start as usize..row.doc.end as usize],
                     );
                     first_text = false;
-                    if hyphen || split {
-                        carried = Some(line);
-                        continue;
-                    }
                     out.push_str(line.trim_end());
                     out.push('\n');
                 }
             }
-        }
-        if let Some(line) = carried {
-            out.push_str(line.trim_end());
-            out.push('\n');
         }
     }
     out
@@ -245,8 +237,9 @@ mod tests {
 
     /// Linear output never divides a word: not at the author's soft hyphens,
     /// which it leaves out, and not inside a run too wide for a row, which
-    /// a screen paints with a dim `↩` this output cannot. Either line runs
-    /// past the width instead, and `--render` without colour agrees.
+    /// a screen paints with a dim `↩`. Such a run stands alone on its line
+    /// and runs past the width instead, and `--render` without colour
+    /// agrees. `tests/linear_width.rs` holds the rest of the contract.
     #[test]
     fn no_word_is_divided_and_no_soft_hyphen_is_written() {
         let src = "A super\u{AD}cali\u{AD}fragi\u{AD}listic\u{AD}expi\u{AD}ali\u{AD}docious \

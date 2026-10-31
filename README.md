@@ -269,17 +269,28 @@ so carrel never adds a division of its own to make a third. **The hyphen is
 drawn, not written**: it is dimmer than the letters beside it, and search,
 selection and copy see the word whole — carrel's hyphen was never in the text,
 and the author's soft hyphen is invisible to all three. `--plain` and
-`--render` never divide a word. Turn it off in the settings pane (`,`) or with
-`hyphenate = false`.
+`--render` never divide a word to fill a line. Turn it off in the settings
+pane (`,`) or with `hyphenate = false`.
 
 A word, hash or token longer than the whole row has to be cut somewhere. A word
 in the document's language is divided where its rules allow, with a hyphen;
 anything else is cut where it must and the row ends in a dim `↩`, so a cut
 token does not look like a shorter one. That mark is drawn, not written, too.
-Code is the exception: its continued lines already start with `↳`. `--plain`
-and `--render` cannot draw a dim mark, and a hyphen would be wrong inside a
-hash or a URL, so they cut nothing: such a line runs past the width instead,
-and the author's soft hyphens are left out.
+Code is the exception: its continued lines already start with `↳`.
+
+Output that leaves the screen keeps `fmt`'s rule instead: `--plain` divides
+no word and adds no character, because a hyphen would be wrong inside a hash
+or a URL and a screen reader or a copy wants the run whole. Every line fits the
+width except one holding a single run too long for the whole row, which gets a
+line of its own and runs past; the text before it ends the line above, and the
+text after it wraps as usual. The author's soft hyphens are left out, so a word
+that has them moves to the next line whole, like any other. `--render` breaks
+its lines in the same places, except that a run too long for the whole row is
+cut the way the screen cuts it, and the hyphen or `↩` it adds is written faint,
+which is weight rather than color. With `NO_COLOR` set it has no way to show
+that a character was added, so it adds none and is exactly `--plain`. Neither
+cuts a code line: on the screen, a cut code line is marked at the start of its
+next row, where linear output prints the code's own indentation.
 
 ### Images, highlights, and notes
 
