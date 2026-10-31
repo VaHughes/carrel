@@ -1190,12 +1190,7 @@ impl App {
     /// path to key on — the same contract position saving already has.
     fn save_marks(&self) {
         if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
-            let places: Vec<crate::state::Place> = self
-                .marks
-                .iter()
-                .map(|&m| crate::state::Place::of(&self.doc, DocByte(m)))
-                .collect();
-            let _ = crate::state::save_marks_in(dir, file, &places);
+            let _ = crate::state::save_marks_in(dir, file, &self.mark_places());
         }
     }
 
@@ -1213,8 +1208,74 @@ impl App {
             (Some(dir), Some(file)) => crate::state::load_marks_in(dir, file),
             _ => Vec::new(),
         };
+        self.set_marks_from(&places);
+    }
+
+    /// The bookmarks as places in the current document — what is saved, and
+    /// what carries them across a reload.
+    fn mark_places(&self) -> Vec<crate::state::Place> {
+        self.marks
+            .iter()
+            .map(|&m| crate::state::Place::of(&self.doc, DocByte(m)))
+            .collect()
+    }
+
+    /// Each bookmark as its block's content hash, which same-content block
+    /// it is (the `k`th, for a repeated line), and its place as a fallback.
+    fn mark_carriers(&self) -> Vec<(u64, usize, crate::state::Place)> {
+        let hashes = block_hashes(&self.doc);
+        self.marks
+            .iter()
+            .map(|&m| {
+                let b = self.doc.block_at_doc(DocByte(m)).get();
+                let h = hashes[b];
+                let k = hashes[..b].iter().filter(|&&x| x == h).count();
+                (h, k, crate::state::Place::of(&self.doc, DocByte(m)))
+            })
+            .collect()
+    }
+
+    /// After a reload: each bookmark on the same block it was on, found by
+    /// content; a block that is gone keeps its mark at its old place, snapped
+    /// to whatever block is there now.
+    fn carry_marks(&mut self, carriers: &[(u64, usize, crate::state::Place)]) {
+        if self.doc.block_count() == 0 {
+            self.marks.clear();
+            return;
+        }
+        let hashes = block_hashes(&self.doc);
+        let mut marks: Vec<u32> = carriers
+            .iter()
+            .map(|&(h, k, place)| {
+                let b = hashes
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &x)| x == h)
+                    .nth(k)
+                    .map_or_else(
+                        || self.doc.block_at_doc(place.resolve(&self.doc)),
+                        |(i, _)| BlockIdx(i as u32),
+                    );
+                self.doc.node_for_block(b).doc.start
+            })
+            .collect();
+        marks.sort_unstable();
+        marks.dedup();
+        self.marks = marks;
+    }
+
+    /// Put the bookmarks at `places` in the current document, each snapped
+    /// to the start of its block. A document with no blocks at all — an
+    /// empty file, or one holding only a link definition or a comment, which
+    /// a bookmarked file can become when it is rewritten — has nowhere to
+    /// put one, and keeps none.
+    fn set_marks_from(&mut self, places: &[crate::state::Place]) {
+        if self.doc.block_count() == 0 {
+            self.marks.clear();
+            return;
+        }
         let mut marks: Vec<u32> = places
-            .into_iter()
+            .iter()
             .map(|p| {
                 let b = self.doc.block_at_doc(p.resolve(&self.doc));
                 self.doc.node_for_block(b).doc.start
@@ -1879,7 +1940,13 @@ impl App {
         // appending a line to a long plan threw open every section the
         // reader had closed. Carried across by name instead.
         let folds = self.fold_keys();
+        // Bookmarks are doc bytes of the parse being replaced, and the file
+        // was edited, so no coordinate survives: a paragraph inserted above
+        // moves every source and display byte after it. Carried by content
+        // instead (`carry_marks`), the way `mark_changes` tells blocks apart.
+        let marks = self.mark_carriers();
         self.reload_from(&src);
+        self.carry_marks(&marks);
         if self.apply_fold_keys(&folds) {
             self.relayout();
         }
@@ -3174,6 +3241,13 @@ enum StepKind {
 /// with it a renumbered item, a heading that changed level, a fence that
 /// changed language and a link pointed somewhere else. Offsets are left out
 /// on purpose: they shift whenever anything earlier in the file does.
+/// [`block_hash`] for every block, in order.
+fn block_hashes(doc: &Document) -> Vec<u64> {
+    (0..doc.block_count())
+        .map(|i| block_hash(doc, BlockIdx(i as u32)))
+        .collect()
+}
+
 fn block_hash(doc: &Document, b: BlockIdx) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();

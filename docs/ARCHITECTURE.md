@@ -68,8 +68,10 @@ records exactly this). Hence:
 
 `./scripts/check-discipline.sh` enforces 1–4, 6 and 7 mechanically. Rule 6 checks the whole
 closure, not only direct imports: no terminal crate named on any non-comment line of a listed
-module, and every `crate::` edge from one lands on another (or on a name re-exported from
-`carrel-state`). Until 2026-10-31 it grepped for a direct `use ratatui` and passed while `app`,
+module, and every `crate::` (or top-level `super::`) edge from one lands on another (or on a
+name re-exported from `carrel-state`). Rules 1 and 7's dependency halves ask `cargo tree`,
+not the manifest, so a table-form, renamed or transitive UI dependency is caught too, and a
+cargo that cannot answer fails the check. Until 2026-10-31 it grepped for a direct `use ratatui` and passed while `app`,
 `footer` and `menu` reached crossterm through `keys` (research.md Q29). Every check has been
 verified to fail on an injected violation. Comment lines are skipped, because the docs
 necessarily name what the rules forbid. Color (rule 3's RGBA half) is a convention, not a
@@ -215,7 +217,7 @@ Key facts that are easy to get wrong:
 | Module | What it is |
 |---|---|
 | `intent.rs` | `Intent` and the small enums it needs (`Span`, `Where`, `Direction`, `SearchKey`, `NoteKey`, `Edge`). See discipline 4. |
-| `state.rs`, `config.rs` | XDG state (reading positions, bookmarks, collapsed sections) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. Positions and bookmarks are saved as a `Place`: a source byte plus a signed correction (`s1024+16`), exact under the core that saved it and still in the right run under another; a bare number is a display byte from 2026.10.21 or earlier (`Place::Legacy`). `config.rs` documents which keys are shared and which belong to one frontend. |
+| `state.rs`, `config.rs` | XDG state (reading positions, bookmarks, collapsed sections) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. Positions and bookmarks are saved as a `Place`: a source byte plus a signed correction (`s1024+16`), exact under the core that saved it (file unchanged) and still in the right run under another — except a diff, whose source is markdown carrel generates; a bare number is a display byte from 2026.10.21 or earlier (`Place::Legacy`). A line or mark this version cannot read is written back unchanged. A live reload carries bookmarks by block content, since an edit moves every coordinate. `config.rs` documents which keys are shared and which belong to one frontend. |
 | `scan.rs`, `grep.rs`, `fuzzy.rs` | The library walk (streamed, `.gitignore`-aware via the `ignore` crate with `require_git(false)`, cached index), multi-file content search (the source is only a prefilter, `carrel_core::SourceFilter`, which never passes over a file the reader matches; a file that passes is parsed and counted by the reader's own `search`, so the home count is what opening the file finds; four workers, hits sent in entry order; inline-math views kept per file by mtime and length), and the filter's fuzzy match. |
 | `tags.rs` | Tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads every scanned entry (to 1 MiB), finds its frontmatter by the core's own rule (`carrel_core::frontmatter`) and its key lines by `meta_split` — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and its inline `#tags` by the core's own parse (`Document::tags`), run only when a byte scan cannot rule one out. `groups` nests `a/b` under `a` (a parent's count includes its children) and `render` writes a section per tag, nested tags as subsections, with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. |
 | `links.rs`, `wiki.rs` | Forward links and backlinks with no index; `[[wikilink]]` resolution. |

@@ -14,8 +14,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   in the file itself, plus how far into the run they sat, so they resume
   exactly where you left off and still land in the right paragraph under a
   newer carrel. Positions and bookmarks saved by older versions still load.
-  If you go back to an older carrel after running this one, it ignores the
-  newer entries.
+  An older carrel cannot read the new entries, and discards them the next
+  time it saves; this version and later keep any entry they cannot read.
+  A live reload keeps each bookmark on its own section when the file is
+  edited above it.
 - **A long footnote can be read from the keyboard.** While the footnote box
   shows how much more there is, the keys that scroll the page (`↓`, `j`,
   `Space`, `Ctrl-D`, `End`…) scroll the box instead, and stop at its ends. The

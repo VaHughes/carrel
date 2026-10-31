@@ -11,7 +11,10 @@
 //! **escaped** by [`escape_field`]. **The old three-field form still
 //! parses** — an entry written before 2026-08-21 simply has no progress to
 //! show, rather than being dropped — and malformed lines are ignored, so a
-//! newer version's file cannot break an older binary.
+//! newer version's file cannot break an older binary. **Nor is it lost:** a
+//! line, or a bookmark, this version cannot read is written back unchanged
+//! when it rewrites the file. Releases up to 2026.10.21 did not do this, so
+//! going back to one of them discards what a newer carrel saved.
 //!
 //! The anchor, and every bookmark, is a [`Place`]: a SOURCE byte, written
 //! `s<src>` with a signed correction after it (`s1024+16`). Releases up to
@@ -157,7 +160,12 @@ const MARK_CAP: usize = 500;
 /// byte saved by one carrel therefore names a different place under the
 /// next — and with a terminal and a GUI installed from different channels,
 /// two cores reading one state file is the normal case, not an upgrade's.
-/// The source bytes are the author's and change only when the file does.
+/// The source bytes are the author's and change only when the file does —
+/// with one exception: a `.diff` or `.patch` (or a pipe) read as a diff is
+/// shown as markdown carrel generates from it, and its "source" is that
+/// markdown, which a newer carrel may generate differently (and which
+/// `--diff`/`--no-diff` change outright). A place in one keeps the old
+/// guarantee only: right under the core that saved it.
 ///
 /// A source byte alone is not enough, though. Provenance is recorded per
 /// RUN, and a run whose text was rewritten — a paragraph with smart quotes
@@ -165,8 +173,8 @@ const MARK_CAP: usize = 500;
 /// first source byte, so a reading position saved halfway down such a
 /// paragraph would come back at its top, rows earlier. So a place also
 /// keeps `delta`: how far the display byte stood from where its source
-/// byte maps back to. Under the core that saved it, `to_doc(src) + delta`
-/// is the saved display byte EXACTLY; under another, `to_doc(src)` finds
+/// byte maps back to. Under the core that saved it, and with the file as it
+/// was, `to_doc(src) + delta` is the saved display byte EXACTLY; under another, `to_doc(src)` finds
 /// the right run wherever the new rules put it, and the correction, which
 /// is never larger than a run, keeps the place inside it as nearly as the
 /// new text allows.
@@ -269,32 +277,32 @@ pub struct Entry {
 }
 
 fn parse(text: &str) -> Vec<Entry> {
-    text.lines()
-        .filter_map(|line| {
-            let mut it = line.splitn(5, '\t');
-            let place = Place::decode(it.next()?)?;
-            let saved_at = it.next()?.parse().ok()?;
-            let third = it.next()?;
-            // Three fields: the old form, where the third IS the path.
-            let Some(fourth) = it.next() else {
-                return (!third.is_empty()).then(|| Entry {
-                    place,
-                    saved_at,
-                    permille: None,
-                    words: None,
-                    path: unescape_field(third),
-                });
-            };
-            let path = it.next()?;
-            (!path.is_empty()).then(|| Entry {
-                place,
-                saved_at,
-                permille: third.parse().ok(),
-                words: fourth.parse().ok(),
-                path: unescape_field(path),
-            })
-        })
-        .collect()
+    text.lines().filter_map(parse_line).collect()
+}
+
+fn parse_line(line: &str) -> Option<Entry> {
+    let mut it = line.splitn(5, '\t');
+    let place = Place::decode(it.next()?)?;
+    let saved_at = it.next()?.parse().ok()?;
+    let third = it.next()?;
+    // Three fields: the old form, where the third IS the path.
+    let Some(fourth) = it.next() else {
+        return (!third.is_empty()).then(|| Entry {
+            place,
+            saved_at,
+            permille: None,
+            words: None,
+            path: unescape_field(third),
+        });
+    };
+    let path = it.next()?;
+    (!path.is_empty()).then(|| Entry {
+        place,
+        saved_at,
+        permille: third.parse().ok(),
+        words: fourth.parse().ok(),
+        path: unescape_field(path),
+    })
 }
 
 /// Every remembered document, most recently read first.
@@ -350,6 +358,15 @@ pub fn save_position_in(
         .into_iter()
         .filter(|e| e.path != k)
         .collect();
+    // A line this version cannot read is kept as it is: most likely a newer
+    // carrel's entry, in a form not invented yet. Rebuilding the file from
+    // what parsed is how 2026.10.21 discards every position a later carrel
+    // writes; this version does not do the same to the next one. Written
+    // after the readable entries, in the room the cap leaves.
+    let unread: Vec<&str> = existing
+        .lines()
+        .filter(|l| !l.trim().is_empty() && parse_line(l).is_none())
+        .collect();
     if let Some(place) = place {
         let saved_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -376,6 +393,12 @@ pub fn save_position_in(
             e.words.unwrap_or(0),
             escape_field(&e.path)
         );
+    }
+    // After the readable entries, so a reader that takes the first line for
+    // a document finds the one written now.
+    for line in unread.iter().take(CAP - entries.len()) {
+        out.push_str(line);
+        out.push('\n');
     }
     write_atomic(&path, &out)
 }
@@ -438,9 +461,15 @@ pub fn save_marks_in(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Resul
         .lines()
         .filter(|l| l.split_once('\t').is_none_or(|(p, _)| p != k) && !l.trim().is_empty())
         .collect();
+    let unread: Vec<&str> = existing
+        .lines()
+        .filter_map(|l| l.split_once('\t').filter(|(p, _)| *p == k))
+        .flat_map(|(_, marks)| marks.split(','))
+        .filter(|m| !m.is_empty() && Place::decode(m).is_none())
+        .collect();
     // Room for the line about to be appended, so the cap is a cap on the file
     // and not on the file plus one.
-    let room = if marks.is_empty() {
+    let room = if marks.is_empty() && unread.is_empty() {
         MARK_CAP
     } else {
         MARK_CAP - 1
@@ -453,14 +482,21 @@ pub fn save_marks_in(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Resul
         out.push_str(line);
         out.push('\n');
     }
-    if !marks.is_empty() {
-        let mut joined: Vec<String> = Vec::with_capacity(marks.len());
-        for m in marks {
-            let m = m.encode();
-            if !joined.contains(&m) {
-                joined.push(m);
-            }
+    let mut joined: Vec<String> = Vec::with_capacity(marks.len());
+    for m in marks {
+        let m = m.encode();
+        if !joined.contains(&m) {
+            joined.push(m);
         }
+    }
+    // A mark this version cannot read stays on the line: it is the reader's,
+    // set by a newer carrel, and nothing here can show it or clear it.
+    for m in unread {
+        if !joined.iter().any(|j| j == m) {
+            joined.push(m.to_string());
+        }
+    }
+    if !joined.is_empty() {
         let _ = writeln!(out, "{k}\t{}", joined.join(","));
     }
     write_atomic(&path, &out)
@@ -602,6 +638,36 @@ mod tests {
             [Place::Legacy(5), Place::Src { src: 40, delta: -1 }],
             "the unreadable one dropped, the repeat folded"
         );
+    }
+
+    /// A line a newer carrel wrote, in a form this one cannot read, survives
+    /// this one saving another document's position — and a bookmark this one
+    /// cannot read survives it saving that document's bookmarks.
+    #[test]
+    fn what_this_version_cannot_read_it_writes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.md");
+        std::fs::write(&a, "x").unwrap();
+        let future = "v9:1\t7\t10\t20\t/x/future.md";
+        std::fs::write(dir.path().join("positions"), format!("{future}\n")).unwrap();
+        save_position_in(dir.path(), &a, Some(P(5)), 0, 0).unwrap();
+        save_position_in(dir.path(), &a, Some(P(6)), 0, 0).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("positions")).unwrap();
+        assert_eq!(text.lines().filter(|l| *l == future).count(), 1, "{text:?}");
+        assert!(
+            text.lines().next().unwrap().starts_with('6'),
+            "readable first: {text:?}"
+        );
+        assert_eq!(load_position_in(dir.path(), &a), Some(P(6)));
+
+        let k = escape_field(&key(&a));
+        std::fs::write(dir.path().join("bookmarks"), format!("{k}\t5,w2:9\n")).unwrap();
+        save_marks_in(dir.path(), &a, &[P(5), P(8)]).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("bookmarks")).unwrap();
+        assert_eq!(text, format!("{k}\t5,8,w2:9\n"));
+        save_marks_in(dir.path(), &a, &[]).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("bookmarks")).unwrap();
+        assert_eq!(text, format!("{k}\tw2:9\n"), "clearing what it can see");
     }
 
     /// Wherever a place lands — a file shortened since, a display byte from

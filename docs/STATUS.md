@@ -49,7 +49,11 @@ Last updated: 2026-10-31
     module or any `crate::` edge off the list; rule 7 holds `carrel-state` to no UI
     dependency and no terminal geometry. Every check break-checked.
   - *Positions and bookmarks are source places* (`state::Place`, `s1024+16`): exact under
-    the core that saved them, in the right run under another; the old form still reads.
+    the core that saved them (file unchanged), in the right run under another; the old form
+    still reads, and a line or mark this version cannot read is written back unchanged
+    (2026.10.21 and earlier discard them on their next save). A diff's place is in the
+    markdown carrel generates from it, so only the first guarantee holds there. A reload
+    carries bookmarks by block content.
     Found on the way, a shipped bug: `open_path` loaded bookmarks before setting `file`, so
     a reopened document had none and the next one opened showed (and on `m` saved) the
     previous one's.

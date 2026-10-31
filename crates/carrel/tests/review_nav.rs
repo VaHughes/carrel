@@ -516,3 +516,65 @@ fn bookmarks_come_back_with_their_own_document_and_no_other() {
     other.open_path(&d.path().join("a.md")).unwrap();
     assert_eq!(other.marks, marks, "b's mark did not land on a");
 }
+
+/// A bookmarked file rewritten to nothing a block can be made of — empty,
+/// blank, only a link definition, only a comment — opens with no bookmarks,
+/// rather than looking up the block of a mark in a document that has none
+/// (an index panic, and `panic = "abort"` in a release build).
+#[test]
+fn a_bookmarked_file_emptied_since_opens_with_no_bookmarks() {
+    for emptied in ["", "   \n\n", "[a]: /x\n", "<!-- gone -->\n"] {
+        let d = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut app = file_app(d.path(), "a.md", &long_doc(20));
+        app.state_dir = Some(state.path().to_path_buf());
+        update(&mut app, Action::Scroll(carrel::action::Span::Line, 10));
+        update(&mut app, Action::MarkToggle);
+        assert_eq!(app.marks.len(), 1);
+        std::fs::write(d.path().join("a.md"), emptied).unwrap();
+
+        let mut reopened = file_app(d.path(), "b.md", "# b\n");
+        reopened.state_dir = Some(state.path().to_path_buf());
+        reopened.open_path(&d.path().join("a.md")).unwrap();
+        assert!(
+            reopened.marks.is_empty(),
+            "{emptied:?}: {:?}",
+            reopened.marks
+        );
+        reopened.reload().unwrap();
+        assert!(reopened.marks.is_empty(), "{emptied:?} on reload");
+    }
+}
+
+/// A live reload carries each bookmark to its own block in the new text: a
+/// paragraph inserted above moves every block down, and the marks move with
+/// them instead of staying at bytes that are now mid-paragraph.
+#[test]
+fn bookmarks_follow_their_blocks_across_a_reload() {
+    let d = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let src = long_doc(30);
+    let mut app = file_app(d.path(), "a.md", &src);
+    app.state_dir = Some(state.path().to_path_buf());
+    update(&mut app, Action::Scroll(carrel::action::Span::Line, 25));
+    update(&mut app, Action::MarkToggle);
+    let at = app.marks[0] as usize;
+    let marked = app.doc.text[at..].lines().next().unwrap().to_string();
+
+    let grown = format!("# New top\n\nAn inserted paragraph, long enough to move things.\n\n{src}");
+    std::fs::write(d.path().join("a.md"), grown).unwrap();
+    app.reload().unwrap();
+    assert_eq!(app.marks.len(), 1);
+    let at = app.marks[0] as usize;
+    let b = app.doc.block_at_doc(carrel_core::DocByte(at as u32));
+    assert_eq!(
+        app.doc.node_for_block(b).doc.start as usize,
+        at,
+        "on a block start"
+    );
+    assert_eq!(
+        app.doc.text[at..].lines().next().unwrap(),
+        marked,
+        "the same block"
+    );
+}

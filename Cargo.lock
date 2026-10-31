@@ -163,7 +163,6 @@ dependencies = [
  "carrel-core",
  "carrel-state",
  "criterion",
- "ignore",
  "image",
  "merman",
  "merman-ascii",
@@ -196,6 +195,9 @@ name = "carrel-state"
 version = "2026.10.21"
 dependencies = [
  "carrel-core",
+ "ignore",
+ "proptest",
+ "tempfile",
 ]
 
 [[package]]

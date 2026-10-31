@@ -23,16 +23,28 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 # *name* the things the rules forbid.
 scan() { grep -rnE "$1" "$CORE/src" 2>/dev/null | grep -vP '^[^:]+:[0-9]+:\s*(//|/\*|\*)'; }
 
+# Rule 1, and rule 7's half of it, asked of cargo rather than grepped from a
+# manifest: `[dependencies.ratatui]`, a renamed `tui = { package = "ratatui" }`
+# and a UI crate pulled in by another dependency all show up here, under their
+# real package names. A cargo that cannot answer is a failure, never a pass
+# on an empty list.
+ui_tree() { # DIR CRATE
+  local tree hits
+  tree=$(cargo tree -p "$2" -e normal,build --prefix none --format '{p}' --offline 2>/dev/null \
+         || cargo tree -p "$2" -e normal,build --prefix none --format '{p}' --locked 2>&1)
+  if ! printf '%s\n' "$tree" | grep -q "^$2 "; then
+    note "could not list $2's dependencies (cargo tree):"; printf '%s\n' "$tree" | tail -3
+  elif hits=$(printf '%s\n' "$tree" | grep -v "^$2 " | grep -E '^(ratatui|ratatui-core|ratatui-image|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui|winit|carrel|carrel-state) '); then
+    note "$2 depends, directly or not, on a UI crate or a frontend"; echo "$hits" | sort -u
+  else
+    ok "no UI or frontend crate anywhere in its dependency tree"
+  fi
+}
+
 echo "carrel-core discipline check"
 
 # --- Rule 1: no UI crates, ever. ---------------------------------------------
-if grep -nE '^\s*(ratatui|ratatui-core|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui)\b' \
-     "$CORE/Cargo.toml" >/dev/null 2>&1; then
-  note "carrel-core declares a UI dependency in Cargo.toml"
-  grep -nE '^\s*(ratatui|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui)\b' "$CORE/Cargo.toml"
-else
-  ok "no UI dependency declared"
-fi
+ui_tree "$CORE" carrel-core
 
 hits=$(scan '\b(use|extern crate)\s+(ratatui|ratatui_core|crossterm|termion|termwiz|gtk4|webkit6|iced|egui)\b')
 if [ -n "$hits" ]; then
@@ -102,6 +114,10 @@ deps() {
     local $/; my $s = <STDIN>;
     $s =~ s{//[^\n]*}{}g; $s =~ s{/\*.*?\*/}{}gs;
     my %m;
+    # `super::x` in a top-level module is `crate::x`. Inside a nested module
+    # (`mod tests`) it names the file module itself, whose item names the
+    # caller filters out: only a name that is a module file counts.
+    $m{"super:$1"} = 1 while $s =~ /\bsuper::([a-z_][a-z0-9_]*)/g;
     while ($s =~ /\bcrate::(\{|[a-z_][a-z0-9_]*)/g) {
       if ($1 ne "{") { $m{$1} = 1; next }
       my ($d, $i, $tok, @top) = (1, pos($s), "");
@@ -124,6 +140,10 @@ for m in $PURE; do
       | grep -vP '^[0-9]+:\s*(//|/\*|\*)' | sed "s|^|$f:|")
   [ -n "$h" ] && leak="$leak$h"$'\n'
   for d in $(deps "$f"); do
+    case $d in
+      super:*) d=${d#super:}; [ -f "$SRC/$d.rs" ] || [ -d "$SRC/$d" ] \
+                 || case " $(echo $SHARED) " in *" $d "*) ;; *) continue ;; esac ;;
+    esac
     case " $(echo $PURE $SHARED) " in *" $d "*) ;; *) reach="$reach  $m -> crate::$d"$'\n' ;; esac
   done
 done
@@ -147,13 +167,7 @@ fi
 echo
 echo "carrel-state discipline check"
 STATE=crates/carrel-state
-if grep -nE "^\s*(ratatui|ratatui-core|ratatui-image|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui|carrel)\s*(=|\.workspace)" \
-     "$STATE/Cargo.toml" >/dev/null 2>&1; then
-  note "carrel-state declares a UI (or frontend) dependency in Cargo.toml"
-  grep -nE "^\s*(ratatui|ratatui-core|ratatui-image|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui|carrel)\s*(=|\.workspace)" "$STATE/Cargo.toml"
-else
-  ok "no UI or frontend dependency declared"
-fi
+ui_tree "$STATE" carrel-state
 sscan() { grep -rnE "$1" "$STATE/src" 2>/dev/null | grep -vP '^[^:]+:[0-9]+:\s*(//|/\*|\*)'; }
 hits=$(sscan '\\x1[bB]|\\033|\\e\[')
 if [ -n "$hits" ]; then
