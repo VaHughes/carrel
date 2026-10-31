@@ -2,6 +2,33 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **Bookmarks come back.** Since bookmarks shipped, reopening a document showed
+  none of its bookmarks, and opening a second document showed the first one's,
+  saving them under the second's name on the next `m`. Each document now gets
+  its own.
+- **Reading positions and bookmarks survive carrel's own upgrades.** They were
+  saved as a place in the text carrel displays, which carrel's rendering rules
+  shape and which can change between releases. Now they are saved as a place
+  in the file itself, plus how far into the run they sat, so they resume
+  exactly where you left off and still land in the right paragraph under a
+  newer carrel. Positions and bookmarks saved by older versions still load.
+  If you go back to an older carrel after running this one, it ignores the
+  newer entries.
+- **A long footnote can be read from the keyboard.** While the footnote box
+  shows how much more there is, the keys that scroll the page (`↓`, `j`,
+  `Space`, `Ctrl-D`, `End`…) scroll the box instead, and stop at its ends. The
+  box's `↑`/`↓` are buttons, and the hint row says `◎ footnote`. A footnote
+  that fits is unchanged: `↓` closes it and reads on.
+- **For contributors: a third crate, `carrel-state`**, holds what every
+  frontend shares above the document model: the reader's intents (the
+  terminal's actions minus its chrome) and, from this release, persistence and
+  file discovery. The architectural check now covers the whole closure of the
+  terminal-free modules, not only their direct imports. The old check had
+  passed since the first release while those modules reached crossterm
+  through the key dispatcher; they no longer do.
+
 ## 2026.10.21
 
 - **Search finds what you type through smart punctuation.** `don't`, `"quoted"`,
