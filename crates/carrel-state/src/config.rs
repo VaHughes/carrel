@@ -444,6 +444,9 @@ pub fn load_max_width_in(dir: &Path) -> Option<u16> {
     load_all_in(dir).max_width
 }
 
+/// The terminal's reading measure, in cells: a terminal key in the shared
+/// file (see "Whose key is it" above), so it is spelled in cells here.
+// discipline: terminal key
 pub fn save_max_width_in(dir: &Path, w: u16) -> std::io::Result<()> {
     upsert_key_in(dir, "max_width", &w.to_string())
 }

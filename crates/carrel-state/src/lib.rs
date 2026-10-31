@@ -13,6 +13,13 @@
 //!
 //! - [`intent`]: what a reader can ask for, the frontend-neutral half of the
 //!   terminal's `Action`.
+//! - [`config`] and [`state`]: what carrel remembers, in the files every
+//!   frontend reads — preferences, and reading positions, bookmarks and
+//!   collapsed sections, saved in coordinates that outlive a release
+//!   ([`state::Place`]). [`marginalia`]: highlights and notes.
+//! - [`scan`], [`grep`], [`tags`], [`links`], [`wiki`], [`fuzzy`]: finding
+//!   documents — the library walk, content search, the tag scan, link and
+//!   wikilink resolution, the filter's fuzzy match.
 //!
 //! **No API-stability promise.** This crate is versioned in lockstep with
 //! `carrel` and `carrel-core`, released from one tag, and each depends on the
@@ -21,4 +28,13 @@
 //!
 //! [Carrel]: https://github.com/VaHughes/carrel
 
+pub mod config;
+pub mod fuzzy;
+pub mod grep;
 pub mod intent;
+pub mod links;
+pub mod marginalia;
+pub mod scan;
+pub mod state;
+pub mod tags;
+pub mod wiki;

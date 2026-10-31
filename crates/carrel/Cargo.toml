@@ -24,7 +24,6 @@ path = "src/main.rs"
 unicode-segmentation.workspace = true
 carrel-core = { path = "../carrel-core", version = "=2026.10.21" }
 carrel-state = { path = "../carrel-state", version = "=2026.10.21" }
-ignore.workspace        = true
 image.workspace         = true
 merman.workspace        = true
 merman-core.workspace   = true

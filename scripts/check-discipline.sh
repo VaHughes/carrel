@@ -87,9 +87,13 @@ fi
 echo
 echo "carrel terminal-free module check"
 SRC=crates/carrel/src
-PURE="action annotation_state ansi app breadcrumb cli config diagrams footer \
-      fuzzy grep home images keymap layout links marginalia math_art menu \
-      peek plain scan state status tags view wiki"
+PURE="action annotation_state ansi app breadcrumb cli diagrams footer \
+      home images keymap layout math_art menu peek plain status view"
+# Modules this crate re-exports from carrel-state (`pub use carrel_state::{…}`
+# in lib.rs): `crate::state` is one of those, and the compiler — not this
+# script — keeps it terminal-free, because carrel-state cannot depend on a
+# terminal crate (rule 7). An edge to one of them is an edge into the list.
+SHARED=$(perl -0777 -ne 'print "$1\n" while /pub use carrel_state::\{([^}]*)\}/g' "$SRC/lib.rs" | tr ',' ' ')
 TERM_CRATES='ratatui|ratatui_core|ratatui_image|crossterm|termion|termwiz|signal_hook'
 deps() {
   # The top-level modules a file reaches through `crate::`, comments
@@ -120,7 +124,7 @@ for m in $PURE; do
       | grep -vP '^[0-9]+:\s*(//|/\*|\*)' | sed "s|^|$f:|")
   [ -n "$h" ] && leak="$leak$h"$'\n'
   for d in $(deps "$f"); do
-    case " $(echo $PURE) " in *" $d "*) ;; *) reach="$reach  $m -> crate::$d"$'\n' ;; esac
+    case " $(echo $PURE $SHARED) " in *" $d "*) ;; *) reach="$reach  $m -> crate::$d"$'\n' ;; esac
   done
 done
 if [ -n "$leak" ]; then
@@ -158,7 +162,16 @@ else
   ok "no ANSI escapes"
 fi
 # A terminal cell is a pair of u16s, a rectangle, or a u16 named for a cell.
-hits=$(sscan '\(\s*u16\s*,\s*u16\s*\)|\bRect\b|\b(col|cols|row|rows|x|y|width|height|w|h)\s*:\s*(Option<)?u16\b')
+# One exemption, and it is marked where it is: a config key that belongs to
+# the terminal (config.rs, "Whose key is it") is stored in the shared file,
+# in the terminal's unit. Such an item is preceded by the line
+# `// discipline: terminal key`, and nothing else is exempt.
+marked() { # FILE:LINE:… -> succeed when the line above carries the marker
+  local f=${1%%:*} rest=${1#*:}; local n=${rest%%:*}
+  [ "$n" -gt 1 ] && sed -n "$((n - 1))p" "$f" | grep -qE '^\s*// discipline: terminal key$'
+}
+hits=$(sscan '\(\s*u16\s*,\s*u16\s*\)|\bRect\b|\b(col|cols|row|rows|x|y|width|height|w|h)\s*:\s*(Option<)?u16\b' \
+       | while IFS= read -r h; do marked "$h" || printf '%s\n' "$h"; done)
 if [ -n "$hits" ]; then
   note "carrel-state carries terminal geometry"; echo "$hits"
 else
