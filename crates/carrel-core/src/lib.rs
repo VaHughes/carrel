@@ -42,6 +42,7 @@ pub mod layout;
 pub mod math;
 pub mod position;
 pub mod search;
+pub mod source_filter;
 
 pub use diff::{looks_like_diff, to_markdown};
 pub use document::{
@@ -61,3 +62,4 @@ pub use position::{Affinity, BlockIdx, DocByte, NodeId, SrcByte};
 /// without its own `regex` dependency line.
 pub use regex::Regex;
 pub use search::{Matches, content_pattern, content_pattern_soft, search};
+pub use source_filter::{SourceFilter, math_view};

@@ -2,26 +2,31 @@
 //!
 //! Same streaming shape as `scan.rs`: a background thread walks the already-
 //! scanned entry list and sends hits down a channel, so the filesystem never
-//! blocks a frame. Stale queries die by GENERATION: the state layer applies
-//! only messages stamped with the newest one, and an abandoned thread finds
-//! its receiver dropped and stops on the next send.
+//! blocks a frame. The files are read and filtered by a few workers, and
+//! their hits are sent in entry order, so the list fills exactly as a single
+//! thread would fill it. Stale queries die by GENERATION: the state layer
+//! applies only messages stamped with the newest one, and an abandoned query
+//! finds its receiver dropped on its next send and stops every worker.
 //!
-//! The pattern comes from `carrel_core::content_pattern` — the same
-//! compilation the reader uses, so a file the grep reports will light up
-//! identically once opened. The SOURCE is only the filter: a file whose
-//! source holds no match is passed over at regex speed, which is nearly
-//! every file. One that holds a match is parsed and counted over its
-//! DISPLAY text, exactly as the reader will count it. Counting the source
+//! The SOURCE is only the filter: `carrel_core::SourceFilter` passes over a
+//! file only when the reader, having opened it, would find nothing — so it
+//! passes over nearly every file, and never one the reader matches. A file
+//! it passes is parsed and counted over its DISPLAY text by the reader's own
+//! search, so the count is the one the reader shows. Counting the source
 //! disagreed wherever the display differs: a hyphen run becomes however
 //! many dashes smart punctuation decides (`---` is `—`, which holds no
 //! `--`), except in code, which the source cannot tell apart; and a match
-//! inside a link's URL is never shown. The pattern carries both spellings
-//! of every glyph smart punctuation rewrites, so the filter passes `don't`
-//! for a reader showing `don’t`
-//! (`the_grep_count_is_what_the_reader_finds_through_smart_punctuation`).
-//! What the filter cannot see is accepted: a match the source does not
-//! spell — through an entity (`&ndash;`) or across markup (`` `--`x ``) —
-//! is found once the file is open, and not here.
+//! inside a link's URL is never shown. Filtering by the reader's pattern
+//! alone missed what the display spells and the source does not — an
+//! entity (`&ndash;` is `–`), a phrase across markup (`**foo** bar`), list
+//! markers or table pipes between two words, inline math (`$x^2$` is
+//! `x²`) — so the home screen said "no match" for a file that, once open,
+//! had one. `SourceFilter` covers each of those; the tests below hold one
+//! case per construct, and `the_grep_count_is_the_reader_count` mixes them.
+//!
+//! Inline math is the filter's costliest step: the file is tokenized to
+//! find its spans. That answer does not depend on the needle, so it is kept
+//! per file (`MATH_VIEWS`) until the file's mtime or length changes.
 //!
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
@@ -72,26 +77,27 @@ pub enum Msg {
     Done(u64),
 }
 
+/// At most this many workers per query. The filter's loose pass scans every
+/// byte that holds no plain match at DFA speed, where the old literal-only
+/// filter skipped at memchr speed; spread over a few cores, reading and
+/// filtering a large tree takes no longer than the single-threaded grep it
+/// replaced did.
+const WORKERS: usize = 4;
+
 /// Search `entries` for `needle` on a background thread. Every message is
-/// stamped with `generation`; the caller ignores stale ones.
+/// stamped with `generation`; the caller ignores stale ones. Hits arrive in
+/// `entries` order, whichever worker found them.
 #[must_use]
 pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let Some(q) = Query::new(&needle) else {
-            let _ = tx.send(Msg::Done(generation));
-            return;
-        };
-        let mut sent = 0usize;
-        for e in entries {
-            if sent >= MAX_HITS {
-                break;
-            }
-            if let Some(hit) = grep_file(&q, &e.path) {
-                if tx.send(Msg::Hit(hit, generation)).is_err() {
-                    return; // receiver gone: a newer query took over
-                }
-                sent += 1;
+        if let Some(q) = Query::new(&needle) {
+            let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(WORKERS));
+            let gone = grep_all(&q, &entries, workers, |hit| {
+                tx.send(Msg::Hit(hit, generation)).is_ok()
+            });
+            if gone {
+                return; // receiver gone: a newer query took over
             }
         }
         let _ = tx.send(Msg::Done(generation));
@@ -99,13 +105,63 @@ pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Receiver<M
     rx
 }
 
-/// A needle, and the source filters for it.
+/// [`grep_file`] over `entries` on `workers` threads, each taking the next
+/// file as it finishes one. Hits are handed to `deliver` in `entries` order
+/// — a hit waits for every file before it — up to [`MAX_HITS`]. Returns
+/// `true` when `deliver` refused one (nobody is listening), which stops
+/// every worker at its next file.
+fn grep_all(
+    q: &Query,
+    entries: &[Entry],
+    workers: usize,
+    mut deliver: impl FnMut(Hit) -> bool,
+) -> bool {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let (wtx, wrx) = mpsc::channel::<(usize, Option<Hit>)>();
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            let (wtx, next, stop) = (wtx.clone(), &next, &stop);
+            s.spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(e) = entries.get(i) else { break };
+                    if wtx.send((i, grep_file(q, &e.path))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(wtx);
+        // Answers arrive in any order; each waits in its slot until every
+        // file before it has answered, so hits go out in `entries` order.
+        let mut slots: Vec<Option<Option<Hit>>> = vec![None; entries.len()];
+        let mut emit = 0usize;
+        let mut sent = 0usize;
+        let mut gone = false;
+        for (i, answer) in wrx {
+            slots[i] = Some(answer);
+            while let Some(answer) = slots.get_mut(emit).and_then(Option::take) {
+                emit += 1;
+                let Some(hit) = answer else { continue };
+                if sent < MAX_HITS && !gone {
+                    gone = !deliver(hit);
+                    sent += 1;
+                }
+                if sent >= MAX_HITS || gone {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        gone
+    })
+}
+
+/// A needle, and the source filter for it.
 struct Query {
     needle: String,
-    /// For a source with no soft hyphen — nearly all of them.
-    plain: carrel_core::Regex,
-    /// For one with a soft hyphen, which may sit inside any word.
-    soft: carrel_core::Regex,
+    filter: carrel_core::SourceFilter,
 }
 
 impl Query {
@@ -113,8 +169,7 @@ impl Query {
     fn new(needle: &str) -> Option<Self> {
         Some(Self {
             needle: needle.to_owned(),
-            plain: carrel_core::content_pattern(needle, true)?,
-            soft: carrel_core::content_pattern_soft(needle, true)?,
+            filter: carrel_core::SourceFilter::new(needle)?,
         })
     }
 }
@@ -128,14 +183,16 @@ fn grep_file(q: &Query, path: &std::path::Path) -> Option<Hit> {
     }
     let text = std::fs::read_to_string(path).ok()?;
     // The source is the cheap filter: almost every file fails it, at
-    // regex speed. One that passes is parsed and counted by the reader's
-    // own search, over the display text.
-    let filter = if text.contains('\u{AD}') {
-        &q.soft
-    } else {
-        &q.plain
-    };
-    filter.find(&text)?;
+    // regex speed, and it never fails one the reader would match. One that
+    // passes is parsed and counted by the reader's own search, over the
+    // display text — which is also what drops the filter's false positives.
+    let stamp = (meta.modified().ok(), meta.len());
+    if !q
+        .filter
+        .may_match_with(&text, || math_view(path, stamp, &text))
+    {
+        return None;
+    }
     let doc = carrel_core::Document::parse(&text);
     let found = carrel_core::search(&doc, &q.needle, true);
     let count = found.len();
@@ -158,6 +215,38 @@ fn grep_file(q: &Query, path: &std::path::Path) -> Option<Hit> {
         first_line: first.line.clone(),
         matches,
     })
+}
+
+/// A file's modification time and length: what says a kept view is stale.
+type Stamp = (Option<std::time::SystemTime>, u64);
+
+/// A file's math view, and the stamp it was built under.
+type MathViews = std::collections::HashMap<PathBuf, (Stamp, Option<std::sync::Arc<str>>)>;
+
+/// Math views kept across queries, by file. Building one tokenizes the file,
+/// the costliest step of the filter, and its answer does not depend on the
+/// needle — so each file pays once per change, not once per keystroke. Most
+/// entries are `None` (no inline math), which costs a path; a file that has
+/// math keeps one rendered copy of itself.
+static MATH_VIEWS: std::sync::LazyLock<std::sync::Mutex<MathViews>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The file's math view, from the cache when its stamp still matches.
+fn math_view(path: &std::path::Path, stamp: Stamp, text: &str) -> Option<std::sync::Arc<str>> {
+    let lock = || {
+        MATH_VIEWS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some((s, view)) = lock().get(path)
+        && *s == stamp
+    {
+        return view.clone();
+    }
+    // Built outside the lock: another query's thread may be waiting on it.
+    let view: Option<std::sync::Arc<str>> = carrel_core::math_view(text).map(Into::into);
+    lock().insert(path.to_path_buf(), (stamp, view.clone()));
+    view
 }
 
 /// The trimmed text of 1-based source line `lineno`.
@@ -365,9 +454,224 @@ mod tests {
         assert_eq!(grep_file(&q, &a).map(|h| h.count), Some(1));
     }
 
+    /// The grep's count for `needle` in a file holding `src`, beside the
+    /// reader's: what opening the file and pressing `/` would say.
+    fn grep_and_reader(src: &str, needle: &str) -> (usize, usize) {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        std::fs::write(&a, src).unwrap();
+        let q = Query::new(needle).unwrap();
+        let grep = grep_file(&q, &a).map_or(0, |h| h.count);
+        let doc = carrel_core::Document::parse(src);
+        (grep, carrel_core::search(&doc, needle, true).len())
+    }
+
+    /// The reader finds `needle` in `src`, and the file list says so, with
+    /// the same count.
+    #[track_caller]
+    fn agrees(src: &str, needle: &str) {
+        let (grep, reader) = grep_and_reader(src, needle);
+        assert!(
+            reader > 0,
+            "{needle:?}: the fixture is wrong, the reader finds nothing in {:?}",
+            carrel_core::Document::parse(src).text
+        );
+        assert_eq!(grep, reader, "{needle:?} in {src:?}");
+    }
+
+    // One test per way the display text spells a needle the source does
+    // not. Each failed before the filter learned the construct: the source
+    // regex passed the file over, and the reader then found it.
+
+    #[test]
+    fn a_named_entity_is_found_as_what_it_shows() {
+        agrees("pages 10&ndash;20\n", "10–20");
+        agrees("R&amp;D budget\n", "R&D");
+        agrees("&copy; 2026\n", "© 2026");
+    }
+
+    #[test]
+    fn a_numeric_entity_is_found_as_what_it_shows() {
+        agrees("wait&#8212;what\n", "wait—what");
+        agrees("&#x41;BC\n", "ABC");
+        agrees("&#97;b\n", "ab");
+    }
+
+    #[test]
+    fn an_entity_that_shows_two_letters_is_found() {
+        agrees("&fjlig;ord\n", "fjord");
+    }
+
+    #[test]
+    fn a_phrase_across_emphasis_is_found() {
+        agrees("**foo** bar\n", "foo bar");
+        agrees("fo*o* *b*ar ~~baz~~ __qux__\n", "foo bar baz qux");
+    }
+
+    #[test]
+    fn a_phrase_across_a_code_span_is_found() {
+        agrees("`foo` bar\n", "foo bar");
+    }
+
+    #[test]
+    fn a_phrase_across_a_link_is_found() {
+        agrees("[foo](x.md) bar\n", "foo bar");
+        agrees("[foo](<a b.md> \"title\") bar\n", "foo bar");
+        agrees("![foo](pic.png) bar\n", "foo bar");
+        agrees("<https://ex.example/p> next\n", "ex.example/p next");
+    }
+
+    #[test]
+    fn a_phrase_across_a_reference_link_is_found() {
+        agrees("[foo][r] bar\n\n[r]: http://x.example\n", "foo bar");
+    }
+
+    #[test]
+    fn a_phrase_across_a_reference_definition_is_found() {
+        agrees("foo\n\n[r]: http://x.example \"t\"\n\nbar\n", "foo bar");
+    }
+
+    #[test]
+    fn a_phrase_across_a_wikilink_alias_is_found() {
+        agrees("[[target|foo]] bar\n", "foo bar");
+    }
+
+    #[test]
+    fn a_phrase_across_inline_html_is_found() {
+        agrees("foo<br>bar\n", "foo bar");
+        agrees("<span class=\"x\">foo</span> bar\n", "foo bar");
+        agrees("foo<!-- a > b -->bar\n", "foobar");
+        agrees("see <img alt=\"foo\" src=x.png> bar\n", "see foo bar");
+    }
+
+    #[test]
+    fn a_phrase_across_a_hidden_html_body_is_found() {
+        agrees("foo\n\n<script>var x;</script>\n\nbar\n", "foo bar");
+    }
+
+    #[test]
+    fn a_backslash_escape_is_found_as_what_it_shows() {
+        agrees("a\\*b\n", "a*b");
+        agrees("a-\\-b\n", "a--b");
+    }
+
+    #[test]
+    fn a_phrase_across_list_markers_is_found() {
+        agrees("- foo\n- bar\n", "foo bar");
+        agrees("1. foo\n2. bar\n", "foo bar");
+        agrees("bar\n\n- [x] foo\n", "bar foo");
+    }
+
+    #[test]
+    fn a_phrase_across_block_markers_is_found() {
+        agrees("> foo\n> bar\n", "foo bar");
+        agrees("foo\n## bar\n", "foo bar");
+        agrees("para\n\n```rust\nfn main() {}\n```\n", "para fn main");
+        agrees("> [!NOTE]\n> foo\n", "Note foo");
+    }
+
+    #[test]
+    fn a_phrase_across_table_cells_is_found() {
+        agrees("| foo | bar |\n|---|---|\n| baz | qux |\n", "foo bar");
+        agrees("| foo | bar |\n|---|---|\n| baz | qux |\n", "bar baz");
+    }
+
+    /// GFM drops a row's cells past the header's column count, letters
+    /// and all.
+    #[test]
+    fn a_phrase_across_dropped_table_cells_is_found() {
+        agrees("| a | b |\n|---|---|\n| e | f | gone |\n| h | i |\n", "f h");
+    }
+
+    /// An HTML block ends when the quote around it does, comment open or
+    /// not: the comment hid the rest of that block, and no more.
+    #[test]
+    fn a_phrase_after_a_comment_its_quote_cut_short_is_found() {
+        // The `>` inside matters: it ends a plain tag, not a comment.
+        agrees("> x\n> <!-- a > b\n\nfoo\n", "x foo");
+    }
+
+    #[test]
+    fn a_phrase_across_a_footnote_definition_is_found() {
+        agrees("foo[^1]\n\n[^1]: bar\n", "foo[^1] bar");
+    }
+
+    #[test]
+    fn an_attached_script_is_found_as_what_it_shows() {
+        agrees("x^2^ and H~2~O\n", "x2 and H2O");
+    }
+
+    #[test]
+    fn inline_math_is_found_as_it_renders() {
+        let src = "the $x^2$ term, $\\alpha$, and $\\frac{a+b}{c}$ $y$.\n";
+        agrees(src, "x²");
+        agrees(src, "the x²");
+        agrees(src, "x² term");
+        agrees(src, "α, and (a + b)/c");
+        agrees(src, "c y");
+    }
+
+    /// A kept math view answers only for the file as it was: a file that
+    /// gains math is filtered by its new view, not the old one.
+    #[test]
+    fn a_kept_math_view_is_dropped_when_the_file_changes() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.md");
+        let q = Query::new("x²").unwrap();
+        std::fs::write(&a, "the $x$ and $y$ terms\n").unwrap();
+        assert!(grep_file(&q, &a).is_none(), "no x² yet");
+        std::fs::write(&a, "the $x^2$ and $y$ terms, longer\n").unwrap();
+        assert_eq!(grep_file(&q, &a).map(|h| h.count), Some(1));
+    }
+
+    /// Workers finish files in any order; the list fills in `entries`
+    /// order regardless, so the newest-first sort holds while it streams.
+    #[test]
+    fn hits_arrive_in_entry_order_whichever_worker_finds_them() {
+        let d = tempfile::tempdir().unwrap();
+        let mut entries = Vec::new();
+        for i in 0..64 {
+            let p = d.path().join(format!("{i}.md"));
+            // Sizes vary so the workers finish out of step.
+            std::fs::write(
+                &p,
+                format!("needle\n{}", "padding words\n".repeat(i * 37 % 500)),
+            )
+            .unwrap();
+            entries.push(entry(&p));
+        }
+        let rx = spawn(entries.clone(), "needle".into(), 0);
+        let (hits, done) = collect(&rx);
+        assert!(done);
+        let got: Vec<_> = hits.iter().map(|h| h.path.clone()).collect();
+        let want: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn the_hit_list_stops_at_its_cap() {
+        let d = tempfile::tempdir().unwrap();
+        let entries: Vec<Entry> = (0..MAX_HITS + 7)
+            .map(|i| {
+                let p = d.path().join(format!("{i}.md"));
+                std::fs::write(&p, "needle\n").unwrap();
+                entry(&p)
+            })
+            .collect();
+        let (hits, done) = collect(&spawn(entries, "needle".into(), 0));
+        assert!(done);
+        assert_eq!(hits.len(), MAX_HITS);
+    }
+
     proptest::proptest! {
+        // More cases than the default: a needle meets the one part that
+        // spells it differently (`$x^2$` for `x²`) only now and then.
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1024))]
         /// The file list's count is the reader's, for documents made of
-        /// the punctuation smart punctuation rewrites, in prose and in code.
+        /// the punctuation smart punctuation rewrites, in prose and in code,
+        /// and of the entities, inline markup, block structure and math
+        /// that make the display text spell a needle the source does not.
+        /// No exemption: a file the reader matches is a hit.
         #[test]
         fn the_grep_count_is_the_reader_count(
             parts in proptest::collection::vec(proptest::sample::select(&[
@@ -375,28 +679,19 @@ mod tests {
                 "'", "\"", "don't", "`--`", "`---`", "`... --`", "\n\n",
                 "\n\n```\nx---y -- z\n```\n\n", "\n- item\n", "&ndash;",
                 "super\u{AD}cali", "\u{AD}",
+                "&amp;", "&#8212;", "&#x2d;", "**", "_", "~~", "`", "\\-", "\\*",
+                "[x](u.md)", "[[t|x]]", "<b>", "</b>", "<!-- c -->", "<br>",
+                "\n> ", "\n1. ", "| x | - |\n|---|---|\n", "$x^2$", "x^2^", "a",
             ][..]), 0..24),
             needle in proptest::sample::select(&[
                 "-", "--", "---", "–", "—", "...", "…", "'", "\"", "x-", "x--", "-x",
-                "don't", "a-b", "percal", "supercali",
+                "don't", "a-b", "percal", "supercali", "&", "x²", "x x", "x-x", "ax",
+                "x2", "-a", "x — x", "*x",
             ][..]),
         ) {
             let src = parts.concat();
-            let d = tempfile::tempdir().unwrap();
-            let a = d.path().join("a.md");
-            std::fs::write(&a, &src).unwrap();
-            let q = Query::new(needle).unwrap();
-            let grep = grep_file(&q, &a).map_or(0, |h| h.count);
-            let doc = carrel_core::Document::parse(&src);
-            let reader = carrel_core::search(&doc, needle, true).len();
-            // The source is only the filter. Two things show the reader a
-            // match the source does not spell, and the filter cannot see
-            // them: an entity (`&ndash;` is `–`), and markup between the
-            // characters (`` `--`x `` reads `--x`). Both are accepted; any
-            // file the filter passes is counted exactly.
-            if grep > 0 || !(src.contains('&') || src.contains('`')) {
-                proptest::prop_assert_eq!(grep, reader, "{:?} in {:?}", needle, src);
-            }
+            let (grep, reader) = grep_and_reader(&src, needle);
+            proptest::prop_assert_eq!(grep, reader, "{:?} in {:?}", needle, src);
         }
     }
 

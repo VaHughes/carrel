@@ -2757,8 +2757,7 @@ impl<'a> Builder<'a> {
                 // decoding and smart punctuation already have — which is
                 // exactly why `Prov` exists. Unparseable math keeps its source.
                 Event::InlineMath(t) => {
-                    let rendered = crate::math::parse(&t)
-                        .map_or_else(|| t.to_string(), |e| crate::math::inline_text(&e));
+                    let rendered = render_inline_math(&t);
                     let prev = self.style;
                     self.style = self.style.insert(Style::MATH);
                     self.push(&rendered, src, ProvKind::Substituted);
@@ -2959,6 +2958,38 @@ pub struct Frontmatter {
     /// Just past the closing fence itself (its line break not included) —
     /// where the reader starts parsing markdown.
     pub end: usize,
+}
+
+/// `src` with every inline math span replaced by the text
+/// [`Document::parse`] puts in its place, or `None` when it holds none.
+///
+/// Rendering reorders and invents (`\sqrt[3]{x}` shows `x√3`), so no
+/// pattern over the source can stand in for it; the source filter runs its
+/// loose pass over this instead. The spans are the parser's own — the same
+/// events, options and rendering the builder uses — which is what makes the
+/// substitution exact. Costs a tokenizer pass and no document build.
+pub(crate) fn inline_math_rendered(src: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut at = 0usize;
+    for (ev, r) in Builder::events(src) {
+        if let Event::InlineMath(t) = ev {
+            out.push_str(&src[at..r.start]);
+            out.push_str(&render_inline_math(&t));
+            at = r.end;
+        }
+    }
+    if at == 0 {
+        return None;
+    }
+    out.push_str(&src[at..]);
+    Some(out)
+}
+
+/// What inline math shows: its rendering, or its source when it will not
+/// parse. One function, so the source filter's view cannot drift from the
+/// display text.
+fn render_inline_math(t: &str) -> String {
+    crate::math::parse(t).map_or_else(|| t.to_owned(), |e| crate::math::inline_text(&e))
 }
 
 /// The frontmatter block that opens `src`, if it has one — by the rule
