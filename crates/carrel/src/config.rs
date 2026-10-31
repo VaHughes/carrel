@@ -31,6 +31,36 @@
 //!
 //! Booleans accept `true`/`false`, `1`/`0` and `yes`/`no`, in any case; see
 //! [`flag`], which is the ONE reading of a boolean this file has.
+//!
+//! # Whose key is it
+//!
+//! Every frontend reads this one file, and the state directory beside it
+//! (research.md Q33, the Transmission precedent: its GTK and Qt apps share a
+//! config dir). So each key is either **shared** — it means the same thing in
+//! a terminal and in a window — or it belongs to **one frontend**, and the
+//! others ignore it:
+//!
+//! | key | whose | why |
+//! |---|---|---|
+//! | `root`, `place` | shared | the library is the reader's, not the window's |
+//! | `sort`, `titles`, `preview` | shared | how the file list reads |
+//! | `hyphenate` | shared | a reading preference, not a rendering one |
+//! | `theme` | terminal | names one of the 17 terminal palettes; a GUI follows the desktop's |
+//! | `hints`, `breadcrumb`, `outline_margin` | terminal | chrome the terminal draws |
+//! | `mouse` | terminal | pointer capture is a terminal concept |
+//! | `max_width` | terminal | measured in CELLS, meaningless in a pixel layout |
+//!
+//! The rules for what comes next. **A key is never renamed or repurposed**:
+//! an old binary reads the same file, and the terminal keys keep their bare
+//! names because renaming them would break every config already written. **A
+//! key a GUI adds for itself is prefixed `gtk.`**; one both frontends mean
+//! the same way is bare. Unknown keys are ignored (`parse_all`), which is
+//! what lets the two read one file at different versions.
+//!
+//! The state directory is all shared: reading positions and bookmarks are
+//! saved as source places (`state::Place`), sections by name, notes by quote
+//! and context — none as a display byte or a row, so a second frontend, or a
+//! second version, resolves them against its own layout.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
