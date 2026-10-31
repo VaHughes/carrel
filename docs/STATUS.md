@@ -17,8 +17,9 @@ Last updated: 2026-10-31
   (not yet on crates.io; the name was free on 2026-10-31).
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
   reader-beside-an-agent slate.
-- All five local gates passed on 2026-10-31: **1,380 tests**, zero-warning clippy,
-  formatting, architectural discipline and packaging. Color-sensitive PTY tests need
+- All five local gates passed on 2026-10-31: **1,389 tests**, zero-warning clippy,
+  formatting, architectural discipline and packaging, plus the 1.95 MSRV check; CI green
+  on `d8dbf1c`. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
 - **Decisions made 2026-10-08:** a click outside an open pane closes it and does nothing
   else, the status-row chips included; `≡` always works, replacing whatever pane is up;
@@ -302,6 +303,9 @@ decision — do not propose them):
    2026-10-21): crates.io, the Homebrew tap, nix hashes, the checksum stamp and COPR. It
    needs three repository secrets — `CARGO_REGISTRY_TOKEN`, `HOMEBREW_TAP_DEPLOY_KEY`,
    `COPR_CONFIG` — set once from this machine; the COPR token expires 2027-02-12.
+   **Before the next tag**, `CARGO_REGISTRY_TOKEN` must be allowed to publish a *new*
+   crate (`carrel-state`); a token scoped to the two existing crates publishes core and
+   then fails part-way through the release.
 
 Every feature line on the README roadmap is checked. Known limits, recorded rather than
 planned:
