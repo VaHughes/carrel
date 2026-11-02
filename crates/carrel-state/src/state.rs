@@ -183,8 +183,50 @@ pub enum Place {
     /// A display byte, as releases up to 2026.10.21 wrote one: correct
     /// only under the core that flattened it, and read as such.
     Legacy(u32),
-    /// A source byte and a correction in display bytes.
-    Src { src: u32, delta: i32 },
+    /// A source byte and a correction in display bytes — and, when it was
+    /// saved by [`Place::kept`], the block it was in, by content.
+    Src {
+        src: u32,
+        delta: i32,
+        block: Option<Kept>,
+    },
+}
+
+/// The block a place was in, by what it said: the second answer, for a
+/// file edited while carrel was closed.
+///
+/// A source byte names the same place only while the file is unchanged. A
+/// paragraph inserted above moves every byte below it, and a reopened
+/// bookmark landed on whatever paragraph had moved into its bytes. A live
+/// reload carried bookmarks by content all along (`App::carry_marks`); a
+/// cold reopen had no content to match, so now the place keeps it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    /// [`block_hash`] of the block's display text.
+    pub hash: u64,
+    /// Which of the blocks with that text it was: 0 for the first.
+    pub nth: u32,
+    /// The display byte, from the block's start. Negative for the blank row
+    /// above it, which a reader's view names by the separator before it.
+    pub off: i32,
+}
+
+/// A block's text, hashed the same way by every build: FNV-1a over its
+/// display bytes. Written out by hand because the standard library's
+/// hasher promises nothing across Rust releases, and this one is saved.
+fn block_hash(doc: &carrel_core::Document, b: carrel_core::BlockIdx) -> u64 {
+    let r = &doc.node_for_block(b).doc;
+    doc.text.as_bytes()[r.start as usize..r.end as usize]
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |h, &x| {
+            (h ^ u64::from(x)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+fn block_hashes(doc: &carrel_core::Document) -> Vec<u64> {
+    (0..doc.block_count())
+        .map(|b| block_hash(doc, carrel_core::BlockIdx(b as u32)))
+        .collect()
 }
 
 impl Place {
@@ -197,17 +239,57 @@ impl Place {
         Self::Src {
             src: src.0,
             delta: i32::try_from(delta).unwrap_or(0),
+            block: None,
+        }
+    }
+
+    /// [`Self::of`], keeping the block `d` is in by its content, so the
+    /// place can be found again in the file after an edit. What a reading
+    /// position and a bookmark are saved as. Hashes every block up to
+    /// `d`'s, so it is for saving, not for every byte of a document.
+    #[must_use]
+    pub fn kept(doc: &carrel_core::Document, d: carrel_core::DocByte) -> Self {
+        let Self::Src { src, delta, .. } = Self::of(doc, d) else {
+            unreachable!("`of` spells a source place")
+        };
+        if doc.block_count() == 0 {
+            return Self::Src {
+                src,
+                delta,
+                block: None,
+            };
+        }
+        let b = doc.block_at_doc(d);
+        let hash = block_hash(doc, b);
+        let nth = (0..b.get())
+            .filter(|&i| block_hash(doc, carrel_core::BlockIdx(i as u32)) == hash)
+            .count();
+        let off = i64::from(d.0) - i64::from(doc.node_for_block(b).doc.start);
+        Self::Src {
+            src,
+            delta,
+            block: Some(Kept {
+                hash,
+                nth: u32::try_from(nth).unwrap_or(u32::MAX),
+                off: i32::try_from(off).unwrap_or(0),
+            }),
         }
     }
 
     /// The display byte this place names in `doc`: inside the text, and on
     /// a character boundary, whatever the file or the core did since.
+    ///
+    /// A place that kept its block goes where that block's text is now —
+    /// the same one of several, by count, as a live reload decides — so an
+    /// edit elsewhere in the file does not move it. A block that was itself
+    /// edited has no text to find, and the source place stands.
     #[must_use]
     pub fn resolve(self, doc: &carrel_core::Document) -> carrel_core::DocByte {
         let at = match self {
             Self::Legacy(d) => i64::from(d),
-            Self::Src { src, delta } => {
-                i64::from(doc.to_doc(carrel_core::SrcByte(src)).0) + i64::from(delta)
+            Self::Src { src, delta, block } => {
+                let at = i64::from(doc.to_doc(carrel_core::SrcByte(src)).0) + i64::from(delta);
+                block.and_then(|k| found(doc, k)).unwrap_or(at)
             }
         };
         let last = doc.text.len().saturating_sub(1);
@@ -221,7 +303,16 @@ impl Place {
     fn encode(self) -> String {
         match self {
             Self::Legacy(d) => d.to_string(),
-            Self::Src { src, delta } => format!("s{src}{delta:+}"),
+            Self::Src {
+                src,
+                delta,
+                block: None,
+            } => format!("s{src}{delta:+}"),
+            Self::Src {
+                src,
+                delta,
+                block: Some(k),
+            } => format!("s{src}{delta:+}@{:016x}.{}{:+}", k.hash, k.nth, k.off),
         }
     }
 
@@ -231,12 +322,49 @@ impl Place {
         let Some(rest) = field.strip_prefix('s') else {
             return field.parse().ok().map(Self::Legacy);
         };
+        let (rest, kept) = match rest.split_once('@') {
+            Some((r, k)) => (r, Some(k)),
+            None => (rest, None),
+        };
         let at = rest.find(['+', '-'])?;
+        let block = match kept {
+            None => None,
+            Some(k) => {
+                let (hash, k) = k.split_once('.')?;
+                let at = k.find(['+', '-'])?;
+                if hash.len() != 16 {
+                    return None;
+                }
+                Some(Kept {
+                    hash: u64::from_str_radix(hash, 16).ok()?,
+                    nth: k[..at].parse().ok()?,
+                    off: k[at..].parse().ok()?,
+                })
+            }
+        };
         Some(Self::Src {
             src: rest[..at].parse().ok()?,
             delta: rest[at..].parse().ok()?,
+            block,
         })
     }
+}
+
+/// Where kept block `k` is in `doc`: the same one of the blocks with its
+/// text, by count, at the same offset. `None` when no block has its text
+/// any more. For an unchanged file this IS the saved byte, so it is asked
+/// first; asking instead "is the source place already in a block with this
+/// text?" was fooled by a stale place on the separator before the right
+/// block's start, which `block_at_doc` gives to that block.
+fn found(doc: &carrel_core::Document, k: Kept) -> Option<i64> {
+    if doc.block_count() == 0 {
+        return None;
+    }
+    let hashes = block_hashes(doc);
+    let same: Vec<usize> = (0..hashes.len()).filter(|&i| hashes[i] == k.hash).collect();
+    let b = *same.get(k.nth as usize).or_else(|| same.last())?;
+    let node = doc.node_for_block(carrel_core::BlockIdx(b as u32));
+    Some((i64::from(node.doc.start) + i64::from(k.off)).min(i64::from(node.doc.end)))
 }
 
 /// `$XDG_STATE_HOME/carrel`, else `~/.local/state/carrel`.
@@ -581,19 +709,74 @@ mod tests {
                 Place::Src {
                     src: 1024,
                     delta: 16,
+                    block: None,
                 },
                 "s1024+16",
             ),
-            (Place::Src { src: 7, delta: -5 }, "s7-5"),
-            (Place::Src { src: 0, delta: 0 }, "s0+0"),
+            (
+                Place::Src {
+                    src: 7,
+                    delta: -5,
+                    block: None,
+                },
+                "s7-5",
+            ),
+            (
+                Place::Src {
+                    src: 0,
+                    delta: 0,
+                    block: None,
+                },
+                "s0+0",
+            ),
             (Place::Legacy(1234), "1234"),
+            (
+                Place::Src {
+                    src: 40,
+                    delta: 2,
+                    block: Some(Kept {
+                        hash: 0xab,
+                        nth: 3,
+                        off: -1,
+                    }),
+                },
+                "s40+2@00000000000000ab.3-1",
+            ),
+            (
+                Place::Src {
+                    src: 0,
+                    delta: 0,
+                    block: Some(Kept {
+                        hash: u64::MAX,
+                        nth: 0,
+                        off: 12,
+                    }),
+                },
+                "s0+0@ffffffffffffffff.0+12",
+            ),
         ] {
             assert_eq!(p.encode(), text);
             assert_eq!(Place::decode(text), Some(p), "{text}");
         }
         // Nothing this version did not write is read as a place: a newer
         // carrel's field is skipped rather than taken for a position.
-        for junk in ["", "s", "s12", "s+1", "sx+1", "s1+x", "v2:9", "-4", "12.5"] {
+        for junk in [
+            "",
+            "s",
+            "s12",
+            "s+1",
+            "sx+1",
+            "s1+x",
+            "v2:9",
+            "-4",
+            "12.5",
+            "s1+0@",
+            "s1+0@ab.0+1",
+            "s1+0@00000000000000ab",
+            "s1+0@00000000000000ab.x+1",
+            "s1+0@00000000000000ab.0",
+            "s1+0@zzzzzzzzzzzzzzzz.0+1",
+        ] {
             assert_eq!(Place::decode(junk), None, "{junk:?}");
         }
     }
@@ -624,7 +807,11 @@ mod tests {
         assert_eq!(load_position_in(dir.path(), &old), Some(Place::Legacy(300)));
         assert_eq!(
             load_position_in(dir.path(), &new),
-            Some(Place::Src { src: 40, delta: 2 })
+            Some(Place::Src {
+                src: 40,
+                delta: 2,
+                block: None
+            })
         );
         assert_eq!(load_position_in(dir.path(), &future), None);
 
@@ -635,7 +822,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             load_marks_in(dir.path(), &old),
-            [Place::Legacy(5), Place::Src { src: 40, delta: -1 }],
+            [
+                Place::Legacy(5),
+                Place::Src {
+                    src: 40,
+                    delta: -1,
+                    block: None
+                }
+            ],
             "the unreadable one dropped, the repeat folded"
         );
     }
@@ -683,9 +877,18 @@ mod tests {
             Place::Src {
                 src: 9999,
                 delta: 50,
+                block: None,
             },
-            Place::Src { src: 0, delta: -50 },
-            Place::Src { src: 2, delta: 1 },
+            Place::Src {
+                src: 0,
+                delta: -50,
+                block: None,
+            },
+            Place::Src {
+                src: 2,
+                delta: 1,
+                block: None,
+            },
         ] {
             let at = p.resolve(&doc).0;
             assert!(at < len, "{p:?} -> {at}");
@@ -839,12 +1042,24 @@ mod tests {
         for name in ["with\ttab.md", "with\nnewline.md", "with\\slash.md"] {
             let f = dir.path().join(name);
             std::fs::write(&f, "x").unwrap();
-            let at = Place::Src { src: 42, delta: -3 };
+            let at = Place::Src {
+                src: 42,
+                delta: -3,
+                block: None,
+            };
             save_position_in(dir.path(), &f, Some(at), 500, 100).unwrap();
             assert_eq!(load_position_in(dir.path(), &f), Some(at), "{name:?}");
             let marks = [
-                Place::Src { src: 5, delta: 0 },
-                Place::Src { src: 9, delta: 2 },
+                Place::Src {
+                    src: 5,
+                    delta: 0,
+                    block: None,
+                },
+                Place::Src {
+                    src: 9,
+                    delta: 2,
+                    block: None,
+                },
             ];
             save_marks_in(dir.path(), &f, &marks).unwrap();
             assert_eq!(load_marks_in(dir.path(), &f), marks, "{name:?}");

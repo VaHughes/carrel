@@ -18,12 +18,12 @@ Last updated: 2026-11-02
   (not yet on crates.io; the name was free on 2026-10-31).
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
   reader-beside-an-agent slate.
-- All five local gates passed on 2026-11-02: **1,409 tests**, zero-warning clippy,
+- All five local gates passed on 2026-11-02: **1,412 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging, plus the 1.95 MSRV check.
-  Seen once and not reproduced since (14 runs, 9 of them under 3x parallel load):
-  `pty.rs::closing_the_terminal_ends_the_reader_without_an_abort` got exit status 101
-  (a Rust panic) instead of 129 during a full `cargo test --workspace`. The harness
-  discards the panic message; if it recurs, capture carrel's stderr in that test. Color-sensitive PTY tests need
+  `pty.rs::closing_the_terminal_ends_the_reader_without_an_abort` failed intermittently
+  under load: a race that exited 1 (fixed 2026-11-02; 0 in 200 stressed runs after, 4 in
+  120 before). The one exit 101 (a panic) seen on 2026-11-02 never reproduced; the test
+  now keeps carrel's stderr, so a recurrence will say where. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
 - **Decision made 2026-11-02:** `q` over a footnote box closes the box and stops, as it
   closes every other pane (it used to close the box and then the document).
@@ -79,6 +79,15 @@ Last updated: 2026-11-02
     content end.
   - *Home search's math-view cache* is pruned to the file list each time a search finishes
     uncancelled.
+  - *Places keep their block by content* (`state::Place::kept`, `@<fnv64>.<nth><±off>` on
+    the unreleased `s` form): positions and bookmarks resolve to the same text after an
+    edit made while carrel was closed; the source place stands only when the block's text
+    is gone. Guard: `tests/places.rs::a_kept_place_follows_its_text_down_past_an_insertion`
+    (every byte of a varied document, with a paragraph inserted above).
+  - *The intermittent PTY failure* was the main loop hitting `EIO` on the closed terminal
+    before the watchdog: exit 1, `carrel: Input/output error`, about 1 in 30 closes under
+    load (reproduced 4 in 120). `TerminalGuard::drop` ends that path as the hang-up it is
+    (129), never during a panic. The test now keeps carrel's stderr.
 
 - Unreleased (2026-10-31) — **ready for a second frontend, and three limits cleared.**
   - *A third crate, `carrel-state`*, for what every frontend shares above the model:
@@ -373,12 +382,8 @@ Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) 
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
 Known defects: none recorded. The last list (found 2026-10-31) was fixed on 2026-11-02;
-see Recently completed. One item on it stays, as a limit rather than a defect:
-
-- **A position or bookmark saved before the file was edited elsewhere** lands where the
-  edit moved its bytes, possibly another paragraph (a live reload carries bookmarks by
-  content; a cold reopen cannot, having no content to match). The man page already says
-  bookmarks do not survive an edit.
+see Recently completed. The one item left as a limit then (a place saved before an
+outside edit) was lifted the same day.
 
 The Q29/Q33 architecture follow-ups are done (see Recently completed). What a GTK frontend
 would still find: the TUI's `App` is sized in cells and stays in `carrel`, deliberately — a

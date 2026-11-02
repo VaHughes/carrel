@@ -31,6 +31,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   about a screen early. The same went for a resize or a reload there.
 - **No blank wrapped rows.** A run like `—  —`, which may not be broken at its
   spaces, could leave a row holding only a space and a `↩` in a narrow window.
+- **Bookmarks and reading positions survive an edit made while carrel was
+  closed.** Each now remembers the text of the paragraph it was on, so after
+  someone (or an agent) adds or removes text above it, reopening the file
+  finds the same paragraph instead of whatever moved into its place. One whose
+  own paragraph was rewritten stays near where it was, as before.
+- **Closing the terminal always ends carrel as a hang-up.** About one close in
+  thirty, under load, carrel noticed the closed terminal while painting and
+  exited with an error and status 1 instead of the hang-up status 129.
 - **Home search forgets deleted files.** Its cache of each file's rendered math
   dropped entries only when the file changed, never when it was deleted or the
   folder changed.

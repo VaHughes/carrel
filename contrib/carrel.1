@@ -260,7 +260,9 @@ neither fetches it nor launches anything to open it.
 .TP
 .B m
 Set or clear a bookmark at the current position. Bookmarks are remembered
-between sessions and survive a resize; they do not survive an edit to the file.
+between sessions and survive a resize, and an edit to the file made while it
+is open or closed: each is found again by the text of the paragraph it is on.
+One whose own paragraph was rewritten stays near where it was.
 .TP
 .B '
 Go to the next bookmark, wrapping at the end.

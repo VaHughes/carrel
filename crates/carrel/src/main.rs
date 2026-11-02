@@ -1066,6 +1066,16 @@ impl Drop for TerminalGuard {
             Show
         );
         let _ = ratatui::try_restore();
+        // The terminal went away and the loop noticed first: its next paint
+        // or poll failed with `EIO` before the watchdog's half-second clock
+        // came round, and the error unwound to here. That is the same
+        // hang-up `watch_for_hangup` ends with 128 + SIGHUP, not a failure
+        // to report as `carrel: Input/output error` with status 1 — which
+        // under load it was, about one close in thirty. Not while
+        // panicking: a panic keeps its own status.
+        if !std::thread::panicking() && terminal_gone() {
+            std::process::exit(128 + signal_hook::consts::SIGHUP);
+        }
     }
 }
 

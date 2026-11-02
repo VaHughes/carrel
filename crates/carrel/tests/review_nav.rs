@@ -626,3 +626,77 @@ fn a_resume_with_the_gap_under_a_long_paragraph_on_top_comes_back_there() {
     }
     assert!(checked >= 4, "{checked}");
 }
+
+/// **The limit this lifts** (black-box review, 2026-10-31): a bookmark or a
+/// position saved before the file was edited elsewhere landed where the
+/// edit had moved its bytes — another paragraph. A live reload carried
+/// bookmarks by content; a cold reopen had no content to match. Now each
+/// saved place keeps its block's content, so the reopen finds it.
+#[test]
+fn a_bookmark_and_a_position_survive_an_edit_made_while_carrel_was_closed() {
+    let para = |i: usize| format!("Paragraph {i} {}end.\n\n", "word ".repeat(40));
+    let before: String = (0..12).map(para).collect();
+    let d = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let mut app = file_app(d.path(), "e.md", &before);
+    app.state_dir = Some(state.path().to_path_buf());
+    let p7 = u32::try_from(app.doc.text.find("Paragraph 7").unwrap()).unwrap();
+    let p5 = u32::try_from(app.doc.text.find("Paragraph 5").unwrap()).unwrap();
+    // A bookmark on paragraph 7; the view a row into paragraph 5.
+    let r7 = app
+        .layout
+        .row_start(app.doc.block_at_doc(carrel_core::DocByte(p7)));
+    update(&mut app, Action::ScrollTo(r7));
+    update(&mut app, Action::MarkToggle);
+    assert_eq!(app.marks, [p7]);
+    let b5 = app.doc.block_at_doc(carrel_core::DocByte(p5));
+    let r5 = app.layout.row_start(b5) + 1;
+    update(&mut app, Action::ScrollTo(r5));
+    let anchor = app.view.anchor;
+    assert!(anchor > p5, "mid-paragraph: {anchor} vs {p5}");
+    let into = anchor - p5;
+    update(&mut app, Action::CloseFile);
+
+    // Edited elsewhere: two paragraphs inserted at the top, one above the
+    // marks rewritten, one below them deleted.
+    let mut after = format!("# New title\n\n{}", "Inserted prose. ".repeat(30));
+    after.push_str("\n\n");
+    for i in 0..12 {
+        match i {
+            3 => after.push_str("Paragraph 3 was rewritten entirely.\n\n"),
+            11 => {}
+            _ => after.push_str(&para(i)),
+        }
+    }
+    let mut back = file_app(d.path(), "e.md", &after);
+    back.state_dir = Some(state.path().to_path_buf());
+    back.restore_position();
+    let n7 = u32::try_from(back.doc.text.find("Paragraph 7").unwrap()).unwrap();
+    let n5 = u32::try_from(back.doc.text.find("Paragraph 5").unwrap()).unwrap();
+    assert_eq!(back.marks, [n7], "the bookmark is on paragraph 7 still");
+    assert_eq!(
+        back.view.anchor,
+        n5 + into,
+        "the position is where it was in paragraph 5"
+    );
+}
+
+/// A bookmarked paragraph that the edit itself rewrote has no content to
+/// find; it falls back to its saved place, as before, and lands on a block.
+#[test]
+fn a_bookmark_whose_paragraph_was_rewritten_still_lands_on_a_block() {
+    let d = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let mut app = file_app(d.path(), "r.md", "one\n\ntwo\n\nthree\n");
+    app.state_dir = Some(state.path().to_path_buf());
+    update(&mut app, Action::ScrollTo(2));
+    update(&mut app, Action::MarkToggle);
+    update(&mut app, Action::CloseFile);
+    let mut back = file_app(d.path(), "r.md", "one\n\nTWO, rewritten\n\nthree\n");
+    back.state_dir = Some(state.path().to_path_buf());
+    back.restore_position();
+    assert_eq!(back.marks.len(), 1);
+    let m = back.marks[0];
+    let b = back.doc.block_at_doc(carrel_core::DocByte(m));
+    assert_eq!(back.doc.node_for_block(b).doc.start, m);
+}

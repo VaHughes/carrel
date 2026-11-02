@@ -1161,7 +1161,7 @@ impl App {
             // The place, not the display byte: see `state::Place`. The top
             // of the file is the default, so it is not remembered at all.
             let place = (self.view.anchor > 0)
-                .then(|| crate::state::Place::of(&self.doc, DocByte(self.view.anchor)));
+                .then(|| crate::state::Place::kept(&self.doc, DocByte(self.view.anchor)));
             let _ = crate::state::save_position_in(
                 dir,
                 file,
@@ -1216,7 +1216,7 @@ impl App {
     fn mark_places(&self) -> Vec<crate::state::Place> {
         self.marks
             .iter()
-            .map(|&m| crate::state::Place::of(&self.doc, DocByte(m)))
+            .map(|&m| crate::state::Place::kept(&self.doc, DocByte(m)))
             .collect()
     }
 

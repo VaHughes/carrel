@@ -379,6 +379,9 @@ fn closing_the_terminal_ends_the_reader_without_an_abort() {
     std::fs::write(d.path().join(&marker), "# Title\n\nbody\n").unwrap();
     let bin = env!("CARGO_BIN_EXE_carrel");
     let status = d.path().join("status");
+    // carrel's own stderr, kept: a panic here was once seen as a bare exit
+    // status 101 with its message thrown away along with the pty's output.
+    let stderr = d.path().join("stderr");
     // `script` owns the pty's master side; killing it outright is exactly a
     // closed window. The child shell ignores the hang-up so it lives to record
     // carrel's exit status; carrel installs its own SIGHUP handler, which
@@ -386,10 +389,11 @@ fn closing_the_terminal_ends_the_reader_without_an_abort() {
     let cmd = format!(
         "( sleep 2; pkill -KILL -f '^script .*{marker}' ) & \
          XDG_CONFIG_HOME='{0}' XDG_STATE_HOME='{0}' XDG_CACHE_HOME='{0}' HOME='{0}' \
-         timeout 30 script -qec 'trap \"\" HUP; stty rows 20 cols 76; {bin} {marker}; echo $? > {1}' /dev/null \
+         timeout 30 script -qec 'trap \"\" HUP; stty rows 20 cols 76; RUST_BACKTRACE=1 {bin} {marker} 2>{2}; echo $? > {1}' /dev/null \
          >/dev/null 2>&1; wait",
         d.path().display(),
         status.display(),
+        stderr.display(),
     );
     std::process::Command::new("sh")
         .arg("-c")
@@ -419,7 +423,8 @@ fn closing_the_terminal_ends_the_reader_without_an_abort() {
     assert_ne!(code, 134, "carrel aborted when its terminal closed");
     assert!(
         code == 129,
-        "unexpected exit status {code} after the terminal closed"
+        "unexpected exit status {code} after the terminal closed; carrel said:\n{}",
+        std::fs::read_to_string(&stderr).unwrap_or_default()
     );
 }
 
