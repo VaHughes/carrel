@@ -204,7 +204,9 @@ where
                 break;
             };
             let s = row_start.take().unwrap_or(head.range.start);
-            e.row(s, head.range.end, cut);
+            // Its content end: a head cut at spaces carries them, and a
+            // row's end never shows its trailing whitespace.
+            e.row(s, head.content_end(), cut);
             ladder = if cut == Cut::Hyphen {
                 ladder.saturating_add(1)
             } else {

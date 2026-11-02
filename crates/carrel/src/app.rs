@@ -2182,7 +2182,13 @@ impl App {
     /// neighbour of a row that no longer exists.
     fn after_fold_change(&mut self) {
         self.relayout();
-        let b = crate::view::anchor_block(&self.doc, self.view.anchor);
+        let mut b = crate::view::anchor_block(&self.doc, self.view.anchor);
+        // A gap row's anchor is the separator AFTER its block, which
+        // `anchor_block` gives to the block below; the row belongs to the
+        // block above, and that is the one whose folding hides it.
+        if b.get() > 0 && self.view.anchor < self.doc.node_for_block(b).doc.start {
+            b = BlockIdx(b.get() as u32 - 1);
+        }
         if self.layout.height(b) == 0 {
             let anchor = self.view.anchor;
             if let Some(&id) = self
@@ -2951,6 +2957,16 @@ impl App {
         }
     }
 
+    /// The rows a footnote box may use: the page's, from the top of the
+    /// text to the first row of the footer. Every question about the box —
+    /// where it is, what it shows, whether it scrolls — is asked on these
+    /// rows, so the keys, the paint and the hit-test cannot disagree.
+    #[must_use]
+    pub fn peek_page(&self) -> std::ops::Range<u16> {
+        let top = self.text_y();
+        top..top.saturating_add(self.text_h()).min(self.rows)
+    }
+
     /// How many rows the open footnote box shows, when it is drawn and the
     /// footnote is longer than it — the one condition under which the
     /// scroll keys are the box's ([`crate::peek::Peek::scrolls`]).
@@ -2958,7 +2974,7 @@ impl App {
     pub fn peek_scrolls(&self) -> Option<usize> {
         self.peek
             .as_ref()?
-            .scrolls(&self.doc, self.peek_fit(), self.cols, self.rows)
+            .scrolls(&self.doc, self.peek_fit(), self.cols, self.peek_page())
     }
 
     /// `a`, an action the reader's keymap made of a key, as an open
@@ -3689,7 +3705,7 @@ fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
                     hy: app.hyphenation(),
                     drawn: Some(&*app),
                 };
-                peek.scroll(&app.doc, fit, delta, app.cols, app.rows);
+                peek.scroll(&app.doc, fit, delta, app.cols, app.peek_page());
                 app.peek = Some(peek);
                 return Some(Outcome::Redraw);
             }

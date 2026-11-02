@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31
+Last updated: 2026-11-02
 
 ## Current state
 
@@ -11,16 +11,22 @@ Last updated: 2026-10-31
   artifacts after `release.yml`'s `--target` hit a 403 (fixed on `main`, unproven until
   the next tag). Its nix build fails one test that assumed `/tmp`; fixed on `main`, so
   the nixpkgs PR should wait for the next release.
-- **Unreleased on `main` (2026-10-31):** the GUI-preparation work from Q29/Q33 and three
-  known limits cleared — see the first entry below. The next release is the first with
+- **Unreleased on `main` (2026-10-31, 2026-11-02):** the GUI-preparation work from
+  Q29/Q33, three known limits cleared, and every known defect fixed — see the first two
+  entries below. The next release is the first with
   three crates, so it is also the first test of `publish.yml` publishing `carrel-state`
   (not yet on crates.io; the name was free on 2026-10-31).
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
   reader-beside-an-agent slate.
-- All five local gates passed on 2026-10-31: **1,389 tests**, zero-warning clippy,
-  formatting, architectural discipline and packaging, plus the 1.95 MSRV check; CI green
-  on `d8dbf1c`. Color-sensitive PTY tests need
+- All five local gates passed on 2026-11-02: **1,409 tests**, zero-warning clippy,
+  formatting, architectural discipline and packaging, plus the 1.95 MSRV check.
+  Seen once and not reproduced since (14 runs, 9 of them under 3x parallel load):
+  `pty.rs::closing_the_terminal_ends_the_reader_without_an_abort` got exit status 101
+  (a Rust panic) instead of 129 during a full `cargo test --workspace`. The harness
+  discards the panic message; if it recurs, capture carrel's stderr in that test. Color-sensitive PTY tests need
   `NO_COLOR` unset in this shell.
+- **Decision made 2026-11-02:** `q` over a footnote box closes the box and stops, as it
+  closes every other pane (it used to close the box and then the document).
 - **Decisions made 2026-10-08:** a click outside an open pane closes it and does nothing
   else, the status-row chips included; `≡` always works, replacing whatever pane is up;
   a key that opens a pane replaces one that takes no typed text; a note's trailing
@@ -35,6 +41,44 @@ Last updated: 2026-10-31
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-11-02) — **every known defect fixed**, each test-first and each test
+  break-checked against the old behavior, then cold-reviewed by an agent that found two
+  regressions (both fixed, below). Left as is: a bare URL in image alt text becomes a
+  link, as a `www.` one always has.
+  - *Bare `http(s)://` URLs link* (`document.rs::scheme_autolinks`, beside the `www.`
+    scanner, both trimmed by `autolink_end`). The URL copied is the SOURCE's where smart
+    punctuation rewrote the text (`it's`, `--`), paired by order with a scan of the
+    source; not where an entity or escape is in it. A URL whose text event runs straight
+    into markup (`\_`, an emphasis opening inside it, a footnote mark) reaches the scanner
+    cut short and stays text (`runs_on`, peeked in `run`) — a link to the wrong page is
+    worse than none. Frontmatter values link too.
+  - *`q` over a footnote box* is `Dismiss` in `key_action`, over the reader's map only.
+  - *Navigation lists* (`paint_navigation_entries`, shared by bookmarks and the outline):
+    the selected entry grows only into rows the others do not need, and a cut label
+    continues on its last row instead of restarting (taken from the label, so a token
+    a row cut is not given a space). A list longer than the pane scrolls anyway, so there
+    the selection may take up to half of it. The outline had the same bug.
+  - *The footnote box* is placed on `App::peek_page()` (text top to footer) by
+    `Peek::place`: below its mark, else above, else the roomier side, sized to it; never
+    over the mark. `view`, `scroll`, `scrolls` and `zone` all take that page, so keys,
+    paint and hit-test agree.
+  - *Continue-reading* is re-read with the file's own row on every return home
+    (`main.rs::came_home`).
+  - *Gap rows anchor at the separator byte after their block* (`view::row_anchor`,
+    `view::row_of`), which `block_at_doc` hands to the next block and `row_of` turns into
+    the row just above it; it survives a resume through `Place` with no format change.
+    Property `every_top_row_restores_to_itself` over the conformance corpus at four widths;
+    found on the way, an empty first text row (math shown as source) restored a row late
+    (`visual_row_of`). The cold review found `za` from a gap row left the folded heading a
+    row above the screen: `after_fold_change` now asks about the block ABOVE a separator
+    anchor (guard in `tests/folds.rs`). The one bounded exception: the gap under an EMPTY block (a `---`
+    rule) shares that block's only byte and comes back one row up.
+  - *A forced cut that touches spaces cuts at them* (`units::cut_at_spaces`), unmarked,
+    the spaces carried as the head's trailing whitespace; `pack` ends the row at the head's
+    content end.
+  - *Home search's math-view cache* is pruned to the file list each time a search finishes
+    uncancelled.
 
 - Unreleased (2026-10-31) — **ready for a second frontend, and three limits cleared.**
   - *A third crate, `carrel-state`*, for what every frontend shares above the model:
@@ -328,41 +372,13 @@ planned:
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
-Known defects, found 2026-10-31 and not yet fixed:
+Known defects: none recorded. The last list (found 2026-10-31) was fixed on 2026-11-02;
+see Recently completed. One item on it stays, as a limit rather than a defect:
 
-- **A run of only dashes and spaces can cut to a blank row.** `"—  —"` at width 2 is one
-  unit (UAX #14 LB17 forbids breaks in an em dash, spaces, em dash sequence), and
-  `units::split` cuts inside its whitespace, giving the screen a row of one space with a
-  `↩`. The existing proptest `a_marked_cut_elides_nothing` finds it at 20,000 cases; it
-  predates this work. Fix in `units::split`.
-- **`q` with a footnote box open closes the box and then the document** (`q` is "any other
-  key" to a box). Every pane closes on `q`, so a reader may expect it to close only the
-  box. Owner's call; one line in `key_action` either way.
-
-Found by the cold black-box review of 2026-10-31, older than that work, not yet fixed:
-
-- **The bookmark list (`"`) with long labels** wraps the selected label over two rows and
-  repeats it in the third, so the other marks are never visible (three marks, all three rows
-  the selected one), and stray pieces of the page show past its right edge. Short labels
-  render correctly.
-- **A resume saved with a blank gap row at the top** comes back at the start of the
-  paragraph above it, about a screen too early: the view's anchor for a gap row is the
-  previous block's start. A view-anchor question, not a persistence one (the saved place
-  resolves exactly).
-- **At small heights (12–20 rows) the footnote box** covers the status row, the hint row
-  and the mark itself.
-- **The home list's continue-reading row** keeps its percentage from when the list was
-  built, so after reading on and returning with ⌂ the file's own row and its
-  continue-reading row disagree.
-- **A bare `https://…` URL is not a link** (no OSC 8, hover or copy); `www.` and `<https://…>`
-  are. Hand-rolled linkify covers `www.` only.
 - **A position or bookmark saved before the file was edited elsewhere** lands where the
   edit moved its bytes, possibly another paragraph (a live reload carries bookmarks by
   content; a cold reopen cannot, having no content to match). The man page already says
   bookmarks do not survive an edit.
-- **Home search's math-view cache** (`grep::MATH_VIEWS`) is never pruned: files deleted or
-  under an old root keep their entries for the session. Bounded by the files with inline
-  math, so small in practice.
 
 The Q29/Q33 architecture follow-ups are done (see Recently completed). What a GTK frontend
 would still find: the TUI's `App` is sized in cells and stays in `carrel`, deliberately — a

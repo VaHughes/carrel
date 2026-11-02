@@ -709,10 +709,21 @@ fn fill_titles(app: &mut App) {
     }
 }
 
-/// Fill the home screen's continue-reading band.
+/// The file list is on screen again after a document: read again what the
+/// state file says about where the reader is, for every row that says it.
 ///
-/// Read once at startup: it is a small file, and a list that changed under
-/// the reader would be worse than one that is a few seconds stale.
+/// Both, always together. The continue band used to be read only at
+/// startup while the file's own row was re-read here, so after reading on
+/// and coming back with ⌂ the two rows for one file disagreed. Read on the
+/// way back, never while the list is up: a band that moved under the
+/// pointer would be worse than one that waited.
+fn came_home(app: &mut App) {
+    load_resume(app);
+    load_reading(app);
+}
+
+/// Fill the home screen's continue-reading band: at startup, and each time
+/// the list comes back ([`came_home`]). It is a small file.
 fn load_resume(app: &mut App) {
     let Some(dir) = app.state_dir.clone() else {
         return;
@@ -2307,7 +2318,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
         grep.tick(&mut app);
         tag_scan.tick(&mut app);
         if app.is_home() && !was_home {
-            load_reading(&mut app);
+            came_home(&mut app);
         }
         was_home = app.is_home();
         preview.tick(&mut app);
@@ -2488,6 +2499,21 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
     // it always does.
     if app.peek.is_some() && k.code == KeyCode::Enter {
         return Some(carrel::action::Action::PeekGo);
+    }
+    // ...and `q` closes it and stops there, as it closes every pane. As
+    // "any other key" it closed the box and then the document under it.
+    // Only over the reader's own map: a pane or prompt above the box owns
+    // its letters, and `q` typed into a filter is text.
+    if app.peek.is_some()
+        && k.code == KeyCode::Char('q')
+        && !k
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && app.pane().is_none()
+        && !app.is_home()
+    {
+        keys.reset();
+        return Some(carrel::action::Action::Dismiss);
     }
     // The pane that owns the screen owns the keys — the SAME answer the
     // painter uses to decide what is on top (`App::pane`), so the two can
@@ -3573,7 +3599,7 @@ mod tests {
             .peek
             .as_ref()
             .unwrap()
-            .zone(&app.doc, app.peek_fit(), cols, rows);
+            .zone(&app.doc, app.peek_fit(), cols, app.peek_page());
         let mut leaked = Vec::new();
         let mut covered_text = 0;
         for row in z.y..z.y + z.h {
@@ -3826,11 +3852,11 @@ mod tests {
         // hands the key on to the page.
         hit(&mut app, KeyCode::End);
         let bottom = top(&app);
-        let v = app
-            .peek
-            .as_ref()
-            .unwrap()
-            .view(&app.doc, app.peek_fit(), app.cols, app.rows);
+        let v =
+            app.peek
+                .as_ref()
+                .unwrap()
+                .view(&app.doc, app.peek_fit(), app.cols, app.peek_page());
         assert_eq!(v.below, 0, "End reaches the footnote's end");
         for _ in 0..3 {
             hit(&mut app, KeyCode::Down);
@@ -3883,6 +3909,97 @@ mod tests {
             key_action(&mut keys, &app, down),
             Some(Action::Scroll(Span::Line, 1))
         );
+    }
+
+    /// **The defect** (black-box review, 2026-10-31): the continue-reading
+    /// band was read once at startup while the file's own row was re-read
+    /// on every return home — so after reading on and coming back with ⌂,
+    /// the two rows for one file disagreed. Both come from what is read on
+    /// the way back, so they say the same thing.
+    #[test]
+    fn coming_home_refreshes_the_continue_row_with_the_files_own_row() {
+        use carrel::action::Action;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("docs");
+        std::fs::create_dir(&root).unwrap();
+        let doc = root.join("long.md");
+        let body = "Paragraph.\n\n".repeat(400);
+        std::fs::write(&doc, body).unwrap();
+        let entries = vec![carrel::scan::Entry {
+            path: doc.clone(),
+            mtime: std::time::SystemTime::now(),
+        }];
+        let mut app = App::new_home(root.clone(), entries, 80, 24);
+        app.state_dir = Some(dir.path().join("state"));
+
+        // `steps` pages in from the top, then back home through `⌂`.
+        let read_to = |app: &mut App, steps: usize| {
+            app.open_path(&doc).unwrap();
+            update(app, Action::GoToStart);
+            for _ in 0..steps {
+                update(app, Action::Scroll(carrel::action::Span::Page, 1));
+            }
+            update(app, Action::GoHome);
+            assert!(app.is_home());
+            came_home(app);
+        };
+        let rows = |app: &App| {
+            let h = app.home().unwrap();
+            let own = h.reading.get(&doc).map(|r| r.permille / 10);
+            let canon = doc.canonicalize().unwrap();
+            let band = h
+                .resume
+                .iter()
+                .find(|r| r.path.canonicalize().ok().as_ref() == Some(&canon))
+                .map(|r| r.percent);
+            (own, band)
+        };
+
+        read_to(&mut app, 6);
+        let (own, band) = rows(&app);
+        assert!(own.is_some_and(|p| p > 5 && p < 50), "{own:?}");
+        assert_eq!(band, own, "first visit");
+        read_to(&mut app, 14);
+        let (own2, band2) = rows(&app);
+        assert!(own2 > own, "read on: {own:?} -> {own2:?}");
+        assert_eq!(band2, own2, "after reading on, the two rows agree");
+    }
+
+    /// `q` closes a footnote box and nothing else, as it closes every other
+    /// pane. It used to be "any other key" to the box: the box closed and
+    /// then `q` did what it does on the page — closed the DOCUMENT, so the
+    /// reader dismissing a footnote lost the file. Long box or short, the
+    /// page and the open file are untouched; `Q` still quits outright.
+    #[test]
+    fn q_closes_a_footnote_box_and_not_the_document() {
+        use carrel::action::Action;
+        let q = press(KeyCode::Char('q'), KeyModifiers::NONE);
+        for lines in [1, 40] {
+            let mut app = long_peek(lines, 60, 20);
+            let before = (app.view.scroll_row, app.file.clone());
+            let mut keys = Keys::new();
+            let a = key_action(&mut keys, &app, q);
+            assert_eq!(a, Some(Action::Dismiss), "{lines}-line footnote");
+            update(&mut app, a.unwrap());
+            assert!(app.peek.is_none(), "the box closed");
+            assert!(!app.is_home(), "the document is still open");
+            assert_eq!((app.view.scroll_row, app.file.clone()), before);
+            // With the box gone, `q` is the page's again.
+            assert_eq!(
+                key_action(&mut keys, &app, q),
+                Some(Action::CloseFile),
+                "the next q closes the file, as it always did"
+            );
+            let app = long_peek(lines, 60, 20);
+            assert_eq!(
+                key_action(
+                    &mut keys,
+                    &app,
+                    press(KeyCode::Char('Q'), KeyModifiers::SHIFT)
+                ),
+                Some(Action::Quit)
+            );
+        }
     }
 
     /// A resize closes the box (it is drawn at the cell its mark was

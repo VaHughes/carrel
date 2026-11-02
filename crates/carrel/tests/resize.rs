@@ -36,7 +36,13 @@ fn top_visible_row(app: &App) -> std::ops::Range<u32> {
     let mut rows = Vec::new();
     app.layout.rows_for(&app.doc, b, &mut rows);
     let sub = (app.view.scroll_row - app.layout.row_start(b)) as usize;
-    rows.get(sub).map_or(0..0, |r| r.doc.clone())
+    let row = rows.get(sub).map_or(0..0, |r| r.doc.clone());
+    // The gap under a block is named by the separator byte after it, not by
+    // a byte of its (empty) range: `view::row_anchor` says which.
+    match carrel::view::row_anchor(&app.doc, &app.layout, app.view.scroll_row) {
+        Some(at) if at != row.start => at..at,
+        _ => row,
+    }
 }
 
 proptest! {

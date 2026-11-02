@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 545644c3d2d88528a18aaa1562a0035289839e4e035db13778533220e68cd31f # shrinks to scroll = 2, w1 = 12, w2 = 17, h = 4
+cc 98f54678a946b4c2058a57af2e81d5643c9562104ca39bdc028e9b21f2f46e2c # shrinks to scroll = 9, w1 = 35, w2 = 8, h = 4

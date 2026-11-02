@@ -82,7 +82,7 @@ fn clicking_a_mark_shows_the_footnote_where_the_mark_is() {
     assert_eq!(app.view.scroll_row, 0, "and the reader has not moved");
 
     let (buf, targets) = painted(&app, 80, 24);
-    let boxed = peek.zone(&app.doc, app.peek_fit(), 80, 24);
+    let boxed = peek.zone(&app.doc, app.peek_fit(), 80, app.peek_page());
     assert_eq!(boxed.y, zone.y + 1, "the box hangs under the mark");
     let text: String = (boxed.y..boxed.y + boxed.h)
         .map(|y| {
@@ -247,8 +247,8 @@ fn open_first(app: &mut App, cols: u16, rows: u16) {
 fn check_rows(app: &App, cols: u16, rows: u16) -> Vec<String> {
     let (buf, _) = painted(app, cols, rows);
     let peek = app.peek.as_ref().unwrap();
-    let z = peek.zone(&app.doc, app.peek_fit(), cols, rows);
-    let view = peek.view(&app.doc, app.peek_fit(), cols, rows);
+    let z = peek.zone(&app.doc, app.peek_fit(), cols, app.peek_page());
+    let view = peek.view(&app.doc, app.peek_fit(), cols, app.peek_page());
     let inset = peek.inset(&app.doc);
     let (left, right) = (z.x + 2, z.x + z.w - 2);
     let mut out = Vec::new();
@@ -340,7 +340,7 @@ fn a_word_cut_in_the_box_is_marked_as_on_the_page() {
     );
     open_first(&mut app, cols, rows);
     let peek = app.peek.as_ref().unwrap();
-    let view = peek.view(&app.doc, app.peek_fit(), cols, rows);
+    let view = peek.view(&app.doc, app.peek_fit(), cols, app.peek_page());
     assert_eq!(view.below, 0, "the whole footnote is in view");
     let kinds: Vec<_> = view
         .lines
@@ -371,7 +371,7 @@ fn a_word_cut_in_the_box_is_marked_as_on_the_page() {
         .peek
         .as_ref()
         .unwrap()
-        .view(&app.doc, app.peek_fit(), cols, rows);
+        .view(&app.doc, app.peek_fit(), cols, app.peek_page());
     assert!(
         !view
             .lines
@@ -394,7 +394,7 @@ fn the_box_shows_every_block_of_the_footnote_and_scrolls_to_the_rest() {
             .peek
             .as_ref()
             .unwrap()
-            .view(&app.doc, app.peek_fit(), cols, rows);
+            .view(&app.doc, app.peek_fit(), cols, app.peek_page());
         if view.below == 0 {
             break;
         }
@@ -435,7 +435,7 @@ fn a_footnote_taller_than_its_box_says_how_much_more_there_is() {
         .peek
         .as_ref()
         .unwrap()
-        .zone(&app.doc, app.peek_fit(), cols, rows);
+        .zone(&app.doc, app.peek_fit(), cols, app.peek_page());
     let button_row: String = (z.x..z.x + z.w)
         .map(|x| buf[(x, z.y + z.h - 2)].symbol())
         .collect();
@@ -445,11 +445,12 @@ fn a_footnote_taller_than_its_box_says_how_much_more_there_is() {
     let mut short = reader(80, 24);
     open_first(&mut short, 80, 24);
     let (buf, _) = painted(&short, 80, 24);
-    let z = short
-        .peek
-        .as_ref()
-        .unwrap()
-        .zone(&short.doc, short.hyphenation(), 80, 24);
+    let z =
+        short
+            .peek
+            .as_ref()
+            .unwrap()
+            .zone(&short.doc, short.hyphenation(), 80, short.peek_page());
     let button_row: String = (z.x..z.x + z.w)
         .map(|x| buf[(x, z.y + z.h - 2)].symbol())
         .collect();
@@ -472,7 +473,7 @@ fn a_link_and_a_mark_inside_the_box_are_clickable() {
         .peek
         .as_ref()
         .unwrap()
-        .zone(&app.doc, app.peek_fit(), cols, rows);
+        .zone(&app.doc, app.peek_fit(), cols, app.peek_page());
     let inside = |z: &Zone| boxed.contains(z.x, z.y);
     let link = targets
         .iter()
@@ -527,7 +528,7 @@ fn a_search_hit_in_the_footnote_is_lit_in_the_box() {
         .peek
         .as_ref()
         .unwrap()
-        .zone(&app.doc, app.peek_fit(), cols, rows);
+        .zone(&app.doc, app.peek_fit(), cols, app.peek_page());
     let y = z.y + 1;
     let row: String = (z.x..z.x + z.w).map(|x| buf[(x, y)].symbol()).collect();
     let col = row.find("measurement").expect("the first row has the word");
@@ -561,7 +562,7 @@ fn at_thirty_columns_the_footnote_wraps_inside_the_box() {
             .peek
             .as_ref()
             .unwrap()
-            .view(&app.doc, app.peek_fit(), cols, rows)
+            .view(&app.doc, app.peek_fit(), cols, app.peek_page())
             .below
             == 0
         {
@@ -596,7 +597,7 @@ fn a_wide_table_in_the_box_is_cards_as_on_the_page() {
         // Each value carries its column's label in the card's gutter.
         let peek = app.peek.as_ref().unwrap();
         let (buf, _) = painted(&app, cols, rows);
-        let z = peek.zone(&app.doc, app.peek_fit(), cols, rows);
+        let z = peek.zone(&app.doc, app.peek_fit(), cols, app.peek_page());
         labeled.clear();
         labeled.extend(
             (z.y..z.y + z.h)
@@ -611,7 +612,11 @@ fn a_wide_table_in_the_box_is_cards_as_on_the_page() {
                     inner.split_whitespace().next().unwrap().to_string()
                 }),
         );
-        if peek.view(&app.doc, app.peek_fit(), cols, rows).below == 0 {
+        if peek
+            .view(&app.doc, app.peek_fit(), cols, app.peek_page())
+            .below
+            == 0
+        {
             break;
         }
         update(&mut app, Action::PeekScroll(1));
@@ -638,7 +643,7 @@ fn display_math_in_the_box_is_drawn_as_on_the_page() {
         .peek
         .as_ref()
         .unwrap()
-        .zone(&app.doc, app.peek_fit(), cols, rows);
+        .zone(&app.doc, app.peek_fit(), cols, app.peek_page());
     let inside: String = (z.y..z.y + z.h)
         .map(|y| {
             (z.x..z.x + z.w)

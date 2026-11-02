@@ -269,6 +269,9 @@ pub(super) fn split(
         col = col.saturating_add(gw);
     }
     let at = at?;
+    if let Some(cut) = cut_at_spaces(u, text, at, col, w) {
+        return Some(cut);
+    }
     // A first cluster wider than the budget went on the row alone; it keeps
     // its mark only when the mark still fits beside it.
     let cut = if reserve > 0 && col + u32::from(reserve) <= u32::from(avail) {
@@ -314,6 +317,54 @@ pub(super) fn split_whole(
         return Some(halves(u, at as u32, head_width, Cut::Hyphen));
     }
     split(u, text, avail, w, true, soft)
+}
+
+/// [`split`]'s cut at byte `at` (the head `col` cells wide), moved to the
+/// spaces it touches — when it touches any, and there is something on
+/// both sides of them.
+///
+/// A unit may hold spaces: UAX #14 keeps `— —` and `( x` whole (LB14–17).
+/// A cut that landed in them began the next row with a space, and cut that
+/// one again: a row of only a space and a `↩`. Cut at the spaces instead,
+/// as an ordinary break would: the head carries them as its trailing
+/// whitespace, which a row's end never shows, so no mark is needed and
+/// none ends a row on a space.
+fn cut_at_spaces(
+    u: &Unit,
+    text: &str,
+    at: usize,
+    col: u32,
+    w: &WidthFn,
+) -> Option<(Unit, Unit, Cut)> {
+    let start = u.range.start as usize;
+    let content_end = u.content_end() as usize;
+    let ws_start = start + text[start..at].trim_end().len();
+    let ws_end = content_end - text[at..content_end].trim_start().len();
+    if ws_start == ws_end || ws_start == start || ws_end == content_end {
+        return None;
+    }
+    let cells = |s: &str| -> u32 { s.graphemes(true).map(|g| u32::from(w(g))).sum() };
+    let spaces = cells(&text[ws_start..ws_end]);
+    let width = col - cells(&text[ws_start..at]) + spaces;
+    Some((
+        Unit {
+            range: u.range.start..ws_end as u32,
+            width,
+            trailing_ws: spaces,
+            trailing_ws_bytes: (ws_end - ws_start) as u32,
+            mandatory: false,
+            soft_hyphen: false,
+        },
+        Unit {
+            range: ws_end as u32..u.range.end,
+            width: u.width.saturating_sub(width),
+            trailing_ws: u.trailing_ws,
+            trailing_ws_bytes: u.trailing_ws_bytes,
+            mandatory: u.mandatory,
+            soft_hyphen: u.soft_hyphen,
+        },
+        Cut::Plain,
+    ))
 }
 
 /// `u` cut at byte `at`, the head `head_width` cells wide.

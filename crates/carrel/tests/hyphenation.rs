@@ -457,7 +457,12 @@ proptest! {
             let mut rows = Vec::new();
             app.layout.rows_for(&app.doc, b, &mut rows);
             let sub = (app.view.scroll_row - app.layout.row_start(b)) as usize;
-            rows.get(sub).map_or(0..0, |r| r.doc.clone())
+            let row = rows.get(sub).map_or(0..0, |r| r.doc.clone());
+            // A gap row is named by the separator after its block.
+            match carrel::view::row_anchor(&app.doc, &app.layout, app.view.scroll_row) {
+                Some(at) if at != row.start => at..at,
+                _ => row,
+            }
         };
         let src = format!("{PROSE}\n\n{PROSE}\n\n- {PROSE}\n");
         let mut app = App::new("t.md".into(), Document::parse(&src), w1, h);

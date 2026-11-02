@@ -578,3 +578,51 @@ fn bookmarks_follow_their_blocks_across_a_reload() {
         "the same block"
     );
 }
+
+/// **The defect** (black-box review, 2026-10-31): a position saved with the
+/// blank under a long paragraph on top came back at that paragraph's first
+/// row, about a screen too early — the gap row anchored at the paragraph's
+/// start. Saved and resumed through the state file, every such row comes
+/// back as itself: plain paragraphs, and ones whose text smart punctuation
+/// rewrote, so their bytes map to the source by run.
+#[test]
+fn a_resume_with_the_gap_under_a_long_paragraph_on_top_comes_back_there() {
+    let long = |i: usize| {
+        let words = "word ".repeat(120);
+        if i.is_multiple_of(2) {
+            format!("Paragraph {i} {words}end.\n\n")
+        } else {
+            format!("\"Quoted\" paragraph {i} -- it's {words}end...\n\n")
+        }
+    };
+    let src: String = (0..8).map(long).collect();
+    let d = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let probe = file_app(d.path(), "g.md", &src);
+    let h = probe.text_h();
+    let mut checked = 0;
+    for b in 0..probe.doc.block_count() - 1 {
+        let b = carrel_core::BlockIdx(b as u32);
+        let gap = probe.layout.row_start(b) + probe.layout.content_height(&probe.doc, b);
+        if gap > probe.layout.max_scroll(h) {
+            continue;
+        }
+        let mut app = file_app(d.path(), "g.md", &src);
+        app.state_dir = Some(state.path().to_path_buf());
+        update(&mut app, Action::ScrollTo(gap));
+        assert_eq!(app.view.scroll_row, gap);
+        update(&mut app, Action::CloseFile);
+
+        let mut back = file_app(d.path(), "g.md", &src);
+        back.state_dir = Some(state.path().to_path_buf());
+        back.restore_position();
+        assert_eq!(
+            back.view.scroll_row,
+            gap,
+            "block {b:?}: the gap under it, rows {}..",
+            probe.layout.row_start(b)
+        );
+        checked += 1;
+    }
+    assert!(checked >= 4, "{checked}");
+}

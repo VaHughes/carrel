@@ -26,7 +26,8 @@
 //!
 //! Inline math is the filter's costliest step: the file is tokenized to
 //! find its spans. That answer does not depend on the needle, so it is kept
-//! per file (`MATH_VIEWS`) until the file's mtime or length changes.
+//! per file (`MATH_VIEWS`) until the file's mtime or length changes, and
+//! for as long as the file is in the list a finished search was given.
 //!
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
@@ -101,6 +102,19 @@ pub fn spawn(entries: Vec<Entry>, needle: String, generation: u64) -> Search {
             if gone {
                 return; // receiver gone: a newer query took over
             }
+            // Finished, not cancelled: `entries` is the tree as it stands,
+            // so this is when the kept views can follow it. Once per
+            // settled query, on this thread — never per keystroke, never on
+            // a list a newer query has already replaced.
+            // The set is built before the lock is taken: the workers of the
+            // query that replaces this one wait on that lock.
+            let keep = listed(&entries);
+            prune(
+                &mut MATH_VIEWS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &keep,
+            );
         }
         let _ = tx.send(Msg::Done(generation));
     });
@@ -261,6 +275,20 @@ type MathViews = std::collections::HashMap<PathBuf, (Stamp, Option<std::sync::Ar
 /// math keeps one rendered copy of itself.
 static MATH_VIEWS: std::sync::LazyLock<std::sync::Mutex<MathViews>> =
     std::sync::LazyLock::new(Default::default);
+
+/// Keep only the views of files in `keep`: the list a search was given is
+/// every file under the root as it stands, so a view of anything else is
+/// of a file deleted since, or under a root the list has left.
+fn prune(views: &mut MathViews, keep: &Listed<'_>) {
+    views.retain(|p, _| keep.contains(p.as_path()));
+}
+
+/// The paths of a file list, to look them up.
+type Listed<'a> = std::collections::HashSet<&'a std::path::Path>;
+
+fn listed(keep: &[Entry]) -> Listed<'_> {
+    keep.iter().map(|e| e.path.as_path()).collect()
+}
 
 /// The file's math view, from the cache when its stamp still matches.
 fn math_view(path: &std::path::Path, stamp: Stamp, text: &str) -> Option<std::sync::Arc<str>> {
@@ -653,6 +681,43 @@ mod tests {
         assert!(grep_file(&q, &a).is_none(), "no x² yet");
         std::fs::write(&a, "the $x^2$ and $y$ terms, longer\n").unwrap();
         assert_eq!(grep_file(&q, &a).map(|h| h.count), Some(1));
+    }
+
+    /// The kept views are the files the search was given, and no others: a
+    /// file deleted, or one under a root the list has left, is dropped
+    /// (black-box review, 2026-10-31: they were kept for the session).
+    #[test]
+    fn a_kept_math_view_goes_with_its_file() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a.md"), d.path().join("b.md"));
+        let mut views = MathViews::new();
+        for p in [&a, &b] {
+            views.insert(p.clone(), ((None, 0), None));
+        }
+        prune(&mut views, &listed(&[entry(&a)]));
+        assert!(views.contains_key(&a), "still listed, still kept");
+        assert!(
+            !views.contains_key(&b),
+            "gone from the list, gone from the cache"
+        );
+        prune(&mut views, &listed(&[]));
+        assert!(views.is_empty());
+    }
+
+    /// A search that runs to its end prunes the shared cache to its list.
+    #[test]
+    fn a_finished_search_prunes_the_kept_views() {
+        let d = tempfile::tempdir().unwrap();
+        let gone = d.path().join("gone.md");
+        let here = d.path().join("here.md");
+        std::fs::write(&here, "needle\n").unwrap();
+        MATH_VIEWS
+            .lock()
+            .unwrap()
+            .insert(gone.clone(), ((None, 0), None));
+        let (_, done) = collect(&spawn(vec![entry(&here)], "needle".into(), 0));
+        assert!(done);
+        assert!(!MATH_VIEWS.lock().unwrap().contains_key(&gone));
     }
 
     /// Workers finish files in any order; the list fills in `entries`

@@ -730,10 +730,28 @@ fn paint_navigation_entries(
     if lines.is_empty() {
         lines.push(String::new());
     }
-    if lines.len() > usize::from(area.height) {
-        lines.truncate(usize::from(area.height));
-        *lines.last_mut().expect("nonempty viewport") =
-            fit(&entries[selected].0.replace('\n', " "));
+    // The selected entry opens out only over rows the others do not need.
+    // Given every row it could fill, three long bookmarks in a three-row
+    // list showed the selected one alone, and the other two never. A list
+    // longer than the pane scrolls anyway: there it takes up to half.
+    let room = usize::from(area.height);
+    let others = entries.len() - 1;
+    let cap = if others < room {
+        room - others
+    } else {
+        (room / 2).max(1)
+    };
+    if lines.len() > cap {
+        let kept = cap - 1;
+        let last = match keep {
+            // A label goes ON from its last whole row, so it is never shown
+            // starting twice.
+            Keep::Start => fit(&rest_of(&entries[selected].0, &lines[..kept])),
+            // A path's last row is its END — the file, which is the point.
+            Keep::End => fit(&entries[selected].0.replace('\n', " ")),
+        };
+        lines.truncate(kept);
+        lines.push(last);
     }
     let first = selected.saturating_sub(usize::from(area.height).saturating_sub(lines.len()));
     let mut y = area.y;
@@ -773,6 +791,31 @@ fn paint_navigation_entries(
             Z_OVERLAY,
         );
     }
+}
+
+/// `label` after what `shown` (its first wrapped rows) already shows,
+/// whitespace collapsed. Taken from the label itself, not by joining the
+/// remaining rows: a row cut inside a long token (a path, a URL) is not a
+/// word break, and a joining space would invent one.
+fn rest_of(label: &str, shown: &[String]) -> String {
+    let mut skip: usize = shown
+        .iter()
+        .map(|l| l.chars().filter(|c| !c.is_whitespace()).count())
+        .sum();
+    let at = label
+        .char_indices()
+        .find(|&(_, c)| {
+            if c.is_whitespace() {
+                return false;
+            }
+            if skip == 0 {
+                return true;
+            }
+            skip -= 1;
+            false
+        })
+        .map_or(label.len(), |(i, _)| i);
+    label[at..].split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The bookmark list (`"`): every mark with its context line. Rows derive
@@ -2718,7 +2761,7 @@ fn paint_launcher(
 fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(peek) = &app.peek else { return };
     let area = frame.area();
-    let z = peek.zone(&app.doc, app.peek_fit(), area.width, area.height);
+    let z = peek.zone(&app.doc, app.peek_fit(), area.width, app.peek_page());
     if !crate::peek::is_drawn(z) {
         return; // no room to say anything; the next action closes it
     }
@@ -2768,7 +2811,7 @@ fn paint_peek(frame: &mut Frame, app: &App, targets: &mut Targets) {
             buf.set_stringn(z.x + 1, y, " ".repeat(inner), inner, theme::status());
         }
     }
-    let view = peek.view(&app.doc, app.peek_fit(), area.width, area.height);
+    let view = peek.view(&app.doc, app.peek_fit(), area.width, app.peek_page());
     // The text column: a cell of air inside each border, above the button
     // row.
     let text = Rect::new(z.x + 2, z.y + 1, z.w - 4, z.h - 3);
@@ -6313,6 +6356,83 @@ mod pane_frame_tests {
         }
     }
 
+    /// A label's cut last row goes on from where its rows stopped — inside
+    /// a token, too, with no space invented where a row cut it.
+    #[test]
+    fn the_rest_of_a_label_resumes_where_its_rows_stopped() {
+        let rows = vec!["see the".to_string(), "path /usr/sh".to_string()];
+        assert_eq!(
+            rest_of("see  the path /usr/share/doc\nand more", &rows),
+            "are/doc and more"
+        );
+        assert_eq!(rest_of("short", &["short".to_string()]), "");
+    }
+
+    /// **The defect** (black-box review, 2026-10-31): at 12–20 rows a long
+    /// footnote's box was sized against the whole window and, fitting
+    /// neither below its mark nor above, was pinned to row 0 — over the
+    /// mark it explains and over the status and hint rows. The box keeps to
+    /// the page, above the footer, on one side of its mark, and is still
+    /// drawn wherever that leaves it room to say anything.
+    #[test]
+    fn a_footnote_box_never_covers_its_mark_or_the_footer() {
+        let note = (0..40)
+            .map(|i| format!("note line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n\n    ");
+        let filler = "Filler.\n\n".repeat(30);
+        for short in [false, true] {
+            let body = if short {
+                "a short note".to_string()
+            } else {
+                note.clone()
+            };
+            let src = format!("# Head\n\nBody[^n] text.\n\n{filler}[^n]: {body}\n");
+            for rows in 12..=20u16 {
+                let base = App::new("t.md".into(), carrel_core::Document::parse(&src), 60, rows);
+                let floor = base.text_y() + base.text_h();
+                assert!(
+                    floor <= rows - 2,
+                    "{rows}: the status and hint rows are below"
+                );
+                let byte = u32::try_from(base.doc.text.find("[^n]").unwrap()).unwrap();
+                for y in base.text_y()..floor {
+                    let mut a =
+                        App::new("t.md".into(), carrel_core::Document::parse(&src), 60, rows);
+                    update(&mut a, Action::FootnotePeek { at: (4, y), byte });
+                    let (_, painted) = paint(&a);
+                    let boxes: Vec<Zone> = painted
+                        .targets
+                        .as_slice()
+                        .iter()
+                        .filter(|t| t.z == Z_MENU && t.action == Action::Absorb)
+                        .map(|t| t.zone)
+                        .collect();
+                    let room = (floor - y - 1).max(y - a.text_y().min(y));
+                    let Some(z) = boxes.first() else {
+                        assert!(
+                            room < 4,
+                            "{rows} rows, mark on {y}: no box, with {room} rows free"
+                        );
+                        continue;
+                    };
+                    let ctx = format!("{rows} rows, mark on {y}, short {short}: {z:?}");
+                    assert!(z.y + z.h <= floor, "over the footer: {ctx}");
+                    assert!(!(z.y..z.y + z.h).contains(&y), "over its mark: {ctx}");
+                    // What the box says it shows is what it has room for,
+                    // and the keys agree with what is drawn.
+                    let v =
+                        a.peek
+                            .as_ref()
+                            .unwrap()
+                            .view(&a.doc, a.peek_fit(), a.cols, a.peek_page());
+                    assert_eq!(usize::from(z.h) - 3, v.lines.len(), "{ctx}");
+                    assert_eq!(a.peek_scrolls().is_some(), v.above + v.below > 0, "{ctx}");
+                }
+            }
+        }
+    }
+
     /// A peek opened, scrolled both ways and repainted at every size down to
     /// one cell never panics — with a footnote whose words divide and whose
     /// token is cut, so the box's `-` and `↩` stages run at every width,
@@ -6421,7 +6541,7 @@ mod pane_frame_tests {
                 .peek
                 .as_ref()
                 .unwrap()
-                .zone(&a.doc, a.peek_fit(), cols, rows);
+                .zone(&a.doc, a.peek_fit(), cols, a.peek_page());
             let y = z.y + z.h - 2;
             let row = row_text(&buf, y, z.x, z.x + z.w);
             for (glyph, want) in [
@@ -6455,7 +6575,11 @@ mod pane_frame_tests {
         let a = open(1, 60, 20);
         assert_eq!(a.peek_scrolls(), None);
         let (buf, painted) = paint(&a);
-        let z = a.peek.as_ref().unwrap().zone(&a.doc, a.peek_fit(), 60, 20);
+        let z = a
+            .peek
+            .as_ref()
+            .unwrap()
+            .zone(&a.doc, a.peek_fit(), 60, a.peek_page());
         for y in z.y..z.y + z.h {
             for (_, s) in row_text(&buf, y, z.x, z.x + z.w) {
                 assert!(

@@ -247,10 +247,35 @@ impl Peek {
         (w, w.saturating_sub(4).max(1))
     }
 
-    /// How many rows of text a `rows`-tall window leaves the box. Two
-    /// borders and the button's row are not text.
-    fn room(rows: u16) -> usize {
-        MAX_LINES.min(usize::from(rows.saturating_sub(3))).max(1)
+    /// Where the box goes on `page` — the rows it may use, which are the
+    /// page's: never the breadcrumb above it or the footer below — for a
+    /// footnote of `lines` rows: `(y, h)`.
+    ///
+    /// Under the mark, or above it when there is no room below — the menu's
+    /// rule, for the menu's reason. When it fits neither side whole, it
+    /// takes the roomier side and scrolls. **It never covers the mark**: it
+    /// used to be clamped into the whole window instead, and at 12–20 rows
+    /// a long footnote's box landed on row 0, over the very mark it
+    /// explained and over the status and hint rows.
+    fn place(&self, lines: usize, page: &Range<u16>) -> (u16, u16) {
+        let cy = self.at.1.clamp(page.start, page.end);
+        let below = page.end.saturating_sub(cy.saturating_add(1));
+        let above = cy - page.start;
+        // Borders, the text, and the row the button sits on.
+        let want = u16::try_from(lines.clamp(1, MAX_LINES)).unwrap_or(u16::MAX) + 3;
+        let under = want <= below || (want > above && below >= above);
+        if under {
+            (cy.saturating_add(1), want.min(below))
+        } else {
+            let h = want.min(above);
+            (cy - h, h)
+        }
+    }
+
+    /// How many rows of text the box has room for on `page`. Two borders
+    /// and the button's row are not text.
+    fn room(&self, lines: usize, page: &Range<u16>) -> usize {
+        usize::from(self.place(lines, page).1.saturating_sub(3)).max(1)
     }
 
     /// The index of the row `top` falls on.
@@ -267,12 +292,18 @@ impl Peek {
             .unwrap_or(0)
     }
 
-    /// What the box shows in a `cols × rows` window.
+    /// What the box shows in a `cols`-wide window, on `page`.
     #[must_use]
-    pub fn view<'a>(&self, doc: &Document, fit: impl Into<Fit<'a>>, cols: u16, rows: u16) -> View {
+    pub fn view<'a>(
+        &self,
+        doc: &Document,
+        fit: impl Into<Fit<'a>>,
+        cols: u16,
+        page: Range<u16>,
+    ) -> View {
         let (_, inner) = Self::widths(cols);
-        let room = Self::room(rows);
         let all = self.rows(doc, fit, inner, usize::MAX);
+        let room = self.room(all.len(), &page);
         let first = self.top_index(&all).min(all.len().saturating_sub(room));
         let shown = all.len().saturating_sub(first).min(room);
         let below = all.len() - first - shown;
@@ -296,11 +327,11 @@ impl Peek {
         fit: impl Into<Fit<'a>>,
         delta: i32,
         cols: u16,
-        rows: u16,
+        page: Range<u16>,
     ) {
         let (_, inner) = Self::widths(cols);
         let all = self.rows(doc, fit, inner, usize::MAX);
-        let max = all.len().saturating_sub(Self::room(rows));
+        let max = all.len().saturating_sub(self.room(all.len(), &page));
         let now = self.top_index(&all).min(max);
         let to = now
             .saturating_add_signed(isize::try_from(delta).unwrap_or(0))
@@ -321,39 +352,33 @@ impl Peek {
         doc: &Document,
         fit: impl Into<Fit<'a>>,
         cols: u16,
-        rows: u16,
+        page: Range<u16>,
     ) -> Option<usize> {
         let fit = fit.into();
-        if !is_drawn(self.zone(doc, fit, cols, rows)) {
+        if !is_drawn(self.zone(doc, fit, cols, page.clone())) {
             return None;
         }
-        let v = self.view(doc, fit, cols, rows);
+        let v = self.view(doc, fit, cols, page);
         (v.above + v.below > 0).then_some(v.lines.len())
     }
 
-    /// The box, clamped into a `cols × rows` viewport: under the mark, or
-    /// above it when there is no room below — the menu's rule, for the
-    /// menu's reason.
+    /// The box in a `cols`-wide window, on `page` ([`Self::place`]).
     #[must_use]
-    pub fn zone<'a>(&self, doc: &Document, fit: impl Into<Fit<'a>>, cols: u16, rows: u16) -> Zone {
+    pub fn zone<'a>(
+        &self,
+        doc: &Document,
+        fit: impl Into<Fit<'a>>,
+        cols: u16,
+        page: Range<u16>,
+    ) -> Zone {
         let (w, inner) = Self::widths(cols);
-        let room = Self::room(rows);
-        let shown = self.rows(doc, fit, inner, room).len().clamp(1, room);
-        // Borders, the text, and the row the button sits on.
-        let h = u16::try_from(shown)
-            .unwrap_or(u16::MAX)
-            .saturating_add(3)
-            .min(rows.max(1));
-        let (cx, cy) = self.at;
-        let below = cy.saturating_add(1);
-        let y = if below.saturating_add(h) <= rows {
-            below
-        } else {
-            cy.saturating_sub(h)
-        };
+        let lines = self.rows(doc, fit, inner, MAX_LINES).len();
+        let (y, h) = self.place(lines, &page);
         Zone::new(
-            cx.min(cols.saturating_sub(w.saturating_add(SCROLLBAR))),
-            y.min(rows.saturating_sub(h)),
+            self.at
+                .0
+                .min(cols.saturating_sub(w.saturating_add(SCROLLBAR))),
+            y,
             w,
             h,
         )
@@ -427,16 +452,16 @@ mod tests {
     #[test]
     fn the_box_sits_under_its_mark_and_flips_above_at_the_bottom() {
         let doc = doc_with("a short footnote");
-        let z = peek(&doc, (10, 3)).zone(&doc, Hyphenation::Off, 80, 24);
+        let z = peek(&doc, (10, 3)).zone(&doc, Hyphenation::Off, 80, 0..24);
         assert_eq!((z.x, z.y), (10, 4));
         assert_eq!(z.h, 1 + 3, "one line, two borders, the button row");
 
         // Pushed in from the right edge, it stops short of the scrollbar's
         // column rather than painting its border over it.
-        let right = peek(&doc, (79, 3)).zone(&doc, Hyphenation::Off, 80, 24);
+        let right = peek(&doc, (79, 3)).zone(&doc, Hyphenation::Off, 80, 0..24);
         assert_eq!(right.x + right.w, 79, "{right:?}");
 
-        let low = peek(&doc, (10, 22)).zone(&doc, Hyphenation::Off, 80, 24);
+        let low = peek(&doc, (10, 22)).zone(&doc, Hyphenation::Off, 80, 0..24);
         assert_eq!(low.y + low.h, 22, "its last row is the one above the mark");
     }
 
@@ -445,7 +470,7 @@ mod tests {
         let doc = doc_with(&"word ".repeat(400));
         for (cols, rows) in [(80u16, 24u16), (30, 10), (12, 5), (4, 3), (1, 1)] {
             for at in [(0u16, 0u16), (cols - 1, rows - 1), (cols / 2, rows / 2)] {
-                let z = peek(&doc, at).zone(&doc, Hyphenation::Off, cols, rows);
+                let z = peek(&doc, at).zone(&doc, Hyphenation::Off, cols, 0..rows);
                 assert!(
                     z.x + z.w <= cols && z.y + z.h <= rows,
                     "{cols}x{rows}: {z:?}"
@@ -463,7 +488,7 @@ mod tests {
              > quoted\n\n    ```\n    code line\n    ```",
         );
         let p = peek(&doc, (0, 0));
-        let v = p.view(&doc, Hyphenation::Off, 80, 40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 0..40);
         assert_eq!((v.above, v.below), (0, 0));
         let t = texts(&doc, &v);
         for part in [
@@ -502,7 +527,7 @@ mod tests {
         let doc = doc_with(words);
         let p = peek(&doc, (0, 0));
         let (_, inner) = Peek::widths(30);
-        let v = p.view(&doc, Hyphenation::Off, 30, 40);
+        let v = p.view(&doc, Hyphenation::Off, 30, 0..40);
         let t = texts(&doc, &v);
         assert!(t.len() > 1, "{t:?}");
         for l in &t {
@@ -522,28 +547,28 @@ mod tests {
             .join("\n\n    ");
         let doc = doc_with(&body);
         let mut p = peek(&doc, (0, 0));
-        let v = p.view(&doc, Hyphenation::Off, 80, 40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 0..40);
         assert_eq!(v.lines.len(), MAX_LINES);
         assert_eq!(v.above, 0);
         assert!(v.below > 900, "{}", v.below);
         assert_eq!(more(&v), Some(format!("{} more", v.below)));
 
-        p.scroll(&doc, Hyphenation::Off, 1, 80, 40);
-        let v = p.view(&doc, Hyphenation::Off, 80, 40);
+        p.scroll(&doc, Hyphenation::Off, 1, 80, 0..40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 0..40);
         assert_eq!(texts(&doc, &v)[0], "line 1", "a blank is never the top row");
-        p.scroll(&doc, Hyphenation::Off, -1, 80, 40);
+        p.scroll(&doc, Hyphenation::Off, -1, 80, 0..40);
         assert_eq!(
-            texts(&doc, &p.view(&doc, Hyphenation::Off, 80, 40))[0],
+            texts(&doc, &p.view(&doc, Hyphenation::Off, 80, 0..40))[0],
             "line 0"
         );
 
         // To the end and no further: the last row is the footnote's last.
-        p.scroll(&doc, Hyphenation::Off, 10_000, 80, 40);
-        let v = p.view(&doc, Hyphenation::Off, 80, 40);
+        p.scroll(&doc, Hyphenation::Off, 10_000, 80, 0..40);
+        let v = p.view(&doc, Hyphenation::Off, 80, 0..40);
         assert_eq!(v.below, 0);
         assert_eq!(texts(&doc, &v).last().map(String::as_str), Some("line 499"));
         assert_eq!(more(&v), Some(format!("{} above", v.above)));
-        p.scroll(&doc, Hyphenation::Off, -10_000, 80, 40);
+        p.scroll(&doc, Hyphenation::Off, -10_000, 80, 0..40);
         assert_eq!(p.top, p.def);
     }
 
@@ -555,7 +580,7 @@ mod tests {
     fn the_box_scrolls_only_when_it_is_drawn_and_does_not_fit() {
         let short = doc_with("a short footnote");
         assert_eq!(
-            peek(&short, (0, 0)).scrolls(&short, Hyphenation::Off, 80, 24),
+            peek(&short, (0, 0)).scrolls(&short, Hyphenation::Off, 80, 0..24),
             None
         );
 
@@ -565,23 +590,26 @@ mod tests {
             .join("\n\n    ");
         let long = doc_with(&body);
         let mut p = peek(&long, (0, 0));
-        assert_eq!(p.scrolls(&long, Hyphenation::Off, 80, 24), Some(MAX_LINES));
-        p.scroll(&long, Hyphenation::Off, 10_000, 80, 24);
-        let v = p.view(&long, Hyphenation::Off, 80, 24);
+        assert_eq!(
+            p.scrolls(&long, Hyphenation::Off, 80, 0..24),
+            Some(MAX_LINES)
+        );
+        p.scroll(&long, Hyphenation::Off, 10_000, 80, 0..24);
+        let v = p.view(&long, Hyphenation::Off, 80, 0..24);
         assert_eq!(v.below, 0, "at the end");
         assert_eq!(
-            p.scrolls(&long, Hyphenation::Off, 80, 24),
+            p.scrolls(&long, Hyphenation::Off, 80, 0..24),
             Some(MAX_LINES),
             "still the box's at the end"
         );
         // A window the painter draws no box in: a box nobody can see owns
         // nothing, though the footnote is as long as ever.
-        let tiny = p.zone(&long, Hyphenation::Off, 7, 24);
+        let tiny = p.zone(&long, Hyphenation::Off, 7, 0..24);
         assert!(!is_drawn(tiny), "{tiny:?}");
-        assert_eq!(p.scrolls(&long, Hyphenation::Off, 7, 24), None);
-        let flat = p.zone(&long, Hyphenation::Off, 80, 3);
+        assert_eq!(p.scrolls(&long, Hyphenation::Off, 7, 0..24), None);
+        let flat = p.zone(&long, Hyphenation::Off, 80, 0..3);
         assert!(!is_drawn(flat), "{flat:?}");
-        assert_eq!(p.scrolls(&long, Hyphenation::Off, 80, 3), None);
+        assert_eq!(p.scrolls(&long, Hyphenation::Off, 80, 0..3), None);
     }
 
     /// The step off a blank always lands, whatever the blanks around it.
@@ -627,8 +655,8 @@ mod tests {
         let doc = doc_with(&"word ".repeat(60));
         let p = peek(&doc, (0, 0));
         for rows in [10u16, 8, 6, 5] {
-            let v = p.view(&doc, Hyphenation::Off, 40, rows);
-            let z = p.zone(&doc, Hyphenation::Off, 40, rows);
+            let v = p.view(&doc, Hyphenation::Off, 40, 0..rows);
+            let z = p.zone(&doc, Hyphenation::Off, 40, 0..rows);
             assert_eq!(
                 v.lines.len(),
                 usize::from(z.h - 3),

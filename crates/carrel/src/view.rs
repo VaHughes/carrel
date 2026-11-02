@@ -55,8 +55,7 @@ impl ViewState {
 
     /// Put `byte` on screen at the requested position.
     pub fn reveal(&mut self, doc: &Document, l: &Layout, byte: u32, h: u16, at: Where) {
-        let b = anchor_block(doc, byte);
-        let row = l.row_start(b) + l.visual_row_of(doc, b, byte, Affinity::Right);
+        let row = row_of(doc, l, byte, Affinity::Right);
         let top = match at {
             Where::Top => row,
             Where::Middle => row.saturating_sub(u32::from(h) / 2),
@@ -71,29 +70,73 @@ impl ViewState {
     /// at the end of the document, and the reader's position should survive
     /// that rather than be overwritten by it.
     pub fn restore(&mut self, doc: &Document, l: &Layout, h: u16) {
-        let b = anchor_block(doc, self.anchor);
-        let sub = l.visual_row_of(doc, b, self.anchor, self.affinity);
-        self.scroll_row = (l.row_start(b) + sub).min(l.max_scroll(h));
+        self.scroll_row = row_of(doc, l, self.anchor, self.affinity).min(l.max_scroll(h));
     }
 
     fn reanchor(&mut self, doc: &Document, l: &Layout) {
-        let b = l.block_at_row(self.scroll_row);
-        let mut rows = Vec::new();
-        l.rows_for(doc, b, &mut rows);
-        let sub = (self.scroll_row - l.row_start(b)) as usize;
-        let Some(row) = rows.get(sub) else { return };
-        // §3.5 edge case: a decoration row has an empty doc range, but its
-        // `doc.start` is already a meaningful anchor — image and gap rows pin
-        // it to the enclosing node's start, and a card-mode rule row pins it
-        // to a table row's first cell (the trailing rule to the LAST row's,
-        // never `node.doc.end` — that offset can resolve past the block).
-        // Falling back to `node.doc.start` unconditionally (the
-        // pre-card-view behaviour) collapsed every rule row inside a table to
-        // the table's own top, losing the reader's actual row on a resize
-        // that lands exactly on a rule.
-        self.anchor = row.doc.start;
-        self.affinity = Affinity::Right;
+        if let Some(at) = row_anchor(doc, l, self.scroll_row) {
+            self.anchor = at;
+            self.affinity = Affinity::Right;
+        }
     }
+}
+
+/// The anchor that names absolute row `row`: the doc byte [`row_of`] turns
+/// back into that row. `None` past the last row.
+#[must_use]
+pub fn row_anchor(doc: &Document, l: &Layout, row: u32) -> Option<u32> {
+    let b = l.block_at_row(row);
+    let mut rows = Vec::new();
+    l.rows_for(doc, b, &mut rows);
+    let sub = (row.checked_sub(l.row_start(b))?) as usize;
+    let r = rows.get(sub)?;
+    // The blank row under a block is named by the separator byte after
+    // it — in no block's text, and handed by `block_at_doc` to the next
+    // block, whose row it is just above ([`row_of`]). It used to take the
+    // block's START, like a rule row, so a reader who stopped with the
+    // blank under a long paragraph on top came back — on a resume, a
+    // reload, a resize — at that paragraph's first row, a screen too
+    // early. An empty block's start is its separator already, and the
+    // bottom margin has no block after it: those keep the start.
+    if let Some(gap) = gap_byte(doc, l, b, sub) {
+        return Some(gap);
+    }
+    // §3.5 edge case: a decoration row has an empty doc range, but its
+    // `doc.start` is already a meaningful anchor — image rows pin it to the
+    // enclosing node's start, and a card-mode rule row pins it to a table
+    // row's first cell (the trailing rule to the LAST row's, never
+    // `node.doc.end` — that offset can resolve past the block). Falling
+    // back to `node.doc.start` unconditionally (the pre-card-view
+    // behaviour) collapsed every rule row inside a table to the table's own
+    // top, losing the reader's actual row on a resize that lands exactly on
+    // a rule.
+    Some(r.doc.start)
+}
+
+/// The separator byte that names row `sub` of block `b`, when that row is
+/// the gap under `b` and a separator byte stands between `b` and the next
+/// block to name it by.
+fn gap_byte(doc: &Document, l: &Layout, b: BlockIdx, sub: usize) -> Option<u32> {
+    if (sub as u32) < l.content_height(doc, b) || b.get() + 1 >= doc.block_count() {
+        return None;
+    }
+    let end = doc.node_for_block(b).doc.end;
+    let next = doc.node_for_block(BlockIdx(b.get() as u32 + 1)).doc.start;
+    (end < next && anchor_block(doc, end).get() == b.get() + 1).then_some(end)
+}
+
+/// The absolute row an anchor names: the row of its block it lands on —
+/// or, for a byte of the separator before a block ([`gap_byte`]), the row
+/// just above that block, which is the gap it names. Just above, not
+/// "the previous block's last row": a folded block before has no rows,
+/// and the row above is still the one that was on top.
+#[must_use]
+pub fn row_of(doc: &Document, l: &Layout, byte: u32, aff: Affinity) -> u32 {
+    let b = anchor_block(doc, byte);
+    if b.get() > 0 && byte < doc.node_for_block(b).doc.start {
+        return l.row_start(b).saturating_sub(1);
+    }
+    l.row_start(b) + l.visual_row_of(doc, b, byte, aff)
 }
 
 /// The block an anchor names — `block_at_doc`, except for an empty block.
@@ -189,6 +232,48 @@ mod tests {
             v.reveal(&doc, &l, v.anchor, 3, Where::Top);
             assert_eq!(v.scroll_row, row, "block {b}: reveal");
         }
+    }
+
+    /// **Every row comes back as itself.** Whatever row is on top, the
+    /// anchor it leaves must restore to that same row at the same width —
+    /// a resize that changes nothing, a reload, a resume — and reveal it.
+    ///
+    /// The gap row under a block anchored at the block's START, so a
+    /// reader who stopped with the blank under a long paragraph on top came
+    /// back at that paragraph's first row, a screen too early (black-box
+    /// review, 2026-10-31).
+    #[test]
+    fn every_top_row_restores_to_itself() {
+        let src = include_str!("../tests/corpus/conformance.md");
+        let mut failures = Vec::new();
+        for width in [20u16, 40, 72, 120] {
+            let doc = Document::parse(src);
+            let l = Layout::new(&doc, width);
+            let h = 5;
+            for row in 0..=l.max_scroll(h) {
+                let mut v = ViewState::new();
+                v.scroll_to(&doc, &l, row, h);
+                v.restore(&doc, &l, h);
+                let restored = v.scroll_row;
+                v.reveal(&doc, &l, v.anchor, h, Where::Top);
+                // The one exception, bounded: the gap under an EMPTY block
+                // (a `---` rule) shares the block's only byte with the
+                // block's own row, so it comes back as that row — one up,
+                // the rule instead of the blank under it.
+                let b = l.block_at_row(row);
+                let empty_gap = doc.node_for_block(b).doc.is_empty() && row > l.row_start(b);
+                let want = if empty_gap { row - 1 } else { row };
+                if restored != want || v.scroll_row != want {
+                    failures.push((width, row, restored, v.scroll_row, v.anchor));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} rows came back elsewhere (width, row, restored, revealed, anchor): {:?}",
+            failures.len(),
+            &failures[..failures.len().min(12)]
+        );
     }
 
     #[test]

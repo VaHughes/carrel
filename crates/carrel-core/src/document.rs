@@ -215,18 +215,69 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
     out
 }
 
-/// GFM extended autolinks for bare `www.` runs.
+/// GFM extended autolinks: bare `www.` runs and bare `http://` / `https://`
+/// URLs.
 ///
 /// Absent upstream in pulldown-cmark, so hand-rolled to the GFM rules that
-/// actually matter: the run ends at whitespace or `<`; trailing `?!.,:*_~` are
-/// trimmed; and a trailing `)` is trimmed **only** when the parens are
-/// unbalanced, so `www.example.com/a_(b)` keeps its closing paren while
-/// `(www.example.com)` does not.
+/// actually matter: the run ends at whitespace or `<`; trailing punctuation
+/// is trimmed ([`AUTOLINK_TRAIL`]); and a trailing `)` or `]` is trimmed
+/// **only** when it is unbalanced, so `www.example.com/a_(b)` keeps its
+/// closing paren while `(www.example.com)` does not.
 ///
-/// Returns byte ranges into `text` paired with the URL to register. The scheme
-/// is `http://` per GFM — carrel does not guess at transport.
+/// Returns byte ranges into `text` paired with the URL to register, in
+/// order and never overlapping. A `www.` run gets `http://` per GFM —
+/// carrel does not guess at transport.
 fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
-    const TRAIL: &[char] = &['?', '!', '.', ',', ':', '*', '_', '~'];
+    let mut out = www_autolinks(text);
+    out.extend(scheme_autolinks(text));
+    out.sort_by_key(|(r, _)| r.start);
+    // `https://www.x` is found by both scanners only if the boundary rules
+    // ever let it be; keep the first, so no byte is linked twice.
+    let mut last_end = 0;
+    out.retain(|(r, _)| {
+        let keep = r.start >= last_end;
+        if keep {
+            last_end = r.end;
+        }
+        keep
+    });
+    out
+}
+
+/// Trimmed from the end of a bare URL: sentence punctuation, and the
+/// quotes and ellipsis an author wraps or ends it with — in the curly
+/// forms smart punctuation turns them into as well, since the display
+/// text is what this scans.
+const AUTOLINK_TRAIL: &[char] = &[
+    '?', '!', '.', ',', ':', ';', '*', '_', '~', '\'', '"', '\u{2019}', '\u{201D}', '\u{2026}',
+];
+
+/// Where a bare URL starting at `start` ends: the first whitespace or `<`,
+/// less trailing punctuation and unbalanced closing brackets.
+fn autolink_end(text: &str, start: usize) -> usize {
+    let end = text[start..]
+        .find(|c: char| c.is_whitespace() || c == '<')
+        .map_or(text.len(), |n| start + n);
+    let mut run = &text[start..end];
+    loop {
+        let cut = run.trim_end_matches(AUTOLINK_TRAIL);
+        let unbalanced = |open: char, close: char| {
+            cut.ends_with(close) && cut.matches(open).count() < cut.matches(close).count()
+        };
+        let cut = if unbalanced('(', ')') || unbalanced('[', ']') {
+            &cut[..cut.len() - 1]
+        } else {
+            cut
+        };
+        if cut.len() == run.len() {
+            break;
+        }
+        run = cut;
+    }
+    start + run.len()
+}
+
+fn www_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -236,33 +287,49 @@ fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
         let at_boundary = start == 0
             || matches!(
                 bytes[start - 1],
-                b' ' | b'\t' | b'\n' | b'*' | b'_' | b'(' | b'~'
-            );
-        let mut end = start;
-        while end < bytes.len() && !matches!(bytes[end], b' ' | b'\t' | b'\n' | b'<') {
-            end += 1;
-        }
-        if at_boundary {
-            let mut run = &text[start..end];
-            loop {
-                let cut = run.trim_end_matches(TRAIL);
-                let cut =
-                    if cut.ends_with(')') && cut.matches('(').count() < cut.matches(')').count() {
-                        &cut[..cut.len() - 1]
-                    } else {
-                        cut
-                    };
-                if cut.len() == run.len() {
-                    break;
-                }
-                run = cut;
-            }
-            // `www.` alone is not a host; there must be a dot after it.
-            if run.len() > 4 && run[4..].contains('.') {
-                out.push((start..start + run.len(), format!("http://{run}")));
-            }
+                b' ' | b'\t' | b'\n' | b'*' | b'_' | b'(' | b'~' | b'"' | b'\'' | b'['
+            )
+            || text[..start].ends_with(['\u{201C}', '\u{2018}']);
+        let end = autolink_end(text, start);
+        // `www.` alone is not a host; there must be a dot after it.
+        if at_boundary && end > start + 4 && text[start + 4..end].contains('.') {
+            out.push((start..end, format!("http://{}", &text[start..end])));
         }
         i = end.max(start + 4);
+    }
+    out
+}
+
+/// Bare `http://` and `https://` URLs, GFM's extended URL autolink. The
+/// scheme must not be glued to a word (`xhttps://` is not one), and a host
+/// must follow — any host, dotted or not, since GitHub links
+/// `http://localhost:8080` too.
+fn scheme_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find("://") {
+        let colon = i + rel;
+        i = colon + 3;
+        let start = if text[..colon].ends_with("https") {
+            colon - 5
+        } else if text[..colon].ends_with("http") {
+            colon - 4
+        } else {
+            continue;
+        };
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+        {
+            continue;
+        }
+        if !text[i..].chars().next().is_some_and(char::is_alphanumeric) {
+            continue;
+        }
+        let end = autolink_end(text, start);
+        out.push((start..end, text[start..end].to_string()));
+        i = end;
     }
     out
 }
@@ -1673,18 +1740,38 @@ impl<'a> Builder<'a> {
     /// Skipped entirely inside an explicit link (`current_link` is set) — a
     /// `[label](url)` whose label happens to contain `www.` must not sprout a
     /// second, nested destination.
-    fn push_linkified(&mut self, t: &str, src: Range<usize>) {
+    fn push_linkified(&mut self, t: &str, src: Range<usize>, runs_on: bool) {
         if self.current_link.is_some() || self.in_code_block() {
             self.push(t, src, ProvKind::Verbatim);
             return;
         }
-        let hits = extended_autolinks(t);
+        let mut hits = extended_autolinks(t);
+        let found = hits.len();
+        // A URL cut short is worse than no link: it copies another page.
+        // `https://x.com/a\_b` and `https://x.com/_private_` reach here as
+        // `…/a` and `…/` — so a URL that ends where the run does, when the
+        // run goes on into markup, is left as the text it looks like.
+        if runs_on && hits.last().is_some_and(|(r, _)| r.end == t.len()) {
+            hits.pop();
+        }
         if hits.is_empty() {
             self.push_scripted(t, src, ProvKind::Verbatim);
             return;
         }
+        // The URL a link copies is the one the AUTHOR typed. Smart
+        // punctuation rewrites the text (`it's` becomes `it’s`, `--` an en
+        // dash), and a URL built from that names a different page — so where
+        // the source differs, the same scan over the source gives the URLs,
+        // paired by order. Not where it holds an entity or an escape, whose
+        // decoded form is the one meant; and not if the two scans disagree
+        // on how many there are.
+        let raw = &self.source[src.clone()];
+        let typed = (raw != t && !raw.contains(['&', '\\']))
+            .then(|| extended_autolinks(raw))
+            .filter(|s| s.len() == found);
         let mut cursor = 0usize;
-        for (range, url) in hits {
+        for (n, (range, url)) in hits.into_iter().enumerate() {
+            let url = typed.as_ref().map_or(url, |s| s[n].1.clone());
             if range.start > cursor {
                 // The prefix's source range is unknowable byte-for-byte once
                 // we split, so it is Substituted, not Verbatim — the same rule
@@ -2412,6 +2499,20 @@ impl<'a> Builder<'a> {
                 }
                 other => (other, src),
             };
+            // Does this text run straight on into markup — an escape, an
+            // emphasis that opens, a footnote mark — with no space between?
+            // A bare URL that reaches the run's end is then cut short by
+            // markup the scan cannot see through, and stays text.
+            let runs_on = matches!(ev, Event::Text(_))
+                && !matches!(
+                    events.peek(),
+                    None | Some((Event::End(_) | Event::SoftBreak | Event::HardBreak, _))
+                )
+                && self
+                    .source
+                    .get(src.end..)
+                    .and_then(|r| r.chars().next())
+                    .is_some_and(|c| !c.is_whitespace() && c != '<');
             match ev {
                 // --- containers: contribute indent and structure only ---
                 // The bar is "│ ", two cells, on every row of every enclosed
@@ -2775,7 +2876,7 @@ impl<'a> Builder<'a> {
                         m.push((t.to_string(), src));
                     }
                 }
-                Event::Text(t) => self.push_linkified(&t, src),
+                Event::Text(t) => self.push_linkified(&t, src, runs_on),
                 Event::Code(t) => {
                     // Backticks are delimiters, so the src range is longer than
                     // the text: Substituted, not Verbatim.
@@ -5083,6 +5184,175 @@ mod tests {
             &"see (www.example.com/a_(b)) end"[hits[0].0.clone()],
             "www.example.com/a_(b)"
         );
+    }
+
+    /// The link run and URL of every link in `src`, in order.
+    fn link_runs(src: &str) -> Vec<(String, String)> {
+        let doc = Document::parse(src);
+        let mut out = Vec::new();
+        for b in 0..doc.block_count() {
+            for r in &doc.node_for_block(BlockIdx(b as u32)).inlines {
+                if let Some(LinkId(i)) = r.link {
+                    out.push((
+                        doc.text[r.doc.start as usize..r.doc.end as usize].to_string(),
+                        doc.links[i as usize].to_string(),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    fn one_link(text: &str, url: &str) -> Vec<(String, String)> {
+        vec![(text.to_string(), url.to_string())]
+    }
+
+    /// **The defect** (black-box review, 2026-10-31): `www.` and
+    /// `<https://…>` were links and a bare `https://…` was not — no OSC 8,
+    /// no hover, no copy — though it is what an agent writes most. GFM's
+    /// extended URL autolink: `http://` or `https://`, at a boundary, to
+    /// whitespace or `<`, trailing punctuation trimmed.
+    #[test]
+    fn a_bare_scheme_url_is_a_link() {
+        let u = "https://example.com/a/b?c=d#e";
+        assert_eq!(link_runs(&format!("see {u} now\n")), one_link(u, u));
+        assert_eq!(
+            link_runs(&format!("{u}\n")),
+            one_link(u, u),
+            "opening the block"
+        );
+        assert_eq!(
+            link_runs("http://localhost:8080/x\n"),
+            one_link("http://localhost:8080/x", "http://localhost:8080/x"),
+            "a host with no dot, as GitHub allows after a scheme"
+        );
+        // In a heading, a list item, a table cell and a quote alike.
+        for src in [
+            "# see https://e.com\n",
+            "- see https://e.com\n",
+            "| a |\n|---|\n| https://e.com |\n",
+            "> see https://e.com\n",
+        ] {
+            assert_eq!(
+                link_runs(src),
+                one_link("https://e.com", "https://e.com"),
+                "{src:?}"
+            );
+        }
+    }
+
+    /// What ends a sentence is not part of its URL, and what the author
+    /// wrapped it in is not either — including the curly quotes smart
+    /// punctuation turns `"` into, which the `www.` scanner never trimmed.
+    #[test]
+    fn a_bare_url_leaves_its_punctuation_and_its_wrapping_outside() {
+        for (src, text) in [
+            ("Go to https://e.com/a.\n", "https://e.com/a"),
+            ("Go to https://e.com/a, then\n", "https://e.com/a"),
+            ("(see https://e.com/a)\n", "https://e.com/a"),
+            ("see https://e.com/a_(b)\n", "https://e.com/a_(b)"),
+            ("say \"https://e.com/a\" twice\n", "https://e.com/a"),
+            ("say 'https://e.com/a' twice\n", "https://e.com/a"),
+            ("and so on https://e.com/a...\n", "https://e.com/a"),
+            ("see https://e.com/a?\n", "https://e.com/a"),
+            ("[https://e.com/a] bracketed\n", "https://e.com/a"),
+            ("see https://e.com/a<b\n", "https://e.com/a"),
+        ] {
+            assert_eq!(link_runs(src), one_link(text, text), "{src:?}");
+        }
+        // The `www.` form is trimmed by the same rule now.
+        assert_eq!(
+            link_runs("say \"www.e.com\" twice\n"),
+            one_link("www.e.com", "http://www.e.com")
+        );
+    }
+
+    /// Smart punctuation rewrites the TEXT (`'` → `’`, `--` → `–`), but a
+    /// URL is what the author typed: the one copied must be the source's,
+    /// or it names a different page.
+    #[test]
+    fn a_bare_url_is_the_one_the_author_typed_not_the_smartened_text() {
+        let runs = link_runs("see https://e.com/it's--here now\n");
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].1, "https://e.com/it's--here");
+        let runs = link_runs("see www.e.com/it's--here now\n");
+        assert_eq!(runs[0].1, "http://www.e.com/it's--here");
+    }
+
+    /// What is not a bare URL stays text.
+    #[test]
+    fn what_only_looks_like_a_url_is_not_a_link() {
+        for src in [
+            "https:// alone\n",
+            "xhttps://e.com glued to a word\n",
+            "ftp://e.com another scheme\n",
+            "the https: scheme\n",
+            "`https://e.com` in code\n",
+            "```\nhttps://e.com\n```\n",
+            "    https://e.com\n",
+        ] {
+            assert_eq!(link_runs(src), vec![], "{src:?}");
+        }
+        // An explicit link or an angle autolink is linked once, not twice.
+        assert_eq!(
+            link_runs("[https://e.com](https://e.com)\n"),
+            one_link("https://e.com", "https://e.com")
+        );
+        assert_eq!(
+            link_runs("<https://e.com>\n"),
+            one_link("https://e.com", "https://e.com")
+        );
+        // `www.` inside a scheme URL is one link, not two.
+        assert_eq!(
+            link_runs("https://www.e.com\n"),
+            one_link("https://www.e.com", "https://www.e.com")
+        );
+    }
+
+    /// A URL that runs straight into markup the scan cannot see through —
+    /// an escape, an emphasis opening inside it, a footnote mark — reaches
+    /// the scanner cut short, and a link would copy a different page. It
+    /// stays text. A URL that markup merely CLOSES around is whole, and
+    /// links.
+    #[test]
+    fn a_url_cut_short_by_markup_stays_text() {
+        for src in [
+            "see https://x.com/a\\_b end\n",
+            "see https://x.com/_private_ end\n",
+            "see https://x.com/a`b` end\n",
+            "see https://x.com[^1] end\n\n[^1]: n\n",
+            "see www.x.com/a\\_b end\n",
+        ] {
+            assert_eq!(link_runs(src), vec![], "{src:?}");
+        }
+        for (src, text) in [
+            ("**https://x.com**\n", "https://x.com"),
+            ("*see https://x.com*\n", "https://x.com"),
+            ("see https://x.com/a\nnext line\n", "https://x.com/a"),
+            ("see https://x.com/a<br>next\n", "https://x.com/a"),
+            ("see https://x.com/a.\\_b\n", "https://x.com/a"),
+        ] {
+            assert_eq!(link_runs(src), one_link(text, text), "{src:?}");
+        }
+        // Smart punctuation and the cut together: the second URL is cut, the
+        // first still copies what the author typed.
+        let runs = link_runs("a https://a.com/it's and https://b.com/_x_ end\n");
+        assert_eq!(runs, one_link("https://a.com/it’s", "https://a.com/it's"));
+    }
+
+    /// Two in one sentence, and a frontmatter value, which is where an
+    /// agent puts its source URL.
+    #[test]
+    fn bare_urls_link_beside_each_other_and_in_frontmatter() {
+        assert_eq!(
+            link_runs("a https://a.com and http://b.org/x end\n"),
+            vec![
+                ("https://a.com".into(), "https://a.com".into()),
+                ("http://b.org/x".into(), "http://b.org/x".into())
+            ]
+        );
+        let runs = link_runs("---\nsource: \"https://e.com/p\"\n---\n\nbody\n");
+        assert_eq!(runs, one_link("https://e.com/p", "https://e.com/p"));
     }
 
     #[test]

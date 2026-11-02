@@ -151,3 +151,34 @@ fn a_pipe_and_a_generated_page_remember_nothing() {
         "no file, no key to save under"
     );
 }
+
+/// Folding your own section pulls the view to its heading — from the gap
+/// row too. The gap row under a block is anchored at the separator after it
+/// (the byte the NEXT block's row is just below), so the old test "is the
+/// anchor's block hidden?" asked about the block below the gap, not the one
+/// it belongs to, and the folded heading ended a row above the screen
+/// (cold review, 2026-11-02).
+#[test]
+fn folding_from_the_gap_under_a_paragraph_keeps_its_heading_on_top() {
+    let long = "word ".repeat(200);
+    let src = format!("# Intro\n\nfirst\n\n## A\n\n{long}\n\n## B\n\n{long}\n\n## C\n\n{long}\n");
+    let mut app = App::new("f.md".into(), Document::parse(&src), 60, 24);
+    let a = (0..app.doc.block_count())
+        .map(|b| carrel_core::BlockIdx(b as u32))
+        .find(|&b| app.doc.block_text(b).trim() == "A")
+        .unwrap();
+    let p = carrel_core::BlockIdx(a.get() as u32 + 1);
+    let gap = app.layout.row_start(p) + app.layout.content_height(&app.doc, p);
+    update(&mut app, Action::ScrollTo(gap));
+    assert_eq!(
+        app.view.scroll_row, gap,
+        "the gap under A's paragraph is on top"
+    );
+    update(&mut app, Action::FoldToggle);
+    assert_eq!(folded_titles(&app), ["A"], "A's own section folded");
+    assert_eq!(
+        app.view.scroll_row,
+        app.layout.row_start(a),
+        "and its heading is the top row"
+    );
+}

@@ -462,3 +462,37 @@ proptest! {
         prop_assert_eq!(cut(super::Division::Overwide), cut(super::Division::Fill));
     }
 }
+
+/// **The defect** (found by `a_marked_cut_elides_nothing`, 2026-10-31): a
+/// dash, spaces and a dash are ONE unit (UAX #14 LB17 forbids a break in
+/// `B2 SP* B2`), and a forced cut inside it landed in the spaces — so the
+/// next row began with them, was cut again, and the screen got a row of
+/// one space and a `↩`. A forced cut that touches spaces cuts at them,
+/// unmarked, as an ordinary break would: no row is only spaces, and none
+/// ends with one.
+#[test]
+fn a_forced_cut_in_a_run_of_spaces_cuts_at_the_spaces() {
+    for (t, width) in [
+        ("\u{2014}  \u{2014}", 2u16),
+        ("\u{2014}  \u{2014}", 3),
+        ("\u{2014}   \u{2014}", 2),
+        ("x \u{2014}  \u{2014}\u{2014} y", 2),
+        ("\u{2014}\u{2014}  \u{2014}\u{2014}", 3),
+    ] {
+        for kind in [marked_rows(t, width), soft_rows(t, width)] {
+            let texts: Vec<&str> = kind.iter().map(|r| r.0.as_str()).collect();
+            for (row, _, _, marked) in &kind {
+                assert!(
+                    !row.trim().is_empty(),
+                    "{t:?} at {width}: a row of only spaces in {texts:?}"
+                );
+                assert!(
+                    !(*marked && row.ends_with(' ')),
+                    "{t:?} at {width}: a mark after a space in {texts:?}"
+                );
+            }
+            let dashes: usize = texts.iter().map(|r| r.matches('\u{2014}').count()).sum();
+            assert_eq!(dashes, t.matches('\u{2014}').count(), "{t:?}: {texts:?}");
+        }
+    }
+}

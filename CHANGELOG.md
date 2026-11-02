@@ -4,6 +4,37 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A bare `https://` URL is a link.** `https://…` and `http://…` written as
+  plain text now underline, light under the pointer, and copy on a click, as
+  `www.` and `<https://…>` links already did, in the page and in frontmatter.
+  Punctuation that ends a sentence and quotes wrapped around a URL stay out
+  of it, and a URL copies exactly as written even where carrel shows curly
+  quotes or dashes in its text. A URL that runs straight into formatting
+  carrel cannot see through (`https://x.com/a\_b`) stays plain text rather
+  than becoming a link to the wrong page.
+- **`q` closes a footnote box and stops there**, as it closes every other
+  pane. It used to close the box and then the document.
+- **The bookmark list and the outline list every entry with long labels.**
+  The selected entry no longer takes the rows the others need: three long
+  bookmarks showed the selected one three times and the other two not at all.
+  When the selected entry is cut short, its last row now continues it rather
+  than starting it again.
+- **A footnote box in a short window stays out of the way.** At 12 to 20 rows a
+  long footnote's box covered the mark it explains and the status and hint
+  rows. It now keeps between the breadcrumb and the footer, on one side of its
+  mark, and scrolls when that leaves it less room.
+- **The continue-reading row stays current.** After reading on and coming back
+  to the file list with ⌂, the continue-reading row showed the old percentage
+  while the file's own row showed the new one.
+- **Resuming lands on the row you left.** A position saved with the blank line
+  under a long paragraph at the top came back at the paragraph's first line,
+  about a screen early. The same went for a resize or a reload there.
+- **No blank wrapped rows.** A run like `—  —`, which may not be broken at its
+  spaces, could leave a row holding only a space and a `↩` in a narrow window.
+- **Home search forgets deleted files.** Its cache of each file's rendered math
+  dropped entries only when the file changed, never when it was deleted or the
+  folder changed.
+
 - **Bookmarks come back.** Since bookmarks shipped, reopening a document showed
   none of its bookmarks, and opening a second document showed the first one's,
   saving them under the second's name on the next `m`. Each document now gets

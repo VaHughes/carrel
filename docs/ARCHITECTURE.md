@@ -103,7 +103,7 @@ reopens one.
 | Module | What it is |
 |---|---|
 | `position.rs` | `SrcByte` / `DocByte` / `NodeId` / `BlockIdx` / `Affinity`. Every position is a u32 byte offset by design (`cast_possible_truncation` is allowed for this reason; non-position narrowing casts use `u16::try_from`). |
-| `document.rs` | The display-text model with the **doc-to-source provenance table** (`Prov`) — the part no editor has, because editors have source space == doc space and a markdown reader does not. Paragraphs, headings, code, lists, quotes, tables, rules, inline style, frontmatter metadata cards, definition lists, footnotes, GFM alerts, `<details>`, wikilinks, `www.` autolinks, attached `^sup^`/`~sub~`, inline `#tags` (`Document::tags`: doc ranges found after the parse over the whole display text, so a split run cannot cut one; the text is untouched). The pulldown-cmark event match has **no catch-all**: a parser bump that adds a variant fails to compile rather than silently dropping a construct. |
+| `document.rs` | The display-text model with the **doc-to-source provenance table** (`Prov`) — the part no editor has, because editors have source space == doc space and a markdown reader does not. Paragraphs, headings, code, lists, quotes, tables, rules, inline style, frontmatter metadata cards, definition lists, footnotes, GFM alerts, `<details>`, wikilinks, `www.` and bare `http(s)://` autolinks (the URL taken from the source where smart punctuation rewrote the text; one cut short by markup stays text), attached `^sup^`/`~sub~`, inline `#tags` (`Document::tags`: doc ranges found after the parse over the whole display text, so a split run cannot cut one; the text is untouched). The pulldown-cmark event match has **no catch-all**: a parser bump that adds a variant fails to compile rather than silently dropping a construct. |
 | `search.rs` | Complete per spec. `Matches` holds no row/column/width/block. `intersecting()` implements the wrap-affinity rule as two half-open comparisons. `content_pattern` keeps grep (home-screen `/`) and reader matching identical. Measured: 648 µs for a 3-char literal over 1 MB; 0.74 ms per keystroke. |
 | `source_filter.rs` | `SourceFilter::may_match`: could the reader find this needle in this file, answered from the source without building a document. A superset test — `false` only when the reader's `search` finds nothing in `Document::parse(src)` — in three passes: the reader's own pattern; a loose pattern (one piece per displayed character, each also any entity, with a gap between any two that absorbs every construct the parser hides: markup, tags, comments, link destinations, reference labels and definitions, wikilink targets, task boxes, list numbers, fence info strings, dropped table cells); and the same loose pattern over `math_view(src)`, the source with each inline math span replaced by its rendering, for a file that can hold inline math. `math_view` depends on the source alone, so a caller keeps it per file. The property test cuts needles out of parsed display text and asserts the filter passes the source. |
 | `layout/` | The reflow layer. `units.rs` = all Unicode (UAX #14 break units, measured, width-independent); `pack.rs` = all fitting (never sees a string, so its invariants are testable against hand-built units); `mod.rs` = public API and the 64 KiB chunker. **Wrapping uses the same `wrap`** — what differs is the fit: code carries a continuation marker + hanging indent, tables arrive pre-aligned from parse, images/mermaid/math wrap their alt text while their real heights are a frontend override (`block_rows`). `proptests.rs` holds the property tests. |
@@ -211,6 +211,14 @@ Key facts that are easy to get wrong:
   `#` that was `\#` or `&#35;` — the parse records as it pushes (`inert_hashes`).
 - **After reflow the anchor is usually mid-row.** The row containing it begins earlier at the
   new width. That is correct, not drift.
+- **The gap row under a block is named by the separator byte after it**, not by a byte of its
+  (empty) range. `block_at_doc` gives that byte to the next block, and `view::row_of` turns it
+  into the row just above that block. `view::row_anchor` (row → anchor) and `view::row_of`
+  (anchor → row) are the only conversions, and tests that need "the anchor of the top row"
+  call `row_anchor` rather than reading `Row::doc.start`. That shortcut is the rule that
+  resumed a reader a screen early. Guard: `view::tests::every_top_row_restores_to_itself`.
+  The one bounded exception is the gap under an empty block (a `---` rule), which shares the
+  block's only byte and comes back one row up.
 
 ## carrel-state (shared)
 

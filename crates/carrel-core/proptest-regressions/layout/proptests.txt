@@ -13,3 +13,4 @@ cc 032d900efd414603b93dc9cce48f4c1a4e07895e880927fb2f81a9a89784ce38 # shrinks to
 cc 21a2af2e64a18422fb365cca692ce737d6ecbf71097b23a401d625b4cb92fb43 # shrinks to t = "日\u{ad}", width = 1
 cc 8b2822c4d398b76dbc192969fe8374b023651d9b2ef153b0f0fc67dbd14d87bc # shrinks to t = "日\u{ad}", width = 1
 cc fd11a3c4659088c11808773e9e23d689bdc78d5ad33a42d5c379ef629618abf8 # shrinks to t = "\u{ad}bcdef", width = 1, soft = false
+cc 4b3535266f43384be9d355719cb797f7f869836fdb0f54743d4d20b936154192 # shrinks to t = "\n        —  —", width = 10

@@ -372,9 +372,19 @@ impl Layout {
         if rows.is_empty() || doc.node_for_block(b).doc.is_empty() {
             return 0;
         }
+        // An EMPTY text row — the blank first line of math shown as its
+        // source — holds no byte, so "the first row ending after the
+        // anchor" skipped it and its own anchor came back a row late. It is
+        // the row its start names. Decoration rows are not: the gap and a
+        // card's rules name the row their start is already in.
         let idx = rows
             .iter()
-            .position(|r| anchor < r.doc.end)
+            .position(|r| {
+                anchor < r.doc.end
+                    || (r.doc.is_empty()
+                        && anchor == r.doc.start
+                        && !matches!(r.kind, carrel_core::RowKind::Decoration))
+            })
             .unwrap_or(rows.len() - 1);
         // END biases LEFT: an anchor exactly on a wrap point belongs to the
         // previous row. See `carrel_core::Affinity`.

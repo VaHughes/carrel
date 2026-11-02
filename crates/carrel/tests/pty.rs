@@ -1668,9 +1668,10 @@ fn a_scroll_key_reads_on_in_a_long_footnote_box() {
         pty_run("doc.md", keys, d.path())
     };
     // The mark is on the first text row; a click on its `[`.
+    // `Q` quits with the box still open; `q` would only close the box now.
     let click = r"\033[<0;7;2M\033[<0;7;2m";
 
-    let opened = run(&format!("{click}q"));
+    let opened = run(&format!("{click}Q"));
     assert!(
         opened.contains("alpha") && opened.contains("foxtrot"),
         "the click opens the box on the footnote's first rows"
@@ -1684,7 +1685,7 @@ fn a_scroll_key_reads_on_in_a_long_footnote_box() {
         "the control: the box alone never shows the row below it"
     );
 
-    let scrolled = run(&format!("{click}jq"));
+    let scrolled = run(&format!("{click}jQ"));
     assert!(
         scrolled.contains("QQQQQQ"),
         "`j` over the box scrolls the footnote: the next paragraph is painted"
