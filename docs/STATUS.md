@@ -358,7 +358,9 @@ decision — do not propose them):
    `COPR_CONFIG` — set once from this machine; the COPR token expires 2027-02-12.
    **Before the next tag**, `CARGO_REGISTRY_TOKEN` must be allowed to publish a *new*
    crate (`carrel-state`); a token scoped to the two existing crates publishes core and
-   then fails part-way through the release.
+   then fails part-way through the release. Checked 2026-11-02: the secret dates from
+   2026-10-21, before `carrel-state` existed; crates.io shows a token's scopes only on its
+   website (the API refuses to list them); the name `carrel-state` is still free.
 
 Every feature line on the README roadmap is checked. Known limits, recorded rather than
 planned:
