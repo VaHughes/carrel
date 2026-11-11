@@ -410,6 +410,66 @@ fn a_bare_name_is_a_name_in_the_folder_and_a_line_is_honored() {
 }
 
 #[test]
+fn pasted_locations_preserve_literal_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut body = String::new();
+    for i in 1..=80 {
+        let _ = write!(body, "paragraph {i}\n\n");
+    }
+    body.push_str("## Destination\n\n");
+    body.push_str(&"More text below the heading.\n\n".repeat(30));
+    for name in [
+        "Long Plan.md",
+        "README",
+        r"literal\plan.md",
+        r"literal\ README",
+        "\"quoted plan.md",
+    ] {
+        let target = dir.path().join(name);
+        std::fs::write(&target, &body).unwrap();
+        if name.contains('\\') {
+            std::fs::write(
+                dir.path().join(name.replace('\\', "")),
+                "Wrong decoded filename.",
+            )
+            .unwrap();
+        }
+        for (suffix, expected) in [
+            (":101", "paragraph 51"),
+            (":101:7", "paragraph 51"),
+            ("#L101", "paragraph 51"),
+            ("#destination", "Destination"),
+        ] {
+            for quoted in [false, true] {
+                let address = format!("{name}{suffix}");
+                let pasted = if quoted {
+                    format!("'{address}'")
+                } else {
+                    address
+                };
+                let mut app = listed(dir.path(), 80, 20);
+                paste_on_home(&mut app, &pasted);
+                assert_eq!(
+                    app.file.as_deref(),
+                    Some(target.as_path()),
+                    "{pasted}: {:?}",
+                    app.home().and_then(|h| h.note.as_ref())
+                );
+                let top = app.layout.block_at_row(app.view.scroll_row);
+                assert_eq!(app.doc.block_text(top), expected, "{pasted}");
+            }
+        }
+    }
+    // Literal names remain stronger evidence than address syntax.
+    let literal = dir.path().join("Long Plan.md:101");
+    std::fs::write(&literal, "Literal file, not a line reference.").unwrap();
+    let mut app = listed(dir.path(), 80, 20);
+    paste_on_home(&mut app, "Long Plan.md:101");
+    assert_eq!(app.file.as_deref(), Some(literal.as_path()));
+    assert!(app.doc.text.contains("Literal file"));
+}
+
+#[test]
 fn a_pasted_folder_becomes_the_folder_being_listed() {
     let d = tempfile::tempdir().unwrap();
     let mut app = listed(d.path(), 80, 30);

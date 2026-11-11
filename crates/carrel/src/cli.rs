@@ -96,7 +96,7 @@ pub fn pasted_path(text: &str, dir: &Path) -> Option<String> {
         .find(|line| !line.trim().is_empty())?;
     // Leading/trailing spaces can belong to a filename too. Resolve that
     // literal entry before treating surrounding whitespace as paste padding.
-    if first.len() <= 4096 && std::fs::symlink_metadata(dir.join(first)).is_ok() {
+    if first.len() <= 4096 && existing_pasted_target(&dir.join(first)) {
         return (!first.chars().any(char::is_control)).then(|| first.to_string());
     }
     let line = first.trim();
@@ -106,7 +106,7 @@ pub fn pasted_path(text: &str, dir: &Path) -> Option<String> {
     // A literal directory entry (even a broken symlink) wins over escaping, just
     // as it does in split_target. Backslashes and quotes are legal Unix
     // filename characters; removing them may open a different document.
-    if std::fs::symlink_metadata(dir.join(line)).is_ok() {
+    if existing_pasted_target(&dir.join(line)) {
         return Some(line.to_string());
     }
     let mut path = unquote_pasted_path(line)?;
@@ -133,11 +133,22 @@ pub fn pasted_path(text: &str, dir: &Path) -> Option<String> {
             .into_owned();
     }
     // Prose has spaces and no separators; a path has a separator, or is a
-    // single name with an extension.
+    // single name with an extension. A location in an existing file is
+    // also a path, even for `Long Plan.md:42` or `README#install`.
+    let resolved = dir.join(&path);
     let looks_like_a_path = path.contains('/')
         || (!path.contains(' ') && path.contains('.'))
-        || dir.join(&path).exists();
+        || existing_pasted_target(&resolved);
     looks_like_a_path.then_some(path)
+}
+
+// Recognize literal names before shell decoding, including a location whose
+// base names a file. Otherwise `a\b.md:42` could open `ab.md` by mistake.
+fn existing_pasted_target(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+        || path
+            .to_str()
+            .is_some_and(|target| split_target(target).1.is_some())
 }
 
 // Undo quoting from a dropped path, without shell expansion or evaluation.

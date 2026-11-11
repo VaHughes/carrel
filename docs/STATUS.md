@@ -47,7 +47,7 @@ Last updated: 2026-11-11
 ## Recently completed
 
 - Unreleased (2026-11-11) — **small reading improvements, with no new dependencies or
-  settings.** All five local gates passed: **1,471 tests passed, zero failed, two
+  settings.** All five local gates passed: **1,472 tests passed, zero failed, two
   intentionally ignored**, zero-warning Clippy on Rust 1.97.1 and 1.99.1, formatting,
   discipline and packaging. All targets also check on Rust 1.95.0 (MSRV) and 1.97.1.
   Extended runs passed 5,000 generated documents, 2,000 mixed navigation sequences,
@@ -60,7 +60,8 @@ Last updated: 2026-11-11
     Backward search displays `?` and reports wrapping to the end.
   - *Paths keep their literal meaning* before shell unescaping; joined shell quotes and quoted
     local file URLs decode without evaluation. Existing spaces, backslashes, quotes and broken
-    symlinks win over a different decoded filename.
+    symlinks win over a different decoded filename. Pasted line/heading references also work
+    with spaces in the filename and with extensionless files.
   - *Live edits and Back/Forward keep the paragraph.* Kept places carry the viewport,
     search Escape destination, selected match and history destinations through insertions.
     Shared reparse logic retains named folds and bookmarks for files and streams.

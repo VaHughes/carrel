@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- Pasted line and heading references on Home now recognize spaced and extensionless filenames,
+  preserving literal backslashes and quotes before shell decoding.
+
 - Fixed broken API-documentation links and added a warning-free documentation check to CI.
 
 - **Paste into search, help and the outline.** One bounded line enters at once,
