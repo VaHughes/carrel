@@ -242,10 +242,9 @@ fn emit_message(message: &[&str], out: &mut String) {
             let l: &str = p[j];
             j >= trailers || indent_cols(l) >= base + 4 || l.trim_start().starts_with('#')
         };
-        // Hyphens are kept over each run of lines that parses as ONE inline
-        // context, not line by line: a code span may open on one line and
-        // close on the next. A list marker opens a new item, and with it a
-        // new context; any other line continues the one before it.
+        // Parse the whole run to find code spans. A numbered line does not
+        // necessarily open a new item: only the Markdown parser knows which
+        // lines share an inline context (and therefore a backtick span).
         let mut para = String::new();
         for (j, line) in p.iter().enumerate() {
             let shown = if record(j) {
@@ -253,10 +252,6 @@ fn emit_message(message: &[&str], out: &mut String) {
             } else {
                 block_safe(line.trim()).into_owned()
             };
-            if list_marker(&shown).is_some() {
-                out.push_str(&keep_hyphens(&para));
-                para.clear();
-            }
             para.push_str(&shown);
             // A hard break around a record — unless the line already ends
             // in one: an odd run of backslashes is the author's own break,
@@ -270,23 +265,6 @@ fn emit_message(message: &[&str], out: &mut String) {
         out.push_str(&keep_hyphens(&para));
         out.push('\n');
     }
-}
-
-/// What sits between `<` and `>` in an autolink: a URI (a scheme of two to
-/// 32 letters, digits, `+`, `.` or `-` opening with a letter, then `:`) or
-/// a mail address — near enough to `CommonMark`'s rule that a hyphen pair
-/// inside one is left alone and nothing else is.
-fn is_autolink(t: &str) -> bool {
-    if let Some((scheme, _)) = t.split_once(':') {
-        return (2..=32).contains(&scheme.len())
-            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-            && scheme
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'.' | b'-'));
-    }
-    t.split_once('@').is_some_and(|(user, host)| {
-        !user.is_empty() && host.contains(|c: char| c.is_alphanumeric())
-    })
 }
 
 /// Leading columns of whitespace, a tab reaching the next multiple of four
@@ -328,46 +306,42 @@ fn record_safe(l: &str) -> String {
 /// `$HOME`), and math is the one inline construct that outranks a code
 /// span: `$$` lines around a backtick run swallowed it, so the span this
 /// scan had skipped over was never a span and its `--` became a dash.
-/// With no math possible, the spans found here are the spans the parser
-/// finds.
+/// Ask the document's parser, with math disabled, for the actual code-span
+/// and autolink boundaries before escaping the remaining text.
 fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
+    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
+
     if !s.contains("--") && !s.contains('$') {
         return s.into();
     }
+
+    let options = crate::document::markdown_options()
+        & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
+    let mut protected = Parser::new_ext(s, options)
+        .into_offset_iter()
+        .filter_map(|(event, range)| match event {
+            Event::Code(_)
+            | Event::Start(Tag::Link {
+                link_type: LinkType::Autolink | LinkType::Email,
+                ..
+            }) => Some(range),
+            _ => None,
+        })
+        .peekable();
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len() + 8);
     let mut i = 0;
     while i < b.len() {
+        if protected.peek().is_some_and(|range| range.start == i) {
+            let range = protected.next().expect("peeked protected span");
+            out.push_str(&s[range.clone()]);
+            i = range.end;
+            continue;
+        }
         match b[i] {
             // An escape pair is copied whole: its character is literal.
             b'\\' if i + 1 < b.len() => {
                 let n = 1 + s[i + 1..].chars().next().map_or(0, char::len_utf8);
-                out.push_str(&s[i..i + n]);
-                i += n;
-            }
-            // A code span — a run of backticks closed by a run of the same
-            // length — is copied verbatim. An unclosed run is literal text.
-            b'`' => {
-                let run = b[i..].iter().take_while(|&&c| c == b'`').count();
-                let ticks = &b[i..i + run];
-                let close = (i + run..b.len()).find(|&k| {
-                    b[k..].starts_with(ticks)
-                        && b.get(k + run) != Some(&b'`')
-                        && (k == 0 || b[k - 1] != b'`')
-                });
-                let end = close.map_or(i + run, |k| k + run);
-                out.push_str(&s[i..end]);
-                i = end;
-            }
-            // An autolink: `<`, no space, a scheme's colon or a mail's `@`,
-            // `>`. Raw HTML and a bare `<!--` are not, and get escaped.
-            b'<' => {
-                let span = s[i + 1..]
-                    .find(|c: char| c == '>' || c == '<' || c.is_whitespace())
-                    .filter(|&k| b[i + 1 + k] == b'>')
-                    .map(|k| &s[i + 1..i + 1 + k])
-                    .filter(|t| is_autolink(t));
-                let n = span.map_or(1, |t| t.len() + 2);
                 out.push_str(&s[i..i + n]);
                 i += n;
             }
@@ -874,6 +848,53 @@ CommitDate: Thu Oct 8 16:38:47 2026 -0400
         // A paragraph shaped like trailers is not one when it is the subject:
         // a conventional-commit subject wrapped over two lines still reflows.
         assert!(t.contains("fix: a subject in the shape: of"), "{t:?}");
+    }
+
+    /// Ordered list markers can continue a paragraph or open a new item.
+    /// Backtick spans must follow the parser's decision in both cases.
+    #[test]
+    fn message_code_spans_use_the_parsers_actual_list_boundaries() {
+        for message in [
+            "`\n2)\t`--flag`",
+            "prefix `\n2) `--flag`",
+            "- `\n2) `--flag`",
+            "1. `\n2. `--flag`",
+            "`\n1) `--flag`",
+            "`\n* `--flag`",
+            "`\n2) ``--flag``",
+        ] {
+            let mut lines = String::new();
+            for line in message.lines() {
+                writeln!(lines, "    {line}").unwrap();
+            }
+            let src = format!("commit abcdef0123456789\nAuthor: A\n\n{lines}");
+            let markdown = to_markdown(&src);
+            let doc = Document::parse(&markdown);
+            assert!(
+                doc.text.contains("--flag"),
+                "{message:?}: {:?}\n{markdown}",
+                doc.text
+            );
+            assert!(
+                !doc.text.contains(['\u{2013}', '\u{2014}']),
+                "{message:?}: {:?}",
+                doc.text
+            );
+            assert!(
+                !doc.text.contains("\\--flag"),
+                "an escape leaked into code: {:?}",
+                doc.text
+            );
+        }
+        let doc = Document::parse(&to_markdown(&two_commits(
+            "URL <https://a--b.test/$HOME> and `--flag`",
+        )));
+        assert!(
+            doc.links
+                .iter()
+                .any(|url| &**url == "https://a--b.test/$HOME")
+        );
+        assert!(doc.text.contains("--flag"));
     }
 
     /// A trailer is a record even with no blank line above it — after body

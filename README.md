@@ -21,7 +21,9 @@ Everything below installs the terminal reader.
 
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/VaHughes/carrel/main/assets/demo.gif" alt="Carrel listing the markdown files in a folder, filtering to README.md, and scrolling through it" width="800">
+<img src="https://raw.githubusercontent.com/VaHughes/carrel/main/assets/screenshot.png" alt="Carrel reading a sample document with headings, a table, highlighted shell commands, a task list, and clickable controls" width="800">
+
+[Watch the browsing demo](https://raw.githubusercontent.com/VaHughes/carrel/main/assets/demo.gif)
 
 </div>
 
@@ -117,13 +119,8 @@ cargo binstall carrel       # fetches the release binary
 ```
 
 Prebuilt archives for every target are on the
-[releases page](https://github.com/VaHughes/carrel/releases). AUR (`carrel`, `carrel-bin`)
-is prepared but waiting on Arch: AUR account registration is closed while the Arch team
-handles an ongoing supply-chain campaign against the repository. Distribution is a
-first-class goal, not an afterthought — the
-research was blunt about why: one of the best-featured terminal markdown renderers in
-existence has **under a hundred stars**, because nobody can find it. In this niche,
-packaging beats code.
+[releases page](https://github.com/VaHughes/carrel/releases). AUR recipes for `carrel`
+and `carrel-bin` are prepared but not yet published.
 
 **Open `.md` files from your file manager** (optional, Linux): install
 [`contrib/carrel.desktop`](https://github.com/VaHughes/carrel/blob/main/contrib/carrel.desktop) (it is also inside every release archive)
@@ -155,11 +152,17 @@ when nothing matched, so `if carrel doc.md pattern; then` behaves like grep. Pip
 weight, slant, strike and OSC 8 links (never a colour) for embedding in another tool's
 output, and `carrel --tasks FILE` prints the document's task list as checkbox lines. While a producer is
 still writing, the reader is already open — and your position and search matches hold as
-content arrives, because positions never depend on the screen. Press `F` to keep up with
+content arrives. Collapsed sections and bookmarks stay in place too. Press `F` to keep up with
 the end while it grows, and `y` to copy the code block you are looking at
 (`]` and `[` step between them).
 
 ## Reading what an agent just wrote
+
+When a file changes, Carrel keeps the paragraph you were reading if its text still exists,
+even if other paragraphs were inserted or removed above it. Search keeps its query, and
+Escape returns to that reading place. Back and Forward follow visited paragraphs too,
+including files edited while you read another document. Press `F` or choose
+**Keep up with the end** to keep new text visible; scroll back or jump elsewhere to stop.
 
 Carrel is built for the person in the next pane from an agent, with a `PLAN.md` to read and
 an answer to give. Several things exist for exactly that:
@@ -244,7 +247,12 @@ settings also offer arrow buttons. The document information card (`I`) wraps
 long values and scrolls with the wheel, arrows, or its arrow buttons. Close a
 pane with its **×** button. Very small windows show a close control when a pane
 cannot fit; hidden choices and note edits wait until the window grows. Search
-keeps the end of your query and the result count visible. Selected headings,
+keeps the end of your query and the result count visible. Paste into search, help,
+or the outline to enter a phrase at once (first nonblank line, up to 256 characters).
+Pasted newlines never accept a search, and text pasted over the reading page does
+not run commands. While a document's search is open, ↑/↓ and the older/newer search buttons
+recall up to twenty searches from this session, preserving an unfinished query.
+Search history is never written to disk. Selected headings,
 bookmarks, and links wrap; shortened paths retain their distinguishing end.
 On home, short windows prioritize files over the banner and
 continue-reading rows; the numbered resume shortcuts still work.
@@ -318,8 +326,9 @@ stay in the list marked `?`, and the list's title counts them. **Export** (`E` i
 the list) writes a quote-and-note Markdown file to
 `$XDG_STATE_HOME/carrel/exports/<name>-notes-<hash>.md`, never beside the document,
 then shows the exact path and sends it to the terminal clipboard.
-For piped documents, notes last for the session and export through the terminal
-clipboard (OSC 52).
+Piped documents and generated pages keep notes and bookmarks only in memory;
+Back/Forward retains them while you visit another document. Export their notes
+through the terminal clipboard (OSC 52) before closing the page or quitting.
 
 ## Configuration
 
@@ -394,20 +403,30 @@ stale the moment you rebuild, and a stale binary that still answers to `carrel` 
 debugging a fix you already made:
 
 ```bash
-cargo build                                                    # debug, ~2s incremental
-ln -sfn "$PWD/target/debug/carrel" ~/.local/bin/carrel         # once
+./scripts/build.sh                                    # debug, automatic cache cleanup
+ln -sfn "$PWD/target/debug/carrel" ~/.local/bin/carrel   # once
 ```
 
-From then on `cargo build` *is* the install step, and `carrel --version` reports the workspace
-version. Two things to know:
+From then on `./scripts/build.sh` *is* the install step, and `carrel --version` reports the
+workspace version. Two things to know:
 
-- **`cargo clean` breaks the link** until the next `cargo build`, and so does a build that fails
-  — the symlink keeps pointing at a file that is gone. `carrel: command not found` after a clean
-  means exactly this, not a broken PATH.
-- **The debug build is not the shipping build.** It is roughly twenty times the size and starts
-  noticeably slower on a large tree of files; syntax highlighting and the initial walk are where you
-  will feel it. Point the link at `target/release/carrel` and `cargo build --release` if you are
+- **Cleaning breaks the link** until the next successful build — including automatic cleanup
+  if the following build fails. `carrel: command not found` after a clean means exactly this,
+  not a broken PATH.
+- **The debug build is not the shipping build.** It is larger and starts noticeably slower on
+  a large library; syntax highlighting and the initial walk are where you will feel it.
+  Point the link at `target/release/carrel` and use `./scripts/build.sh --release` if you are
   judging performance rather than behaviour.
+
+The helper runs `cargo clean` before building if this checkout's `target/` exceeds 4 GiB,
+including old test and release artifacts. Set `CARREL_BUILD_CACHE_MIB` to change that threshold,
+for example `CARREL_BUILD_CACHE_MIB=2048 ./scripts/build.sh --release`. A build can exceed the
+threshold; cleanup happens on the next helper invocation. The helper always uses the local
+`target/` for final and intermediate files, even if `CARGO_TARGET_DIR` or
+`CARGO_BUILD_BUILD_DIR` is set. Cleanup is skipped if Cargo's cache marker is missing or
+invalid; the helper reports this and still builds. Plain `cargo build`, `test`, and `check` still work
+and use the smaller debug profile, but do not run this cleanup. Debug and test builds retain
+backtrace line numbers, omit full debug symbols, and disable incremental caches to save space.
 
 To go back to the packaged binary, remove the symlink and reinstall by whichever route
 [Install](#install) describes for your system.

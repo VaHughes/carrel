@@ -2053,7 +2053,7 @@ mod tests {
         );
         h.show_titles = true;
         let want = h.visible_entries(100, 20, true);
-        assert!(!want.is_empty());
+        assert_ne!(want, [] as [carrel_state::scan::Entry; 0]);
         assert!(
             want.len() < 30,
             "a screenful, not the index: got {}",
@@ -2063,7 +2063,10 @@ mod tests {
         for x in &want {
             h.titles.insert((x.path.clone(), x.mtime), None);
         }
-        assert!(h.visible_entries(100, 20, true).is_empty());
+        assert_eq!(
+            h.visible_entries(100, 20, true),
+            [] as [carrel_state::scan::Entry; 0]
+        );
     }
 
     /// Nothing ever evicted from `titles`: a session that scrolls a large
@@ -2350,7 +2353,10 @@ mod tests {
         let roots = picker_contents_in(&browsing, "wk", &[], None, Path::new("/"));
         assert!(roots.contains(&d.path().join("work")));
         // …and what matches nothing is an empty list.
-        assert!(picker_contents_in(&browsing, "zzz", &[], None, Path::new("/")).is_empty());
+        assert_eq!(
+            picker_contents_in(&browsing, "zzz", &[], None, Path::new("/")),
+            [] as [std::path::PathBuf; 0]
+        );
     }
 
     /// Vanished directories drop out instead of offering a row whose only
@@ -2383,7 +2389,7 @@ mod tests {
             .unwrap();
         assert!(h.picker_descend());
         assert_eq!(h.picker.browsing, d.path().join("work"));
-        assert!(h.picker.typed.is_empty());
+        assert_eq!(h.picker.typed, "");
         assert_eq!(
             h.picker.roots[h.picker.selected],
             d.path().join("work"),
@@ -2438,7 +2444,13 @@ mod tests {
     fn a_query_that_matches_nothing_is_an_empty_list() {
         let d = tree();
         let q = d.path().join("zzz");
-        assert!(directory_matches(q.to_str().unwrap(), Path::new("/")).is_empty());
-        assert!(directory_matches("/no/such/place/at/all", Path::new("/")).is_empty());
+        assert_eq!(
+            directory_matches(q.to_str().unwrap(), Path::new("/")),
+            [] as [std::path::PathBuf; 0]
+        );
+        assert_eq!(
+            directory_matches("/no/such/place/at/all", Path::new("/")),
+            [] as [std::path::PathBuf; 0]
+        );
     }
 }

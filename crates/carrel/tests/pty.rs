@@ -1702,3 +1702,114 @@ fn a_scroll_key_reads_on_in_a_long_footnote_box() {
         "the control: `j` with no box open scrolls the page and shows no footnote"
     );
 }
+
+#[test]
+fn an_empty_file_accepts_reader_keys_and_exits_cleanly() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("empty.md"), "").unwrap();
+    let cap = pty_run("empty.md", "\\rm%%zazMzR\\t\\rq", dir.path());
+    assert!(
+        cap.contains("\x1b[?1049h"),
+        "the reader must enter its screen"
+    );
+    assert!(
+        cap.contains("\x1b[?1049l"),
+        "the reader must restore the terminal"
+    );
+}
+
+#[test]
+fn following_a_file_shows_text_appended_by_another_process() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("live.md");
+    let original = "Earlier paragraph.\n\n".repeat(80);
+    std::fs::write(&file, &original).unwrap();
+    let cap = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // Append only after F has acted on the original document. A
+            // fixed delay could write before a slow startup read the file,
+            // and then pass without exercising the watcher at all.
+            let capture = dir.path().join("pty-capture");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while !captured(&capture).contains("keeping") {
+                assert!(std::time::Instant::now() < deadline, "F never took effect");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            // More than one screen: merely retaining the old last page
+            // must not accidentally reveal the marker and pass this check.
+            let appended = "New paragraph.\n\n".repeat(40);
+            std::fs::write(&file, format!("{original}{appended}ZZZZTAILMARKER\n")).unwrap();
+        });
+        pty_run_until("live.md", "F", "ZZZZTAILMARKER", "q", dir.path())
+    });
+    assert!(
+        cap.contains("ZZZZTAILMARKER"),
+        "following must paint the new end: {cap:?}"
+    );
+    assert!(cap.contains("\x1b[?1049l"), "terminal restored");
+}
+
+#[test]
+fn malformed_piped_bytes_remain_readable_and_the_terminal_is_restored() {
+    if !Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("SKIP: python3 not available — malformed stream PTY smoke not run");
+        return;
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/stream_pty.py");
+    let output = Command::new("timeout")
+        .args(["30", "python3"])
+        .arg(script)
+        .arg(env!("CARGO_BIN_EXE_carrel"))
+        .arg(scratch.path())
+        .output()
+        .expect("the stream PTY test requires timeout and python3");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn home_keeps_the_session_from_file_tutorial_and_pipe_entry_points() {
+    if !Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("SKIP: python3 not available — session PTY smoke not run");
+        return;
+    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/session_pty.py");
+    for mode in ["file", "tutorial", "pipe"] {
+        let scratch = tempfile::tempdir().unwrap();
+        let output = Command::new("timeout")
+            .args(["45", "python3"])
+            .arg(&script)
+            .arg(env!("CARGO_BIN_EXE_carrel"))
+            .arg(scratch.path())
+            .arg(mode)
+            .output()
+            .expect("the session PTY test requires timeout and python3");
+        assert!(
+            output.status.success(),
+            "{mode}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

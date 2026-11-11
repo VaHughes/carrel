@@ -136,7 +136,7 @@ fn a_filtered_sheet_still_runs_the_row_that_was_clicked() {
 fn a_narrow_sheet_wraps_its_rows_and_every_line_of_one_is_the_button() {
     let app = sheet(30, 40);
     let (buf, rows) = frame(&app, 30, 40);
-    assert!(!rows.is_empty());
+    assert_ne!(rows, [] as [(u32, carrel::action::Zone); 0]);
     // A wrapped row is more than one line, all of them the same button.
     let mut per_row = std::collections::BTreeMap::<u32, usize>::new();
     for (i, _) in &rows {

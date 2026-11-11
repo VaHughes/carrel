@@ -53,6 +53,8 @@ pub enum Direction {
 /// A keystroke while a typed filter or the search prompt is open.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SearchKey {
+    /// Browse accepted searches in the current session; other filters ignore it.
+    Recall(Direction),
     Char(char),
     Backspace,
     /// Keep the matches, close the prompt.

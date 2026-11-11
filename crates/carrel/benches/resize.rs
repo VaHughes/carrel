@@ -59,5 +59,59 @@ fn bench_resize(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_resize);
+// Reading while another process rewrites a file pays for parsing and for
+// carrying the viewport's place. Keep this beside resize so a new way of
+// preserving that place cannot quietly make live reading expensive.
+fn bench_reload(c: &mut Criterion) {
+    let src = corpus(1 << 20);
+    let inserted = format!("A newly inserted introduction.\n\n{src}");
+    let mut app = App::new("bench.md".into(), Document::parse(&src), 100, 40);
+    let mid = app.layout.total_rows() / 2;
+    update(&mut app, Action::GoToRow(mid));
+    let mut added = false;
+    let mut group = c.benchmark_group("live_reload");
+    group.sample_size(10);
+    group.warm_up_time(std::time::Duration::from_secs(2));
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.bench_function("1mb_mixed", |b| {
+        b.iter(|| {
+            added = !added;
+            app.reload_from(if added { &inserted } else { &src });
+            std::hint::black_box(app.view.anchor);
+        });
+    });
+    group.finish();
+}
+
+// History keeps content-aware places too. Measure a pair of in-document
+// Back/Forward jumps so a stable destination does not make navigation slow.
+fn bench_history(c: &mut Criterion) {
+    let src = corpus(1 << 20);
+    let mut app = App::new("bench.md".into(), Document::parse(&src), 100, 40);
+    app.file = Some("bench.md".into());
+    let middle = (app.doc.block_count() / 2..app.doc.block_count())
+        .map(|i| carrel_core::BlockIdx(i as u32))
+        .find(|&b| {
+            matches!(
+                app.doc.node_for_block(b).kind,
+                carrel_core::NodeKind::Heading { .. }
+            )
+        })
+        .expect("mixed corpus has headings");
+    update(&mut app, Action::OutlineJumpTo(middle));
+    let mut group = c.benchmark_group("history");
+    group.sample_size(10);
+    group.warm_up_time(std::time::Duration::from_secs(2));
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.bench_function("back_forward_1mb_mixed", |b| {
+        b.iter(|| {
+            update(&mut app, Action::Back);
+            update(&mut app, Action::Forward);
+            std::hint::black_box(app.view.anchor);
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_resize, bench_reload, bench_history);
 criterion_main!(benches);

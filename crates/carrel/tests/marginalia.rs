@@ -95,7 +95,7 @@ fn inserting_before_a_combining_mark_keeps_the_cursor_on_a_grapheme_boundary() {
     assert_eq!(draft.text, "a\u{301}");
     assert_eq!(draft.cursor, draft.text.len());
     update(&mut app, Action::NoteInput(NoteKey::Backspace));
-    assert!(app.notes.draft.as_ref().unwrap().text.is_empty());
+    assert_eq!(app.notes.draft.as_ref().unwrap().text, "");
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn switching_documents_loads_only_their_own_notes() {
     let second = dir.path().join("second.md");
     std::fs::write(&second, "Second document.").unwrap();
     app.open_path(&second).unwrap();
-    assert!(app.notes.entries.is_empty());
+    assert_eq!(app.notes.entries, [] as [carrel::marginalia::Annotation; 0]);
     select(&mut app, "Second");
     update(&mut app, Action::HighlightAdd);
     app.open_path(&first).unwrap();
@@ -291,7 +291,7 @@ fn unreadable_sidecar_is_never_replaced_by_new_annotations() {
     update(&mut app, Action::HighlightAdd);
     update(&mut app, Action::NoteEdit);
     assert!(app.notes.draft.is_none());
-    assert!(app.notes.entries.is_empty());
+    assert_eq!(app.notes.entries, [] as [carrel::marginalia::Annotation; 0]);
     assert_eq!(
         std::fs::read_to_string(sidecar).unwrap(),
         "valuable but malformed data"
@@ -319,7 +319,7 @@ fn deleting_a_selected_note_persists_and_clamps_the_pane_cursor() {
     update(&mut app, Action::NoteDelete);
     assert_eq!(app.notes.pane, Some(0));
     app.open_path(&file).unwrap();
-    assert!(app.notes.entries.is_empty());
+    assert_eq!(app.notes.entries, [] as [carrel::marginalia::Annotation; 0]);
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn empty_documents_decline_annotations_without_panicking() {
         Action::NoteAt(0),
     ] {
         update(&mut app, action);
-        assert!(app.notes.entries.is_empty());
+        assert_eq!(app.notes.entries, [] as [carrel::marginalia::Annotation; 0]);
         assert!(app.notes.draft.is_none());
     }
 }
@@ -498,7 +498,7 @@ fn piped_notes_survive_a_link_round_trip_without_inheriting_file_notes() {
     let piped_entries = app.notes.entries.clone();
     update(&mut app, Action::LinkOpen(0));
     assert_eq!(app.file.as_deref(), Some(target.as_path()));
-    assert!(app.notes.entries.is_empty());
+    assert_eq!(app.notes.entries, [] as [carrel::marginalia::Annotation; 0]);
     select(&mut app, "Target");
     update(&mut app, Action::HighlightAdd);
     update(&mut app, Action::Back);
@@ -543,7 +543,7 @@ fn bracketed_paste_preserves_newlines_without_saving_or_executing_keys() {
     select(&mut app, "café quote");
     update(&mut app, Action::NoteEdit);
     carrel::annotation_state::paste(&mut app, "first\r\nq\nV\t界\u{1b}");
-    assert!(app.notes.entries.is_empty());
+    assert_eq!(app.notes.entries, [] as [carrel::marginalia::Annotation; 0]);
     assert_eq!(app.notes.draft.as_ref().unwrap().text, "first\nq\nV    界");
     carrel::annotation_state::paste(&mut app, &"x".repeat(70_000));
     assert_eq!(app.notes.draft.as_ref().unwrap().text, "first\nq\nV    界");

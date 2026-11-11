@@ -57,10 +57,10 @@ fn streaming(dir: &Path) -> App {
 fn feed(app: &mut App, chunk: &str) {
     let mut buf = app.piped.take().unwrap_or_default();
     buf.push_str(chunk);
+    app.piped = Some(buf.clone());
     if app.showing_pipe() {
         app.reload_from(&buf);
     }
-    app.piped = Some(buf);
 }
 
 fn heading_text(app: &App) -> Vec<String> {
@@ -107,9 +107,11 @@ fn the_welcome_page_is_not_the_desk_it_was_opened_from() {
     let d = tempfile::tempdir().unwrap();
     let mut app = file_app(d.path(), "a.md", "# A\n\nhello\n");
     tags_ready(&mut app, d.path());
-    assert!(app.on_desk.is_some());
+    let tags = app.on_desk.expect("tags is a retained page");
     update(&mut app, Action::WelcomeOpen);
-    assert_eq!(app.on_desk, None);
+    let welcome = app.on_desk.expect("the guide is a retained page too");
+    assert_ne!(welcome, tags);
+    assert_eq!(app.desks[welcome].label, "how carrel works");
 }
 
 #[test]
@@ -699,4 +701,71 @@ fn a_bookmark_whose_paragraph_was_rewritten_still_lands_on_a_block() {
     let m = back.marks[0];
     let b = back.doc.block_at_doc(carrel_core::DocByte(m));
     assert_eq!(back.doc.node_for_block(b).doc.start, m);
+}
+
+#[test]
+fn returning_to_a_pipe_does_not_borrow_the_other_documents_bookmarks_or_folds() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "[other](other.md)\n\n# Shared heading\n\nShared paragraph\n";
+    std::fs::write(dir.path().join("other.md"), src).unwrap();
+    let mut app = streaming(dir.path());
+    feed(&mut app, src);
+    // Relative paths in a pipe resolve against the working directory.
+    let path = dir.path().join("other.md");
+    app.doc.links[0] = path.to_string_lossy().into_owned().into();
+    update(&mut app, Action::LinkOpen(0));
+    assert!(app.file.is_some());
+    update(&mut app, Action::MarkToggle);
+    update(&mut app, Action::FoldAll);
+    assert_ne!(app.marks, [] as [u32; 0]);
+    assert!(!app.folded.is_empty());
+    update(&mut app, Action::Back);
+    assert!(app.showing_pipe());
+    assert!(
+        app.marks.is_empty(),
+        "a file's bookmark must not appear in stdin"
+    );
+    assert!(
+        app.folded.is_empty(),
+        "a file's folds must not collapse stdin"
+    );
+    assert!(
+        app.dead_links.is_empty(),
+        "an unfinished pipe's links are not judged"
+    );
+}
+
+#[test]
+fn back_within_a_pipe_keeps_its_notes_and_stops_automatic_motion() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = format!("[later](#later)\n\n{}\n# Later\n\nend", long_doc(30));
+    let mut app = streaming(dir.path());
+    feed(&mut app, &src);
+    update(&mut app, Action::HighlightAdd);
+    assert_eq!(app.notes.entries.len(), 1);
+    update(&mut app, Action::LinkOpen(0));
+    assert_ne!(
+        app.history,
+        [] as [(std::path::PathBuf, carrel::state::Place); 0]
+    );
+    update(&mut app, Action::FollowToggle);
+    update(&mut app, Action::Back);
+    assert_eq!(
+        app.notes.entries.len(),
+        1,
+        "Back must not reload a different notes list"
+    );
+    assert!(!app.following, "the reader chose an earlier place");
+}
+
+#[test]
+fn returning_to_rewritten_unicode_text_never_splits_a_character() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = file_app(dir.path(), "a.md", "abc [other](b.md)\n");
+    std::fs::write(dir.path().join("b.md"), "other").unwrap();
+    app.view.anchor = 1;
+    update(&mut app, Action::LinkOpen(0));
+    std::fs::write(dir.path().join("a.md"), "éééééé\n").unwrap();
+    update(&mut app, Action::Back);
+    assert!(app.doc.text.is_char_boundary(app.view.anchor as usize));
 }

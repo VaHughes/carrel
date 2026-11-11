@@ -62,6 +62,9 @@ jobs:
       - name: Benches still compile
         run: cargo check --workspace --all-targets
 
+      - name: Local build helper keeps cleanup within the checkout
+        run: python3 scripts/check-build-helper.py
+
       - name: Architectural discipline
         run: ./scripts/check-discipline.sh
 

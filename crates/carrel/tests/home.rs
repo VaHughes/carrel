@@ -59,7 +59,9 @@ fn the_live_walk_reconciles_with_the_cache() {
     for msg in scan::spawn(d.path()) {
         match msg {
             scan::Msg::Found(e) => app.home_mut().unwrap().push(e),
-            scan::Msg::Done { unreadable } => app.home_mut().unwrap().finish_scan(unreadable),
+            crate::scan::Msg::Done { unreadable } => {
+                app.home_mut().unwrap().finish_scan(unreadable)
+            }
         };
     }
 
@@ -208,7 +210,7 @@ mod picker {
             update(&mut app, Action::HomeKey(SearchKey::Backspace));
         }
         let h = app.home().unwrap();
-        assert!(h.picker.typed.is_empty());
+        assert_eq!(h.picker.typed, "");
         assert!(
             h.picker.roots.contains(&d.path().join("plain")),
             "erased back to the neighbourhood: {:?}",
@@ -314,7 +316,10 @@ mod picker {
         for c in "/no/such/place".chars() {
             update(&mut app, Action::HomeKey(SearchKey::Char(c)));
         }
-        assert!(app.home().unwrap().picker.roots.is_empty());
+        assert_eq!(
+            app.home().unwrap().picker.roots,
+            [] as [std::path::PathBuf; 0]
+        );
         assert_eq!(update(&mut app, Action::PickerChoose), Outcome::Redraw);
         let h = app.home().unwrap();
         assert_eq!(h.root, before, "nothing to choose, nothing chosen");
@@ -487,7 +492,10 @@ mod links {
         assert_eq!(update(&mut app, Action::Back), Outcome::Redraw);
         assert!(app.doc.text.contains("filler"), "must be back in a.md");
         assert_eq!(app.view.anchor, anchor_before, "reading position restored");
-        assert!(app.history.is_empty());
+        assert_eq!(
+            app.history,
+            [] as [(std::path::PathBuf, carrel::state::Place); 0]
+        );
     }
 
     /// Was `an_external_link_is_never_followed_only_noted`. It is copied now

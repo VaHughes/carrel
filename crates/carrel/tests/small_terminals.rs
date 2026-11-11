@@ -149,6 +149,9 @@ fn narrow_reader_keeps_a_visible_menu_launcher() {
 fn resizing_every_pane_to_tiny_dimensions_is_safe() {
     for (cols, rows) in [
         (0, 0),
+        (1, 0),
+        (80, 0),
+        (0, 24),
         (1, 1),
         (2, 2),
         (4, 3),
@@ -159,6 +162,9 @@ fn resizing_every_pane_to_tiny_dimensions_is_safe() {
         (59, 11),
         (60, 12),
     ] {
+        let mut reader = app(80, 24);
+        reader.on_resize(cols, rows);
+        let _ = frame(&reader);
         for action in [
             Action::HelpToggle,
             Action::SettingsToggle,
@@ -461,7 +467,7 @@ fn shrinking_a_pane_blocks_hidden_choices_and_note_edits() {
     carrel::annotation_state::paste(&mut app, "hidden paste");
     update(&mut app, Action::NoteInput(NoteKey::Save));
     assert_eq!(app.notes.draft.as_ref().unwrap().text, before);
-    assert!(app.notes.entries.is_empty());
+    assert_eq!(app.notes.entries, [] as [carrel::marginalia::Annotation; 0]);
 }
 
 #[test]

@@ -552,6 +552,8 @@ impl Keys {
             return Some(Action::Quit);
         }
         let k = match key.code {
+            KeyCode::Up => SearchKey::Recall(Direction::Backward),
+            KeyCode::Down => SearchKey::Recall(Direction::Forward),
             KeyCode::Char(c) => SearchKey::Char(c),
             KeyCode::Backspace => SearchKey::Backspace,
             KeyCode::Enter => SearchKey::Accept,
@@ -1163,7 +1165,7 @@ mod tests {
                 "k" => vec![k('k')],
                 "F" => vec![k('F')],
                 "y" => vec![k('y')],
-                "↑/↓" => vec![code(KeyCode::Down)],
+                "↑/↓" | "↓" => vec![code(KeyCode::Down)],
                 "↑" => vec![code(KeyCode::Up)],
                 "→" => vec![code(KeyCode::Right)],
                 "spc" => vec![k(' ')],

@@ -223,12 +223,6 @@ fn block_hash(doc: &carrel_core::Document, b: carrel_core::BlockIdx) -> u64 {
         })
 }
 
-fn block_hashes(doc: &carrel_core::Document) -> Vec<u64> {
-    (0..doc.block_count())
-        .map(|b| block_hash(doc, carrel_core::BlockIdx(b as u32)))
-        .collect()
-}
-
 impl Place {
     /// The place of display byte `d` in `doc`.
     #[must_use]
@@ -357,13 +351,22 @@ impl Place {
 /// text?" was fooled by a stale place on the separator before the right
 /// block's start, which `block_at_doc` gives to that block.
 fn found(doc: &carrel_core::Document, k: Kept) -> Option<i64> {
-    if doc.block_count() == 0 {
-        return None;
+    // Stop at the requested occurrence without allocating every hash or
+    // match. If that occurrence disappeared, retain the last surviving one.
+    let mut remaining = k.nth;
+    let mut last = None;
+    for i in 0..doc.block_count() {
+        let block = carrel_core::BlockIdx(i as u32);
+        if block_hash(doc, block) != k.hash {
+            continue;
+        }
+        last = Some(block);
+        if remaining == 0 {
+            break;
+        }
+        remaining -= 1;
     }
-    let hashes = block_hashes(doc);
-    let same: Vec<usize> = (0..hashes.len()).filter(|&i| hashes[i] == k.hash).collect();
-    let b = *same.get(k.nth as usize).or_else(|| same.last())?;
-    let node = doc.node_for_block(carrel_core::BlockIdx(b as u32));
+    let node = doc.node_for_block(last?);
     Some((i64::from(node.doc.start) + i64::from(k.off)).min(i64::from(node.doc.end)))
 }
 
@@ -693,6 +696,46 @@ pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Resul
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_kept_place_counts_repeated_paragraphs_and_falls_back_to_the_last() {
+        use carrel_core::{DocByte, Document};
+
+        let old = Document::parse(
+            "# Before\n\nRepeated café.\n\nBetween.\n\nRepeated café.\n\nBetween again.\n\nRepeated café.\n",
+        );
+        let new = Document::parse(
+            "# A longer introduction\n\nRepeated café.\n\nDifferent middle.\n\nRepeated café.\n",
+        );
+        let starts = |doc: &Document| {
+            doc.text
+                .match_indices("Repeated café.")
+                .map(|(at, _)| at as u32)
+                .collect::<Vec<_>>()
+        };
+        let old_starts = starts(&old);
+        let new_starts = starts(&new);
+        assert_eq!(old_starts.len(), 3);
+        assert_eq!(new_starts.len(), 2);
+        for (i, &start) in old_starts.iter().enumerate() {
+            for offset in [-1, 0, 2] {
+                let byte = DocByte(start.checked_add_signed(offset).unwrap());
+                let place = Place::kept(&old, byte);
+                assert_eq!(place.resolve(&old), byte);
+                assert_eq!(
+                    place.resolve(&new).0,
+                    new_starts[i.min(1)].checked_add_signed(offset).unwrap()
+                );
+            }
+        }
+        let gone = Document::parse("No matching paragraph.\n");
+        for start in old_starts {
+            assert_eq!(
+                Place::kept(&old, DocByte(start)).resolve(&gone),
+                Place::of(&old, DocByte(start)).resolve(&gone)
+            );
+        }
+    }
+
     use super::*;
 
     /// A place in the old spelling, which every test below that is about
@@ -903,7 +946,10 @@ mod tests {
         let b = dir.path().join("b.md");
         std::fs::write(&a, "x").unwrap();
         std::fs::write(&b, "y").unwrap();
-        assert!(load_marks_in(dir.path(), &a).is_empty());
+        assert_eq!(
+            load_marks_in(dir.path(), &a),
+            [] as [crate::state::Place; 0]
+        );
 
         save_marks_in(dir.path(), &a, &[P(300), P(100), P(100)]).unwrap();
         assert_eq!(
@@ -1008,14 +1054,20 @@ mod tests {
         );
 
         save_folds_in(d.path(), &a, &[]).unwrap();
-        assert!(load_folds_in(d.path(), &a).is_empty());
+        assert_eq!(load_folds_in(d.path(), &a), [] as [String; 0]);
         assert_eq!(
             load_folds_in(d.path(), &b),
             ["h:x"],
             "the other document stays"
         );
-        assert!(load_folds_in(d.path(), &d.path().join("never.md")).is_empty());
-        assert!(load_folds_in(&d.path().join("no-such-dir"), &a).is_empty());
+        assert_eq!(
+            load_folds_in(d.path(), &d.path().join("never.md")),
+            [] as [String; 0]
+        );
+        assert_eq!(
+            load_folds_in(&d.path().join("no-such-dir"), &a),
+            [] as [String; 0]
+        );
     }
 
     #[test]

@@ -259,7 +259,7 @@ fn a_german_page_that_says_so_is_divided_by_german_patterns() {
     // Undeclared, German is never guessed at.
     let app = app_at(36, 60, GERMAN);
     assert_eq!(app.hyphenation(), carrel_core::Hyphenation::Off);
-    assert!(hyphenated(&app, 0).is_empty());
+    assert_eq!(hyphenated(&app, 0), [] as [u32; 0]);
     // Declared, it is divided — capitalized nouns included — and only
     // where the German patterns allow.
     let app = app_at(36, 60, &format!("---\nlang: de-DE\n---\n\n{GERMAN}"));

@@ -17,7 +17,7 @@ exactly — the shape research.md Q29/Q33 (private notes) found holding up where
 frontends ship.
 
 The full spec (position types, data structures, algorithms, the resize path, a 20-item
-"do not do this" list keyed to failures in real editors) is `architecture.md` in the private
+"do not do this" list keyed to failures in real editors) is `docs/architecture.md` in the private
 notes repo, checked out at `../carrel-notes` on the maintainer's machine. Read it before
 touching `carrel-core`. Design specs and plans for each feature slate live there too, under
 `docs/superpowers/{specs,plans}/`.
@@ -225,7 +225,7 @@ Key facts that are easy to get wrong:
 | Module | What it is |
 |---|---|
 | `intent.rs` | `Intent` and the small enums it needs (`Span`, `Where`, `Direction`, `SearchKey`, `NoteKey`, `Edge`). See discipline 4. |
-| `state.rs`, `config.rs` | XDG state (reading positions, bookmarks, collapsed sections) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. Positions and bookmarks are saved as a `Place`: a source byte plus a signed correction (`s1024+16`), exact under the core that saved it (file unchanged) and still in the right run under another — except a diff, whose source is markdown carrel generates; a bare number is a display byte from 2026.10.21 or earlier (`Place::Legacy`). A line or mark this version cannot read is written back unchanged. Saved positions and bookmarks also keep their block by content (`Place::kept`, `s1024+16@<fnv64>.<nth><±off>`: a hand-written FNV-1a of the block's display text, which of the blocks with that text, and the offset in it), so a file edited while carrel was closed resolves them to the same text; the source place stands only when no block has that text. A live reload carries bookmarks by block content the same way, in memory. `config.rs` documents which keys are shared and which belong to one frontend. |
+| `state.rs`, `config.rs` | XDG state (reading positions, bookmarks, collapsed sections) and XDG config. Both are injected as `Option` dirs (`None` in constructors) so tests can never reach the real files. Positions and bookmarks are saved as a `Place`: a source byte plus a signed correction (`s1024+16`), exact under the core that saved it (file unchanged) and still in the right run under another — except a diff, whose source is markdown carrel generates; a bare number is a display byte from 2026.10.21 or earlier (`Place::Legacy`). A line or mark this version cannot read is written back unchanged. Saved positions and bookmarks also keep their block by content (`Place::kept`, `s1024+16@<fnv64>.<nth><±off>`: a hand-written FNV-1a of the block's display text, which of the blocks with that text, and the offset in it), so a file edited while carrel was closed resolves them to the same text; the source place stands only when no block has that text. Resolution scans until the requested matching occurrence without allocating hash/match lists, falling back to the last surviving occurrence. A live reload carries bookmarks by block content the same way, in memory. `config.rs` documents which keys are shared and which belong to one frontend. |
 | `scan.rs`, `grep.rs`, `fuzzy.rs` | The library walk (streamed, `.gitignore`-aware via the `ignore` crate with `require_git(false)`, cached index), multi-file content search (the source is only a prefilter, `carrel_core::SourceFilter`, which never passes over a file the reader matches; a file that passes is parsed and counted by the reader's own `search`, so the home count is what opening the file finds; four workers, hits sent in entry order; inline-math views kept per file by mtime and length), and the filter's fuzzy match. |
 | `tags.rs` | Tags across the folder, as a generated document (`grep::render_results`' idea again). A background thread reads every scanned entry (to 1 MiB), finds its frontmatter by the core's own rule (`carrel_core::frontmatter`) and its key lines by `meta_split` — never a YAML parse; flow lists, block lists and scalars in YAML and TOML — and its inline `#tags` by the core's own parse (`Document::tags`), run only when a byte scan cannot rule one out. `groups` nests `a/b` under `a` (a parent's count includes its children) and `render` writes a section per tag, nested tags as subsections, with a link per document, every tag and title backslash-escaped because they are untrusted text headed for a heading. |
 | `links.rs`, `wiki.rs` | Forward links and backlinks with no index; `[[wikilink]]` resolution. |
@@ -239,7 +239,7 @@ Key facts that are easy to get wrong:
 | Module | What it is |
 |---|---|
 | `main.rs` | Entry, `USAGE`, `key_action` (the ONE key dispatcher, called by both loops), the event loop (`run_loop`, shared by the file, piped and `--tutorial` entries), `paint` (every frame inside a DEC 2026 synchronized update plus the OSC 8 post-draw pass), mtime `Reloader`, rescan timer, signal handling, `init_terminal` and the hang-up watch. |
-| `app.rs` | The state machine — `App`, `update()`, folding, bookmarks, links, `reveal_byte`, `adapt` (the single funnel every parse goes through for diff detection), `text_size`/`text_x`/`text_y`, the settings rows (`settings_rows`, derived per call, never stored), and `WELCOME` (`welcome.md`, embedded with `include_str!` and opened pathless like a pipe). |
+| `app.rs` | The state machine — `App`, `update()`, folding, bookmarks, links, `reveal_byte`, `adapt` (the single funnel every parse goes through for diff detection), `text_size`/`text_x`/`text_y`, the settings rows (`settings_rows`, derived per call, never stored), and `WELCOME` (`welcome.md`, embedded with `include_str!` and opened as a retained `Desk`). |
 | `action.rs` | The terminal's `Action` (every `Intent` plus its chrome, with the exhaustive conversions) and the per-frame click-target registry (`Targets`). |
 | `keys.rs` | The key-event dispatcher: vim motion set with a count register, plus the beginner bindings — which by rule only ever claim keys that were **already unbound**, so the vim set is never diminished. Its tests are the drift guards that hold `keymap.rs` to it. The one module of the state machine's neighbours that names crossterm. |
 | `keymap.rs` | What the keys are called, as data: the help tables (key, description, and the action a click on the row runs), the footer hint tables, `accel` for menu rows, `upward`, and `MENU_KEYS`. Read by `app`, `footer` and `menu` without a dispatcher. |
@@ -251,7 +251,7 @@ Key facts that are easy to get wrong:
 | `peek.rs` | The footnote peek: the whole definition (`Document::footnote_def_range`, recorded at parse), wrapped by the core's `wrap` at the box's width with the definition's own inset taken off, and its box geometry. Every row is a slice of the text, so `render::paint_peek_row` reuses the reader's text, footnote-mark and search-hit stages; links and marks inside are buttons at the box's layer. Its scroll position is a doc byte, moved by `PeekScroll` (rows): the wheel over the box, its painted `↑/↓` buttons, and the page's scroll keys. Not a pane — whatever the reader does next closes it and then happens, with two exceptions: `Enter` goes to the footnote, and **while `Peek::scrolls` says the box is drawn and the footnote longer than it**, `App::peek_key` turns the reader keymap's `Scroll`/`GoToStart`/`GoToEnd` into `PeekScroll` (clamped at both ends, never spilling onto the page). Ownership is a fact of the box's size, never of the scroll position; the footer shows `◎ footnote` with its own chips exactly then, so a chip and its key cannot disagree. A box that fits takes no scroll key. A resize closes it (it is drawn at the cell its mark was clicked at); auto-read waits while it is open. Display math and mermaid show as source in it, and a table without its rules. |
 | `cli.rs` | What the command line meant where that takes judgment: `FILE:LINE` / `FILE#section` (a path that exists is never split), the nearest option or file to a mistyped one, the newest document, and a pasted or dropped path in whatever form the terminal handed it over. |
 | `annotation_state.rs`, `annotation_render.rs` | Modal list/editor state for notes and highlights (terminal-free), and the terminal notes pane. |
-| `stream.rs` | stdin on a thread with UTF-8 carry across chunks; keys arrive via `/dev/tty` (crossterm's native fallback). |
+| `stream.rs` | stdin on a thread with iterative UTF-8 carry across chunks and an eight-chunk bounded channel; keys arrive via `/dev/tty` (crossterm's native fallback). The event loop coalesces a burst for up to 16 ms, draining at most 1,024 chunks or 8 MiB plus the final chunk before returning to input. |
 | `images.rs`, `diagrams.rs`, `math_art.rs`, `plain.rs`, `ansi.rs` | Image decoding and sizing (drawn kitty/halfblock via `ratatui-image` in `render`), mermaid box art (`merman`), TeX-lite math boxes, `--plain` and `--render` output. |
 
 Key facts:
@@ -302,27 +302,38 @@ Key facts:
   (`hyphenate`) and then `carrel_core::hyphenation_for(&doc)`, evaluated at every relayout, so
   it cannot go stale across a reload, a followed link or a growing pipe. `Layout` holds the
   answer it was built with, for the reason it holds `wrap_tables`.
-- **The tags document is a `Desk`: a generated document `Back` can return to.** Search results
-  push no history when a hit is followed; the tags document keeps its source and its collapse
-  state, leaves a sentinel no file can be named on the trail, and `go_back` reopens it as it was left.
-  Closing to the file list drops it. `#` only *asks* (`Home::tags_wanted`): the event loop's
-  `TagScan` reads on a thread and answers with `Action::HomeOpenTags`, and anything the reader
-  does in between withdraws the request.
+- **Generated pages are retained `Desk`s:** search results, tags and the tutorial. Each
+  keeps its source, notes, bookmarks and both kinds of collapsed sections in memory.
+  Identical pages reuse a desk; the tutorial has one identity. A sentinel no file can be
+  named lets Back/Forward return to them. Closing to the file list drops retained pages.
+  `#` only *asks* (`Home::tags_wanted`): the event loop's `TagScan` reads on a thread and
+  answers with `Action::HomeOpenTags`; intervening input withdraws the request.
 - **A link destination is a URL on the way in, so generated pages encode their targets.**
   `links::encode_target` percent-encodes what the follower acts on (`#`, `?`, `:`, `&`, `%`,
   angle brackets, backslash, control characters); `links::resolve_local` tries the name as
   written, then percent-decoded, then without a `?query` (`links::candidates`), before the
   out-of-folder check. Search results and the
   tags page both come through it, because both are built from file names carrel did not choose.
-- **One model for every place a reader can have come from.** `App::location()` is what every
-  departure asks before it leaves: a file is its path, a generated page (`Desk`: search
-  results, the tags page) is a `\0desk/<n>` sentinel with its collapse state remembered, a
-  pipe is `(stdin)`. `history` and `future` hold those; `go_to` returns to any of them.
-  `push_history` empties `future` (a new departure forgets the branch not taken);
-  `go_forward` pushes raw, so it does not. The status row's trail is `status::trail`.
-  Several things are pathless (a pipe, a generated page, the welcome page), so "no file" does
-  not mean "the pipe is on screen": ask `App::showing_pipe`, which the stream drain does
-  before parsing a chunk.
+- **One model for every place a reader can have come from.** `App::location()` captures
+  the document identity and a `Place::kept` before departure. Files use their paths,
+  generated pages a `\0desk/<n>` sentinel, and the pipe `(stdin)`; Home has no location.
+  `history` and `future` retain these places, so Back/Forward follow unchanged paragraphs
+  through edits, including while another page is open. Same-document returns resolve
+  against the current parse without rereading. `push_history` caps the trail at 256 and
+  empties `future`; `go_forward` pushes raw. The status row's trail is `status::trail`.
+  `stash_pathless_state` keeps a pipe's notes, bookmark places and named folds separate
+  from generated pages and files. `showing_pipe()` identifies the displayed document;
+  `streaming` identifies the background producer; `is_live_pipe()` requires both. A
+  background pipe's EOF must not stop keeping up with a watched file.
+- **Bounded stream ingestion is not incremental parsing.** A displayed pipe reparses
+  its accumulated text after each batch. Large finite pipes can therefore take more CPU
+  than one unbounded drain; the limits provide turns for input and bound the decoded queue.
+  They do not impose a fixed upper bound on Markdown parsing or layout latency.
+- **Reader search recall is session-only.** `RecentSearches` retains twenty distinct
+  accepted nonblank queries, at most 4,096 bytes each. Up/Down recall preserves the draft;
+  editing starts a new draft. `HomeRequest` carries this opaque state from direct file,
+  tutorial and pipe entry loops to interactive Home. Once a TUI has a terminal, returning
+  Home does not retest piped stdin as if it were a fresh noninteractive invocation.
 - **A line number means a line of the file.** `Document::line_start` maps a 1-based source
   line through the provenance table to the text it displays, and `line_of` is its inverse.
   `notes.md:42`, a `#L42` link and a search hit's line all go through `jump_to_line`, which
@@ -340,6 +351,10 @@ Key facts:
   after it, and saves in a row accumulate until `Esc`. A reload also carries collapse state
   across by name (`fold_keys` / `apply_fold_keys`: a heading's `#fragment`, a `<details>`
   by place and summary), which is also what `state.rs` persists in `folds`.
+  `reload_from` also carries the viewport, search's Escape destination and selected match
+  by kept place, plus bookmarks by content, before one layout. The shared path handles
+  both watched files and pipe chunks. Keeping up pins the end after layout; explicit
+  navigation or selection stops automatic motion, and auto-read and keeping up are exclusive.
 - **Per-document facts are found once, when the document arrives** (`lay_out_new_document`
   and `find_dead_links`, which every opener reaches): task counts, footnote marks, and
   which links lead nowhere. Dead links are only ever judged inside the library — a path
@@ -396,8 +411,18 @@ Key facts:
   quotes and context in per-document state sidecars; ambiguous/missing quotes stay
   unresolved. Failed reads block writes; failed saves retain drafts. Pane state and
   note traversal indices live separately from viewport coordinates. Piped notes
-  are retained across link round trips. The note editor alone enables bracketed
-  paste, and terminal restoration disables it on every exit path.
+  and generated-page notes are retained across link round trips, in memory only.
+- **Paste is text, never a command stream.** Bracketed paste stays enabled throughout
+  the TUI and is disabled on teardown. `paste_input` routes to the visible note editor,
+  home input/path opener, or reader search/help/outline; hidden panes and normal reading
+  accept none. Single-line inputs take the first nonblank line, turn tabs into spaces,
+  drop controls and cap each paste at 256 scalars without splitting a grapheme. Matching
+  runs once per paste. Backspace removes one grapheme in every text input.
+- **Commit-message hyphens follow the Markdown parser's inline boundaries.** The diff
+  adapter parses each message run with the shared `document::markdown_options`, minus
+  math and smart punctuation, and protects code spans and autolinks by source offsets
+  before escaping dollar signs and hyphen pairs elsewhere. A numbered line such as `2)`
+  can continue a paragraph; a hand-written list-marker split cannot identify code spans.
 - **Sub-image scroll clipping is deferred** (top-anchored crop) until the GUI's image work.
 - **Carrel never reports success it cannot verify.** OSC 52 is written blind — there is no
   reply — so the clipboard notes say what was sent, and the mechanism is documented in the

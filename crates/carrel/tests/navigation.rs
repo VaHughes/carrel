@@ -77,7 +77,10 @@ fn a_name_on_the_trail_goes_back_that_far_and_forward_retraces_it() {
     // history: [a, b]; here: c. Click `a` — entry 0.
     update(&mut app, Action::BackTo(0));
     assert_eq!(name(&app), "a.md");
-    assert!(app.history.is_empty());
+    assert_eq!(
+        app.history,
+        [] as [(std::path::PathBuf, carrel::state::Place); 0]
+    );
     update(&mut app, Action::Forward);
     update(&mut app, Action::Forward);
     assert_eq!(name(&app), "c.md", "forward retraces every step it skipped");
@@ -191,7 +194,10 @@ fn returning_to_the_file_list_ends_the_trail() {
     app.open_path(&d.path().join("a.md")).unwrap();
     update(&mut app, Action::LinkOpen(0));
     update(&mut app, Action::Back);
-    assert!(!app.future.is_empty());
+    assert_ne!(
+        app.future,
+        [] as [(std::path::PathBuf, carrel::state::Place); 0]
+    );
     update(&mut app, Action::CloseFile);
     assert!(app.is_home());
     assert!(app.history.is_empty() && app.future.is_empty() && app.desks.is_empty());
@@ -474,5 +480,182 @@ fn the_arrows_come_as_a_pair_and_only_the_live_one_is_a_button() {
     assert!(
         !targets.iter().any(|(a, _)| *a == Action::Back),
         "with nothing behind, the back arrow is not a button"
+    );
+}
+
+#[test]
+fn the_tutorial_can_return_to_the_document_it_was_opened_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = chain(dir.path());
+    update(&mut app, Action::WelcomeOpen);
+    assert!(app.doc.text.contains("Reading in carrel"));
+    update(&mut app, Action::Back);
+    assert_eq!(name(&app), "a.md");
+    update(&mut app, Action::Forward);
+    assert!(app.doc.text.contains("Reading in carrel"));
+    assert_eq!(app.path, "how carrel works");
+}
+
+#[test]
+fn a_tutorial_heading_jump_returns_within_the_tutorial_even_with_a_background_pipe() {
+    let mut app = App::new("(stdin)".into(), Document::parse("background pipe"), 80, 24);
+    app.piped = Some("background pipe".into());
+    app.streaming = true;
+    update(&mut app, Action::WelcomeOpen);
+    update(&mut app, Action::HighlightAdd);
+    assert_eq!(app.notes.entries.len(), 1);
+    let heading = (0..app.doc.block_count())
+        .map(|i| carrel_core::BlockIdx(i as u32))
+        .rev()
+        .find(|&b| {
+            matches!(
+                app.doc.node_for_block(b).kind,
+                carrel_core::NodeKind::Heading { .. }
+            )
+        })
+        .unwrap();
+    update(&mut app, Action::OutlineJumpTo(heading));
+    update(&mut app, Action::Back);
+    assert!(app.doc.text.contains("Reading in carrel"));
+    assert_eq!(
+        app.notes.entries.len(),
+        1,
+        "a same-page jump keeps its notes"
+    );
+    assert!(!app.showing_pipe());
+    update(&mut app, Action::Back);
+    assert!(app.showing_pipe());
+    assert!(app.doc.text.contains("background pipe"));
+}
+
+#[test]
+fn opening_the_tutorial_from_home_does_not_revive_a_closed_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("closed.md");
+    std::fs::write(&file, "closed document").unwrap();
+    let mut app = App::new_home(dir.path().into(), vec![], 80, 24);
+    app.open_path(&file).unwrap();
+    update(&mut app, Action::CloseFile);
+    assert!(app.is_home());
+    assert_eq!(app.location_path(), None);
+    update(&mut app, Action::WelcomeOpen);
+    assert_eq!(
+        app.history,
+        [] as [(std::path::PathBuf, carrel::state::Place); 0]
+    );
+    update(&mut app, Action::CloseFile);
+    assert!(app.is_home());
+}
+
+#[test]
+fn a_retained_page_keeps_its_annotations_and_bookmarks_across_back_and_forward() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = chain(dir.path());
+    update(&mut app, Action::WelcomeOpen);
+    update(&mut app, Action::HighlightAdd);
+    update(&mut app, Action::MarkToggle);
+    assert_eq!(app.notes.entries.len(), 1);
+    assert_eq!(app.marks.len(), 1);
+    let note = app.notes.entries[0].clone();
+    update(&mut app, Action::Back);
+    assert_eq!(name(&app), "a.md");
+    assert!(
+        app.notes.entries.is_empty(),
+        "tutorial notes do not belong to a.md"
+    );
+    assert!(
+        app.marks.is_empty(),
+        "tutorial bookmarks do not belong to a.md"
+    );
+    update(&mut app, Action::Forward);
+    assert_eq!(
+        app.notes.entries.len(),
+        1,
+        "the retained page still owns its notes"
+    );
+    assert_eq!(app.notes.entries[0], note);
+    assert_eq!(app.marks.len(), 1);
+    update(&mut app, Action::WelcomeOpen);
+    assert_eq!(
+        app.notes.entries[0], note,
+        "reopening this same page keeps its notes"
+    );
+    assert_eq!(app.marks.len(), 1);
+}
+
+#[test]
+fn a_pipe_keeps_its_bookmarks_and_collapsed_sections_across_a_link_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join("other.md");
+    std::fs::write(&other, "# Other\n\nother document").unwrap();
+    let source = format!(
+        "[other]({})\n\n# Section\n\nkept paragraph\n",
+        other.display()
+    );
+    let mut app = App::new("(stdin)".into(), Document::parse(&source), 80, 24);
+    app.piped = Some(source);
+    update(&mut app, Action::MarkToggle);
+    update(&mut app, Action::FoldAll);
+    assert_eq!(app.marks.len(), 1);
+    assert_eq!(app.folded.len(), 1);
+    update(&mut app, Action::LinkOpen(0));
+    assert_eq!(name(&app), "other.md");
+    assert!(app.marks.is_empty(), "pipe bookmarks stay with the pipe");
+    update(&mut app, Action::Back);
+    assert!(app.showing_pipe());
+    assert_eq!(app.marks.len(), 1);
+    assert_eq!(app.folded.len(), 1);
+}
+
+#[test]
+fn back_and_forward_follow_their_text_across_a_live_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("live.md");
+    let source = format!(
+        "# Origin\n\nOpening paragraph.\n\n## Destination\n\n{}",
+        "A later paragraph.\n\n".repeat(30)
+    );
+    std::fs::write(&file, &source).unwrap();
+    let mut app = App::new("live.md".into(), Document::parse(""), 70, 10);
+    app.open_path(&file).unwrap();
+    let destination = (0..app.doc.block_count())
+        .map(|i| carrel_core::BlockIdx(i as u32))
+        .find(|&block| app.doc.block_text(block) == "Destination")
+        .unwrap();
+    update(&mut app, Action::OutlineJumpTo(destination));
+    let at = |app: &App| {
+        app.doc
+            .block_text(app.doc.block_at_doc(carrel_core::DocByte(app.view.anchor)))
+            .to_owned()
+    };
+    assert_eq!(at(&app), "Destination");
+    app.reload_from(&format!("# Inserted before everything\n\n{source}"));
+    update(&mut app, Action::Back);
+    assert_eq!(at(&app), "Origin", "Back names the text previously visited");
+    app.reload_from(&format!(
+        "# Another insertion\n\nLonger new introduction.\n\n{source}"
+    ));
+    update(&mut app, Action::Forward);
+    assert_eq!(at(&app), "Destination", "Forward survives a rewrite too");
+}
+
+#[test]
+fn back_follows_the_old_paragraph_when_the_file_changed_while_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = chain(dir.path());
+    let source = std::fs::read_to_string(dir.path().join("a.md")).unwrap();
+    update(&mut app, Action::LinkOpen(0));
+    std::fs::write(
+        dir.path().join("a.md"),
+        format!("# Newly inserted\n\n{source}"),
+    )
+    .unwrap();
+    update(&mut app, Action::Back);
+    assert_eq!(name(&app), "a.md");
+    assert_eq!(
+        app.doc
+            .block_text(app.doc.block_at_doc(carrel_core::DocByte(app.view.anchor))),
+        "A",
+        "return to the old heading, not whatever moved into byte zero"
     );
 }

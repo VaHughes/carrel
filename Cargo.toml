@@ -99,6 +99,12 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 # reconfirmed against the v11 manifest). The non-default paths are pure Rust.
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 
+# Keep backtrace file/line information without the large type/variable symbols.
+# Test builds inherit dev; disabling incremental avoids another persistent cache.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [profile.release]
 opt-level     = 3
 lto           = "thin"

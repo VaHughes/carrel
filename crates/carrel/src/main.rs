@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use std::io::Write as _;
 
 use carrel::action::Targets;
-use carrel::app::{App, Outcome, Pane, update};
+use carrel::app::{App, Outcome, Pane, RecentSearches, update};
 use carrel::images::{self, ImageMsg};
 use carrel::keys::Keys;
 use carrel::render::{OscLink, Painted};
@@ -267,7 +267,8 @@ fn main() -> ExitCode {
         [a] if a == "--tutorial" => {
             if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
                 match run_welcome() {
-                    Ok(_) => ExitCode::SUCCESS,
+                    Ok(None) => ExitCode::SUCCESS,
+                    Ok(Some(home)) => open_home_after_reader(home),
                     Err(e) => {
                         say!("carrel: {e}");
                         ExitCode::FAILURE
@@ -473,7 +474,7 @@ fn run_stdin_or_fallback() -> ExitCode {
     if let Ok(home) = run_stdin(&rx) {
         match home {
             None => ExitCode::SUCCESS,
-            Some(root) => open_home(Some(&root)),
+            Some(home) => open_home_after_reader(home),
         }
     } else {
         // The reader thread owns stdin now; collect through its channel
@@ -845,7 +846,23 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
         return emit(&out);
     }
 
-    match run_home(root, note) {
+    open_home_interactive(root, note, RecentSearches::default())
+}
+
+/// A live reader has already established keyboard input, including the
+/// /dev/tty fallback for a pipe. Do not reinterpret its Home click as a
+/// noninteractive directory listing just because stdin is still that pipe.
+fn open_home_after_reader(home: HomeRequest) -> ExitCode {
+    let (root, note) = home_root(Some(&home.root));
+    open_home_interactive(root, note, home.searches)
+}
+
+fn open_home_interactive(
+    root: PathBuf,
+    note: Option<String>,
+    searches: RecentSearches,
+) -> ExitCode {
+    match run_home(root, note, searches) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             say!("carrel: {e}");
@@ -906,7 +923,7 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
         // The `⌂`: the reader is closed and the terminal restored, so the
         // home screen starts exactly as `carrel <DIR>` would. It is an
         // explicit root, so browsing here never overwrites the saved one.
-        Ok(Some(root)) => open_home(Some(&root)),
+        Ok(Some(home)) => open_home_after_reader(home),
         Err(e) => {
             say!("carrel: {e}");
             ExitCode::FAILURE
@@ -1600,8 +1617,8 @@ fn b64(bytes: &[u8]) -> String {
 /// dead end, and `carrel --tutorial` opens it whenever anyone wants it.
 /// Open the built-in document. It has no path, so nothing is persisted
 /// against it and the reloader stays inert — the same shape as a pipe.
-fn run_welcome() -> std::io::Result<Option<PathBuf>> {
-    let doc = carrel_core::Document::parse(carrel::app::WELCOME);
+fn run_welcome() -> std::io::Result<Option<HomeRequest>> {
+    let doc = carrel_core::Document::parse("");
     let images = Images::detect();
     let theme_note = startup_theme();
     let terminal = init_terminal()?;
@@ -1613,10 +1630,9 @@ fn run_welcome() -> std::io::Result<Option<PathBuf>> {
     app.state_dir = carrel::state::state_dir();
     carrel::annotation_state::load(&mut app);
     apply_config(&mut app);
-    // The constructor laid the page out with the defaults; the reader's own
-    // text width, heading bar and hyphenation only apply from here.
-    app.on_resize(app.cols, app.rows);
-    app.piped = Some(carrel::app::WELCOME.to_string());
+    // Open after configuration, using the same retained tutorial page as
+    // the home screen's invitation. It is not a stdin stream.
+    app.open_welcome();
     run_loop(terminal, app, images, None)
 }
 
@@ -1625,7 +1641,7 @@ fn run(
     src: &str,
     start: Option<&carrel::cli::Start>,
     loaded: Option<std::time::SystemTime>,
-) -> std::io::Result<Option<PathBuf>> {
+) -> std::io::Result<Option<HomeRequest>> {
     let theme_note = startup_theme();
     // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
     let diff_ok = diff_forced().unwrap_or_else(|| {
@@ -1692,6 +1708,13 @@ fn run(
     run_loop(terminal, app, images, None)
 }
 
+/// The file-list destination and session-only state carried between loops.
+#[derive(Debug)]
+struct HomeRequest {
+    root: PathBuf,
+    searches: RecentSearches,
+}
+
 /// The reader's event loop, shared by the file entry (`run`) and the piped
 /// entry (`run_stdin`). `stream` is the stdin channel when the document is
 /// arriving live; `None` for a file.
@@ -1703,7 +1726,7 @@ fn run_loop(
     mut app: App,
     mut images: Images,
     mut stream: Option<&Receiver<String>>,
-) -> std::io::Result<Option<PathBuf>> {
+) -> std::io::Result<Option<HomeRequest>> {
     let mut keys = Keys::new();
 
     let mut resize = Resize::default();
@@ -1769,8 +1792,8 @@ fn run_loop(
                         break;
                     }
                 }
-                Event::Paste(text) if app.notes.draft.is_some() => {
-                    carrel::annotation_state::paste(&mut app, &text);
+                Event::Paste(text) => {
+                    carrel::app::paste_input(&mut app, &text);
                 }
                 Event::Mouse(m) => match mouse_action(m, &app, &painted.targets, &mut ptr) {
                     Some(action) => {
@@ -1819,7 +1842,10 @@ fn run_loop(
             ptr.forget_geometry();
         }
     }
-    Ok(app.goto_home.take())
+    Ok(app.goto_home.take().map(|root| HomeRequest {
+        root,
+        searches: std::mem::take(&mut app.search_history),
+    }))
 }
 
 /// Drain the stdin channel: one re-parse per wake no matter how many chunks
@@ -1832,21 +1858,41 @@ fn poll_stream(
     images: &mut Images,
     diagrams: &mut Diagrams,
 ) {
-    use std::sync::mpsc::TryRecvError;
+    use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
     let Some(rx) = *stream else { return };
     let mut buf = app.piped.take().unwrap_or_default();
     let mut grew = false;
     let mut done = false;
-    loop {
-        match rx.try_recv() {
+    let before = buf.len();
+    let burst_deadline = Instant::now() + Duration::from_millis(16);
+    // Even a producer that never pauses must give keys and paint a turn.
+    // Bound bytes and tiny chunks separately; unread chunks stay queued.
+    // Coalesce ordinary finite pipes: a briefly empty bounded queue can
+    // mean its producer has not been scheduled yet. After the first chunk,
+    // allow at most one frame for it to refill; an idle pipe never waits.
+    // A generous byte cap balances reparse cost with turns for input.
+    for _ in 0..1024 {
+        let next = match rx.try_recv() {
+            Err(TryRecvError::Empty) if grew => rx
+                .recv_timeout(burst_deadline.saturating_duration_since(Instant::now()))
+                .map_err(|error| match error {
+                    RecvTimeoutError::Timeout => TryRecvError::Empty,
+                    RecvTimeoutError::Disconnected => TryRecvError::Disconnected,
+                }),
+            result => result,
+        };
+        match next {
             Ok(chunk) => {
-                if buf.len() + chunk.len() >= u32::MAX as usize {
+                if buf.len().saturating_add(chunk.len()) >= u32::MAX as usize {
                     app.set_note("stdin exceeds 4 GiB; showing what fits".into());
                     done = true;
                     break;
                 }
                 buf.push_str(&chunk);
                 grew = true;
+                if buf.len() - before >= 8 * 1024 * 1024 {
+                    break;
+                }
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
@@ -1868,18 +1914,12 @@ fn poll_stream(
         images.for_file = None;
         images.initialized = false;
         diagrams.for_file = None;
-        // Following is applied HERE, not in `update()`: the stream is drained
-        // by the event loop, and no action fires when a chunk lands.
-        if app.following {
-            let h = app.text_h();
-            app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
-        }
     }
     if done {
         app.streaming = false;
-        // Nothing left to follow; the lamp says `reading` again.
-        app.following = false;
+        // EOF belongs to the pipe, not a watched file opened from it.
         if app.showing_pipe() {
+            app.following = false;
             app.path = "(stdin)".into();
         }
         *stream = None;
@@ -1889,7 +1929,7 @@ fn poll_stream(
 /// The piped-document reader: the TUI opens immediately and content streams
 /// in. Keys arrive through `/dev/tty` — crossterm's own fallback when stdin
 /// is not a terminal — so this fails cleanly where no tty exists.
-fn run_stdin(rx: &Receiver<String>) -> std::io::Result<Option<PathBuf>> {
+fn run_stdin(rx: &Receiver<String>) -> std::io::Result<Option<HomeRequest>> {
     let theme_note = startup_theme();
     let images = Images::detect();
     let terminal = init_terminal()?;
@@ -2074,7 +2114,7 @@ impl Siblings {
 
     fn tick(&mut self, app: &mut App) {
         let file = match app.file.clone() {
-            Some(f) if !app.is_home() && !app.streaming => f,
+            Some(f) if !app.is_home() => f,
             _ => {
                 self.rx = None;
                 self.watching = None;
@@ -2276,7 +2316,7 @@ fn home_app(root: &Path, note: Option<String>, size: (u16, u16), images: &Images
     app
 }
 
-fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
+fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> std::io::Result<()> {
     let theme_note = startup_theme();
     let note = note.or(theme_note);
     let mut images = Images::detect();
@@ -2286,6 +2326,7 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
 
     let size = terminal.size()?;
     let mut app = home_app(&root, note, (size.width, size.height), &images);
+    app.search_history = searches;
     let mut keys = Keys::new();
     let mut ptr = Pointer::default();
     let mut reloader = Reloader::new();
@@ -2356,12 +2397,8 @@ fn run_home(root: PathBuf, note: Option<String>) -> std::io::Result<()> {
                         break;
                     }
                 }
-                Event::Paste(text) if app.notes.draft.is_some() => {
-                    carrel::annotation_state::paste(&mut app, &text);
-                }
-                // A path pasted or dropped onto the file list opens it.
-                Event::Paste(text) if app.is_home() => {
-                    carrel::app::paste_on_home(&mut app, &text);
+                Event::Paste(text) => {
+                    carrel::app::paste_input(&mut app, &text);
                 }
                 Event::Mouse(m) => match home_mouse_action(m, &app, &painted.targets, &mut ptr) {
                     Some(a) => {
@@ -3183,15 +3220,9 @@ fn paint(
     images: &mut HashMap<BlockIdx, StatefulProtocol>,
 ) -> std::io::Result<()> {
     synchronized(|| {
-        // Bracketed paste belongs to the note editor — pasted newlines must
-        // become text, never the Enter command that saves a note — and to
-        // the file list, where a pasted or dropped path opens that file
-        // instead of being typed at the list as forty commands.
-        if app.notes.draft.is_some() || app.is_home() {
-            ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste)?;
-        } else {
-            ratatui::crossterm::execute!(std::io::stdout(), DisableBracketedPaste)?;
-        }
+        // Always distinguish pasted text from commands, even when no input
+        // is focused. The state layer routes it only to a visible input.
+        ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste)?;
         terminal.draw(|f| {
             render::draw_full(f, app, painted, images);
             render::declare_wide_cells(f);
@@ -3401,6 +3432,66 @@ fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_queued_pipe_batch_leaves_time_for_input_without_losing_text() {
+        for (count, chunk_size) in [(256, 64 * 1024), (2048, 1)] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut expected = String::new();
+            for i in 0..count {
+                let chunk = format!("chunk {i} {}\n", "x".repeat(chunk_size));
+                expected.push_str(&chunk);
+                tx.send(chunk).unwrap();
+            }
+            drop(tx);
+            // Read another file while the background stream accumulates. The
+            // batch limit belongs to ingestion, independent of parse cost.
+            let mut app = App::new("file.md".into(), Document::parse("file"), 80, 24);
+            app.file = Some("file.md".into());
+            app.streaming = true;
+            app.piped = Some(String::new());
+            let mut stream = Some(&rx);
+            let mut images = Images::detect();
+            let mut diagrams = Diagrams::new();
+            poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
+            let received = app.piped.as_ref().unwrap().len();
+            assert!(
+                received > 0 && received < expected.len(),
+                "one heartbeat drained {received} bytes"
+            );
+            assert!(stream.is_some());
+            for _ in 0..100 {
+                poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
+                if stream.is_none() {
+                    break;
+                }
+            }
+            assert!(stream.is_none());
+            assert_eq!(app.piped.as_deref(), Some(expected.as_str()));
+        }
+    }
+
+    #[test]
+    fn a_background_pipe_finishing_does_not_stop_following_a_file() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(tx);
+        let mut app = App::new("file.md".into(), Document::parse("file"), 80, 24);
+        app.file = Some("file.md".into());
+        app.streaming = true;
+        app.piped = Some("background".into());
+        app.following = true;
+        let mut stream = Some(&rx);
+        poll_stream(
+            &mut stream,
+            &mut app,
+            &mut Images::detect(),
+            &mut Diagrams::new(),
+        );
+        assert!(stream.is_none());
+        assert!(!app.streaming);
+        assert!(app.following, "EOF belongs to the background pipe");
+        assert_eq!(app.doc.text, "file\n");
+    }
 
     fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
         MouseEvent {
@@ -4937,3 +5028,6 @@ mod lightbox_pipeline_tests {
         assert!(pipeline.initialized);
     }
 }
+
+#[cfg(test)]
+mod input_sequence_tests;

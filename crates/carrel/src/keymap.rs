@@ -237,7 +237,7 @@ pub const READER_HELP: &[HelpRow] = &[
     ("§", "search", None),
     (
         "/ ?",
-        "search forward / backward",
+        "find text; ↑/↓ past searches",
         Some(Action::SearchOpen(Direction::Forward)),
     ),
     (
@@ -508,6 +508,16 @@ pub const HINT_READING: &[Hint] = &[
 pub const HINT_SEARCH_TYPING: &[Hint] = &[
     hint("enter", "jump", Action::SearchKey(SearchKey::Accept)),
     hint("esc", "cancel", Action::SearchKey(SearchKey::Cancel)),
+    hint(
+        "↑",
+        "older search",
+        Action::SearchKey(SearchKey::Recall(Direction::Backward)),
+    ),
+    hint(
+        "↓",
+        "newer search",
+        Action::SearchKey(SearchKey::Recall(Direction::Forward)),
+    ),
 ];
 pub const HINT_STREAMING: &[Hint] = &[
     hint("↑/↓", "scroll", Action::Scroll(Span::Line, 1)),

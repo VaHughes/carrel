@@ -329,10 +329,9 @@ pub fn global(app: &App) -> Vec<Item> {
         Item::new("Tags", Action::HomeTags),
         Item::new("Focus on one paragraph", Action::FocusToggle),
         Item::new("Auto-read", Action::AutoToggle),
-        // Following pins the view to the end of a document that is still
-        // growing. Nothing is growing here, so the row says so rather than
-        // jumping to the end and claiming to follow it.
-        if app.streaming {
+        // A file is watched for changes, and a live pipe can keep arriving.
+        // A finished pathless document has no source of further updates.
+        if app.can_follow() {
             Item::new("Keep up with the end", Action::FollowToggle)
         } else {
             Item::new("Keep up with the end", Action::FollowToggle).greyed()
@@ -1255,6 +1254,8 @@ mod tests {
         };
         assert!(!row(&a).pickable(), "nothing is growing yet");
         a.streaming = true;
+        a.path = "(stdin)".into();
+        a.piped = Some("body".into());
         assert!(
             row(&a).pickable(),
             "a pipe is open: following means something"

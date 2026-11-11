@@ -1,8 +1,13 @@
 # Status
 
-Last updated: 2026-11-02
+Last updated: 2026-11-11
 
 ## Current state
+
+- **Local build-cache changes retained (2026-11-11):** dev/test builds retain line tables
+  without full symbols or incremental caches; `./scripts/build.sh [--release]` cleans this
+  checkout's `target/` before building when it exceeds 4 GiB (`CARREL_BUILD_CACHE_MIB`
+  overrides). Plain Cargo commands do not run cleanup.
 
 - **Latest release: v2026.10.21** (2026-10-21), the first published by
   `.github/workflows/publish.yml`: crates.io (both crates), the Homebrew tap, COPR
@@ -11,14 +16,13 @@ Last updated: 2026-11-02
   artifacts after `release.yml`'s `--target` hit a 403 (fixed on `main`, unproven until
   the next tag). Its nix build fails one test that assumed `/tmp`; fixed on `main`, so
   the nixpkgs PR should wait for the next release.
-- **Unreleased on `main` (2026-10-31, 2026-11-02):** the GUI-preparation work from
-  Q29/Q33, three known limits cleared, and every known defect fixed — see the first two
-  entries below. The next release is the first with
+- **Unreleased work (2026-10-31 through 2026-11-11):** the GUI-preparation work from
+  Q29/Q33, three known limits cleared, and the reading-input and navigation fixes below. The next release is the first with
   three crates, so it is also the first test of `publish.yml` publishing `carrel-state`
   (not yet on crates.io; the name was free on 2026-10-31).
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
   reader-beside-an-agent slate.
-- All five local gates passed on 2026-11-02: **1,412 tests**, zero-warning clippy,
+- Previous baseline: all five local gates passed on 2026-11-02: **1,412 tests**, zero-warning clippy,
   formatting, architectural discipline and packaging, plus the 1.95 MSRV check.
   `pty.rs::closing_the_terminal_ends_the_reader_without_an_abort` failed intermittently
   under load: a race that exited 1 (fixed 2026-11-02; 0 in 200 stressed runs after, 4 in
@@ -37,10 +41,44 @@ Last updated: 2026-11-02
   heading fragments are numbered GitHub's way (until free). Design record:
   `2026-09-30-reader-beside-an-agent-design.md` in the notes repo.
 - Feature-complete for the terminal reader as planned; the roadmap in `README.md` is the
-  authoritative done/open list. What remains on it is packaging (AUR, nixpkgs, `.deb`)
+  authoritative done/open list. What remains on it is packaging (AUR and nixpkgs)
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-11-11) — **small reading improvements, with no new dependencies or
+  settings.** All five local gates passed: **1,470 tests passed, zero failed, two
+  intentionally ignored**, zero-warning Clippy on Rust 1.97.1 and 1.99.1, formatting,
+  discipline and packaging. All targets also check on Rust 1.95.0 (MSRV) and 1.97.1.
+  Extended runs passed 5,000 generated documents, 2,000 mixed navigation sequences,
+  and 20,000 hostile commit messages. The release build and terminal smoke checks passed.
+  - *Paste into search, help and outline* once per paste; bracketed paste stays on throughout
+    the TUI so pasted newlines and `q` cannot become commands. Inputs preserve whole graphemes
+    at the 256-scalar paste limit and on Backspace; tabs separate words.
+  - *Recent searches* — twenty accepted queries, Up/Down or clickable hints, draft restoration,
+    memory only. Home retains them through direct-file, tutorial and pipe entry routes.
+    Backward search displays `?` and reports wrapping to the end.
+  - *Paths keep their literal meaning* before shell unescaping; joined shell quotes and quoted
+    local file URLs decode without evaluation. Existing spaces, backslashes, quotes and broken
+    symlinks win over a different decoded filename.
+  - *Live edits and Back/Forward keep the paragraph.* Kept places carry the viewport,
+    search Escape destination, selected match and history destinations through insertions.
+    Shared reparse logic retains named folds and bookmarks for files and streams.
+  - *Keep up with watched files* via `F` or the menu. Navigation/selection stops motion;
+    auto-read and keeping up are exclusive. Background pipe EOF affects only the pipe.
+  - *Retained pages* — tutorial, search results and tags keep notes, bookmarks and collapsed
+    sections for Back/Forward. Pipe state stays separate. Home opens interactively from
+    `--tutorial` and piped input instead of exiting or printing a plain list.
+  - *Empty input and terminal sizes* no longer assume a block or screen cell exists. A pipe
+    awaiting text says so. Invalid UTF-8 is decoded iteratively instead of recursively;
+    producer queues and event-loop batches are bounded, with short burst coalescing.
+  - *Git message rendering* now uses the Markdown parser's actual code-span/autolink ranges.
+    A full-suite property run found a numbered continuation beside unmatched backticks
+    turning command hyphens into a dash; the seed and a named regression test are retained.
+  - *Preview and tooling* — reproducible static README screenshot; cache helper preserves
+    Cargo's cleanup marker guard, confines output to the checkout, and has isolated tests.
+    Rust 1.99 Clippy assertions fixed without changing CI pins or suppressing lints.
+
 
 - Unreleased (2026-11-02) — **every known defect fixed**, each test-first and each test
   break-checked against the old behavior, then cold-reviewed by an agent that found two
@@ -343,19 +381,18 @@ decision — do not propose them):
 1. **nixpkgs by-name PR** — `publish.yml` now computes `carrel-package.nix`'s two hashes
    and builds it after each release, so the file on `main` is submittable from the next
    release on. The PR itself (and a nixpkgs maintainer entry) is still the owner's.
-2. **AUR** — recipes stamped and build-tested (`makepkg -f`), blocked on Arch reopening
-   account registration (closed since aurweb v6.5.0 during a supply-chain campaign).
+2. **AUR** — recipes prepared but not published. The AUR RPC returned no `carrel` or
+   `carrel-bin` package on 2026-11-11. Account registration could not be verified through
+   its browser challenge; do not treat the old registration-closure claim as current fact.
 3. **Catalog listings** — drafts in the private notes. awesome-ratatui: ready to submit.
-   Terminal Trove: needs a still PNG screenshot first. awesome-tuis: not before 2027-02-12
+   Terminal Trove: still PNG and reproducible capture are now ready (`assets/screenshot.png`).
+   awesome-tuis: not before 2027-02-12
    (six-month minimum age). awesome-cli-apps: archived, skip.
-4. **`.deb`** — built by `.github/workflows/deb.yml` after each Release run; proven at
-   2026.10.21 (dispatched by hand that time, since the Release run had failed).
-6. **Prove the `release.yml` `--verify-tag` fix** at the next release. Until it has run
+4. **Prove the `release.yml` `--verify-tag` fix** at the next release. Until it has run
    once, do not push to `main` between a tag and its Release run's host job.
-5. **Publishing after the tag is automated** (`.github/workflows/publish.yml`, added
-   2026-10-21): crates.io, the Homebrew tap, nix hashes, the checksum stamp and COPR. It
-   needs three repository secrets — `CARGO_REGISTRY_TOKEN`, `HOMEBREW_TAP_DEPLOY_KEY`,
-   `COPR_CONFIG` — set once from this machine; the COPR token expires 2027-02-12.
+5. **Before the next automated publication** (`.github/workflows/publish.yml`): the
+   existing repository secrets are `CARGO_REGISTRY_TOKEN`, `HOMEBREW_TAP_DEPLOY_KEY` and
+   `COPR_CONFIG`; the COPR token expires 2027-02-12.
    **Before the next tag**, `CARGO_REGISTRY_TOKEN` must be allowed to publish a *new*
    crate (`carrel-state`); a token scoped to the two existing crates publishes core and
    then fails part-way through the release. Checked 2026-11-02: the secret dates from
@@ -383,9 +420,8 @@ planned:
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
-Known defects: none recorded. The last list (found 2026-10-31) was fixed on 2026-11-02;
-see Recently completed. The one item left as a limit then (a place saved before an
-outside edit) was lifted the same day.
+Known defects: the bugs reproduced on 2026-11-11 have fixes and regression coverage;
+all local gates and extended randomized checks passed. See Recently completed.
 
 The Q29/Q33 architecture follow-ups are done (see Recently completed). What a GTK frontend
 would still find: the TUI's `App` is sized in cells and stays in `carrel`, deliberately — a
@@ -394,6 +430,14 @@ state machine over them, dispatching on `Intent` with one explicit arm for what 
 implement. The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
+
+- 2026-11-11: **Improve existing reading gestures before adding another pane.** Search recall,
+  safe paste, stable return positions and Home continuity fit the novice workflow without
+  dependencies, persistent search history, or additional configuration.
+- 2026-11-11: **A background producer is not the displayed document.** Pipe arrival/EOF,
+  watched-file keeping up, and pathless page state use explicit identities.
+- 2026-11-11: **Use the Markdown parser for Markdown boundaries.** A line that resembles
+  an ordered list item does not necessarily interrupt a paragraph or its code span.
 
 - 2026-10-31: **the shared layer is `carrel-state`, and `App` is not in it.** `App` is
   shaped by cells; moving it would have repeated Helix's mistake one crate over. What

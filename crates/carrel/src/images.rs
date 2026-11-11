@@ -154,7 +154,10 @@ mod tests {
     #[test]
     fn no_base_directory_means_no_relative_requests() {
         let doc = Document::parse("![local](pic.png)\n");
-        assert!(local_image_requests(&doc, None).is_empty());
+        assert_eq!(
+            local_image_requests(&doc, None),
+            [] as [(carrel_core::BlockIdx, std::path::PathBuf); 0]
+        );
     }
 
     #[test]

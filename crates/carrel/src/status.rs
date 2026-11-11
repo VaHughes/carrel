@@ -568,7 +568,7 @@ mod tests {
             gone.iter().map(|t| kind(t)).collect::<Vec<_>>(),
             ["min left", "T theme", "tasks", "", "q quit"]
         );
-        assert!(fit(right(&a), 0).is_empty());
+        assert_eq!(fit(right(&a), 0), [] as [crate::status::Chip; 0]);
     }
 
     #[test]
@@ -586,7 +586,10 @@ mod tests {
 
     fn visited(a: &mut App, names: &[&str]) {
         for n in names {
-            a.history.push((PathBuf::from(format!("/r/{n}")), 0));
+            a.history.push((
+                PathBuf::from(format!("/r/{n}")),
+                crate::state::Place::Legacy(0),
+            ));
         }
     }
 
@@ -626,7 +629,7 @@ mod tests {
             [ELLIPSIS],
             "only room to say so"
         );
-        assert!(trail_chips(&a, 2).is_empty());
+        assert_eq!(trail_chips(&a, 2), [] as [crate::status::Chip; 0]);
         assert!(
             trail_chips(&app("x"), 80).is_empty(),
             "no history, no trail"

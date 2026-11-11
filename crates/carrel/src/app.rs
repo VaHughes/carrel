@@ -16,6 +16,7 @@ use crate::home::{Home, HomeMode};
 use crate::layout::Layout;
 use crate::math_art::{self, MathBox};
 use crate::scan::Entry;
+use crate::state::Place;
 use crate::view::ViewState;
 
 /// What the event loop must do after a transition.
@@ -340,23 +341,66 @@ pub struct Sibling {
     pub more: u32,
 }
 
-/// A generated document the reader can come back to: search results, the
-/// tags page.
-///
-/// Both are for browsing — open a document, come back, open the next — so
-/// the source is kept and `Back` returns to it, with the sections the reader
-/// had expanded still expanded. Collapse state is heading ids, and the same
-/// source parses to the same ids.
+/// A generated document the reader can come back to: search results, tags,
+/// or the tutorial. Source, annotations, bookmarks, and collapsed sections
+/// stay in memory for Back/Forward. The source is unchanged, so its byte
+/// positions and node IDs remain valid when parsed again.
 ///
 /// (Search results used to be "a desk, not a place": following a hit pushed
 /// no history, so the only way back to the results was to search again. The
 /// tags page showed what that costs, and what it takes to fix.)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Desk {
     pub root: PathBuf,
     pub label: String,
     pub src: String,
     pub folded: std::collections::HashSet<carrel_core::NodeId>,
+    pub folded_details: std::collections::BTreeSet<u32>,
+    pub marks: Vec<u32>,
+    pub notes: Vec<crate::marginalia::Annotation>,
+}
+
+/// Session-only search history. Nothing typed here is written to disk.
+#[derive(Debug, Default)]
+pub struct RecentSearches {
+    entries: Vec<String>,
+    browsing: Option<(usize, String)>,
+}
+
+impl RecentSearches {
+    fn record(&mut self, input: &str) {
+        self.browsing = None;
+        if input.trim().is_empty() || input.len() > 4096 {
+            return;
+        }
+        self.entries.retain(|entry| entry != input);
+        self.entries.push(input.to_owned());
+        if self.entries.len() > 20 {
+            self.entries.remove(0);
+        }
+    }
+
+    fn recall(&mut self, input: &mut String, direction: Direction) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+        match (&mut self.browsing, direction) {
+            (None, Direction::Backward) => {
+                self.browsing = Some((self.entries.len() - 1, input.clone()));
+            }
+            (Some((index, _)), Direction::Backward) if *index > 0 => *index -= 1,
+            (Some((index, _)), Direction::Forward) if *index + 1 < self.entries.len() => {
+                *index += 1;
+            }
+            (Some(_), Direction::Forward) => {
+                *input = self.browsing.take().expect("browsing history").1;
+                return true;
+            }
+            _ => return false,
+        }
+        input.clone_from(&self.entries[self.browsing.as_ref().expect("browsing history").0]);
+        true
+    }
 }
 
 // Four independent on/off facts (rendered blocks, card view, hints,
@@ -367,6 +411,8 @@ pub struct App {
     pub screen: Screen,
     pub doc: Document,
     pub matches: Option<Matches>,
+    /// Moved between reader and home entry loops; never persisted.
+    pub search_history: RecentSearches,
     pub layout: Layout,
     pub view: ViewState,
     pub mode: Mode,
@@ -375,8 +421,8 @@ pub struct App {
     /// real file is opened — and `None` for a piped document, which is what
     /// keeps the reloader and position persistence inert in pager mode.
     pub file: Option<PathBuf>,
-    /// A stdin stream is still arriving. Presentation only: the footer lamp
-    /// and the path label read it; nothing else may.
+    /// The background stdin producer is still open, even on another page.
+    /// Use `is_live_pipe()` for behavior of the document currently shown.
     pub streaming: bool,
     /// The backlinks pane, while it is open. `None` means closed; the rows
     /// stream in from `links.rs` and the event loop appends them.
@@ -448,21 +494,23 @@ pub struct App {
     /// it after following a link out — a pipe has no path to re-read.
     pub piped: Option<String>,
     pub piped_notes: Vec<crate::marginalia::Annotation>,
+    piped_marks: Vec<crate::state::Place>,
+    piped_folds: Vec<String>,
     /// Folded heading ids. Doc-space and width-independent, so fold state
-    /// cannot be invalidated by reflow, by construction. Cleared on reload —
-    /// the ids indexed the old parse (the selection precedent).
+    /// cannot be invalidated by reflow, by construction. Reload carries the
+    /// named folds to new IDs rather than reusing IDs from the old parse.
     pub folded: std::collections::HashSet<carrel_core::NodeId>,
     /// Folded `<details>` regions, by index into `doc.details`. The same
-    /// currency and the same clearing rule as `folded`: doc bytes under the
-    /// hood, gone when the document is re-parsed.
+    /// currency as `folded`; reload restores them by their summary keys.
     pub folded_details: std::collections::BTreeSet<u32>,
-    /// Where we came from: `(file, anchor)` pairs. `Ctrl-O` pops.
+    /// Where we came from: `(document, kept place)` pairs. `Ctrl-O` pops.
+    /// A place follows its paragraph through edits, including while away.
     ///
     /// Capped, like every other remembered list here — auto-repeat on `%` or
     /// Tab+Enter reaches thousands of entries in seconds, and this was the
     /// only structure in the state layer that grew without a bound or a
     /// sentence saying why it need not.
-    pub history: Vec<(PathBuf, u32)>,
+    pub history: Vec<(PathBuf, Place)>,
     /// The link `Tab` has selected, if any.
     pub selected_link: Option<LinkId>,
     /// Pixel dimensions of decoded images, by block. Plain numbers — the
@@ -563,7 +611,7 @@ pub struct App {
     /// Where `Back` came from, newest last: what `Forward` returns to. Any
     /// new departure empties it — the branch you did not take is gone, as in
     /// every browser.
-    pub future: Vec<(PathBuf, u32)>,
+    pub future: Vec<(PathBuf, Place)>,
     /// Where reading positions persist. Same contract as `config_dir`:
     /// `None` in every constructor, set by the BINARY at startup, so no test
     /// can ever write the real state file.
@@ -1006,6 +1054,7 @@ impl App {
             screen: Screen::Reader,
             doc,
             matches: None,
+            search_history: RecentSearches::default(),
             layout,
             view: ViewState::new(),
             mode: Mode::Normal,
@@ -1025,6 +1074,8 @@ impl App {
             code_focus: None,
             piped: None,
             piped_notes: Vec::new(),
+            piped_marks: Vec::new(),
+            piped_folds: Vec::new(),
             breadcrumb: true,
             has_headings,
             folded: std::collections::HashSet::new(),
@@ -1223,6 +1274,9 @@ impl App {
     /// Each bookmark as its block's content hash, which same-content block
     /// it is (the `k`th, for a repeated line), and its place as a fallback.
     fn mark_carriers(&self) -> Vec<(u64, usize, crate::state::Place)> {
+        if self.marks.is_empty() {
+            return Vec::new();
+        }
         let hashes = block_hashes(&self.doc);
         self.marks
             .iter()
@@ -1239,7 +1293,7 @@ impl App {
     /// content; a block that is gone keeps its mark at its old place, snapped
     /// to whatever block is there now.
     fn carry_marks(&mut self, carriers: &[(u64, usize, crate::state::Place)]) {
-        if self.doc.block_count() == 0 {
+        if carriers.is_empty() || self.doc.block_count() == 0 {
             self.marks.clear();
             return;
         }
@@ -1307,7 +1361,7 @@ impl App {
         // change on the reloader's first look rather than being missed.
         let loaded = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let src = read_document(path)?;
-        self.stash_piped_notes();
+        self.stash_pathless_state();
         // A `.md` file is never sniffed; `.diff`/`.patch` always are. Set
         // before parsing, because `parse_adapting` reads it.
         self.diff_ok = self.diff_forced.unwrap_or_else(|| {
@@ -1373,7 +1427,7 @@ impl App {
             root: root.to_path_buf(),
             label: format!("search: {query}"),
             src: crate::grep::render_results(root, query, hits),
-            folded: std::collections::HashSet::new(),
+            ..Desk::default()
         });
     }
 
@@ -1389,7 +1443,7 @@ impl App {
             root: root.to_path_buf(),
             label: "tags".into(),
             src: crate::tags::render(root, index),
-            folded: std::collections::HashSet::new(),
+            ..Desk::default()
         });
         if self.layout.total_rows() > u32::from(self.text_h()) {
             self.folded = self
@@ -1407,15 +1461,17 @@ impl App {
     /// opened twice is one desk, so asking for tags again and again does not
     /// keep a copy per asking.
     fn open_desk(&mut self, desk: Desk) {
-        self.open_generated(&desk.root, desk.label.clone(), &desk.src);
-        let at = self
+        if let Some(i) = self
             .desks
             .iter()
-            .position(|d| d.label == desk.label && d.root == desk.root && d.src == desk.src);
-        self.on_desk = Some(at.unwrap_or_else(|| {
-            self.desks.push(desk);
-            self.desks.len() - 1
-        }));
+            .position(|d| d.label == desk.label && d.root == desk.root && d.src == desk.src)
+        {
+            self.reopen_desk(i, Place::Legacy(0));
+            return;
+        }
+        self.open_generated(&desk.root, desk.label.clone(), &desk.src);
+        self.desks.push(desk);
+        self.on_desk = Some(self.desks.len() - 1);
     }
 
     /// Would asking for the tags page read anything? The one predicate
@@ -1484,13 +1540,16 @@ impl App {
     /// which document this is.
     #[must_use]
     pub fn location_path(&self) -> Option<PathBuf> {
+        if self.is_home() {
+            return None;
+        }
         if let Some(file) = &self.file {
             return Some(file.clone());
         }
         if let Some(i) = self.on_desk {
             return Some(desk_entry(i));
         }
-        self.piped.is_some().then(|| PathBuf::from("(stdin)"))
+        self.showing_pipe().then(|| PathBuf::from("(stdin)"))
     }
 
     /// What closes the pane that is up, exactly as its own key would: the
@@ -1601,36 +1660,28 @@ impl App {
         self.task_counts
     }
 
-    /// Where the reader is, as a history entry — and the ONE thing every
-    /// departure asks before it leaves.
-    ///
-    /// A file is its path; a desk is its sentinel, with the sections that are
-    /// expanded right now remembered for the return (asked before the open,
-    /// because opening clears them); a pipe is `(stdin)`. `None` for a
-    /// document with nothing to come back to.
-    fn location(&mut self) -> Option<(PathBuf, u32)> {
-        let anchor = self.view.anchor;
-        if let Some(file) = self.file.clone() {
-            return Some((file, anchor));
-        }
-        if let Some(i) = self.on_desk
-            && let Some(desk) = self.desks.get_mut(i)
-        {
-            desk.folded.clone_from(&self.folded);
-            return Some((desk_entry(i), anchor));
-        }
-        self.piped
-            .is_some()
-            .then(|| (PathBuf::from("(stdin)"), anchor))
+    /// Where the reader is, as a history entry. Every departure uses the
+    /// same identity: a file, a retained page, or the pipe currently shown.
+    fn location(&self) -> Option<(PathBuf, Place)> {
+        self.location_path()
+            .map(|path| (path, Place::kept(&self.doc, DocByte(self.view.anchor))))
     }
 
-    /// A pipe's notes live only in memory, so they are put aside whenever
-    /// the pipe leaves the screen — for a file, a generated page or the
-    /// welcome page alike — and only then: the notes of a page opened FROM
-    /// the pipe are not the pipe's.
-    fn stash_piped_notes(&mut self) {
+    /// Pathless documents keep reading state in this session, never on disk.
+    /// A pipe may grow while away, so its marks and folds use stable places
+    /// and names; a retained generated page has exactly the same source.
+    fn stash_pathless_state(&mut self) {
         if self.showing_pipe() {
             self.piped_notes.clone_from(&self.notes.entries);
+            self.piped_marks = self.mark_places();
+            self.piped_folds = self.fold_keys();
+        } else if let Some(i) = self.on_desk
+            && let Some(desk) = self.desks.get_mut(i)
+        {
+            desk.notes.clone_from(&self.notes.entries);
+            desk.marks.clone_from(&self.marks);
+            desk.folded.clone_from(&self.folded);
+            desk.folded_details.clone_from(&self.folded_details);
         }
     }
 
@@ -1645,8 +1696,15 @@ impl App {
             && self.path.starts_with("(stdin")
     }
 
+    /// Whether the document on screen is the still-arriving stdin stream.
+    #[must_use]
+    pub fn is_live_pipe(&self) -> bool {
+        self.streaming && self.showing_pipe()
+    }
+
     /// Come back to a [`Desk`] the trail left behind, as it was left.
-    fn reopen_desk(&mut self, i: usize, anchor: u32) -> bool {
+    fn reopen_desk(&mut self, i: usize, place: Place) -> bool {
+        self.stash_pathless_state();
         let Some(desk) = self.desks.get(i).cloned() else {
             return false;
         };
@@ -1655,11 +1713,11 @@ impl App {
         // The same source is the same parse, so the ids still name the same
         // headings — and the byte still names the same row.
         self.folded = desk.folded;
+        self.folded_details = desk.folded_details;
+        self.marks = desk.marks;
+        self.notes.entries = desk.notes;
         self.relayout();
-        let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
-        self.view.anchor = anchor.min(last);
-        let h = self.text_h();
-        self.view.restore(&self.doc, &self.layout, h);
+        self.land_on(place.resolve(&self.doc).0, self.text_h());
         true
     }
 
@@ -1667,13 +1725,15 @@ impl App {
     /// links resolve against `root`.
     fn open_generated(&mut self, root: &Path, label: String, src: &str) {
         self.save_position();
-        self.stash_piped_notes();
+        self.stash_pathless_state();
+        self.following = false;
+        self.auto_read = false;
         // Generated markdown, never sniffed as a diff: it is already one.
         self.diff_ok = false;
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
-        // A generated page has no bookmarks of its own, and must not show
-        // the ones of the file it was opened from.
+        // Start with no bookmarks from the outgoing page. A retained desk
+        // restores its own after this fresh parse.
         self.marks.clear();
         self.mtime = None;
         self.matches = None;
@@ -1703,39 +1763,18 @@ impl App {
         self.find_dead_links();
     }
 
-    /// Open the built-in first document.
-    ///
-    /// Pathless, exactly like [`Self::open_results`] and a pipe: no position
-    /// persists against it, no reloader watches it, and `q` returns to the
-    /// file list rather than to a place on disk. Carrel is a reader, so the
-    /// honest way to explain it is to hand the reader something to read.
+    /// Open the built-in guide as a retained page, like search results.
+    /// No file is watched or changed; heading jumps can return within it,
+    /// and the caller can leave a history entry for the previous document.
     pub fn open_welcome(&mut self) {
-        self.save_position();
-        self.stash_piped_notes();
-        self.diff_ok = false;
-        self.table_offsets.clear();
-        self.doc = self.parse_adapting(WELCOME);
-        self.mtime = None;
-        self.matches = None;
-        self.forward = None;
-        self.mode = Mode::Normal;
-        self.view = ViewState::new();
-        self.path = "how carrel works".into();
-        self.file = None;
-        self.on_desk = None;
-        self.notes = crate::annotation_state::Notes::default();
-        self.results_root = None;
-        self.forget_derived_state();
-        self.backlinks = None;
-        self.mark_list = None;
-        self.marks.clear();
-        self.rebuild_math_art();
-        self.words = word_count(&self.doc.text);
-        self.has_headings = true;
-        self.lay_out_new_document();
-        if let Screen::Home(h) = std::mem::replace(&mut self.screen, Screen::Reader) {
-            self.home_stash = Some(h);
-        }
+        self.open_desk(Desk {
+            // The built-in guide has no relative links and one identity,
+            // regardless of which file's folder it was opened from.
+            root: PathBuf::from("."),
+            label: "how carrel works".into(),
+            src: WELCOME.into(),
+            ..Desk::default()
+        });
     }
 
     /// Does following this link leave the library?
@@ -1778,7 +1817,7 @@ impl App {
     /// Remember where we came from, dropping the oldest when the trail gets
     /// long. Going back a few hundred documents is a trail; going back ten
     /// thousand is a leak.
-    fn push_history(&mut self, from: PathBuf, anchor: u32) {
+    fn push_history(&mut self, from: PathBuf, anchor: Place) {
         const HISTORY_CAP: usize = 256;
         // A new departure: the way forward that `Back` left is gone.
         self.future.clear();
@@ -1807,8 +1846,10 @@ impl App {
     /// every other destination. Back used to land inside a collapsed
     /// section: the top of a document with the place it meant at no height.
     fn land_on(&mut self, anchor: u32, h: u16) {
+        self.following = false;
+        self.auto_read = false;
         let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
-        let anchor = anchor.min(last);
+        let anchor = self.doc.text.floor_char_boundary(anchor.min(last) as usize) as u32;
         if self.unfold_to(anchor) {
             self.relayout();
         }
@@ -1877,6 +1918,8 @@ impl App {
     /// document — a context menu's rows carry its byte offsets, a note
     /// draft is anchored in its text, the search prompt searches it.
     fn close_document_panes(&mut self) {
+        self.following = false;
+        self.auto_read = false;
         self.info = false;
         self.info_scroll = 0;
         self.forward = None;
@@ -1917,9 +1960,10 @@ impl App {
     /// Re-read the open file in place: same document identity, new content.
     ///
     /// What survives, and why it can: the anchor is a doc byte, so an append
-    /// — the agent-writing-a-log case — moves nothing at all, and a rewrite
-    /// clamps; the search re-runs from the pattern `Matches` kept for
-    /// exactly this; history and the stashed home screen are untouched. The
+    /// — the agent-writing-a-log case — moves nothing at all. A rewrite
+    /// follows an unchanged paragraph by content and otherwise resolves its
+    /// old source place within the new text. Search re-runs its kept pattern;
+    /// history and the stashed home screen are untouched. The
     /// selection clears — its bytes indexed the old text. On error (a
     /// vanished file) the last good parse stays on screen; the caller notes.
     pub fn reload(&mut self) -> std::io::Result<()> {
@@ -1935,21 +1979,7 @@ impl App {
             .change_base
             .take()
             .unwrap_or_else(|| block_census(&self.doc));
-        // A reload used to expand everything: collapse state is node ids,
-        // and the ids belong to the parse being replaced. So an agent
-        // appending a line to a long plan threw open every section the
-        // reader had closed. Carried across by name instead.
-        let folds = self.fold_keys();
-        // Bookmarks are doc bytes of the parse being replaced, and the file
-        // was edited, so no coordinate survives: a paragraph inserted above
-        // moves every source and display byte after it. Carried by content
-        // instead (`carry_marks`), the way `mark_changes` tells blocks apart.
-        let marks = self.mark_carriers();
         self.reload_from(&src);
-        self.carry_marks(&marks);
-        if self.apply_fold_keys(&folds) {
-            self.relayout();
-        }
         self.mark_changes(base.clone());
         self.change_base = Some(base);
         self.note = Some(match self.changed.len() {
@@ -1998,6 +2028,24 @@ impl App {
     /// re-read — a piped stream re-parses through here on every append.
     /// Sets no note: one reload is an event, a stream of them is weather.
     pub fn reload_from(&mut self, src: &str) {
+        // A new parse has new byte positions and node IDs. Carry the
+        // reading context by content/name, as saved positions already do.
+        // This is shared by file reloads and arriving chunks of a pipe.
+        let place = crate::state::Place::kept(&self.doc, DocByte(self.view.anchor));
+        let search_place = match self.mode {
+            Mode::Search { saved, .. } => {
+                Some(crate::state::Place::kept(&self.doc, DocByte(saved)))
+            }
+            Mode::Normal => None,
+        };
+        let current_place = self.matches.as_ref().and_then(|matches| {
+            matches
+                .current
+                .and_then(|i| matches.ranges.get(i))
+                .map(|range| crate::state::Place::kept(&self.doc, DocByte(range.start)))
+        });
+        let folds = self.fold_keys();
+        let marks = self.mark_carriers();
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
         crate::annotation_state::reanchor(self);
@@ -2017,17 +2065,28 @@ impl App {
                 f.selected = f.selected.min(f.rows.len().saturating_sub(1));
             }
         }
-        // Clamp first: the relayout restores the view, and the anchor it
-        // restores to must be a byte this parse has.
-        let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
-        self.view.anchor = self.view.anchor.min(last);
+        // Resolve before laying out: unchanged paragraphs follow edits
+        // above them; removed text falls back to a valid source position.
+        self.view.anchor = place.resolve(&self.doc).0;
+        if let (Mode::Search { saved, .. }, Some(place)) = (&mut self.mode, search_place) {
+            *saved = place.resolve(&self.doc).0;
+        }
+        self.carry_marks(&marks);
+        if self.marks.is_empty() {
+            self.mark_list = None;
+        }
+        self.apply_fold_keys(&folds);
         self.lay_out_new_document();
         if let Some(old) = self.matches.take() {
             let mut m = search(&self.doc, &old.pattern, old.flexible_ws);
-            m.current = old
-                .current
-                .map(|i| i.min(m.ranges.len().saturating_sub(1)))
-                .filter(|_| !m.ranges.is_empty());
+            m.current = current_place.and_then(|place| {
+                let byte = place.resolve(&self.doc).0;
+                m.ranges
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, range)| range.start.abs_diff(byte))
+                    .map(|(i, _)| i)
+            });
             self.matches = Some(m);
         }
         if let Some(o) = self.outline.as_mut() {
@@ -2035,6 +2094,10 @@ impl App {
         }
         self.resolve_wikilinks();
         self.find_dead_links();
+        if self.following {
+            self.view
+                .scroll_to(&self.doc, &self.layout, u32::MAX, self.text_h());
+        }
     }
 
     /// The directory links resolve against: the document's own, the searched
@@ -2339,7 +2402,7 @@ impl App {
         /// unknown, not dead.
         const MAX: usize = 2000;
         self.dead_links.clear();
-        if self.streaming {
+        if self.is_live_pipe() {
             return;
         }
         // Asked once, not once per link: a table of contents is hundreds of
@@ -2838,6 +2901,13 @@ impl App {
         } else {
             row.clone()
         }
+    }
+
+    /// A watched file or a live pipe can receive more text. A finished
+    /// pathless document has no source of updates to follow.
+    #[must_use]
+    pub fn can_follow(&self) -> bool {
+        !self.is_home() && (self.is_live_pipe() || self.file.is_some())
     }
 
     #[must_use]
@@ -3610,6 +3680,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
 fn settings_action(app: &mut App, action: Action) -> Option<Outcome> {
     match action {
         Action::WelcomeOpen => {
+            app.push_here();
             app.open_welcome();
             return Some(Outcome::Redraw);
         }
@@ -3754,6 +3825,94 @@ fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
     Outcome::Redraw
 }
 
+/// Deliver a paste to the visible text input as one edit. Pasted newlines
+/// never act as Enter, and text pasted over the page never becomes commands.
+/// Search and filters take one line; the note editor owns multiline text.
+pub fn paste_input(app: &mut App, text: &str) -> Outcome {
+    if app.blocked_pane().is_some() {
+        return Outcome::Idle;
+    }
+    if app.notes.draft.is_some() {
+        crate::annotation_state::paste(app, text);
+        return Outcome::Redraw;
+    }
+    if app.is_home() {
+        return paste_on_home(app, text);
+    }
+    paste_filter_input(app, text)
+}
+
+/// Single-line inputs have an implicit cursor at the end. Match the note
+/// editor: one Backspace removes one grapheme, including its combining marks.
+fn backspace_grapheme(input: &mut String) {
+    use unicode_segmentation::UnicodeSegmentation;
+    if let Some((start, _)) = input.grapheme_indices(true).next_back() {
+        input.truncate(start);
+    }
+}
+
+fn pasted_line(text: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    const LIMIT: usize = 256;
+    // One extra scalar tells us whether the last character joins the limit
+    // boundary. Keep work bounded even for a huge paste of combining marks.
+    let clean: String = text
+        .split(['\n', '\r'])
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .take(LIMIT + 1)
+        .collect();
+    let mut used = 0;
+    clean
+        .graphemes(true)
+        .take_while(|g| {
+            used += g.chars().count();
+            used <= LIMIT
+        })
+        .collect()
+}
+
+fn paste_filter_input(app: &mut App, text: &str) -> Outcome {
+    let pane = app.pane();
+    if !matches!(pane, Some(Pane::Search | Pane::Help | Pane::Outline)) {
+        return Outcome::Idle;
+    }
+    let typed = pasted_line(text);
+    let Some(last) = typed.chars().last() else {
+        return Outcome::Idle;
+    };
+    let head = &typed[..typed.len() - last.len_utf8()];
+    let action = match pane {
+        Some(Pane::Search) => {
+            if let Mode::Search { input, .. } = &mut app.mode {
+                input.push_str(head);
+            }
+            Action::SearchKey(SearchKey::Char(last))
+        }
+        Some(Pane::Help) => {
+            app.help
+                .as_mut()
+                .expect("visible help")
+                .filter
+                .push_str(head);
+            Action::HelpKey(SearchKey::Char(last))
+        }
+        Some(Pane::Outline) => {
+            app.outline
+                .as_mut()
+                .expect("visible outline")
+                .filter
+                .push_str(head);
+            Action::OutlineKey(SearchKey::Char(last))
+        }
+        _ => return Outcome::Idle,
+    };
+    update(app, action)
+}
+
 /// Text pasted, or a file dropped, onto the file list.
 ///
 /// Where the list is taking typing — the filter, the search, the folder
@@ -3766,10 +3925,7 @@ pub fn paste_on_home(app: &mut App, text: &str) -> Outcome {
         return Outcome::Idle;
     }
     if app.help.is_some() {
-        for c in text.chars().filter(|c| !c.is_control()) {
-            update(app, Action::HelpKey(SearchKey::Char(c)));
-        }
-        return Outcome::Redraw;
+        return paste_filter_input(app, text);
     }
     let Some(home) = app.home() else {
         return Outcome::Idle;
@@ -3780,15 +3936,7 @@ pub fn paste_on_home(app: &mut App, text: &str) -> Outcome {
         // of a large folder froze the screen for a quarter of a minute with
         // `Esc` queued behind it. The first line, and no more of it than a
         // name could be.
-        const TYPED_MAX: usize = 256;
-        let typed: String = text
-            .split(['\n', '\r'])
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or_default()
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(TYPED_MAX)
-            .collect();
+        let typed = pasted_line(text);
         let Some(last) = typed.chars().last() else {
             return Outcome::Idle;
         };
@@ -3888,6 +4036,9 @@ fn request_tags(app: &mut App, focus: Option<String>) -> Outcome {
 /// The tag written at `byte`: an inline `#tag` in the body, or one on the
 /// open document's metadata card.
 fn tag_at(app: &App, byte: u32) -> Option<String> {
+    if app.doc.block_count() == 0 {
+        return None;
+    }
     if let Some(tag) = app.doc.tag_at(byte) {
         return Some(tag.to_string());
     }
@@ -3939,6 +4090,19 @@ fn open_ready_tags(app: &mut App) -> Outcome {
     if let Some(tag) = focus {
         app.focus_tag(&index, &tag);
     }
+    Outcome::Redraw
+}
+
+fn auto_read_toggle(app: &mut App) -> Outcome {
+    app.auto_read = !app.auto_read;
+    if app.auto_read {
+        app.following = false;
+    }
+    app.note = Some(if app.auto_read {
+        "auto-read on — scroll to stop it".into()
+    } else {
+        "auto-read off".into()
+    });
     Outcome::Redraw
 }
 
@@ -4055,15 +4219,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
                 app.focus = !app.focus;
                 return Outcome::Redraw;
             }
-            Action::AutoToggle => {
-                app.auto_read = !app.auto_read;
-                app.note = Some(if app.auto_read {
-                    "auto-read on — scroll to stop it".into()
-                } else {
-                    "auto-read off".into()
-                });
-                return Outcome::Redraw;
-            }
+            Action::AutoToggle => return auto_read_toggle(app),
             _ => {}
         }
     }
@@ -4295,11 +4451,11 @@ fn help_update(app: &mut App, action: Action) -> Outcome {
             }
             SearchKey::Backspace => {
                 if let Some(h) = app.help.as_mut() {
-                    h.filter.pop();
+                    backspace_grapheme(&mut h.filter);
                 }
                 Outcome::Redraw
             }
-            SearchKey::Accept => Outcome::Idle,
+            SearchKey::Accept | SearchKey::Recall(_) => Outcome::Idle,
             // Two-stage escape, the filter's shape: clear the filter first,
             // close the sheet only when there is nothing left to clear.
             SearchKey::Cancel => {
@@ -4413,6 +4569,7 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
         }
         Action::OutlineKey(k) => {
             match k {
+                SearchKey::Recall(_) => return Outcome::Idle,
                 SearchKey::Char(c) => {
                     if let Some(o) = app.outline.as_mut() {
                         o.filter.push(c);
@@ -4420,7 +4577,7 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
                 }
                 SearchKey::Backspace => {
                     if let Some(o) = app.outline.as_mut() {
-                        o.filter.pop();
+                        backspace_grapheme(&mut o.filter);
                     }
                 }
                 SearchKey::Accept => return outline_update(app, Action::OutlineJump),
@@ -4467,6 +4624,8 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Idle;
             };
             app.outline = None;
+            app.following = false;
+            app.auto_read = false;
             // A jump is a link follow in spirit: Ctrl-O comes back.
             app.push_here();
             let byte = app.doc.node_for_block(block).doc.start;
@@ -4780,12 +4939,12 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                     h.grep_done = false;
                 }
                 SearchKey::Backspace => {
-                    h.query.pop();
+                    backspace_grapheme(&mut h.query);
                     h.hits.clear();
                     h.hit_selected = 0;
                     h.grep_done = false;
                 }
-                SearchKey::Accept => return Outcome::Idle,
+                SearchKey::Accept | SearchKey::Recall(_) => return Outcome::Idle,
                 // Two-stage escape, same as the filter.
                 SearchKey::Cancel => {
                     if h.query.is_empty() {
@@ -4860,9 +5019,9 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                         }
                         return Outcome::Redraw;
                     }
-                    h.picker.typed.pop();
+                    backspace_grapheme(&mut h.picker.typed);
                 }
-                SearchKey::Accept => return Outcome::Idle,
+                SearchKey::Accept | SearchKey::Recall(_) => return Outcome::Idle,
                 // Two-stage escape, the same shape as the filter's: clear the
                 // filter first, close the picker only when there is nothing
                 // left to clear.
@@ -4898,10 +5057,10 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                     h.refilter();
                 }
                 SearchKey::Backspace => {
-                    h.filter.pop();
+                    backspace_grapheme(&mut h.filter);
                     h.refilter();
                 }
-                SearchKey::Accept => return Outcome::Idle,
+                SearchKey::Accept | SearchKey::Recall(_) => return Outcome::Idle,
                 SearchKey::Cancel => {
                     // Two-stage escape: clear the filter first, change mode only
                     // when there is nothing left to clear.
@@ -4926,6 +5085,36 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         return outcome;
     }
     let h = app.text_h();
+    // Explicit navigation or selection gives the viewport back to the
+    // reader. Downward scrolling and GoToEnd keep their follow semantics;
+    // layout/resize restoration never passes through this intent guard.
+    if matches!(
+        action,
+        Action::GoToStart
+            | Action::GoToRow(_)
+            | Action::ScrollTo(_)
+            | Action::BlockStep(_)
+            | Action::Recenter(_)
+            | Action::SearchOpen(_)
+            | Action::MatchStep(_)
+            | Action::LinkStep(_)
+            | Action::CrumbJump(_)
+            | Action::OutlineJumpTo(_)
+            | Action::MarkNext
+            | Action::MarkListJump
+            | Action::FootnoteJump
+            | Action::FootnoteJumpAt(_)
+            | Action::CodeStep(_)
+            | Action::ChangeStep(_)
+            | Action::TaskOpen
+            | Action::TaskStep(_)
+            | Action::SelectAnchor(_)
+            | Action::SelectWord(_)
+            | Action::SelectBlock(_)
+    ) {
+        app.following = false;
+        app.auto_read = false;
+    }
     // Notes are one-shot: whatever happens next replaces or clears them.
     app.note = None;
     match action {
@@ -5082,6 +5271,9 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
         Action::SelectBlock(byte) => {
+            if app.doc.block_count() == 0 {
+                return Outcome::Idle;
+            }
             let node = app.doc.node_for_block(app.doc.block_at_doc(DocByte(byte)));
             app.selection = (!node.doc.is_empty()).then(|| node.doc.clone());
             Outcome::Redraw
@@ -5093,6 +5285,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         Action::LinkFollow => {
             let block = app.layout.block_at_row(app.view.scroll_row);
             if app.selected_link.is_none()
+                && block.get() < app.doc.block_count()
                 && matches!(
                     app.doc.node_for_block(block).kind,
                     carrel_core::NodeKind::Image { .. }
@@ -5134,6 +5327,10 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         // raw scroll offset: `zz` and a resize both move the offset, and a
         // mark that drifted off the thing it marked would be useless.
         Action::MarkToggle => {
+            if app.doc.block_count() == 0 {
+                app.note = Some("nothing here to bookmark".into());
+                return Outcome::Redraw;
+            }
             let block = app.layout.block_at_row(app.view.scroll_row);
             let at = app.doc.node_for_block(block).doc.start;
             if let Some(i) = app.marks.iter().position(|&m| m == at) {
@@ -5370,6 +5567,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::OutlineJumpTo(b) => {
+            if b.get() >= app.doc.block_count()
+                || !matches!(app.doc.node_for_block(b).kind, NodeKind::Heading { .. })
+            {
+                return Outcome::Idle;
+            }
             app.push_here();
             let byte = app.doc.node_for_block(b).doc.start;
             app.reveal_byte(byte, h, Where::Top);
@@ -5377,8 +5579,13 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::FollowToggle => {
+            if !app.following && !app.can_follow() {
+                app.note = Some("nothing is still arriving".into());
+                return Outcome::Redraw;
+            }
             app.following = !app.following;
             if app.following {
+                app.auto_read = false;
                 app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
                 app.note = Some("keeping up with the end".into());
             } else {
@@ -5581,7 +5788,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             app.auto_read = false;
             // `G` on a document that is still being written means "and keep
             // me there" — the one place following turns itself on.
-            if app.streaming {
+            if app.is_live_pipe() {
                 app.following = true;
             }
             app.view.scroll_to(&app.doc, &app.layout, u32::MAX, h);
@@ -5619,6 +5826,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         }
 
         Action::SearchOpen(dir) => {
+            app.search_history.browsing = None;
             app.mode = Mode::Search {
                 input: String::new(),
                 dir,
@@ -5653,7 +5861,14 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                         back != 0 && i < back
                     };
                     if wrapped {
-                        app.note = Some("wrapped round to the start".into());
+                        app.note = Some(
+                            if n >= 0 {
+                                "wrapped round to the start"
+                            } else {
+                                "wrapped round to the end"
+                            }
+                            .into(),
+                        );
                     }
                     (i + step) % len
                 }
@@ -5806,17 +6021,17 @@ fn footnote_jump_at(app: &mut App, byte: u32, h: u16) -> Outcome {
 }
 
 fn footnote_jump(app: &mut App, h: u16) -> Outcome {
-    let byte = app
-        .doc
-        .node_for_block(app.layout.block_at_row(app.view.scroll_row))
-        .doc
-        .start;
     let refs = app.doc.footnote_refs();
     let defs = app.doc.footnote_defs();
     if refs.is_empty() {
         app.note = Some("no footnotes in this document".into());
         return Outcome::Redraw;
     }
+    let byte = app
+        .doc
+        .node_for_block(app.layout.block_at_row(app.view.scroll_row))
+        .doc
+        .start;
     let mut marks: Vec<(u32, bool, &str)> = refs
         .iter()
         .map(|(n, at)| (*at, false, n.as_ref()))
@@ -5993,44 +6208,58 @@ fn go_back_to(app: &mut App, index: usize, h: u16) -> Outcome {
 }
 
 /// Go to a history entry. Says whether the reader is now there.
-fn go_to(app: &mut App, to: &Path, anchor: u32, h: u16) -> bool {
-    // A same-document entry (a fragment jump) restores the position without
-    // re-reading the file — nothing about the document changed.
-    if app.file.as_deref() == Some(to) {
-        app.land_on(anchor, h);
+fn go_to(app: &mut App, to: &Path, place: Place, h: u16) -> bool {
+    // A same-document entry resolves against the current parse, including
+    // any watched rewrite. No second read or annotation reload is needed.
+    if app.file.as_deref() == Some(to)
+        || (to == Path::new("(stdin)") && app.showing_pipe())
+        || desk_index(to).is_some_and(|i| app.on_desk == Some(i))
+    {
+        app.land_on(place.resolve(&app.doc).0, h);
         return true;
     }
     // A generated page: reopened from its kept source, with the sections
     // that were expanded still expanded.
     if let Some(i) = desk_index(to) {
-        return app.reopen_desk(i, anchor);
+        return app.reopen_desk(i, place);
     }
     // A piped document: no file to re-read, but the text was retained for
     // exactly this. Re-parse from memory and become pathless again; the
     // label follows whether the stream is still arriving.
     if to == Path::new("(stdin)")
-        && let Some(src) = app.piped.take()
+        && let Some(src) = app.piped.clone()
     {
         app.save_position();
+        app.stash_pathless_state();
+        app.close_document_panes();
+        app.forget_derived_state();
+        app.marks.clear();
+        app.matches = None;
+        app.results_root = None;
+        app.mtime = None;
+        app.diff_ok = app.diff_forced.unwrap_or(true);
         app.file = None;
         app.on_desk = None;
         app.notes = crate::annotation_state::Notes {
             entries: std::mem::take(&mut app.piped_notes),
             ..crate::annotation_state::Notes::default()
         };
-        app.reload_from(&src);
-        app.piped = Some(src);
         app.path = if app.streaming {
             "(stdin — streaming…)".into()
         } else {
             "(stdin)".into()
         };
-        app.land_on(anchor, h);
+        app.reload_from(&src);
+        app.set_marks_from(&app.piped_marks.clone());
+        if app.apply_fold_keys(&app.piped_folds.clone()) {
+            app.relayout();
+        }
+        app.land_on(place.resolve(&app.doc).0, h);
         return true;
     }
     match app.open_path(to) {
         Ok(()) => {
-            app.land_on(anchor, h);
+            app.land_on(place.resolve(&app.doc).0, h);
             true
         }
         Err(e) => {
@@ -6103,6 +6332,9 @@ pub(crate) fn has_scheme(dest: &str) -> bool {
 /// section — the two markers look alike, so they must behave alike — and a
 /// summary wins, because it is the more specific of the two.
 fn fold_at(app: &mut App, byte: u32) -> bool {
+    if app.doc.block_count() == 0 {
+        return false;
+    }
     if let Some((i, _)) = app
         .doc
         .details
@@ -6209,8 +6441,7 @@ fn link_follow(app: &mut App) -> Outcome {
     if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
         return app.ask_before_leaving(id, &target);
     }
-    // Where we are leaving from, asked BEFORE the open: a generated page's
-    // expanded sections are part of the answer, and opening clears them.
+    // Capture the outgoing text's place before opening replaces the parse.
     let from = app.location();
     match app.open_path(&target) {
         Ok(()) => {
@@ -6435,7 +6666,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
             app.note = Some("nothing to follow".into());
             return Outcome::Redraw;
         };
-        let anchor = app.view.anchor;
+        let anchor = Place::kept(&app.doc, DocByte(app.view.anchor));
         if jump_to_wiki_fragment(app, frag) {
             app.push_history(here, anchor);
         }
@@ -6450,7 +6681,7 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
     if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
         return app.ask_before_leaving(id, &target);
     }
-    let anchor = app.view.anchor;
+    let anchor = Place::kept(&app.doc, DocByte(app.view.anchor));
     match app.open_path(&target) {
         Ok(()) => {
             app.push_history(here, anchor);
@@ -6547,24 +6778,39 @@ fn jump_to_fragment(app: &mut App, frag: &str) -> bool {
 }
 
 fn search_key(app: &mut App, k: SearchKey, h: u16) -> Outcome {
+    if !app.searching() {
+        return Outcome::Idle;
+    }
     match k {
+        SearchKey::Recall(direction) => {
+            let Mode::Search { input, .. } = &mut app.mode else {
+                return Outcome::Idle;
+            };
+            if !app.search_history.recall(input, direction) {
+                return Outcome::Idle;
+            }
+            app.rerun_search();
+        }
         SearchKey::Char(c) => {
+            app.search_history.browsing = None;
             if let Mode::Search { input, .. } = &mut app.mode {
                 input.push(c);
             }
             app.rerun_search();
         }
         SearchKey::Backspace => {
+            app.search_history.browsing = None;
             if let Mode::Search { input, .. } = &mut app.mode {
-                input.pop();
+                backspace_grapheme(input);
             }
             app.rerun_search();
         }
         SearchKey::Accept => {
-            let Mode::Search { dir, .. } = &app.mode else {
+            let Mode::Search { dir, input, .. } = &app.mode else {
                 return Outcome::Idle;
             };
             let dir = *dir;
+            app.search_history.record(input);
             app.mode = Mode::Normal;
             if app.matches.as_ref().is_some_and(|m| !m.ranges.is_empty()) {
                 let step = if dir == Direction::Forward { 1 } else { -1 };
@@ -6572,6 +6818,7 @@ fn search_key(app: &mut App, k: SearchKey, h: u16) -> Outcome {
             }
         }
         SearchKey::Cancel => {
+            app.search_history.browsing = None;
             let Mode::Search { saved, .. } = &app.mode else {
                 return Outcome::Idle;
             };
@@ -7436,7 +7683,7 @@ mod tests {
         update(&mut a, Action::MatchStep(1)); // -> 1 of 2, wrapped
         assert_eq!(a.note.as_deref(), Some("wrapped round to the start"));
         update(&mut a, Action::MatchStep(-1)); // back to 2 of 2, wrapped again
-        assert_eq!(a.note.as_deref(), Some("wrapped round to the start"));
+        assert_eq!(a.note.as_deref(), Some("wrapped round to the end"));
     }
 
     #[test]
@@ -8253,7 +8500,7 @@ mod tests {
     }
 
     #[test]
-    fn unfold_all_restores_every_row_and_reload_clears_folds() {
+    fn unfold_all_restores_every_row_and_reload_keeps_named_folds() {
         let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
         let all = a.layout.total_rows();
         update(&mut a, Action::FoldAll);
@@ -8262,9 +8509,11 @@ mod tests {
         assert_eq!(a.layout.total_rows(), all);
 
         update(&mut a, Action::FoldAll);
+        let keys = a.fold_keys();
+        let folded_height = a.layout.total_rows();
         a.reload_from(FOLD_SRC);
-        assert!(a.folded.is_empty(), "a reload's ids indexed the old parse");
-        assert_eq!(a.layout.total_rows(), all);
+        assert_eq!(a.fold_keys(), keys, "fold names outlive the old parse");
+        assert_eq!(a.layout.total_rows(), folded_height);
     }
 
     #[test]
@@ -8366,14 +8615,20 @@ mod tests {
     }
 
     #[test]
-    fn a_reload_clears_details_folds_with_the_rest() {
+    fn a_reload_keeps_details_folds_by_summary() {
         let mut a = App::new("d.md".into(), Document::parse(DETAILS_SRC), 40, 10);
         let all = a.layout.total_rows();
         update(&mut a, Action::FoldAll);
         assert!(a.layout.total_rows() < all, "details bodies went away");
+        let folded_height = a.layout.total_rows();
+        let keys = a.fold_keys();
         a.reload_from(DETAILS_SRC);
-        assert!(a.folded_details.is_empty(), "indices indexed the old parse");
-        assert_eq!(a.layout.total_rows(), all);
+        let mut restored = a.fold_keys();
+        restored.sort();
+        let mut expected = keys;
+        expected.sort();
+        assert_eq!(restored, expected);
+        assert_eq!(a.layout.total_rows(), folded_height);
     }
 
     // --- footnote % jumps ---
@@ -9311,6 +9566,7 @@ diff --git a/x.rs b/x.rs
         );
         a.file = None;
         a.streaming = true;
+        a.piped = Some("a line\n\n".repeat(60));
         a
     }
 
@@ -9322,11 +9578,9 @@ diff --git a/x.rs b/x.rs
         let end = a.layout.max_scroll(a.text_h());
         assert_eq!(a.view.scroll_row, end, "F goes to the end at once");
 
-        // Appending must keep it there. `poll_stream` applies this in the
-        // event loop; the state half is what a test can reach.
+        // Reparse itself follows the end, for files as well as pipes.
         a.reload_from(&"a line\n\n".repeat(120));
         let h = a.text_h();
-        a.view.scroll_to(&a.doc, &a.layout, u32::MAX, h);
         assert_eq!(a.view.scroll_row, a.layout.max_scroll(h));
         assert!(a.view.scroll_row > end, "the document really grew");
     }

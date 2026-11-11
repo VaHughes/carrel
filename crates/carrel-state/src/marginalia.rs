@@ -331,11 +331,17 @@ mod tests {
         let first = temp.path().join("first.md");
         let second = temp.path().join("second.md");
         let a = Annotation::new("word", 0..4, "note".into()).unwrap();
-        assert!(load_in(temp.path(), &first, "word").unwrap().is_empty());
+        assert_eq!(
+            load_in(temp.path(), &first, "word").unwrap(),
+            [] as [crate::marginalia::Annotation; 0]
+        );
         save_in(temp.path(), &first, std::slice::from_ref(&a)).unwrap();
         save_in(temp.path(), &second, std::slice::from_ref(&a)).unwrap();
         save_in(temp.path(), &first, &[]).unwrap();
-        assert!(load_in(temp.path(), &first, "word").unwrap().is_empty());
+        assert_eq!(
+            load_in(temp.path(), &first, "word").unwrap(),
+            [] as [crate::marginalia::Annotation; 0]
+        );
         assert_eq!(load_in(temp.path(), &second, "word").unwrap(), vec![a]);
     }
 

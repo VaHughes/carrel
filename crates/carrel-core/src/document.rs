@@ -38,6 +38,21 @@ use crate::highlight::{self, Token};
 use crate::layout::{cluster_width, display_width};
 use crate::position::{BlockIdx, DocByte, NodeId, SrcByte};
 
+/// Parser extensions shared by document parsing and source adapters.
+pub(crate) fn markdown_options() -> Options {
+    Options::ENABLE_TABLES
+        | Options::ENABLE_GFM
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION
+        | Options::ENABLE_WIKILINKS
+        | Options::ENABLE_MATH
+        | Options::ENABLE_DEFINITION_LIST
+        | Options::ENABLE_SUPERSCRIPT
+        | Options::ENABLE_SUBSCRIPT
+}
+
 /// Tab stop, in display cells.
 const TAB_STOP: u16 = 4;
 /// The widest a frontmatter key counts for when the card's value column is
@@ -2010,20 +2025,6 @@ impl<'a> Builder<'a> {
         );
     }
 
-    fn opts() -> Options {
-        Options::ENABLE_TABLES
-            | Options::ENABLE_GFM
-            | Options::ENABLE_FOOTNOTES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_SMART_PUNCTUATION
-            | Options::ENABLE_WIKILINKS
-            | Options::ENABLE_MATH
-            | Options::ENABLE_DEFINITION_LIST
-            | Options::ENABLE_SUPERSCRIPT
-            | Options::ENABLE_SUBSCRIPT
-    }
-
     /// The events of the whole document, offsets into the whole source.
     ///
     /// Frontmatter exists only at the very start of a document, after an
@@ -2049,7 +2050,7 @@ impl<'a> Builder<'a> {
             |(_, r)| r.end,
         );
         front.into_iter().chain(
-            Parser::new_ext(&src[body..], Self::opts())
+            Parser::new_ext(&src[body..], markdown_options())
                 .into_offset_iter()
                 .map(move |(ev, r)| (ev, r.start + body..r.end + body)),
         )
@@ -3144,7 +3145,7 @@ pub fn frontmatter(src: &str) -> Option<Frontmatter> {
 fn front_events(src: &str) -> Option<Vec<(Event<'_>, Range<usize>)>> {
     let bom = if src.starts_with('\u{feff}') { 3 } else { 0 };
     let cand = frontmatter_candidate(&src[bom..])?;
-    let opts = Builder::opts()
+    let opts = markdown_options()
         | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
         | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS;
     let mut probe = Parser::new_ext(&src[bom..bom + cand], opts).into_offset_iter();
@@ -3824,7 +3825,7 @@ mod tests {
     #[test]
     fn an_untagged_code_block_stays_plain() {
         let d = Document::parse("```\nsomething\n```\n");
-        assert!(d.tokens(BlockIdx(0)).is_empty());
+        assert_eq!(d.tokens(BlockIdx(0)), []);
     }
 
     #[test]
@@ -4458,7 +4459,7 @@ mod tests {
     #[test]
     fn an_unclosed_bracket_caret_spins_nowhere() {
         let doc = Document::parse("oops [^ no closer here\n");
-        assert!(doc.footnote_refs().is_empty());
+        assert_eq!(doc.footnote_refs(), [] as [(Box<str>, u32); 0]);
     }
 
     // --- fragment anchors ---
@@ -5357,7 +5358,10 @@ mod tests {
 
     #[test]
     fn a_bare_www_with_no_host_is_not_a_link() {
-        assert!(extended_autolinks("www. alone").is_empty());
+        assert_eq!(
+            extended_autolinks("www. alone"),
+            [] as [(std::ops::Range<usize>, String); 0]
+        );
     }
 
     #[test]
@@ -5444,10 +5448,16 @@ mod tests {
 
     #[test]
     fn no_tag_is_read_from_code_or_the_frontmatter_card() {
-        assert!(tag_names("```\n#include <stdio.h>\n#tag\n```\n").is_empty());
-        assert!(tag_names("    #indented code\n").is_empty());
-        assert!(tag_names("---\ntitle: x # #comment\n---\n").is_empty());
-        assert!(tag_names("$$\n#x\n$$\n").is_empty());
+        assert_eq!(
+            tag_names("```\n#include <stdio.h>\n#tag\n```\n"),
+            [] as [String; 0]
+        );
+        assert_eq!(tag_names("    #indented code\n"), [] as [String; 0]);
+        assert_eq!(
+            tag_names("---\ntitle: x # #comment\n---\n"),
+            [] as [String; 0]
+        );
+        assert_eq!(tag_names("$$\n#x\n$$\n"), [] as [String; 0]);
     }
 
     #[test]
@@ -5494,7 +5504,7 @@ mod tests {
             ["bad", "cafe", "face"]
         );
         // Inside a word, the hash is the word's.
-        assert!(tag_names("見て#日本語\n").is_empty());
+        assert_eq!(tag_names("見て#日本語\n"), [] as [String; 0]);
     }
 
     #[test]
@@ -5520,14 +5530,14 @@ mod tests {
         let ok = "a".repeat(MAX_TAG_CHARS);
         let long = "a".repeat(MAX_TAG_CHARS + 1);
         assert_eq!(tag_names(&format!("#{ok} x\n")), std::slice::from_ref(&ok));
-        assert!(tag_names(&format!("#{long} x\n")).is_empty());
+        assert_eq!(tag_names(&format!("#{long} x\n")), [] as [String; 0]);
         let wide = "日".repeat(MAX_TAG_CHARS + 30);
         assert!(
             tag_names(&format!("#{wide} x\n")).is_empty(),
             "not its first 64"
         );
         let way = "a".repeat(10_000);
-        assert!(tag_names(&format!("#{way}\n")).is_empty());
+        assert_eq!(tag_names(&format!("#{way}\n")), [] as [String; 0]);
     }
 
     #[test]

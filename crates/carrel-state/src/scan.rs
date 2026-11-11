@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn a_missing_root_yields_nothing_rather_than_panicking() {
         let (entries, _) = walk_blocking(Path::new("/nonexistent/xyzzy"));
-        assert!(entries.is_empty());
+        assert_eq!(entries, [] as [crate::scan::Entry; 0]);
     }
 
     #[test]
@@ -642,7 +642,7 @@ mod tests {
     fn the_cache_round_trips() {
         let d = tempfile::tempdir().unwrap();
         let root = Path::new("/some/root");
-        assert!(load_cache_in(d.path(), root).is_empty());
+        assert_eq!(load_cache_in(d.path(), root), [] as [crate::scan::Entry; 0]);
 
         let entries = vec![Entry {
             path: PathBuf::from("/some/root/a.md"),
@@ -660,7 +660,10 @@ mod tests {
             mtime: SystemTime::UNIX_EPOCH,
         }];
         save_cache_in(d.path(), Path::new("/a"), &e);
-        assert!(load_cache_in(d.path(), Path::new("/b")).is_empty());
+        assert_eq!(
+            load_cache_in(d.path(), Path::new("/b")),
+            [] as [crate::scan::Entry; 0]
+        );
     }
 
     /// The name is written to disk and read back by a *later build*, so it has
@@ -768,6 +771,6 @@ mod tests {
         let root = Path::new("/some/root");
         save_cache_in(d.path(), root, &[]);
         fs::write(d.path().join(cache_name(root)), "\u{0}not a cache\nnope").unwrap();
-        assert!(load_cache_in(d.path(), root).is_empty());
+        assert_eq!(load_cache_in(d.path(), root), [] as [crate::scan::Entry; 0]);
     }
 }

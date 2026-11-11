@@ -154,6 +154,22 @@ def main(binary, scratch, from_home=False):
             expect("reader.md")
             send("\r")
         expect("selectable")
+        assert b"\x1b[?2004h" in raw, "the reader must distinguish pastes from commands"
+        send("/w")
+        expect("/w")
+        send("\x1b[200~ombat\nq\x1b[201~")
+        expect("/wombat")
+        expect("cancel")
+        assert "wombatq" not in screen.text(), screen.text()
+        send("\x1b")
+        send("\x1b[200~qGzz\x1b[201~")
+        send("h")
+        expect("help")
+        send("\x1b[200~copy\nq\x1b[201~")
+        expect("copy")
+        send("\x1b")  # clear the help filter
+        send("\x1b")  # close help
+        expect("selectable")
         send("/a-long-query-with-END")
         expect("END")
         for size in ((24,6),(12,5),(80,24),(24,6)):
@@ -162,6 +178,11 @@ def main(binary, scratch, from_home=False):
         expect("no matches")
         send("\x1b")
         send("/needle\r")
+        expect("1 of 2")
+        send("/")
+        send("\x1b[A")
+        expect("/needle")
+        send("\r")
         expect("1 of 2")
         for size in ((80,24),(20,5),(40,8),(24,6)):
             resize(*size)

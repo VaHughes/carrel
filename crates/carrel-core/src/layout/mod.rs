@@ -1569,7 +1569,7 @@ mod tests {
         let text = "                    deeply indented and long enough to wrap";
         let mut rows = Vec::new();
         wrap_text_kind(text, 24, true, |r| rows.push((r.indent, r.kind)));
-        assert!(!rows.is_empty());
+        assert_ne!(rows, [] as [(u16, crate::layout::RowKind); 0]);
         assert!(
             rows.iter().all(|(i, _)| *i < 24),
             "content must always get at least one cell: {rows:?}",

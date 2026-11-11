@@ -268,7 +268,10 @@ mod tests {
 
     #[test]
     fn an_unknown_language_yields_no_tokens() {
-        assert!(highlight("not-a-language", "fn main() {}", 0).is_empty());
+        assert_eq!(
+            highlight("not-a-language", "fn main() {}", 0),
+            [] as [crate::highlight::Token; 0]
+        );
     }
 
     #[test]
@@ -291,7 +294,10 @@ mod tests {
     #[test]
     fn an_oversized_block_is_left_plain() {
         let big = "x = 1\n".repeat(MAX_HIGHLIGHT_BYTES / 6 + 1);
-        assert!(highlight("python", &big, 0).is_empty());
+        assert_eq!(
+            highlight("python", &big, 0),
+            [] as [crate::highlight::Token; 0]
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ pub enum Start {
 #[must_use]
 pub fn split_target(arg: &str) -> (PathBuf, Option<Start>) {
     let whole = || (PathBuf::from(arg), None);
-    if Path::new(arg).exists() {
+    if std::fs::symlink_metadata(arg).is_ok() {
         return whole();
     }
     if let Some((path, line)) = line_suffix(arg)
@@ -91,21 +91,29 @@ fn line_suffix(arg: &str) -> Option<(&str, u32)> {
 pub fn pasted_path(text: &str, dir: &Path) -> Option<String> {
     // A terminal sends a bare CR between the lines of a paste, which
     // `str::lines` does not split on.
-    let line = text
+    let first = text
         .split(['\n', '\r'])
-        .map(str::trim)
-        .find(|l| !l.is_empty())?;
+        .find(|line| !line.trim().is_empty())?;
+    // Leading/trailing spaces can belong to a filename too. Resolve that
+    // literal entry before treating surrounding whitespace as paste padding.
+    if first.len() <= 4096 && std::fs::symlink_metadata(dir.join(first)).is_ok() {
+        return (!first.chars().any(char::is_control)).then(|| first.to_string());
+    }
+    let line = first.trim();
     if line.len() > 4096 || line.chars().any(char::is_control) {
         return None;
     }
-    let quoted = line.len() >= 2
-        && ((line.starts_with('"') && line.ends_with('"'))
-            || (line.starts_with('\'') && line.ends_with('\'')));
-    let mut path = if quoted {
-        line[1..line.len() - 1].to_string()
-    } else if let Some(rest) = line.strip_prefix("file://") {
+    // A literal directory entry (even a broken symlink) wins over escaping, just
+    // as it does in split_target. Backslashes and quotes are legal Unix
+    // filename characters; removing them may open a different document.
+    if std::fs::symlink_metadata(dir.join(line)).is_ok() {
+        return Some(line.to_string());
+    }
+    let mut path = unquote_pasted_path(line)?;
+    if let Some(rest) = path.strip_prefix("file://") {
         // `file:///home/x` and `file://localhost/home/x` both mean `/home/x`.
-        // Any other host is another machine's file, not a path here.
+        // Apply this after unquoting too: quotes cannot turn a remote URL
+        // into a local path or bypass the decoded-control check below.
         let rest = rest
             .strip_prefix("localhost")
             .filter(|r| r.starts_with('/'))
@@ -113,19 +121,8 @@ pub fn pasted_path(text: &str, dir: &Path) -> Option<String> {
         if !rest.starts_with('/') {
             return None;
         }
-        crate::links::percent_decoded(rest).unwrap_or_else(|| rest.to_string())
-    } else {
-        // A shell-escaped drop: `/my\ notes/a.md`.
-        let mut out = String::with_capacity(line.len());
-        let mut chars = line.chars();
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' => out.extend(chars.next()),
-                c => out.push(c),
-            }
-        }
-        out
-    };
+        path = crate::links::percent_decoded(rest).unwrap_or_else(|| rest.to_string());
+    }
     // Again, now that it is decoded: `%0a` is a newline too.
     if path.is_empty() || path.chars().any(char::is_control) {
         return None;
@@ -141,6 +138,40 @@ pub fn pasted_path(text: &str, dir: &Path) -> Option<String> {
         || (!path.contains(' ') && path.contains('.'))
         || dir.join(&path).exists();
     looks_like_a_path.then_some(path)
+}
+
+// Undo quoting from a dropped path, without shell expansion or evaluation.
+// An unquoted apostrophe is otherwise a legal filename character. Only a
+// leading quote opts into quote parsing; existing literal names win earlier.
+fn unquote_pasted_path(line: &str) -> Option<String> {
+    if line.starts_with("file://") {
+        return Some(line.to_string());
+    }
+    let quoted = line.starts_with(['\'', '"']);
+    let mut quote = None;
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (None, '\'' | '"') if quoted => quote = Some(c),
+            (None | Some('"'), '\\') => {
+                if quote == Some('"')
+                    && chars
+                        .peek()
+                        .is_some_and(|c| !matches!(c, '$' | '`' | '"' | '\\'))
+                {
+                    out.push('\\');
+                } else {
+                    // Preserve a trailing literal backslash instead of silently
+                    // turning a missing path into a different filename.
+                    out.push(chars.next().unwrap_or('\\'));
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    quote.is_none().then_some(out)
 }
 
 /// How many single-character edits separate two strings, counting a swap of
@@ -345,6 +376,44 @@ mod tests {
     }
 
     #[test]
+    fn pasted_shell_quotes_and_quoted_file_urls_are_decoded_without_evaluation() {
+        let p = |s: &str| pasted_path(s, Path::new("/nowhere"));
+        for (given, wanted) in [
+            (r"'/w/it'\''s notes.md'", "/w/it's notes.md"),
+            (r#""/w/a\"b.md""#, "/w/a\"b.md"),
+            (r#""/w/a\\b.md""#, r"/w/a\b.md"),
+            (r#""/w/a\b.md""#, r"/w/a\b.md"),
+            (r#""/w/\$HOME.md""#, "/w/$HOME.md"),
+            ("'file:///w/my%20notes/a.md'", "/w/my notes/a.md"),
+            (r#""file://localhost/w/a.md""#, "/w/a.md"),
+        ] {
+            assert_eq!(p(given).as_deref(), Some(wanted), "{given}");
+        }
+        assert_eq!(p("'file://remote/w/a.md'"), None);
+        assert_eq!(p("'file:///w/%0a.md'"), None);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn shell_quoted_unicode_paths_round_trip(
+            name in "[a-zé界 '\"\\\\$`]{1,40}"
+        ) {
+            let path = format!("/nowhere/{name}.md");
+            let single = format!("'{}'", path.replace('\'', "'\\''"));
+            let mut double = String::from("\"");
+            for c in path.chars() {
+                if matches!(c, '$' | '`' | '"' | '\\') {
+                    double.push('\\');
+                }
+                double.push(c);
+            }
+            double.push('"');
+            proptest::prop_assert_eq!(pasted_path(&single, Path::new("/nowhere")), Some(path.clone()));
+            proptest::prop_assert_eq!(pasted_path(&double, Path::new("/nowhere")), Some(path));
+        }
+    }
+
+    #[test]
     fn a_file_url_for_another_machine_is_not_a_path_on_this_one() {
         let p = |s: &str| pasted_path(s, Path::new("/nowhere"));
         assert_eq!(p("file://host/etc/x.md"), None);
@@ -359,6 +428,58 @@ mod tests {
         std::fs::write(d.path().join("LICENSE"), "x").unwrap();
         assert_eq!(pasted_path("LICENSE", d.path()).as_deref(), Some("LICENSE"));
         assert_eq!(pasted_path("NOTICE", d.path()), None);
+    }
+
+    #[test]
+    fn a_pasted_existing_name_keeps_literal_backslashes_and_quotes() {
+        let d = tempfile::tempdir().unwrap();
+        for name in [r"notes\draft.md", "'notes.md'", r"notes\"] {
+            touch(d.path(), name);
+            assert_eq!(pasted_path(name, d.path()).as_deref(), Some(name));
+            let absolute = d.path().join(name);
+            let text = absolute.to_str().unwrap();
+            assert_eq!(pasted_path(text, d.path()).as_deref(), Some(text));
+        }
+        // When both spellings exist, never silently open a different file.
+        touch(d.path(), "notesdraft.md");
+        assert_eq!(
+            pasted_path(r"notes\draft.md", d.path()).as_deref(),
+            Some(r"notes\draft.md")
+        );
+    }
+
+    #[test]
+    fn literal_spaces_at_the_ends_of_existing_names_are_not_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [" leading.md", "trailing.md ", " padded.md "] {
+            touch(dir.path(), name);
+            touch(dir.path(), name.trim());
+            assert_eq!(pasted_path(name, dir.path()).as_deref(), Some(name));
+            let absolute = dir.path().join(name);
+            let text = absolute.to_str().unwrap();
+            assert_eq!(pasted_path(text, dir.path()).as_deref(), Some(text));
+        }
+        touch(dir.path(), "plain.md");
+        assert_eq!(
+            pasted_path("  plain.md  ", dir.path()).as_deref(),
+            Some("plain.md")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_symlink_name_is_not_reinterpreted_as_another_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("notes.md");
+        std::fs::write(&plain, "the wrong document").unwrap();
+        for name in ["notes.md:42", "notes.md#heading", "'notes.md'"] {
+            let link = dir.path().join(name);
+            std::os::unix::fs::symlink("missing.md", &link).unwrap();
+            let text = link.to_str().unwrap();
+            assert_eq!(split_target(text), (link.clone(), None));
+            assert_eq!(pasted_path(text, dir.path()).as_deref(), Some(text));
+            assert_eq!(pasted_path(name, dir.path()).as_deref(), Some(name));
+        }
     }
 
     #[test]

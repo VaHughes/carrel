@@ -394,6 +394,8 @@ pub fn update(app: &mut App, action: Action) -> Option<Outcome> {
             if let Some(i) = selected_entry(app) {
                 if let Some(range) = app.notes.entries[i].range.clone() {
                     app.notes.pane = None;
+                    app.following = false;
+                    app.auto_read = false;
                     app.reveal_byte(range.start, app.text_h(), Where::Top);
                     app.notes.current = Some(i);
                     app.notes.walk_anchor = Some(app.view.anchor);
@@ -428,6 +430,8 @@ pub fn update(app: &mut App, action: Action) -> Option<Outcome> {
                 })
                 .unwrap_or(0);
             if let Some(&(index, byte)) = attached.get(next) {
+                app.following = false;
+                app.auto_read = false;
                 app.reveal_byte(byte, app.text_h(), Where::Top);
                 app.notes.current = Some(index);
                 app.note = Some(format!(

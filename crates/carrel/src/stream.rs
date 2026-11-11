@@ -22,25 +22,32 @@ impl Utf8Carry {
     pub fn push(&mut self, bytes: &[u8]) -> String {
         self.carry.extend_from_slice(bytes);
         let buf = std::mem::take(&mut self.carry);
-        match std::str::from_utf8(&buf) {
-            Ok(s) => s.to_owned(),
-            Err(e) => {
-                let (valid, rest) = buf.split_at(e.valid_up_to());
-                let mut out = String::from_utf8_lossy(valid).into_owned();
-                match e.error_len() {
-                    // A truncated char: the rest may arrive next push.
-                    None => {
-                        self.carry = rest.to_vec();
-                        out
-                    }
-                    // Genuinely invalid: replace it and keep going.
-                    Some(n) => {
-                        out.push('\u{FFFD}');
-                        out + &self.push(&rest[n..])
+        let mut rest = buf.as_slice();
+        let mut out = String::with_capacity(buf.len());
+        loop {
+            match std::str::from_utf8(rest) {
+                Ok(valid) => {
+                    out.push_str(valid);
+                    break;
+                }
+                Err(error) => {
+                    let (valid, invalid) = rest.split_at(error.valid_up_to());
+                    out.push_str(std::str::from_utf8(valid).expect("valid UTF-8 prefix"));
+                    match error.error_len() {
+                        // Only an incomplete trailing character crosses a read.
+                        None => {
+                            self.carry.extend_from_slice(invalid);
+                            break;
+                        }
+                        Some(n) => {
+                            out.push('\u{FFFD}');
+                            rest = &invalid[n..];
+                        }
                     }
                 }
             }
         }
+        out
     }
 
     /// EOF: whatever is still held back will never complete; show it lossily.
@@ -54,7 +61,9 @@ impl Utf8Carry {
 /// the EOF signal, the same contract as `scan::spawn`'s channel.
 #[must_use]
 pub fn spawn() -> Receiver<String> {
-    let (tx, rx) = mpsc::channel();
+    // Backpressure keeps the decoded queue bounded while the UI parses or
+    // the reader browses another document. Nothing is dropped.
+    let (tx, rx) = mpsc::sync_channel(8);
     std::thread::spawn(move || {
         let mut stdin = std::io::stdin().lock();
         let mut carry = Utf8Carry::default();
@@ -81,6 +90,30 @@ pub fn spawn() -> Receiver<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_chunk_of_invalid_bytes_is_decoded_without_recursion() {
+        let mut carry = Utf8Carry::default();
+        let decoded = carry.push(&vec![0xff; CHUNK]);
+        assert_eq!(decoded, "\u{FFFD}".repeat(CHUNK));
+        assert_eq!(carry.finish(), "");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn arbitrary_bytes_match_lossy_utf8_independently_of_chunk_boundaries(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..2048),
+            chunk in 1usize..128,
+        ) {
+            let mut carry = Utf8Carry::default();
+            let mut decoded = String::new();
+            for part in bytes.chunks(chunk) {
+                decoded.push_str(&carry.push(part));
+            }
+            decoded.push_str(&carry.finish());
+            proptest::prop_assert_eq!(decoded, String::from_utf8_lossy(&bytes));
+        }
+    }
 
     #[test]
     fn a_multibyte_char_split_across_chunks_is_never_mangled() {

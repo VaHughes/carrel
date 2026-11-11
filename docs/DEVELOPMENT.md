@@ -25,15 +25,18 @@ cargo check --workspace --all-targets                   # benches still compile
                                                         # vs Cargo.toml; pass an archive path to
                                                         # check a REAL release artifact
 cargo bench -p carrel-core --bench wrap                  # reflow throughput
-cargo bench -p carrel --bench resize                     # end-to-end resize latency
+cargo bench -p carrel --bench resize                     # resize, reload and Back/Forward latency
 cargo run -p carrel -- <FILE> [PATTERN]
 cargo run -p carrel                                     # the home screen
+vhs contrib/screenshot.tape                             # re-render assets/screenshot.png
 vhs contrib/demo.tape                                   # re-render assets/demo.gif (needs vhs + ttyd)
 ```
 
 The first five (test, clippy, fmt, discipline, packaging) plus `cargo check` are exactly what
 `.github/workflows/ci.yml` runs on `main` and on pull requests; `release.yml` runs the same
-gate job against the tagged commit before building anything.
+gate job against the tagged commit before building anything. CI also runs
+`python3 scripts/check-build-helper.py` to verify the local build helper without deleting
+or building anything in the real workspace.
 
 When scripting the gates, run each as its own `;`-terminated command with an echoed marker and
 gate on exit codes: `set -e` does not abort on the left side of `&&`, and `grep -c` exits 1 on a
@@ -47,14 +50,39 @@ Symlink, never copy — a copied binary goes stale on the next rebuild while sti
 `carrel`:
 
 ```bash
-cargo build
+./scripts/build.sh
 ln -sfn "$PWD/target/debug/carrel" ~/.local/bin/carrel
 ```
 
-`cargo clean` or a failed build breaks the link until the next successful build. The debug
-build is ~20x the size and noticeably slower on a large library; point the link at
-`target/release/carrel` when judging performance. The maintainer field-tests continuously, so
-rebuild after every user-facing change.
+`cargo clean` breaks the link until the next successful build; so does automatic cleanup if
+the following build fails. The debug build is larger and noticeably slower on a large library;
+point the link at `target/release/carrel` when judging performance. The maintainer field-tests
+continuously, so rebuild after every user-facing change.
+
+### Build cache size
+
+Use `./scripts/build.sh` (or `./scripts/build.sh --release`) for routine local builds. It
+runs `cargo clean` before building if this checkout's `target/` exceeds 4 GiB, removing old
+debug, test, benchmark, package, and release output together. Override the threshold with
+`CARREL_BUILD_CACHE_MIB`, e.g. `CARREL_BUILD_CACHE_MIB=2048 ./scripts/build.sh`. This is a
+threshold checked before building, not a hard size limit; the next helper invocation cleans
+an oversized cache. Cleanup removes both debug and release executables until rebuilt.
+
+The helper pins both final and intermediate build output to this checkout's `target/`,
+ignoring `CARGO_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR`. It rejects `--target-dir`,
+`--manifest-path` / `-m`, `--config`, and a symlinked `target/` to keep cleanup local.
+Use plain Cargo for other output paths or configuration overrides. Automatic cleanup
+requires Cargo's valid, nonsymlinked `CACHEDIR.TAG`; older untagged output is left in place
+with a message, and the build continues. The helper never creates a marker to authorize
+deletion. Check these boundaries with `python3 scripts/check-build-helper.py`. Plain `cargo build`, `test`, `check`, and `clippy` do not run
+the helper's cleanup.
+
+The dev profile (also inherited by test) uses `debug = "line-tables-only"` and
+`incremental = false`: backtraces keep file/line information while full debug symbols and
+incremental caches no longer accumulate. Recompiling a changed crate can take longer.
+For debugger sessions needing local variables, use `CARGO_PROFILE_DEV_DEBUG=2 cargo build`
+(or `CARGO_PROFILE_TEST_DEBUG=2 cargo test`). These overrides create additional artifacts,
+which the same size threshold eventually clears. Release optimization settings are unchanged.
 
 ## Testing
 
@@ -93,10 +121,18 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   a build that has the hang-up fix; never build an old revision just to compare.
 - **Live resize regression:** `tests/pty.rs` launches the stdlib-only Python 3
   driver `tests/support/resize_pty.py` under `timeout`. It sends real `SIGWINCH`
-  events and checks reconstructed screens, OSC 52 copying, saved note contents,
+  events and checks reconstructed screens, paste and search recall, OSC 52 copying, saved note contents,
   immediate input during shrink, and terminal restoration. It skips loudly without
   `python3`; the COPR spec carries `BuildRequires: python3` so it runs there too (its
   absence failed the first 2026.10.8 COPR build).
+- **Session and stream PTYs:** `session_pty.py` checks Home and search recall through
+  direct file, tutorial and pipe entries. `stream_pty.py` feeds malformed UTF-8 and checks
+  navigation and clean exit. Both use the same small screen reconstructor as resize tests.
+- **Mixed-input properties:** `src/input_sequence_tests.rs` exercises the real key dispatcher,
+  paste, pointer input, resizes, rewrites and Back/Forward across files and retained pages.
+  `tests/reader_documents.rs` composes incomplete Markdown and Unicode across arbitrary sizes.
+  Raise `PROPTEST_CASES` for longer local runs; preserve genuine failure seeds. The hostile
+  commit-message property in core explicitly runs 2,000 cases per invocation.
 - **Installer smokes** additionally override `HOME`. The dist shell installer writes four
   dotfiles (`~/.bashrc`, `~/.profile`, `~/.zshrc`, `~/.config/fish/conf.d/carrel.env.fish`);
   grep all four for the scratch path before and after.

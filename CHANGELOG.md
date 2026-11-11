@@ -4,6 +4,48 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Paste into search, help and the outline.** One bounded line enters at once,
+  including Unicode and tab-separated words; pasted newlines never accept a search
+  or become reader commands. Backspace removes a whole visible character, including
+  combined accents and emoji. The tutorial explains help's two-stage Escape behavior.
+- **Recall recent searches without retyping.** Up/Down and clickable older/newer
+  hints browse twenty accepted queries and restore an unfinished draft. History lasts
+  only for the session, including trips Home. Backward search shows `?` and reports
+  wrapping to the end.
+- **Keep reading the same paragraph during edits.** The viewport, search's Escape
+  destination and selected match follow unchanged text when paragraphs move. Back and
+  Forward do too, including files edited while off screen. Saved-place resolution
+  avoids temporary hash/match lists and stops at the requested occurrence.
+- **Keep up with watched files using `F` or the menu.** New text stays visible at the
+  end. Navigation, selection or leaving the document stops automatic motion; keeping
+  up and auto-read no longer compete. A background pipe ending affects only that pipe.
+- **The tutorial has a way back.** Heading jumps support Back/Forward within the guide.
+  Generated pages retain notes, bookmarks and collapsed sections across visits; pipes
+  keep their own state separate. This state stays in memory. Home now stays interactive
+  from tutorial and pipe entry points instead of exiting or printing a plain list.
+- **Dropped filenames keep their literal meaning.** Existing spaces, backslashes,
+  quotes and broken symlinks win over shell decoding. Joined shell quotes and quoted
+  local file URLs decode correctly; remote hosts and encoded controls remain rejected.
+- **Damaged or fast piped input remains usable.** Invalid UTF-8 is decoded iteratively
+  without stack overflow. The queue and each input batch are bounded, with short burst
+  coalescing. Reparse preserves named folds and bookmarks for files and pipes alike.
+- **Empty documents and windows no longer assume a block or cell exists.** Reader
+  actions remain safe during an empty rewrite, and zero-sized windows clear hidden
+  controls and wait to draw. A live pipe awaiting text says it is waiting.
+- **Commit messages keep command-line hyphens.** Multiline backticks beside numbered
+  lines no longer turn `--` into a dash. Code spans and autolink addresses follow the
+  Markdown parser's actual boundaries.
+- **A still preview shows the reader before installation.** The README screenshot
+  shows a table, code and tasks; `contrib/screenshot.tape` reproduces it from an isolated
+  sample. The browsing animation remains linked.
+- **Smaller local build caches.** Debug/test builds retain backtrace line numbers
+  without full symbols or incremental caches. `./scripts/build.sh [--release]` cleans
+  this checkout's cache above 4 GiB (`CARREL_BUILD_CACHE_MIB` overrides), confines both
+  output directories locally, and leaves unmarked output intact. Isolated tests cover
+  cleanup boundaries; no release optimization settings changed.
+- **Rust 1.99 Clippy is clean again.** Empty-collection assertions show actual values
+  on failure; no lint is suppressed and CI's toolchain pins are unchanged.
+
 - **A bare `https://` URL is a link.** `https://…` and `http://…` written as
   plain text now underline, light under the pointer, and copy on a click, as
   `www.` and `<https://…>` links already did, in the page and in frontmatter.

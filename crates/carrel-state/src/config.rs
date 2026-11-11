@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn places_round_trip_newest_first_and_dedupe() {
         let d = tempfile::tempdir().unwrap();
-        assert!(load_places_in(d.path()).is_empty());
+        assert_eq!(load_places_in(d.path()), [] as [std::path::PathBuf; 0]);
         add_place_in(d.path(), Path::new("/a")).unwrap();
         add_place_in(d.path(), Path::new("/b")).unwrap();
         assert_eq!(
@@ -724,6 +724,6 @@ mod tests {
         let empty = load_all_in(Path::new("/nonexistent/xyzzy"));
         assert_eq!(empty.root, None);
         assert_eq!(empty.hints, None);
-        assert!(empty.places.is_empty());
+        assert_eq!(empty.places, [] as [std::path::PathBuf; 0]);
     }
 }

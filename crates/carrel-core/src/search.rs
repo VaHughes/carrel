@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(hits(&d, "20 --- an"), ["20 — an"]);
         // A run reads greedily: `---` is the em dash, never an en dash and
         // a hyphen.
-        assert!(hits(&d, "10---20").is_empty());
+        assert_eq!(hits(&d, "10---20"), [] as [&str; 0]);
     }
 
     /// The reverse: a curly quote pasted from the screen must still find a
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn a_single_hyphen_is_not_a_dash() {
         let d = Document::parse("pages 10--20 and well-known\n");
-        assert!(hits(&d, "10-20").is_empty());
+        assert_eq!(hits(&d, "10-20"), [] as [&str; 0]);
         assert_eq!(hits(&d, "well-known"), ["well-known"]);
     }
 

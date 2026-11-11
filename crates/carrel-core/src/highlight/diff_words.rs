@@ -185,11 +185,14 @@ mod tests {
 
     #[test]
     fn headers_context_and_unpaired_changes_are_not_word_diffs() {
-        assert!(
-            changes("--- a/old\n+++ b/new\n@@ -1 +1 @@\n-only removed\n context\n+only added\n")
-                .is_empty()
+        assert_eq!(
+            changes("--- a/old\n+++ b/new\n@@ -1 +1 @@\n-only removed\n context\n+only added\n"),
+            [] as [(String, crate::highlight::TokenKind); 0]
         );
-        assert!(changes("-same words\n+same   words\n").is_empty());
+        assert_eq!(
+            changes("-same words\n+same   words\n"),
+            [] as [(String, crate::highlight::TokenKind); 0]
+        );
         assert_eq!(
             changes("-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n"),
             vec![
@@ -202,7 +205,10 @@ mod tests {
     #[test]
     fn comparison_budget_falls_back_to_line_colors() {
         let text = format!("-{}\n+{}\n", "old ".repeat(1100), "new ".repeat(1100));
-        assert!(changes(&text).is_empty());
+        assert_eq!(
+            changes(&text),
+            [] as [(String, crate::highlight::TokenKind); 0]
+        );
         assert!(
             highlight("diff", &text, 0)
                 .iter()

@@ -1193,7 +1193,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bin.md");
         std::fs::write(&path, b"\xff\xfe junk #zeta \x80 more").unwrap();
-        assert!(tags_of(&path).is_empty());
+        assert_eq!(tags_of(&path), [] as [String; 0]);
         let path = dir.path().join("ok.md");
         std::fs::write(&path, "caf\u{e9} #zeta").unwrap();
         assert_eq!(tags_of(&path), ["zeta"]);
@@ -1219,7 +1219,7 @@ mod tests {
             tags_of(&rule.path).is_empty(),
             "an unclosed fence is a rule"
         );
-        assert!(tags_of(&d.path().join("missing.md")).is_empty());
+        assert_eq!(tags_of(&d.path().join("missing.md")), [] as [String; 0]);
     }
 
     #[test]
@@ -1476,8 +1476,8 @@ mod tests {
             "both keys are tags"
         );
         assert_eq!(at("tags: [rust, rust]\n").len(), 1, "one tag, one place");
-        assert!(at("title: no tags\n").is_empty());
-        assert!(at("tags: []\n").is_empty());
+        assert_eq!(at("title: no tags\n"), [] as [(String, String); 0]);
+        assert_eq!(at("tags: []\n"), [] as [(String, String); 0]);
     }
 
     #[test]

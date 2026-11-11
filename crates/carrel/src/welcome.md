@@ -71,6 +71,12 @@ That sounds like a small thing. It is the thing carrel is proudest of, because m
 readers lose their place the moment the lines move, and carrel cannot: a match is a
 place in the text, not a place on the screen.
 
+You can paste a phrase into search. Carrel takes the first nonblank line as text;
+newlines do not press Enter for you. Pasting also works in help and outline filters.
+While search is open, ↑ and ↓ (or the **older search** and **newer search** buttons)
+recall searches from this session. Going forward again brings back what you were
+typing. Searches are forgotten when you quit.
+
 `o` opens an **outline** of the document, one row per heading. Type to narrow it,
 then click a row or press Enter to jump there.
 
@@ -82,8 +88,8 @@ then click a row or press Enter to jump there.
 - `T` cycles the color **theme**. There are several; keep pressing until one suits
   the room you are in. Carrel remembers your choice.
 - `h` (or `F1`) opens the **help** sheet, a list of every key. You can type while it
-  is open to filter it: type `copy` and only the copying keys remain. `q` or Esc
-  closes it.
+  is open to filter it: type `copy` and only the copying keys remain. Esc clears
+  the filter; press Esc again to close help. You can also click its × button.
 - `H` hides the hint row when you know your way around, and brings it back when you
   do not. `B` hides the **heading bar** across the top, the one that names the
   section you are currently in.

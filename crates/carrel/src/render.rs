@@ -159,6 +159,11 @@ pub fn draw_full(
     // Cleared with the links, and for the same reason: what this frame does
     // not paint, this frame cannot be asked to click.
     painted.targets.clear();
+    // A resize can briefly report an empty viewport. There is no cell to
+    // paint, even for the small-window message or a modal's close button.
+    if frame.area().is_empty() {
+        return;
+    }
     if paint_tiny_modal(frame, app, &mut painted.targets) {
         return;
     }
@@ -1593,7 +1598,13 @@ fn paint_if_empty(frame: &mut Frame, app: &App, full: Rect) -> bool {
     frame.buffer_mut().set_stringn(
         full.x,
         full.y,
-        "This file is empty.",
+        if app.is_live_pipe() {
+            "Waiting for text…"
+        } else if app.showing_pipe() {
+            "This input is empty."
+        } else {
+            "This file is empty."
+        },
         full.width as usize,
         theme::dim(),
     );
@@ -2574,7 +2585,13 @@ fn paint_query_status(
 
 fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets) {
     let left = match &app.mode {
-        Mode::Search { input, .. } => format!("/{input}"),
+        Mode::Search { input, dir, .. } => {
+            let prefix = match dir {
+                crate::action::Direction::Forward => '/',
+                crate::action::Direction::Backward => '?',
+            };
+            format!("{prefix}{input}")
+        }
         // A one-shot note (a failed follow, an external URL) outranks the
         // filename until the next action clears it.
         Mode::Normal => app.note.clone().unwrap_or_else(|| app.path.clone()),
@@ -4885,7 +4902,7 @@ mod tests {
     #[test]
     fn a_viewport_too_small_to_lay_out_says_so_instead_of_panicking() {
         let buf = frame_of("hello\n", 4, 1);
-        assert!(!line(&buf, 0).is_empty());
+        assert_ne!(line(&buf, 0), "");
     }
 
     #[test]
@@ -5080,6 +5097,25 @@ mod tests {
         let buf = buffer_of(&app, 60, 30);
         let text: String = (0..30).map(|y| line(&buf, y) + "\n").collect();
         assert!(text.contains("no key matches that"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_live_pipe_says_it_is_waiting_not_finished() {
+        let mut app = App::new("(stdin — streaming…)".into(), Document::parse(""), 60, 10);
+        app.streaming = true;
+        app.piped = Some(String::new());
+        let text = |app: &App| {
+            let buf = buffer_of(app, 60, 10);
+            (0..10).map(|y| line(&buf, y) + "\n").collect::<String>()
+        };
+        assert!(text(&app).contains("Waiting for text…"));
+        app.streaming = false;
+        assert!(text(&app).contains("This input is empty."));
+        // A producer behind a file does not own that file's empty state.
+        app.streaming = true;
+        app.file = Some("empty.md".into());
+        app.path = "empty.md".into();
+        assert!(text(&app).contains("This file is empty."));
     }
 
     /// **The degraded states used to look like bugs.**
@@ -6588,6 +6624,6 @@ mod pane_frame_tests {
                 );
             }
         }
-        assert!(peek_buttons(&painted).is_empty());
+        assert_eq!(peek_buttons(&painted), [] as [crate::action::Action; 0]);
     }
 }

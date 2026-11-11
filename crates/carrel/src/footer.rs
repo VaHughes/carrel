@@ -84,7 +84,7 @@ pub fn of(app: &App) -> Footer {
     }
     // Ambient, not a mode: every mode above outranks it, and the keys are
     // the ordinary reading set — only the lamp says content is arriving.
-    if app.streaming {
+    if app.is_live_pipe() {
         return f('◉', "arriving", keymap::HINT_STREAMING);
     }
     // Lowest precedence of all: every mode above knows something more
@@ -111,12 +111,14 @@ pub(crate) mod tests {
     fn a_streaming_document_says_so_until_eof() {
         let mut a = reader();
         a.streaming = true;
+        a.path = "(stdin)".into();
+        a.piped = Some(String::new());
         let f = of(&a);
         assert_eq!((f.bulb, f.word), ('◉', "arriving"));
         // Streaming used to show the plain reading hints — "same keys,
-        // different weather". It shows its own now, because `F` exists ONLY
-        // while a document is growing and the footer is the one place anyone
-        // would find it.
+        // different weather". It shows its own now so the arriving text
+        // teaches `F` where it is useful. Watched files also offer it from
+        // the menu and help.
         assert_eq!(f.hints, keymap::HINT_STREAMING);
         assert!(f.hints.iter().any(|h| h.key == "F"));
 
@@ -190,6 +192,8 @@ pub(crate) mod tests {
     fn every_mode_outranks_the_invitation() {
         let mut a = reader();
         a.streaming = true;
+        a.path = "(stdin)".into();
+        a.piped = Some(String::new());
         a.first_run = true;
         assert_eq!(
             of(&a).hints,

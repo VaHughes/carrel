@@ -290,7 +290,7 @@ fn a_line_without_whitespace_parses_in_linear_time() {
     let time = |src: &str| {
         let t = Instant::now();
         let doc = Document::parse(src);
-        assert!(!doc.text.is_empty());
+        assert_ne!(doc.text, "");
         t.elapsed().as_secs_f64()
     };
     time(&small);
@@ -316,7 +316,7 @@ fn a_split_line_full_of_hashes_parses_in_linear_time() {
     let time = |src: &str| {
         let t = Instant::now();
         let doc = Document::parse(src);
-        assert!(!doc.text.is_empty());
+        assert_ne!(doc.text, "");
         t.elapsed().as_secs_f64()
     };
     time(&small);

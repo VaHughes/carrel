@@ -268,7 +268,10 @@ fn closing_a_document_opened_from_tags_returns_to_the_file_list() {
     update(&mut app, Action::CloseFile);
     assert!(app.is_home());
     assert!(app.desks.is_empty(), "the file list is not on the trail");
-    assert!(app.history.is_empty());
+    assert_eq!(
+        app.history,
+        [] as [(std::path::PathBuf, carrel::state::Place); 0]
+    );
 }
 
 #[test]

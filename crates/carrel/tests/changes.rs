@@ -80,7 +80,7 @@ fn a_reload_that_changes_nothing_you_can_see_marks_nothing() {
     let (mut app, path) = opened(d.path(), 80, 24);
     // Source formatting only: the display text is identical.
     rewrite(&mut app, &path, &BASE.replace("\n\n", "\n\n\n"));
-    assert!(app.changed.is_empty());
+    assert_eq!(app.changed, [] as [carrel_core::BlockIdx; 0]);
     assert_eq!(app.note.as_deref(), Some("reloaded"));
 }
 
@@ -342,4 +342,71 @@ fn esc_puts_the_news_away_without_acting_on_it() {
         update(&mut app, Action::SiblingOpen),
         carrel::app::Outcome::Idle
     );
+}
+
+#[test]
+fn a_live_rewrite_keeps_the_paragraph_being_read_and_the_search_cancel_destination() {
+    use carrel::action::{Direction, SearchKey, Where};
+    let paragraphs: Vec<String> = (0..80)
+        .map(|i| format!("Paragraph {i}: a unique place to keep while reading."))
+        .collect();
+    let original = paragraphs.join("\n\n");
+    let target = &paragraphs[40];
+    let replacements = [
+        format!("A newly inserted introduction.\n\n{original}"),
+        paragraphs[20..].join("\n\n"),
+    ];
+    for searching in [false, true] {
+        for replacement in &replacements {
+            let mut app = App::new("live.md".into(), Document::parse(&original), 50, 8);
+            let at = app.doc.text.find(target).unwrap() as u32;
+            app.view
+                .reveal(&app.doc, &app.layout, at, app.text_h(), Where::Top);
+            assert_eq!(app.view.anchor, at);
+            if searching {
+                update(&mut app, Action::SearchOpen(Direction::Forward));
+                carrel::app::paste_input(&mut app, "unique");
+            }
+            app.reload_from(replacement);
+            if searching {
+                update(&mut app, Action::SearchKey(SearchKey::Cancel));
+            }
+            let moved = app.doc.text.find(target).unwrap() as u32;
+            assert_eq!(app.view.anchor, moved, "searching={searching}");
+            app.on_resize(25, 12);
+            assert_eq!(
+                app.view.anchor, moved,
+                "resize must keep the carried position"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_stream_reparse_keeps_named_folds_and_bookmarks_without_reusing_node_ids() {
+    let original = "# History\n\nEarlier notes.\n\n<details><summary>More</summary>\n\nInside details.\n\n</details>\n\n## Later\n\nStill reading.";
+    let mut app = App::new("(stdin)".into(), Document::parse(original), 50, 10);
+    update(&mut app, Action::MarkToggle);
+    update(&mut app, Action::FoldAll);
+    let mut before = app.fold_keys();
+    before.sort();
+    assert_eq!(before.len(), 3);
+    app.reload_from(&format!(
+        "# New introduction\n\nAdded above.\n\n{original}\n\n## Just arrived\n\nNew text."
+    ));
+    let mut after = app.fold_keys();
+    after.sort();
+    assert_eq!(
+        after, before,
+        "new sections stay open; existing folds keep their names"
+    );
+    let marked = app.doc.text.find("History").unwrap() as u32;
+    assert_eq!(
+        app.marks,
+        [marked],
+        "the bookmark follows its original heading"
+    );
+    app.reload_from("");
+    assert_eq!(app.marks, [] as [u32; 0]);
+    assert_eq!(app.fold_keys(), [] as [String; 0]);
 }

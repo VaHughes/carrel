@@ -81,6 +81,7 @@ fn a_reload_judges_the_links_again() {
 fn a_pipe_that_is_still_arriving_is_not_judged() {
     let mut app = App::new("(stdin)".into(), Document::parse("x"), 80, 20);
     app.streaming = true;
+    app.piped = Some("x".into());
     app.reload_from("[gone](definitely-not-here.md)\n");
     assert!(app.dead_links.is_empty());
     app.streaming = false;

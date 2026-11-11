@@ -48,11 +48,11 @@ bumping `cargo-dist-version`.
 ## Test it as the command, not just as a test
 
 The gates prove the code is right; they do not prove it is what you are *running*. Make the
-`carrel` on your PATH a symlink to your own build, so `cargo build` is the only install step
-there is:
+`carrel` on your PATH a symlink to your own build, so `./scripts/build.sh` is the only install
+step there is:
 
 ```bash
-cargo build
+./scripts/build.sh
 ln -sfn "$PWD/target/debug/carrel" ~/.local/bin/carrel
 ```
 
@@ -61,6 +61,11 @@ A copied binary is the trap here. It goes stale on the next rebuild while still 
 which is a bug hunt for something already fixed. See
 [Running your own build as `carrel`](README.md#running-your-own-build-as-carrel) for the two
 caveats (`cargo clean`, and debug-build speed).
+
+The helper automatically cleans this checkout's `target/` before a build when it exceeds
+4 GiB; `CARREL_BUILD_CACHE_MIB` overrides the threshold. Pass normal build options such as
+`--release` or `--locked`. Plain Cargo commands use the smaller debug profile but do not
+perform this cleanup.
 
 ## How changes happen here
 

@@ -179,8 +179,13 @@ Move to the previous or next block.
 Put the current match in the middle, at the top, or at the bottom.
 .TP
 .BR / ", " ?
-Search forward and backward. Matches survive reflow and resize by
-construction. Typed punctuation finds the typographic form the page shows:
+Search forward and backward. Paste enters the first nonblank line (up to
+256 characters) without accepting the search. Help and outline filters also
+accept pasted text. Text pasted over the reading page does not run commands.
+While the search prompt is open, Up and Down (also clickable older/newer search
+buttons) recall up to twenty accepted searches from this session. Going forward
+past the newest returns to the unfinished query. Search history is not saved to disk.
+Matches survive reflow and resize by construction. Typed punctuation finds the typographic form the page shows:
 an apostrophe or quote finds a curly one, three dots an ellipsis, two
 hyphens an en dash and three an em dash. A single hyphen stays a hyphen.
 .TP
@@ -240,8 +245,9 @@ screen also carries a clickable
 chip on the blank row under it, which copies that block.
 .TP
 .B F
-Keep up with the end of a document that is still arriving on a pipe: the view
-stays at the end as content appears. Any deliberate move away lets go.
+Keep up with the end of a watched file or a document still arriving on a pipe:
+the view stays at the end as content appears. Scroll back, search, or jump elsewhere
+to let go. Keeping up and auto-read do not run together.
 .TP
 .B A
 Auto\-read: the view scrolls slowly on its own, a line at a time, until any
