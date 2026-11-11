@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-11
+Last updated: 2026-11-11 (final session wrap-up)
 
 ## Current state
 
@@ -51,7 +51,11 @@ Last updated: 2026-11-11
   intentionally ignored**, zero-warning Clippy on Rust 1.97.1 and 1.99.1, formatting,
   discipline and packaging. All targets also check on Rust 1.95.0 (MSRV) and 1.97.1.
   Extended runs passed 5,000 generated documents, 2,000 mixed navigation sequences,
-  and 20,000 hostile commit messages. The release build and terminal smoke checks passed.
+  20,000 hostile commit messages, and 50,000 partial rewrites (77,000 cases total).
+  The release build and five optimized terminal smoke checks passed. Implementation
+  commit `0477112` passed CI, including the MSRV job. A 15-minute idle-pipe soak used
+  3.48 seconds of CPU with sampled RSS unchanged at 7,004 KiB, and quit cleanly with
+  the writer still open (one small-document Linux measurement, not a resource bound).
   - *Paste into search, help and outline* once per paste; bracketed paste stays on throughout
     the TUI so pasted newlines and `q` cannot become commands. Inputs preserve whole graphemes
     at the 256-scalar paste limit and on Backspace; tabs separate words.
