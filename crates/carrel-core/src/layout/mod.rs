@@ -7,8 +7,8 @@
 //!
 //! Two stages with a seam between them:
 //!
-//! - [`units`] turns text into measured break units. **All Unicode is here.**
-//! - [`pack`] turns units into rows. **It never sees a string**, so its
+//! - `units` turns text into measured break units. **All Unicode is here.**
+//! - `pack` turns units into rows. **It never sees a string**, so its
 //!   invariants are testable against units built by hand.
 //!
 //! Keeping the base unit producer width-free is deliberate: the only

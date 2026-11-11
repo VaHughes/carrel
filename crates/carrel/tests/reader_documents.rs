@@ -41,7 +41,20 @@ const PARTS: &[&str] = &[
     "\r\n\n",
 ];
 
+fn property_config() -> ProptestConfig {
+    ProptestConfig {
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/proptest-regressions/reader_documents.txt"
+            )),
+        )),
+        ..ProptestConfig::default()
+    }
+}
+
 proptest! {
+    #![proptest_config(property_config())]
     #[test]
     fn mixed_markdown_keeps_valid_bytes_and_searches_through_layout_changes(
         pieces in prop::collection::vec(prop::sample::select(PARTS), 0..45),
@@ -83,5 +96,59 @@ proptest! {
                 }
             }
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+    #[test]
+    fn partial_rewrites_keep_search_and_bookmarks_inside_the_current_text(
+        pieces in prop::collection::vec(prop::sample::select(PARTS), 0..30),
+        fractions in prop::collection::vec(0usize..=1000, 1..8),
+        pattern in prop::sample::select(&["a", "界", "Heading", "Summary", "text"]),
+        width in 0u16..100,
+        height in 0u16..30,
+    ) {
+        use carrel::action::{Direction, SearchKey};
+        use carrel::app::Mode;
+
+        let source = format!("# Anchor\n\n{}{}", "A paragraph with text.\n\n".repeat(8), pieces.concat());
+        let mut app = App::new("rewrite.md".into(), Document::parse(&source), 80, 8);
+        update(&mut app, Action::GoToEnd);
+        prop_assert!(app.view.anchor > 0, "the stale-position check needs a nonzero starting place");
+        update(&mut app, Action::MarkToggle);
+        update(&mut app, Action::SearchOpen(Direction::Forward));
+        carrel::app::paste_input(&mut app, pattern);
+        // A writer truncates the file, then grows it again. Cuts can land
+        // inside delimiters whose completion changes the preceding parse.
+        let mut ends: Vec<_> = fractions.into_iter()
+            .map(|fraction| source.floor_char_boundary(source.len() * fraction / 1000))
+            .chain([0, source.len()])
+            .collect();
+        ends.sort_unstable();
+        ends.dedup();
+        for end in ends {
+            app.reload_from(&source[..end]);
+            prop_assert_eq!(&app.doc.text, &Document::parse(&source[..end]).text);
+            prop_assert!(app.doc.text.is_char_boundary(app.view.anchor as usize));
+            if let Mode::Search { saved, .. } = app.mode {
+                prop_assert!(app.doc.text.is_char_boundary(saved as usize));
+            } else {
+                prop_assert!(false, "a partial write closed the search prompt");
+            }
+            for &mark in &app.marks {
+                prop_assert!((mark as usize) < app.doc.text.len());
+                prop_assert!(app.doc.text.is_char_boundary(mark as usize));
+            }
+            let expected = search(&app.doc, pattern, true);
+            let actual = app.matches.as_ref().expect("active search survives a reload");
+            prop_assert_eq!(&actual.ranges, &expected.ranges);
+            prop_assert!(actual.current.is_none_or(|index| index < actual.len()));
+            app.on_resize(width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw_full(frame, &app, &mut Painted::default(), &mut HashMap::new())).unwrap();
+        }
+        update(&mut app, Action::SearchKey(SearchKey::Cancel));
+        prop_assert!(app.doc.text.is_char_boundary(app.view.anchor as usize));
     }
 }

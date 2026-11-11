@@ -8,7 +8,7 @@
 //! and a bare pipe gets it by default.
 //!
 //! ASCII-safe by policy: quote bars are `> `, no box drawing, and never an
-//! escape byte — nor any other control character, which [`push_text`] strips
+//! escape byte — nor any other control character, which `push_text` strips
 //! from the document's own text on the way out. Tables stay aligned (never
 //! cards — card gutter labels are paint decoration, which plain output by
 //! definition omits). NO RATATUI — `scripts/check-discipline.sh` rule 6.

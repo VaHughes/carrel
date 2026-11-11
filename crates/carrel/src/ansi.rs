@@ -13,7 +13,7 @@
 //! deliberately duplicated rather than parameterised: they differ in every
 //! branch, and a mode flag threaded through ten match arms would be harder to
 //! read than two honest functions. What opens a row does not differ, so it is
-//! not duplicated — [`crate::plain::open_row`] emits the block separator,
+//! not duplicated — `crate::plain::open_row` emits the block separator,
 //! quote bars, indent and prefix for both, after the copies here had already
 //! drifted out from under the `NO_COLOR` promise above. NO RATATUI — rule 6.
 
@@ -137,7 +137,7 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
                 RowKind::Decoration => pending_blanks += 1,
                 RowKind::Text { hyphen, split, .. } => {
                     // Separator, quote bars, indent and prefix are [`plain`]'s
-                    // to decide — see [`crate::plain::open_row`] for why the
+                    // to decide — see `crate::plain::open_row` for why the
                     // duplication this module's header defends stops there.
                     // The prefix comes back unstyled: a bullet needs no weight.
                     let mut line = crate::plain::open_row(

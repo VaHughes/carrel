@@ -653,7 +653,7 @@ pub fn help_row_keys(key: &str) -> Option<Vec<KeyEvent>> {
 
 /// What clicking a help row does: the action its first key maps to, through
 /// the same dispatcher a real key press goes through. The help tables carry
-/// the answer as their third column ([`HelpRow`]); this is the oracle the
+/// the answer as their third column ([`HelpRow`](crate::keymap::HelpRow)); this is the oracle the
 /// test `every_help_row_runs_what_its_key_does` holds that column to.
 #[must_use]
 pub fn help_row_action(key: &str, home: bool) -> Option<Action> {

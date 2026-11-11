@@ -4,6 +4,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- Fixed broken API-documentation links and added a warning-free documentation check to CI.
+
 - **Paste into search, help and the outline.** One bounded line enters at once,
   including Unicode and tab-separated words; pasted newlines never accept a search
   or become reader commands. Backspace removes a whole visible character, including

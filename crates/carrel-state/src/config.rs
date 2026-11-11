@@ -30,7 +30,7 @@
 //! the 300 KB buys something. Until then it buys a dependency.
 //!
 //! Booleans accept `true`/`false`, `1`/`0` and `yes`/`no`, in any case; see
-//! [`flag`], which is the ONE reading of a boolean this file has.
+//! `flag`, which is the ONE reading of a boolean this file has.
 //!
 //! # Whose key is it
 //!
@@ -78,7 +78,7 @@ use crate::state::write_atomic;
 /// whole thing to answer a single key. That is not a measurable cost at this
 /// size, and it is not the reason to fix it: six copies of "find a key, trim
 /// it, decide what its value means" is six places for the readings to drift
-/// apart, and they did — see [`flag`].
+/// apart, and they did — see `flag`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Config {
     pub root: Option<PathBuf>,

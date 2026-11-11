@@ -1,6 +1,6 @@
-# The five gates CONTRIBUTING names, in its order, and one step more.
+# The five gates CONTRIBUTING names, plus compilation and tooling checks.
 #
-# The extra step is `cargo check --workspace --all-targets`. The benches are
+# `cargo check --workspace --all-targets` compiles the benches. They are
 # not RUN here — that is the packaging cycle's business, and a timing number
 # from a shared runner would be noise anyway — but nothing else compiles them,
 # and a bench that stopped compiling should not reach main.
@@ -61,6 +61,11 @@ jobs:
 
       - name: Benches still compile
         run: cargo check --workspace --all-targets
+
+      - name: Public API documentation has no broken links
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
       - name: Local build helper keeps cleanup within the checkout
         run: python3 scripts/check-build-helper.py

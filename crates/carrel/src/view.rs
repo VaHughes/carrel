@@ -126,7 +126,7 @@ fn gap_byte(doc: &Document, l: &Layout, b: BlockIdx, sub: usize) -> Option<u32> 
 }
 
 /// The absolute row an anchor names: the row of its block it lands on —
-/// or, for a byte of the separator before a block ([`gap_byte`]), the row
+/// or, for a byte of the separator before a block (`gap_byte`), the row
 /// just above that block, which is the gap it names. Just above, not
 /// "the previous block's last row": a folded block before has no rows,
 /// and the row above is still the one that was on top.

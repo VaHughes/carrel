@@ -42,7 +42,7 @@
 //!   English when its prose reads as English ([`reads_as_english`]). A
 //!   declared language the patterns here do not cover turns hyphenation
 //!   OFF — it never falls back to English. See [`hyphenation_for`].
-//! - **Only a free-standing lowercase word divides** ([`word_in`]), spelled
+//! - **Only a free-standing lowercase word divides** (`word_in`), spelled
 //!   wholly in its language's alphabet. That one rule excludes identifiers,
 //!   paths, URLs, numbers, acronyms, proper nouns and every word the patterns
 //!   were not built for. German, where every noun is capitalized, is the one
@@ -568,7 +568,7 @@ pub(crate) fn word_in(language: Hyphenation, content: &str) -> Option<Range<usiz
 }
 
 /// `word`'s letters, folded to lowercase, or `None` when it has too many to
-/// divide. `word` is what [`word_in`] found.
+/// divide. `word` is what `word_in` found.
 fn letters(word: &str) -> Option<([char; MAX_WORD], usize)> {
     let mut out = ['.'; MAX_WORD];
     let mut n = 0;
@@ -580,7 +580,7 @@ fn letters(word: &str) -> Option<([char; MAX_WORD], usize)> {
 }
 
 /// Every place `word` may be divided, earliest first, as `(letters before
-/// it, byte offset into word)`. `word` is what [`word_in`] found.
+/// it, byte offset into word)`. `word` is what `word_in` found.
 pub(crate) fn divisions(
     language: Hyphenation,
     word: &str,
@@ -633,7 +633,7 @@ const ENGLISH: [&str; 14] = [
 
 /// Does this document's prose read as English?
 ///
-/// Counts function words over the first [`SAMPLE_WORDS`] words of running
+/// Counts function words over the first `SAMPLE_WORDS` words of running
 /// prose (paragraphs, list items, definitions — never code or tables).
 /// Measured 2026-09-30: nine English documents, from terse status notes to a
 /// tutorial, spend between 10% and 18% of their words on the list above;

@@ -36,7 +36,7 @@ const SNIFF_LINES: usize = 40;
 /// restricts this to piped input and to files named `.diff`/`.patch`; that
 /// single rule removes the whole class of "my markdown document *about* diffs
 /// got mangled" bugs. What is left is a strong marker in the first
-/// [`SNIFF_LINES`] lines.
+/// `SNIFF_LINES` lines.
 #[must_use]
 pub fn looks_like_diff(text: &str) -> bool {
     text.lines().take(SNIFF_LINES).any(|l| {
@@ -481,7 +481,7 @@ fn neutralize(line: &str) -> std::borrow::Cow<'_, str> {
 /// Commits become `#` headings, files become `##` headings with their line
 /// counts, and each file's hunks become one `diff`-tagged fence. Anything that
 /// is neither (a commit message, `Author:`, trailing prose) passes through as
-/// text — see [`emit_message`] for how it keeps its lines and its section —
+/// text — see `emit_message` for how it keeps its lines and its section —
 /// which is what makes `git log` readable rather than merely not-broken.
 #[must_use]
 #[allow(clippy::too_many_lines)]

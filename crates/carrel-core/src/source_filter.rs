@@ -11,7 +11,7 @@
 //! every one of those, and the file list then disagrees with the open file.
 //!
 //! [`SourceFilter::may_match`] is a SUPERSET test: it is `false` only when
-//! the reader's [`search`](crate::search) finds nothing in
+//! the reader's [`search`](crate::search()) finds nothing in
 //! `Document::parse(src)`. A `true` costs the caller one parse; a wrong
 //! `false` costs a file the reader would have found, so every relaxation
 //! here leans toward `true`. Three passes, cheapest first:
@@ -193,7 +193,7 @@ impl SourceFilter {
 /// shows for it, or `None` when it holds none. Depends on the source alone,
 /// never on a needle, so a caller may keep it for as long as the file is
 /// unchanged. A source that cannot hold inline math (see
-/// [`may_hold_inline_math`]) costs a byte scan; one that can costs a
+/// `may_hold_inline_math`) costs a byte scan; one that can costs a
 /// tokenizer pass, no document build.
 #[must_use]
 pub fn math_view(src: &str) -> Option<String> {

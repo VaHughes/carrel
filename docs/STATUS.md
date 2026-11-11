@@ -47,7 +47,7 @@ Last updated: 2026-11-11
 ## Recently completed
 
 - Unreleased (2026-11-11) — **small reading improvements, with no new dependencies or
-  settings.** All five local gates passed: **1,470 tests passed, zero failed, two
+  settings.** All five local gates passed: **1,471 tests passed, zero failed, two
   intentionally ignored**, zero-warning Clippy on Rust 1.97.1 and 1.99.1, formatting,
   discipline and packaging. All targets also check on Rust 1.95.0 (MSRV) and 1.97.1.
   Extended runs passed 5,000 generated documents, 2,000 mixed navigation sequences,
@@ -78,6 +78,8 @@ Last updated: 2026-11-11
   - *Preview and tooling* — reproducible static README screenshot; cache helper preserves
     Cargo's cleanup marker guard, confines output to the checkout, and has isolated tests.
     Rust 1.99 Clippy assertions fixed without changing CI pins or suppressing lints.
+    A stricter API-doc build found broken/private links; these are corrected and checked in CI.
+    A mutation-checked property also covers search and bookmark validity during partial rewrites.
 
 
 - Unreleased (2026-11-02) — **every known defect fixed**, each test-first and each test

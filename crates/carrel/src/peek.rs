@@ -362,7 +362,7 @@ impl Peek {
         (v.above + v.below > 0).then_some(v.lines.len())
     }
 
-    /// The box in a `cols`-wide window, on `page` ([`Self::place`]).
+    /// The box in a `cols`-wide window, on `page` (`Self::place`).
     #[must_use]
     pub fn zone<'a>(
         &self,

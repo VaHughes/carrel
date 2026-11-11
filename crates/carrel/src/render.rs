@@ -78,7 +78,7 @@ pub struct OscLink {
     pub text: String,
     pub url: String,
     /// The style the cell was actually painted with, read back off the
-    /// buffer by [`settle_links`] once every painter has had its say.
+    /// buffer by `settle_links` once every painter has had its say.
     ///
     /// The pass repaints these cells, so it has to know what they look like.
     /// It used to hard-code one colour — carrel's own amber — which meant

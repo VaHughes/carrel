@@ -14,8 +14,8 @@
 //!
 //! One palette is not in that table: [`OMARCHY`] is derived at runtime from
 //! the colours the desktop publishes ([`crate::omarchy`]) and can be replaced
-//! while the reader is up, so [`ACTIVE`] holding [`OMARCHY_SLOT`] means "look
-//! in [`DESKTOP`] instead". Everything else about it — how it is named, how it
+//! while the reader is up, so `ACTIVE` holding `OMARCHY_SLOT` means "look
+//! in `DESKTOP` instead". Everything else about it — how it is named, how it
 //! cycles, how it is persisted — is the same as for any built-in.
 //!
 //! # Third-party palettes
@@ -38,7 +38,7 @@ use ratatui::style::{Color, Modifier, Style};
 /// `terminal` theme a first-class palette rather than a special case.
 ///
 /// `Copy` on purpose: the desktop palette ([`install_omarchy`]) is built at
-/// runtime and can be replaced while the reader is up, so [`active`] hands
+/// runtime and can be replaced while the reader is up, so `active` hands
 /// back a value rather than a `&'static` borrowed from a table that may be
 /// about to change. ~120 bytes off a hot L1 line, against a `Box::leak` per
 /// theme change — measured at noise either way, and this one does not leak.
@@ -647,8 +647,8 @@ fn tinted(s: Style) -> Style {
 /// The name the desktop palette answers to, in config and on `T`.
 pub const OMARCHY: &str = "omarchy";
 
-/// [`ACTIVE`] holding this means "the desktop palette", which lives in
-/// [`DESKTOP`] rather than in [`PALETTES`]. A sentinel rather than an index
+/// `ACTIVE` holding this means "the desktop palette", which lives in
+/// `DESKTOP` rather than in [`PALETTES`]. A sentinel rather than an index
 /// because the built-in table is a compile-time constant and this one is not.
 const OMARCHY_SLOT: usize = usize::MAX;
 
@@ -1019,7 +1019,7 @@ pub fn bar_cut(bar: Style) -> Style {
 /// as a new colour — and so it costs no new slot in seventeen palettes. The
 /// row it sits on is the terminal's base background, which is what makes
 /// each chip a visible rectangle; under `NO_COLOR` the background becomes
-/// `REVERSED` through [`tinted`] and the chips stay chips.
+/// `REVERSED` through `tinted` and the chips stay chips.
 #[must_use]
 pub fn button() -> Style {
     status()
@@ -1105,7 +1105,7 @@ pub fn dead_link() -> Style {
 /// themes — and obviously fine in the one the tests happen to run in.
 /// Modifiers cannot be defeated by a palette, need no new entry in
 /// seventeen tables, and are already right under `NO_COLOR` and in
-/// monochrome without going through [`tinted`] at all.
+/// monochrome without going through `tinted` at all.
 ///
 /// **Both** bold and underline, because each alone collides with something
 /// already on the cell: a link is underlined by [`inline`], and a selected

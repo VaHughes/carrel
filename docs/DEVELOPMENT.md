@@ -36,7 +36,9 @@ The first five (test, clippy, fmt, discipline, packaging) plus `cargo check` are
 `.github/workflows/ci.yml` runs on `main` and on pull requests; `release.yml` runs the same
 gate job against the tagged commit before building anything. CI also runs
 `python3 scripts/check-build-helper.py` to verify the local build helper without deleting
-or building anything in the real workspace.
+or building anything in the real workspace. It also builds public API documentation with
+`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`; links to private
+helpers are plain code, while links to public items must resolve.
 
 When scripting the gates, run each as its own `;`-terminated command with an echoed marker and
 gate on exit codes: `set -e` does not abort on the left side of `&&`, and `grep -c` exits 1 on a
@@ -133,6 +135,8 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   `tests/reader_documents.rs` composes incomplete Markdown and Unicode across arbitrary sizes.
   Raise `PROPTEST_CASES` for longer local runs; preserve genuine failure seeds. The hostile
   commit-message property in core explicitly runs 2,000 cases per invocation.
+  `reader_documents` also checks truncated and growing Markdown with active search and
+  bookmarks; its failure seeds go to `proptest-regressions/reader_documents.txt`.
 - **Installer smokes** additionally override `HOME`. The dist shell installer writes four
   dotfiles (`~/.bashrc`, `~/.profile`, `~/.zshrc`, `~/.config/fish/conf.d/carrel.env.fish`);
   grep all four for the scratch path before and after.

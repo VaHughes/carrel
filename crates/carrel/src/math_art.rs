@@ -43,7 +43,7 @@ impl MathBox {
     /// A UTF-8 string's display width never exceeds its byte length — the
     /// narrowest encoding of a printing cluster is one byte for one cell — so
     /// the byte test is conservative in the safe direction, and past it
-    /// [`cluster_width`] cannot silently cap. See [`MAX_DEPTH`] for what
+    /// [`cluster_width`] cannot silently cap. See `MAX_DEPTH` for what
     /// refusal means.
     fn sym(s: &str) -> Option<Self> {
         u16::try_from(s.len()).ok().map(|_| Self {
@@ -213,7 +213,7 @@ const MAX_DEPTH: usize = 64;
 /// one", which is exactly the state `App::rebuild_math_art` already produces
 /// for math that will not parse, and which `App::math_form` renders as
 /// literal LaTeX source. It happens when the expression nests past
-/// [`MAX_DEPTH`], or when a box would be wider than the `u16` that
+/// `MAX_DEPTH`, or when a box would be wider than the `u16` that
 /// [`MathBox::width`] — and every width comparison in `App` — is made of.
 #[must_use]
 pub fn try_lay_out(expr: &MathExpr, mode: Mode) -> Option<MathBox> {
@@ -223,7 +223,7 @@ pub fn try_lay_out(expr: &MathExpr, mode: Mode) -> Option<MathBox> {
 /// The total form of [`try_lay_out`], for callers that hold a `MathBox` and
 /// not an `Option<MathBox>`.
 ///
-/// A refused expression becomes [`MathBox::no_fit`], which is wider than any
+/// A refused expression becomes `MathBox::no_fit`, which is wider than any
 /// terminal and so takes `App::math_form`'s source rung — the same rendering
 /// the honest `None` would produce. Prefer [`try_lay_out`]: it says what
 /// happened instead of encoding it in a width.

@@ -230,7 +230,7 @@ pub fn save_cache(root: &Path, entries: &[Entry]) {
 }
 
 /// `<mtime seconds>\t<path>` per line, the path escaped by
-/// [`crate::state::escape_field`] — same reason as the positions file, and
+/// `crate::state::escape_field` — same reason as the positions file, and
 /// the same helper so there is only one answer to what an escaped path is.
 ///
 /// A malformed line is skipped and a corrupt file is simply no cache. **The
@@ -279,8 +279,8 @@ pub fn save_cache_in(dir: &Path, root: &Path, entries: &[Entry]) {
 ///
 /// **Reads only the head of the file.** A home screen paints fourteen rows;
 /// reading 110k files to fill them is not affordable, so this takes the first
-/// [`TITLE_BYTES`] and stops — unless a frontmatter block runs past them
-/// (see [`read_head`]). Callers cache by `(path, mtime)`.
+/// `TITLE_BYTES` and stops — unless a frontmatter block runs past them
+/// (see `read_head`). Callers cache by `(path, mtime)`.
 ///
 /// Frontmatter is found by the reader's own rule, and the title is read from
 /// a line the reader's card shows as the `title` key — so a `---` rule
@@ -340,7 +340,7 @@ pub fn frontmatter_title(body: &str, format: carrel_core::MetaFormat) -> Option<
 
 /// The frontmatter block that opens a regular file, and the text it was
 /// found in (`body` and `end` index that text) — `None` when the file has
-/// none, is not a regular file, or cannot be read. See [`read_head`].
+/// none, is not a regular file, or cannot be read. See `read_head`.
 #[must_use]
 pub fn read_front(path: &Path, first: usize) -> Option<(String, carrel_core::Frontmatter)> {
     let (text, fm, _) = read_head(path, first, false)?;
@@ -412,7 +412,7 @@ fn read_head(
     Some((text, fm, cut))
 }
 
-/// How far [`read_head`] keeps reading for a closing fence before deciding
+/// How far `read_head` keeps reading for a closing fence before deciding
 /// the opening `---` was a rule, not frontmatter.
 pub const FRONTMATTER_MAX: u64 = 64 * 1024;
 

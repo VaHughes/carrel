@@ -467,7 +467,7 @@ pub struct App {
     /// said so in the help.
     pub marks: Vec<u32>,
     /// May this document be sniffed as a raw diff? Set per document by
-    /// whoever opened it — see [`Self::parse_adapting`].
+    /// whoever opened it — see `Self::parse_adapting`.
     pub diff_ok: bool,
     /// `--diff` / `--no-diff`: a command-line override that outranks the
     /// per-document rule for the whole run.
@@ -597,7 +597,7 @@ pub struct App {
     /// one on screen as a button every frame and finding them is a scan of
     /// the whole text.
     pub footnote_marks: Vec<(u32, u32)>,
-    /// Links that lead nowhere; see [`Self::find_dead_links`]. Painted
+    /// Links that lead nowhere; see `Self::find_dead_links`. Painted
     /// struck through.
     pub dead_links: std::collections::HashSet<LinkId>,
     /// `(done, total)` task items; see [`Self::task_counts`].
@@ -1475,7 +1475,7 @@ impl App {
     }
 
     /// Would asking for the tags page read anything? The one predicate
-    /// [`request_tags`] refuses by and the menus offer `Tags` by.
+    /// `request_tags` refuses by and the menus offer `Tags` by.
     #[must_use]
     pub fn tags_readable(&self) -> bool {
         let empty = self
@@ -1536,7 +1536,7 @@ impl App {
         Some(desk.label.as_str())
     }
 
-    /// [`Self::location`]'s path, for something that only needs to know
+    /// `Self::location`'s path, for something that only needs to know
     /// which document this is.
     #[must_use]
     pub fn location_path(&self) -> Option<PathBuf> {

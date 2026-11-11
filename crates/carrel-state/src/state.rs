@@ -8,7 +8,7 @@
 //!
 //! Format: one entry per line,
 //! `anchor<TAB>saved_at<TAB>permille<TAB>words<TAB>path`, the path
-//! **escaped** by [`escape_field`]. **The old three-field form still
+//! **escaped** by `escape_field`. **The old three-field form still
 //! parses** — an entry written before 2026-08-21 simply has no progress to
 //! show, rather than being dropped — and malformed lines are ignored, so a
 //! newer version's file cannot break an older binary. **Nor is it lost:** a
@@ -28,7 +28,7 @@
 //!
 //! # The on-disk helpers live here
 //!
-//! [`write_atomic`] and [`escape_field`] are `pub(crate)` and used by
+//! `write_atomic` and `escape_field` are `pub(crate)` and used by
 //! `config.rs` and `scan.rs` as well. They belong to one module because two
 //! spellings of "escape a path into a line" is exactly how the bookmarks
 //! file came to be corruptible; this is the module whose whole subject is
@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 ///
 /// `fs::write` opens with `O_TRUNC` and then writes, so the file is empty for
 /// as long as the write takes. Every file this project keeps is a
-/// read-modify-write of *everything* it holds — up to [`CAP`] reading
+/// read-modify-write of *everything* it holds — up to `CAP` reading
 /// positions — so a crash, a SIGKILL or a full disk inside that window does
 /// not cost the last line, it costs all of them, and a second carrel reading
 /// at that instant sees a truncated file. Writing a sibling temp file and
@@ -115,7 +115,7 @@ pub(crate) fn escape_field(s: &str) -> String {
     out
 }
 
-/// The inverse of [`escape_field`]. An unknown escape keeps both characters,
+/// The inverse of `escape_field`. An unknown escape keeps both characters,
 /// so a path this version never wrote is returned as it was found rather than
 /// silently mangled.
 pub(crate) fn unescape_field(s: &str) -> String {
@@ -202,7 +202,7 @@ pub enum Place {
 /// cold reopen had no content to match, so now the place keeps it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Kept {
-    /// [`block_hash`] of the block's display text.
+    /// `block_hash` of the block's display text.
     pub hash: u64,
     /// Which of the blocks with that text it was: 0 for the first.
     pub nth: u32,
@@ -473,7 +473,7 @@ pub fn load_position_in(dir: &Path, file: &Path) -> Option<Place> {
 
 /// Upsert `file`'s place; `None` removes the entry (the caller passes it at
 /// the top of the file, which is the default — remembering it is noise).
-/// Keeps the newest [`CAP`] entries by save time.
+/// Keeps the newest `CAP` entries by save time.
 pub fn save_position_in(
     dir: &Path,
     file: &Path,
@@ -574,11 +574,11 @@ pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<Place> {
 /// last because they are "the tab-safe field"; that is backwards. Whichever
 /// field comes last is the one allowed to contain the separator, so putting
 /// the marks there made the PATH the field that must not contain a tab — and
-/// Unix paths may. [`escape_field`] is what makes the line safe, in both
+/// Unix paths may. `escape_field` is what makes the line safe, in both
 /// files; the ordering is now free, and stays as it is only because changing
 /// it would orphan every bookmark already on disk.
 ///
-/// Keeps the newest [`MARK_CAP`] documents. Unlike `positions` there is no
+/// Keeps the newest `MARK_CAP` documents. Unlike `positions` there is no
 /// timestamp to sort on, so "newest" is file order: this function appends the
 /// document it just wrote and drops from the front, which is oldest-first as
 /// long as every write comes through here.

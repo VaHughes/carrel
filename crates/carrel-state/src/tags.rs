@@ -10,7 +10,7 @@
 //! machinery. It is `grep::render_results`' idea again, and `carrel_core::diff`'s.
 //!
 //! Same streaming shape as `grep.rs` and `scan.rs`: a background thread walks
-//! the already-scanned entry list and reads each file (to [`BODY_MAX`]), so
+//! the already-scanned entry list and reads each file (to `BODY_MAX`), so
 //! the filesystem never blocks a frame. A file is parsed only when a byte
 //! scan cannot rule out an inline tag ([`may_hold_inline_tag`]); a note whose
 //! only hashes open headings costs the read and nothing more.
@@ -125,7 +125,7 @@ pub enum Msg {
 /// they sent only on finding a tagged document — so in a folder of untagged
 /// notes, a scan whose page had been closed read every file anyway, and
 /// opening and closing the tags page a few times left that many eight-thread
-/// scans reading up to [`BODY_MAX`] a file.
+/// scans reading up to `BODY_MAX` a file.
 #[derive(Debug)]
 pub struct Scan {
     rx: Receiver<Msg>,
