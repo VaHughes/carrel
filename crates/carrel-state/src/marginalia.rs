@@ -245,7 +245,7 @@ pub fn export_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Res
         path.parent()
             .ok_or_else(|| invalid("missing export directory"))?,
     )?;
-    write_atomic(&path, &export_markdown(file, annotations))?;
+    write_atomic(&path, export_markdown(file, annotations))?;
     Ok(path)
 }
 

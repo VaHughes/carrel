@@ -8,7 +8,8 @@
 //!
 //! Format: one entry per line,
 //! `anchor<TAB>saved_at<TAB>permille<TAB>words<TAB>path`, the path
-//! **escaped** by `escape_field`. **The old three-field form still
+//! **escaped** by `escape_path` (`escape_field`, plus `\xNN` for a byte
+//! that is not UTF-8). **The old three-field form still
 //! parses** — an entry written before 2026-08-21 simply has no progress to
 //! show, rather than being dropped — and malformed lines are ignored, so a
 //! newer version's file cannot break an older binary. **Nor is it lost:** a
@@ -61,8 +62,29 @@ use std::path::{Path, PathBuf};
 /// than a shredded one. Doing better needs a lock file, which needs a policy
 /// for the stale lock a killed reader leaves behind, and that is a worse
 /// trade for state this size.
-pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+///
+/// **A symlink is written through, not replaced.** `rename` onto a link
+/// replaces the LINK, so a stow-managed `~/.config/carrel/config` pointing
+/// into a dotfiles repo silently became a regular file the first time a
+/// theme was cycled, and the repo's copy stopped changing. The target is
+/// resolved first and the temp file goes beside it, so the rename stays
+/// within the target's filesystem and the link keeps pointing where it did.
+pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
     use std::io::Write as _;
+    let resolved;
+    let path = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => {
+            // A dangling link has nothing to canonicalize; write where it
+            // points, which is what the link says the file is.
+            resolved = std::fs::canonicalize(path).or_else(|_| {
+                let parent = path.parent().unwrap_or_else(|| Path::new("."));
+                std::fs::read_link(path).map(|l| parent.join(l))
+            })?;
+            resolved.as_path()
+        }
+        _ => path,
+    };
+    let text = text.as_ref();
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     // The pid keeps two carrels from writing the same temp file and renaming
@@ -70,7 +92,7 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let write = |tmp: &Path| -> std::io::Result<()> {
         let mut f = std::fs::File::create(tmp)?;
-        f.write_all(text.as_bytes())?;
+        f.write_all(text)?;
         f.sync_all()
     };
     if let Err(e) = write(&tmp) {
@@ -140,6 +162,114 @@ pub(crate) fn unescape_field(s: &str) -> String {
         }
     }
     out
+}
+
+/// [`escape_field`] for a path, losslessly.
+///
+/// A path is bytes, not text. `display()` turned every byte that is not
+/// UTF-8 into U+FFFD, so `\xff.md` and `\xfe.md` shared one position, one
+/// bookmark list and one set of folds, and the home screen offered a
+/// `\u{fffd}.md` that does not exist. Each such byte is written `\xNN`
+/// instead. A path that IS UTF-8 escapes exactly as before, so every line
+/// already on disk still matches; and since `escape_field` writes a
+/// backslash as `\\`, no line this version or the last wrote has `\x` in
+/// it to be misread.
+fn escape_path(p: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::fmt::Write as _;
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut out = String::new();
+        for chunk in p.as_os_str().as_bytes().utf8_chunks() {
+            out.push_str(&escape_field(chunk.valid()));
+            for b in chunk.invalid() {
+                let _ = write!(out, "\\x{b:02x}");
+            }
+        }
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        escape_field(&p.to_string_lossy())
+    }
+}
+
+/// The inverse of [`escape_path`], with [`unescape_field`]'s rule that an
+/// escape it does not know keeps both characters.
+fn unescape_path(s: &str) -> PathBuf {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let hex = b
+            .get(i + 2..i + 4)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok());
+        match (b.get(i + 1), hex) {
+            (Some(b't'), _) => out.push(b'\t'),
+            (Some(b'n'), _) => out.push(b'\n'),
+            (Some(b'r'), _) => out.push(b'\r'),
+            (Some(b'\\'), _) => out.push(b'\\'),
+            (Some(b'x'), Some(byte)) => {
+                out.push(byte);
+                i += 4;
+                continue;
+            }
+            // A trailing backslash, or an escape this version never wrote:
+            // the backslash stays, and what follows is read as itself.
+            _ => {
+                out.push(b'\\');
+                i += 1;
+                continue;
+            }
+        }
+        i += 2;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        PathBuf::from(std::ffi::OsString::from_vec(out))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(&out).into_owned())
+    }
+}
+
+/// A state file's bytes; a file that is not there yet is empty.
+///
+/// **Any other failure is an error, and a save stops at it.** Every save
+/// here rewrites the whole file from what it read, so a file it could not
+/// read — no permission, an I/O error — would be replaced by the one entry
+/// being saved. `marginalia::save_in` refuses for the same reason. The
+/// callers drop the error, so the refusal is quiet.
+fn read_state(path: &Path) -> std::io::Result<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(b) => Ok(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// The non-blank lines of a state file, as BYTES.
+///
+/// Bytes because `read_to_string` fails on a single byte that is not UTF-8
+/// — a torn write from a release that still truncated in place, a disk
+/// error — and the save that followed read "nothing" and wrote back only
+/// its own entry: every other document's position gone. Reading line by
+/// line, rather than refusing the whole file, means one bad line costs only
+/// itself: it is unreadable, so it is kept verbatim like a line from a
+/// newer carrel, and every line around it goes on working.
+fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes
+        .split(|&b| b == b'\n')
+        .map(|l| l.strip_suffix(b"\r").unwrap_or(l))
+        .filter(|l| !l.trim_ascii().is_empty())
 }
 
 /// Keep the most recent N files. Positions are a convenience, not a
@@ -473,35 +603,42 @@ pub struct Entry {
     pub permille: Option<u16>,
     /// The document's word count when it was last read, for the estimate.
     pub words: Option<u32>,
-    pub path: String,
+    /// The document, byte for byte — not a `String`, because a path need
+    /// not be UTF-8 and a lossy one names a file that does not exist.
+    pub path: PathBuf,
 }
 
-fn parse(text: &str) -> Vec<Entry> {
-    text.lines().filter_map(parse_line).collect()
+/// Every entry this version can read, in file order. A line that is not
+/// UTF-8 is simply not one of them.
+fn parse(bytes: &[u8]) -> impl Iterator<Item = Entry> + '_ {
+    lines(bytes).filter_map(|l| parse_line(std::str::from_utf8(l).ok()?))
 }
 
 fn parse_line(line: &str) -> Option<Entry> {
-    let mut it = line.splitn(5, '\t');
-    let place = Place::decode(it.next()?)?;
-    let saved_at = it.next()?.parse().ok()?;
-    let third = it.next()?;
-    // Three fields: the old form, where the third IS the path.
-    let Some(fourth) = it.next() else {
-        return (!third.is_empty()).then(|| Entry {
-            place,
-            saved_at,
-            permille: None,
-            words: None,
-            path: unescape_field(third),
-        });
+    // Split on EVERY tab and require the exact count. The path is escaped,
+    // so it can never hold a raw tab, and a line with more fields than this
+    // version writes is a newer carrel's. `splitn(5)` read
+    // `s10+0 ⇥ … ⇥ newfield=1 ⇥ /docs/plan.md` as the path
+    // `newfield=1⇥/docs/plan.md`, and the next save wrote it back with the
+    // tab escaped — a newer entry corrupted rather than preserved.
+    let fields: Vec<&str> = line.split('\t').collect();
+    let (place, saved_at, progress, path) = match fields[..] {
+        // The old form, where the third IS the path.
+        [place, saved_at, path] => (place, saved_at, None, path),
+        [place, saved_at, permille, words, path] => {
+            (place, saved_at, Some((permille, words)), path)
+        }
+        _ => return None,
     };
-    let path = it.next()?;
-    (!path.is_empty()).then(|| Entry {
-        place,
-        saved_at,
-        permille: third.parse().ok(),
-        words: fourth.parse().ok(),
-        path: unescape_field(path),
+    if path.is_empty() {
+        return None;
+    }
+    Some(Entry {
+        place: Place::decode(place)?,
+        saved_at: saved_at.parse().ok()?,
+        permille: progress.and_then(|(p, _)| p.parse().ok()),
+        words: progress.and_then(|(_, w)| w.parse().ok()),
+        path: unescape_path(path),
     })
 }
 
@@ -511,38 +648,42 @@ fn parse_line(line: &str) -> Option<Entry> {
 /// are the caller's to drop — this layer does not touch the disk to check.
 #[must_use]
 pub fn recent_in(dir: &Path) -> Vec<Entry> {
-    let Ok(text) = std::fs::read_to_string(dir.join("positions")) else {
+    let Ok(bytes) = std::fs::read(dir.join("positions")) else {
         return Vec::new();
     };
-    let mut v = parse(&text);
+    let mut v: Vec<Entry> = parse(&bytes).collect();
     v.sort_by_key(|e| std::cmp::Reverse(e.saved_at));
     v
 }
 
 /// The canonical key for a file: symlink-resolved when possible, so the same
-/// document reached by two spellings shares one position.
-fn key(file: &Path) -> String {
-    std::fs::canonicalize(file)
-        .unwrap_or_else(|_| file.to_path_buf())
-        .display()
-        .to_string()
+/// document reached by two spellings shares one position. A path, not a
+/// string, so two names that differ only in bytes that are not UTF-8 stay
+/// two documents; [`escape_path`] spells it for the file.
+fn key(file: &Path) -> PathBuf {
+    std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf())
+}
+
+/// Seconds since the epoch, now.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The saved place for `file`, if any. A missing directory, file, or entry
 /// is `None` — never an error.
 #[must_use]
 pub fn load_position_in(dir: &Path, file: &Path) -> Option<Place> {
-    let text = std::fs::read_to_string(dir.join("positions")).ok()?;
+    let bytes = std::fs::read(dir.join("positions")).ok()?;
     let k = key(file);
-    parse(&text)
-        .into_iter()
-        .find(|e| e.path == k)
-        .map(|e| e.place)
+    parse(&bytes).find(|e| e.path == k).map(|e| e.place)
 }
 
 /// Upsert `file`'s place; `None` removes the entry (the caller passes it at
 /// the top of the file, which is the default — remembering it is noise).
-/// Keeps the newest `CAP` entries by save time.
+/// Keeps the newest `CAP` entries by save time, and always the one being
+/// saved.
 pub fn save_position_in(
     dir: &Path,
     file: &Path,
@@ -552,35 +693,44 @@ pub fn save_position_in(
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("positions");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = read_state(&path)?;
     let k = key(file);
-    let mut entries: Vec<Entry> = parse(&existing)
-        .into_iter()
-        .filter(|e| e.path != k)
-        .collect();
+    let now = now();
+    let mut entries: Vec<Entry> = Vec::new();
     // A line this version cannot read is kept as it is: most likely a newer
-    // carrel's entry, in a form not invented yet. Rebuilding the file from
-    // what parsed is how 2026.10.21 discards every position a later carrel
-    // writes; this version does not do the same to the next one. Written
-    // after the readable entries, in the room the cap leaves.
-    let unread: Vec<&str> = existing
-        .lines()
-        .filter(|l| !l.trim().is_empty() && parse_line(l).is_none())
-        .collect();
-    if let Some(place) = place {
-        let saved_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        entries.push(Entry {
-            place,
-            saved_at,
-            permille: Some(permille),
-            words: Some(words),
-            path: k,
-        });
+    // carrel's entry, in a form not invented yet, or a line a torn write left
+    // half in bytes that are not UTF-8. Rebuilding the file from what parsed
+    // is how 2026.10.21 discards every position a later carrel writes; this
+    // version does not do the same to the next one. Written after the
+    // readable entries, in the room the cap leaves.
+    let mut unread: Vec<&[u8]> = Vec::new();
+    for line in lines(&existing) {
+        match std::str::from_utf8(line).ok().and_then(parse_line) {
+            Some(e) if e.path == k => {}
+            // A save time ahead of the clock — a clock that ran fast, or a
+            // file from another machine — would outrank every save made now,
+            // and with the file full the entry being saved sorted last and
+            // was truncated away. Nothing is saved in the future.
+            Some(e) => entries.push(Entry {
+                saved_at: e.saved_at.min(now),
+                ..e
+            }),
+            None => unread.push(line),
+        }
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.saved_at));
-    entries.truncate(CAP);
+    let fresh = place.map(|place| Entry {
+        place,
+        saved_at: now,
+        permille: Some(permille),
+        words: Some(words),
+        path: k,
+    });
+    // The cap evicts the oldest OTHER document: the one just read is the
+    // one entry that must survive it, so it is placed first by hand rather
+    // than trusted to the sort.
+    entries.truncate(CAP - usize::from(fresh.is_some()));
+    entries.splice(0..0, fresh);
     let mut out = String::new();
     for e in &entries {
         use std::fmt::Write as _;
@@ -591,14 +741,15 @@ pub fn save_position_in(
             e.saved_at,
             e.permille.unwrap_or(0),
             e.words.unwrap_or(0),
-            escape_field(&e.path)
+            escape_path(&e.path)
         );
     }
+    let mut out = out.into_bytes();
     // After the readable entries, so a reader that takes the first line for
     // a document finds the one written now.
     for line in unread.iter().take(CAP - entries.len()) {
-        out.push_str(line);
-        out.push('\n');
+        out.extend_from_slice(line);
+        out.push(b'\n');
     }
     write_atomic(&path, &out)
 }
@@ -612,19 +763,16 @@ pub fn save_position_in(
 /// same document reached two ways" means.
 #[must_use]
 pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<Place> {
-    let Ok(text) = std::fs::read_to_string(dir.join("bookmarks")) else {
+    let Ok(bytes) = std::fs::read(dir.join("bookmarks")) else {
         return Vec::new();
     };
-    let k = escape_field(&key(file));
-    for line in text.lines() {
-        let Some((path, marks)) = line.split_once('\t') else {
+    // Compared escaped, so one `escape_path` answers the whole file rather
+    // than one unescape per line.
+    let k = escape_path(&key(file));
+    for line in lines(&bytes) {
+        let Some(marks) = marks_of(line, &k) else {
             continue;
         };
-        // Compared escaped, so one `escape_field` answers the whole file
-        // rather than one `unescape_field` per line.
-        if path != k {
-            continue;
-        }
         let mut out: Vec<Place> = Vec::new();
         for m in marks.split(',').filter_map(Place::decode) {
             if !out.contains(&m) {
@@ -634,6 +782,16 @@ pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<Place> {
         return out;
     }
     Vec::new()
+}
+
+/// The marks field of `line` if it is document `k`'s line, in the form this
+/// version writes: exactly two fields. The path is escaped, so a raw tab
+/// after the marks means a newer carrel's form, which is that carrel's to
+/// read and this one's to leave alone — taking it for ours read its extra
+/// field as one more unreadable mark and wrote it back inside the marks.
+fn marks_of<'a>(line: &'a [u8], k: &str) -> Option<&'a str> {
+    let (path, marks) = std::str::from_utf8(line).ok()?.split_once('\t')?;
+    (path == k && !marks.contains('\t')).then_some(marks)
 }
 
 /// Replace `file`'s bookmarks. An empty list removes the entry.
@@ -652,19 +810,19 @@ pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<Place> {
 /// document it just wrote and drops from the front, which is oldest-first as
 /// long as every write comes through here.
 pub fn save_marks_in(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Result<()> {
-    use std::fmt::Write as _;
     std::fs::create_dir_all(dir)?;
     let path = dir.join("bookmarks");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let k = escape_field(&key(file));
-    let mut kept: Vec<&str> = existing
-        .lines()
-        .filter(|l| l.split_once('\t').is_none_or(|(p, _)| p != k) && !l.trim().is_empty())
+    let existing = read_state(&path)?;
+    let k = escape_path(&key(file));
+    // Every other line verbatim, as bytes: a line this version cannot read
+    // — another document's in a newer form, or one a torn write left in
+    // bytes that are not UTF-8 — is not this function's to drop.
+    let mut kept: Vec<&[u8]> = lines(&existing)
+        .filter(|l| marks_of(l, &k).is_none())
         .collect();
-    let unread: Vec<&str> = existing
-        .lines()
-        .filter_map(|l| l.split_once('\t').filter(|(p, _)| *p == k))
-        .flat_map(|(_, marks)| marks.split(','))
+    let unread: Vec<&str> = lines(&existing)
+        .filter_map(|l| marks_of(l, &k))
+        .flat_map(|marks| marks.split(','))
         .filter(|m| !m.is_empty() && Place::decode(m).is_none())
         .collect();
     // Room for the line about to be appended, so the cap is a cap on the file
@@ -677,10 +835,10 @@ pub fn save_marks_in(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Resul
     if kept.len() > room {
         kept.drain(..kept.len() - room);
     }
-    let mut out = String::new();
+    let mut out: Vec<u8> = Vec::new();
     for line in kept {
-        out.push_str(line);
-        out.push('\n');
+        out.extend_from_slice(line);
+        out.push(b'\n');
     }
     let mut joined: Vec<String> = Vec::with_capacity(marks.len());
     for m in marks {
@@ -697,7 +855,7 @@ pub fn save_marks_in(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Resul
         }
     }
     if !joined.is_empty() {
-        let _ = writeln!(out, "{k}\t{}", joined.join(","));
+        out.extend_from_slice(format!("{k}\t{}\n", joined.join(",")).as_bytes());
     }
     write_atomic(&path, &out)
 }
@@ -713,16 +871,24 @@ const FOLD_CAP: usize = 500;
 /// per line, the path first, then one escaped key per TAB-separated field.
 #[must_use]
 pub fn load_folds_in(dir: &Path, file: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(dir.join("folds")) else {
+    let Ok(bytes) = std::fs::read(dir.join("folds")) else {
         return Vec::new();
     };
-    let k = escape_field(&key(file));
-    text.lines()
+    let k = escape_path(&key(file));
+    lines(&bytes)
         .find_map(|line| {
-            let mut fields = line.split('\t');
+            let mut fields = std::str::from_utf8(line).ok()?.split('\t');
             (fields.next()? == k).then(|| fields.map(unescape_field).collect())
         })
         .unwrap_or_default()
+}
+
+/// Whether `line` is document `k`'s. A folds line has no fixed field
+/// count — one key per field — so unlike the other two files there is no
+/// "more fields than this version writes" to set aside: the path is all
+/// that decides it.
+fn is_folds_of(line: &[u8], k: &str) -> bool {
+    line.split(|&b| b == b'\t').next() == Some(k.as_bytes())
 }
 
 /// Replace `file`'s collapsed sections. An empty list removes the entry, so
@@ -730,13 +896,12 @@ pub fn load_folds_in(dir: &Path, file: &Path) -> Vec<String> {
 pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("folds");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let k = escape_field(&key(file));
-    let mut kept: Vec<&str> = existing
-        .lines()
-        .filter(|l| l.split('\t').next() != Some(k.as_str()) && !l.trim().is_empty())
-        .collect();
-    if keys.is_empty() && kept.len() == existing.lines().count() {
+    let existing = read_state(&path)?;
+    let k = escape_path(&key(file));
+    // Every other line verbatim, as bytes, for the reason `save_marks_in`
+    // gives.
+    let mut kept: Vec<&[u8]> = lines(&existing).filter(|l| !is_folds_of(l, &k)).collect();
+    if keys.is_empty() && kept.len() == lines(&existing).count() {
         return Ok(()); // nothing to remove and nothing to add
     }
     let room = if keys.is_empty() {
@@ -747,18 +912,18 @@ pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Resul
     if kept.len() > room {
         kept.drain(..kept.len() - room);
     }
-    let mut out = String::new();
+    let mut out: Vec<u8> = Vec::new();
     for line in kept {
-        out.push_str(line);
-        out.push('\n');
+        out.extend_from_slice(line);
+        out.push(b'\n');
     }
     if !keys.is_empty() {
-        out.push_str(&k);
+        out.extend_from_slice(k.as_bytes());
         for key in keys {
-            out.push('\t');
-            out.push_str(&escape_field(key));
+            out.push(b'\t');
+            out.extend_from_slice(escape_field(key).as_bytes());
         }
-        out.push('\n');
+        out.push(b'\n');
     }
     write_atomic(&path, &out)
 }
@@ -924,7 +1089,7 @@ mod tests {
         for f in [&old, &new, &future] {
             std::fs::write(f, "x").unwrap();
         }
-        let k = |f: &Path| escape_field(&key(f));
+        let k = |f: &Path| escape_path(&key(f));
         std::fs::write(
             dir.path().join("positions"),
             format!(
@@ -985,7 +1150,7 @@ mod tests {
         );
         assert_eq!(load_position_in(dir.path(), &a), Some(P(6)));
 
-        let k = escape_field(&key(&a));
+        let k = escape_path(&key(&a));
         std::fs::write(dir.path().join("bookmarks"), format!("{k}\t5,w2:9\n")).unwrap();
         save_marks_in(dir.path(), &a, &[P(5), P(8)]).unwrap();
         let text = std::fs::read_to_string(dir.path().join("bookmarks")).unwrap();
@@ -1289,5 +1454,202 @@ mod tests {
             worst, full,
             "a reader saw a {worst}-line file where {full} lines were on disk",
         );
+    }
+
+    /// One byte that is not UTF-8 — a torn write from a release that still
+    /// truncated in place — made `read_to_string` fail, and the next save
+    /// wrote back only its own entry: every other document lost, in all
+    /// three files. Now the bad line costs only itself, and is kept.
+    #[test]
+    fn a_line_that_is_not_utf8_costs_only_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.md"), dir.path().join("b.md"));
+        let torn: &[u8] = b"s1+0\t5\t0\t0\t/tmp/\xff\xfe torn";
+
+        save_position_in(dir.path(), &a, Some(P(3)), 100, 10).unwrap();
+        let mut t = std::fs::read(dir.path().join("positions")).unwrap();
+        t.extend_from_slice(torn);
+        t.push(b'\n');
+        std::fs::write(dir.path().join("positions"), &t).unwrap();
+        assert_eq!(load_position_in(dir.path(), &a), Some(P(3)), "load too");
+        save_position_in(dir.path(), &b, Some(P(5)), 100, 10).unwrap();
+        assert_eq!(load_position_in(dir.path(), &a), Some(P(3)));
+        assert_eq!(load_position_in(dir.path(), &b), Some(P(5)));
+        let t = std::fs::read(dir.path().join("positions")).unwrap();
+        assert!(t.split(|&c| c == b'\n').any(|l| l == torn), "kept verbatim");
+        assert_eq!(recent_in(dir.path()).len(), 2);
+
+        save_marks_in(dir.path(), &a, &[P(7)]).unwrap();
+        let mut t = std::fs::read(dir.path().join("bookmarks")).unwrap();
+        t.extend_from_slice(b"/x/\xff\t1,2\n");
+        std::fs::write(dir.path().join("bookmarks"), &t).unwrap();
+        assert_eq!(load_marks_in(dir.path(), &a), [P(7)], "load too");
+        save_marks_in(dir.path(), &b, &[P(8)]).unwrap();
+        assert_eq!(load_marks_in(dir.path(), &a), [P(7)]);
+        let t = std::fs::read(dir.path().join("bookmarks")).unwrap();
+        assert!(t.split(|&c| c == b'\n').any(|l| l == b"/x/\xff\t1,2"));
+
+        save_folds_in(dir.path(), &a, &["h:x".into()]).unwrap();
+        let mut t = std::fs::read(dir.path().join("folds")).unwrap();
+        t.extend_from_slice(b"/x/\xff\th:y\n");
+        std::fs::write(dir.path().join("folds"), &t).unwrap();
+        assert_eq!(load_folds_in(dir.path(), &a), ["h:x"], "load too");
+        save_folds_in(dir.path(), &b, &["h:z".into()]).unwrap();
+        assert_eq!(load_folds_in(dir.path(), &a), ["h:x"]);
+        let t = std::fs::read(dir.path().join("folds")).unwrap();
+        assert!(t.split(|&c| c == b'\n').any(|l| l == b"/x/\xff\th:y"));
+    }
+
+    /// A file that cannot be read at all is not replaced by the one entry
+    /// being saved: the save refuses, and the file is as it was.
+    #[cfg(unix)]
+    #[test]
+    fn a_state_file_it_cannot_read_is_never_overwritten() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.md");
+        for name in ["positions", "bookmarks", "folds"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "precious\n").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o200)).unwrap();
+            if std::fs::read(&p).is_ok() {
+                return; // running as root: permissions cannot stop a read
+            }
+        }
+        assert!(save_position_in(dir.path(), &a, Some(P(1)), 0, 0).is_err());
+        assert!(save_marks_in(dir.path(), &a, &[P(1)]).is_err());
+        assert!(save_folds_in(dir.path(), &a, &["h:x".into()]).is_err());
+        for name in ["positions", "bookmarks", "folds"] {
+            let p = dir.path().join(name);
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), "precious\n", "{name}");
+        }
+    }
+
+    /// `rename` onto a symlink replaces the link: a stow-managed state or
+    /// config file became a regular file and the dotfiles copy stopped
+    /// changing. The write goes through the link to its target.
+    #[cfg(unix)]
+    #[test]
+    fn writing_through_a_symlink_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let dots = dir.path().join("dotfiles");
+        std::fs::create_dir(&dots).unwrap();
+        let target = dots.join("positions");
+        std::fs::write(&target, "").unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        std::os::unix::fs::symlink(&target, state.join("positions")).unwrap();
+        let a = dir.path().join("a.md");
+        save_position_in(&state, &a, Some(P(9)), 0, 0).unwrap();
+        let link = std::fs::symlink_metadata(state.join("positions")).unwrap();
+        assert!(link.file_type().is_symlink(), "the link survived");
+        assert!(std::fs::read_to_string(&target).unwrap().starts_with("9\t"));
+        assert_eq!(load_position_in(&state, &a), Some(P(9)));
+        // A dangling link is written where it points.
+        let gone = dots.join("bookmarks");
+        std::os::unix::fs::symlink(&gone, state.join("bookmarks")).unwrap();
+        save_marks_in(&state, &a, &[P(4)]).unwrap();
+        assert!(
+            std::fs::symlink_metadata(state.join("bookmarks"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(load_marks_in(&state, &a), [P(4)]);
+        assert!(gone.is_file());
+    }
+
+    /// `\xff.md` and `\xfe.md` are two files, and `display()` made them one
+    /// key, `\u{fffd}.md`, which is neither — so they shared a position and
+    /// the home screen offered a path that does not exist.
+    #[cfg(unix)]
+    #[test]
+    fn paths_that_are_not_utf8_are_their_own_documents() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join(std::ffi::OsStr::from_bytes(b"\xff.md"));
+        let b = dir.path().join(std::ffi::OsStr::from_bytes(b"\xfe.md"));
+        let c = dir
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"lit\\xff\t\xff.md"));
+        for f in [&a, &b, &c] {
+            std::fs::write(f, "x").unwrap();
+        }
+        save_position_in(dir.path(), &a, Some(P(7)), 500, 10).unwrap();
+        assert_eq!(load_position_in(dir.path(), &b), None);
+        save_position_in(dir.path(), &c, Some(P(8)), 500, 10).unwrap();
+        assert_eq!(load_position_in(dir.path(), &a), Some(P(7)));
+        assert_eq!(load_position_in(dir.path(), &c), Some(P(8)));
+        let recent: Vec<PathBuf> = recent_in(dir.path()).into_iter().map(|e| e.path).collect();
+        assert!(
+            recent.contains(&key(&a)) && recent.contains(&key(&c)),
+            "{recent:?}"
+        );
+        assert!(recent.iter().all(|p| p.is_file()), "{recent:?}");
+
+        save_marks_in(dir.path(), &a, &[P(1)]).unwrap();
+        assert!(load_marks_in(dir.path(), &b).is_empty());
+        save_folds_in(dir.path(), &a, &["h:x".into()]).unwrap();
+        assert!(load_folds_in(dir.path(), &b).is_empty());
+        assert_eq!(load_folds_in(dir.path(), &a), ["h:x"]);
+
+        // A UTF-8 path escapes exactly as it always did, so old lines match.
+        for s in ["/plain/é.md", "/a\tb\\c\nd.md", "/lit\\xff.md"] {
+            assert_eq!(escape_path(Path::new(s)), escape_field(s));
+            assert_eq!(unescape_path(&escape_path(Path::new(s))), Path::new(s));
+        }
+        for raw in [&b"\xff"[..], b"a\\xzz\xfe\\", b"\\x4"] {
+            let p = Path::new(std::ffi::OsStr::from_bytes(raw));
+            assert_eq!(unescape_path(&escape_path(p)), p, "{raw:?}");
+        }
+    }
+
+    /// Entries saved by a clock that ran ahead outranked every save made
+    /// now, so with the file full the entry being saved sorted last and was
+    /// cut by the cap: silently not remembered.
+    #[test]
+    fn the_entry_being_saved_always_survives_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = String::new();
+        for i in 0..CAP {
+            use std::fmt::Write as _;
+            let _ = writeln!(t, "s0+5\t{}\t100\t10\t/old/{i}.md", 4_000_000_000 + i);
+        }
+        std::fs::write(dir.path().join("positions"), t).unwrap();
+        let doc = dir.path().join("doc.md");
+        save_position_in(dir.path(), &doc, Some(P(7)), 500, 10).unwrap();
+        assert_eq!(load_position_in(dir.path(), &doc), Some(P(7)));
+        assert_eq!(
+            recent_in(dir.path())[0].path,
+            key(&doc),
+            "and is the most recent"
+        );
+        let text = std::fs::read_to_string(dir.path().join("positions")).unwrap();
+        assert_eq!(text.lines().count(), CAP);
+    }
+
+    /// A line with more fields than this version writes is a newer carrel's,
+    /// and goes back exactly as it came — `splitn(5)` read the extra field
+    /// into the path and wrote the line back with its tab escaped.
+    #[test]
+    fn a_line_with_more_fields_than_this_version_writes_is_kept_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("doc.md");
+        let newer = "s10+0\t1794000000\t500\t100\tnewfield=1\t/docs/plan.md";
+        std::fs::write(dir.path().join("positions"), format!("{newer}\n")).unwrap();
+        assert!(recent_in(dir.path()).is_empty(), "not misread");
+        save_position_in(dir.path(), &doc, Some(P(7)), 500, 10).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("positions")).unwrap();
+        assert_eq!(text.lines().last(), Some(newer), "{text:?}");
+
+        let k = escape_path(&key(&doc));
+        let newer = format!("{k}\t5,6\tcolor=blue");
+        std::fs::write(dir.path().join("bookmarks"), format!("{newer}\n")).unwrap();
+        assert!(load_marks_in(dir.path(), &doc).is_empty(), "not misread");
+        save_marks_in(dir.path(), &doc, &[P(9)]).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("bookmarks")).unwrap();
+        assert_eq!(text, format!("{newer}\n{k}\t9\n"));
+        assert_eq!(load_marks_in(dir.path(), &doc), [P(9)]);
     }
 }

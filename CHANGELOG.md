@@ -23,6 +23,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   Every copy now drops control characters other than line breaks and tabs, carriage
   returns (CRLF becomes LF), bidi overrides and soft hyphens; a file name or heading in a
   quote, a reference or the notes export can no longer start a new line.
+- **Saved reading state is harder to lose.** One damaged line in `positions`, `bookmarks`
+  or `folds` no longer wipes every other document's entry on the next save, and a file
+  carrel cannot read is left alone rather than replaced. Saving through a symlinked state
+  or config file (stow-style dotfiles) keeps the link. Two files whose names differ only
+  in bytes that are not UTF-8 no longer share a position, the document you just read is
+  never evicted by entries from a clock that ran fast, and a line written by a newer
+  carrel goes back unchanged instead of having its extra field folded into the path.
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves
