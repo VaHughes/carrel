@@ -504,9 +504,6 @@ planned:
   64 MB file of one-line headings still costs gigabytes.
 - Math with more than 64 commands in a row separated by at most one atom
   (`\alpha \alpha …`) shows as source.
-- A reload hold keeps the OLDEST place it could not find: edit the paragraph being read,
-  delete it, then undo the delete, and a reader who never moved lands on the paragraph
-  after it rather than back on the edited one.
 - Ctrl-W and Ctrl-U do not edit text inputs (Ctrl-H does). They would need a delete-word
   and clear-line intent in seven inputs whose Backspace differs.
 

@@ -2229,9 +2229,13 @@ impl App {
         }
         // Resolve before laying out: unchanged paragraphs follow edits
         // above them; removed text falls back to a valid source position.
-        let held_place = hold.as_ref().and_then(|h| h.place);
-        let place = held_place
-            .filter(|p| kept_found(*p, &self.doc))
+        let held_places = hold.as_ref().map(|h| h.places.clone()).unwrap_or_default();
+        // Oldest first: the place before the first missing read is the
+        // reader's own; a later one is where the source place landed.
+        let place = held_places
+            .iter()
+            .copied()
+            .find(|p| kept_found(*p, &self.doc))
             .unwrap_or(fresh);
         self.view.anchor = place.resolve(&self.doc).0;
         if let (Mode::Search { saved, .. }, Some(place)) = (&mut self.mode, search_place) {
@@ -2261,13 +2265,15 @@ impl App {
         self.pull_out_of_folds();
         // Hold what is still missing: the oldest place that had it, so a
         // run of short writes cannot walk it away a step at a time.
-        let place_hold = (!place_found)
-            .then(|| held_place.unwrap_or(fresh))
-            .filter(|p| matches!(p, crate::state::Place::Src { block: Some(_), .. }));
+        let place_hold = if place_found {
+            Vec::new()
+        } else {
+            hold_places(held_places, fresh)
+        };
         let marks_hold = (!marks_found).then(|| held_marks.unwrap_or(fresh_marks));
-        if place_hold.is_some() || marks_hold.is_some() {
+        if !place_hold.is_empty() || marks_hold.is_some() {
             self.reload_hold = Some(ReloadHold {
-                place: place_hold,
+                places: place_hold,
                 carriers: marks_hold,
                 anchor: self.view.anchor,
                 marks: self.marks.clone(),
@@ -3695,7 +3701,8 @@ enum StepKind {
 /// since, and only uses the held place if not.
 #[derive(Debug, Clone)]
 struct ReloadHold {
-    place: Option<crate::state::Place>,
+    /// Oldest first, at most [`HOLD_PLACES`].
+    places: Vec<crate::state::Place>,
     carriers: Option<Vec<(crate::state::Kept, crate::state::Place)>>,
     anchor: u32,
     marks: Vec<u32>,
@@ -3705,6 +3712,28 @@ struct ReloadHold {
 /// kept (one taken in an empty document) has nothing to find.
 fn kept_found(p: crate::state::Place, doc: &Document) -> bool {
     matches!(p, crate::state::Place::Src { block: Some(_), .. }) && p.finds_its_block(doc)
+}
+
+/// How many unfound places a reload hold keeps: the reader's own and the
+/// latest few.
+const HOLD_PLACES: usize = 4;
+
+/// The places a reload hold keeps after a read that found none of them:
+/// every place since the last one found, not only the first. Edit the
+/// paragraph being read, delete it, undo the delete, and the reader who
+/// never moved belongs on the EDITED paragraph — a place only the middle
+/// read had. A few are enough; the oldest, the reader's own, is kept.
+fn hold_places(
+    mut held: Vec<crate::state::Place>,
+    fresh: crate::state::Place,
+) -> Vec<crate::state::Place> {
+    if matches!(fresh, crate::state::Place::Src { block: Some(_), .. }) && !held.contains(&fresh) {
+        held.push(fresh);
+    }
+    if held.len() > HOLD_PLACES {
+        held.drain(1..held.len() - (HOLD_PLACES - 1));
+    }
+    held
 }
 
 fn block_hashes(doc: &Document) -> Vec<u64> {
@@ -11512,5 +11541,33 @@ diff --git a/x.rs b/x.rs
         let ghost = repo.join("docs/ghost.md");
         assert_eq!(direct_open_root(&ghost, Some(&repo)), repo.join("docs"));
         assert_eq!(direct_open_root(Path::new("doc.md"), None), Path::new("."));
+    }
+
+    /// The hold keeps the reader's own place and the latest few, deduped.
+    #[test]
+    fn a_reload_hold_keeps_the_first_place_and_the_latest() {
+        use crate::state::{Kept, Place};
+        let p = |n: u32| Place::Src {
+            src: n,
+            delta: 0,
+            block: Some(Kept {
+                hash: u64::from(n),
+                nth: 0,
+                off: 0,
+                prev: None,
+                next: None,
+            }),
+        };
+        let mut held = Vec::new();
+        for n in 0..10 {
+            held = hold_places(held, p(n));
+        }
+        assert_eq!(held, vec![p(0), p(7), p(8), p(9)]);
+        assert_eq!(hold_places(held.clone(), p(9)), held, "no duplicate");
+        assert_eq!(
+            hold_places(Vec::new(), Place::Legacy(3)),
+            vec![],
+            "a place with no block holds nothing"
+        );
     }
 }

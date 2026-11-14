@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Undoing an edit brings a reader who never moved back to their paragraph**, even
+  through an edit, a deletion and the undo of both.
+
 - **`git log | carrel` shows fewer stray backslashes**: none inside a backtick span that
   runs across a `#` line, and none from a line break where the message's own markdown
   already ends the paragraph.

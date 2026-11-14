@@ -94,3 +94,35 @@ fn a_reload_that_removes_the_heading_you_are_on_does_not_drop_you_into_a_fold() 
             ..app.doc.node_for_block(b).doc.end as usize]
     );
 }
+
+#[test]
+fn undoing_a_delete_returns_a_reader_who_never_moved_to_the_paragraph_they_were_on() {
+    let v0 = "# Title\n\nalpha para\n\nbeta para\n";
+    let v1 = "# Title\n\nalpha edited para\n\nbeta para\n"; // their paragraph edited
+    let v2 = "# Title\n\nbeta para\n"; // then deleted
+    let mut app = App::new("t.md".into(), Document::parse(v0), 40, 12);
+    at(&mut app, "alpha");
+    app.reload_from(v1);
+    let then = block_of(&app);
+    assert_eq!(
+        then, "alpha edited para",
+        "precondition: the edit keeps the reader on the edited paragraph"
+    );
+    app.reload_from(v2);
+    app.reload_from(v1); // the delete is undone; the reader has not moved since
+    assert_eq!(block_of(&app), then);
+}
+
+/// The same, undone all the way: the original paragraph comes back.
+#[test]
+fn undoing_every_edit_returns_a_reader_who_never_moved_to_the_original() {
+    let v0 = "# Title\n\nalpha para\n\nbeta para\n";
+    let v1 = "# Title\n\nalpha edited para\n\nbeta para\n";
+    let v2 = "# Title\n\nbeta para\n";
+    let mut app = App::new("t.md".into(), Document::parse(v0), 40, 12);
+    at(&mut app, "alpha");
+    for v in [v1, v2, v1, v0] {
+        app.reload_from(v);
+    }
+    assert_eq!(block_of(&app), "alpha para");
+}
