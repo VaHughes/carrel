@@ -25,6 +25,7 @@
 //! [`Document::section_path`]: crate::Document::section_path
 //! [`Document::to_src`]: crate::Document::to_src
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 /// How far in to look for a diff marker before giving up.
@@ -198,8 +199,12 @@ impl FileDiff {
 /// swallowing every commit after it. [`neutralize`] escapes the few line
 /// starts that open a block; everything inline (`code`, *emphasis*, links)
 /// keeps working, and so do lists, which commit bodies use. Smart
-/// punctuation's dashes do not ([`keep_hyphens`]): `--` in a commit
+/// punctuation's dashes do not ([`escape_dashes`]): `--` in a commit
 /// message is a flag or an HTML comment, not an en dash.
+///
+/// Every backslash this adds is planned as a [`Plan`] and then checked
+/// against the parse of the text it produces ([`settle`]), never against
+/// a parse of something else.
 fn emit_message(message: &[&str], out: &mut String) {
     let mut paras: Vec<&[&str]> = Vec::new();
     for chunk in message.split(|l| l.trim().is_empty()) {
@@ -220,16 +225,12 @@ fn emit_message(message: &[&str], out: &mut String) {
         .min()
         .unwrap_or(0);
     for (i, p) in paras.iter().enumerate() {
-        if i == 0 && header {
-            let lines: Vec<String> = p.iter().map(|l| record_safe(l.trim())).collect();
-            out.push_str(&lines.join("\\\n"));
-            out.push_str("\n\n");
-            continue;
-        }
         // The trailer run: the last paragraph's closing trailer-shaped
         // lines. Never in the subject's paragraph, whose own first line
         // has the shape whenever it is a conventional-commit subject.
-        let trailers = if i + 1 == paras.len() && i > body {
+        let trailers = if i == 0 && header {
+            0
+        } else if i + 1 == paras.len() && i > body {
             p.len()
                 - p.iter()
                     .rev()
@@ -242,115 +243,269 @@ fn emit_message(message: &[&str], out: &mut String) {
             let l: &str = p[j];
             j >= trailers || indent_cols(l) >= base + 4 || l.trim_start().starts_with('#')
         };
-        // Parse the whole run to find code spans. A numbered line does not
-        // necessarily open a new item: only the Markdown parser knows which
-        // lines share an inline context (and therefore a backtick span).
-        let mut para = String::new();
-        // What this pass added that only means something OUTSIDE a code
-        // span: a record line's escapes, a line start made safe (`\\>`,
-        // `2\\)`), and every hard break.
-        let mut added = Vec::new();
+        let mut plan = Plan::default();
         for (j, line) in p.iter().enumerate() {
-            let (shown, escaped) = if record(j) {
-                (record_safe(line.trim()), true)
+            if record(j) {
+                record_safe(line.trim(), &mut plan);
             } else {
-                match block_safe(line.trim()) {
-                    std::borrow::Cow::Borrowed(l) => (l.to_owned(), false),
-                    std::borrow::Cow::Owned(l) => (l, true),
-                }
-            };
-            let at = para.len();
-            para.push_str(&shown);
-            if escaped {
-                added.push(at..para.len());
+                block_safe(line.trim(), &mut plan);
             }
-            // A hard break around a record — unless the line already ends
-            // in one: an odd run of backslashes is the author's own break,
-            // and one more would escape it into a literal backslash.
-            let own_break = shown.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1;
-            // Nor before a list item, which starts its own line anyway: the
-            // paragraph ends there, and a break at its end is a backslash.
-            let next_item =
-                j + 1 < p.len() && !record(j + 1) && list_marker(p[j + 1].trim()).is_some();
-            if j + 1 < p.len() && (record(j) || record(j + 1)) && !own_break && !next_item {
-                added.push(para.len()..para.len() + 1);
-                para.push('\\');
+            // A hard break around a record. Where the parser would not read
+            // it as one — the line ends in the author's own break, a list
+            // item follows, the message's markdown ends the paragraph first
+            // — `settle` takes it out again.
+            if j + 1 < p.len() && (record(j) || record(j + 1)) {
+                plan.esc.insert(plan.base.len(), Esc::Break);
             }
-            para.push('\n');
+            plan.base.push('\n');
         }
-        let para = unspan(para, &mut added);
-        let para = unbreak(para, &added);
-        out.push_str(&keep_hyphens(&para));
+        escape_dashes(&mut plan);
+        out.push_str(&settle(plan));
         out.push('\n');
     }
 }
 
-/// Keep code spans off what this pass `added`: a backtick on one message
-/// line can open a span that a backtick lines later closes, and inside it a
-/// record line's escapes and the hard breaks around it are literal — a
-/// `#<!--` line showed as `\\#\\<\\!\\--`. Such a span's opening backticks are
-/// escaped, so it never forms; asked again until none is left, since
-/// unpairing one backtick can pair the next differently.
-fn unspan(mut s: String, added: &mut Vec<std::ops::Range<usize>>) -> String {
-    use pulldown_cmark::{Event, Options, Parser};
-    let options = crate::document::markdown_options()
-        & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
-    for _ in 0..s.matches('`').count() {
-        let crossing = Parser::new_ext(&s, options)
-            .into_offset_iter()
-            .find_map(|(event, r)| {
-                matches!(event, Event::Code(_))
-                    .then_some(r)
-                    .filter(|r| added.iter().any(|a| a.start < r.end && r.start < a.end))
-            });
-        let Some(r) = crossing else {
-            break;
-        };
-        let run = s[r.start..].bytes().take_while(|&b| b == b'`').count();
-        let escaped = "\\`".repeat(run);
-        s.replace_range(r.start..r.start + run, &escaped);
-        for a in added.iter_mut().filter(|a| a.start >= r.start) {
-            a.start += run;
-            a.end += run;
-        }
-        // These escapes are added text too: a span formed later around
-        // them would show them. Two bytes each, so `unbreak` never takes
-        // one for a hard break.
-        added.extend((0..run).map(|k| r.start + 2 * k..r.start + 2 * k + 2));
-    }
-    s
+/// Who added a backslash, which decides what [`settle`] may do with it
+/// when the parse says it would be shown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Esc {
+    /// Keeps a line start, or a record's character, literal. Never taken
+    /// out: whatever would show it is broken open instead.
+    Keep,
+    /// Keeps a hyphen pair from smart punctuation, or a `$` from math.
+    /// Neither applies inside a code span, an autolink or raw HTML, so
+    /// there it is taken out.
+    Plain,
+    /// A hard break around a record line, taken out wherever the parser
+    /// does not read it as one.
+    Break,
 }
 
-/// Drop each hard break this pass `added` that the parser does not read as
-/// one. A break is a backslash before a newline only inside a paragraph;
-/// at the end of a list item, before an indented line that continues it
-/// differently, or anywhere the message's own markdown ends a paragraph
-/// first, it is a literal backslash on the screen.
-fn unbreak(s: String, added: &[std::ops::Range<usize>]) -> String {
-    use pulldown_cmark::{Event, Options, Parser};
-    let breaks: Vec<usize> = added
-        .iter()
-        .filter(|a| a.len() == 1 && s.as_bytes().get(a.start) == Some(&b'\\'))
-        .map(|a| a.start)
-        .collect();
-    if breaks.is_empty() {
-        return s;
+/// A paragraph as the message wrote it, line starts normalized (`base`),
+/// and the backslashes this pass inserts into it: one before `base[pos]`
+/// for each entry of `esc`.
+///
+/// Planning the escapes as data rather than writing them into a string is
+/// what lets [`settle`] take one out again. Each layer that used to edit
+/// the string planned on a parse the next layer changed: `<!--` swallowed
+/// a backtick until its `--` was escaped, freeing the backtick to open a
+/// code span over a record line's escapes, which then showed as
+/// backslashes — and each patch for one such shape uncovered another.
+#[derive(Default)]
+struct Plan {
+    base: String,
+    esc: BTreeMap<usize, Esc>,
+}
+
+impl Plan {
+    /// Escape the next character pushed.
+    fn escape_next(&mut self) {
+        self.esc.insert(self.base.len(), Esc::Keep);
     }
-    let options = crate::document::markdown_options()
-        & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
-    let read: std::collections::HashSet<usize> = Parser::new_ext(&s, options)
-        .into_offset_iter()
-        .filter(|(e, _)| matches!(e, Event::HardBreak))
-        .map(|(_, r)| r.start)
-        .collect();
-    let mut out = String::with_capacity(s.len());
-    let mut last = 0;
-    for b in breaks.into_iter().filter(|b| !read.contains(b)) {
-        out.push_str(&s[last..b]);
-        last = b + 1;
+
+    /// The paragraph with the backslashes `keep` admits, and where each
+    /// landed: `(offset in the text, position in base, kind)`.
+    fn render(&self, keep: impl Fn(usize) -> bool) -> (String, Vec<(usize, usize, Esc)>) {
+        let mut text = String::with_capacity(self.base.len() + self.esc.len());
+        let mut at = Vec::with_capacity(self.esc.len());
+        let mut last = 0;
+        for (&pos, &kind) in self.esc.iter().filter(|&(&pos, _)| keep(pos)) {
+            text.push_str(&self.base[last..pos]);
+            at.push((text.len(), pos, kind));
+            text.push('\\');
+            last = pos;
+        }
+        text.push_str(&self.base[last..]);
+        (text, at)
     }
-    out.push_str(&s[last..]);
-    out
+
+    /// Stop the construct whose opener is at `text_at` forming: escape its
+    /// backtick run, its `<` or its `$`. `false` when there is nothing left
+    /// to escape there, which `settle` takes as no progress.
+    fn break_open(&mut self, text_at: usize, at: &[(usize, usize, Esc)]) -> bool {
+        let pos = text_at - at.partition_point(|&(t, ..)| t < text_at);
+        let b = self.base.as_bytes();
+        match b.get(pos) {
+            Some(b'`') => {
+                let run = b[pos..].iter().take_while(|&&c| c == b'`').count();
+                for k in pos..pos + run {
+                    self.esc.insert(k, Esc::Keep);
+                }
+                true
+            }
+            Some(b'<' | b'$' | b'[') if self.esc.get(&pos) != Some(&Esc::Keep) => {
+                self.esc.insert(pos, Esc::Keep);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What the parser makes of a rendered paragraph: the ranges in which a
+/// backslash is literal, and where it reads a hard break.
+struct Parsed {
+    /// Each range starts at its construct's opener. The flag says whether
+    /// a hyphen or `$` escape may simply be taken out there.
+    literal: Vec<(std::ops::Range<usize>, bool)>,
+    /// Where math begins. All of it is broken open: a message is shell.
+    math: Option<usize>,
+    breaks: std::collections::HashSet<usize>,
+}
+
+impl Parsed {
+    /// Parsed with the document's own options, math and all — the parse
+    /// the reader will make of this text.
+    fn of(text: &str) -> Self {
+        use pulldown_cmark::{Event, LinkType, Parser, Tag};
+        let mut parsed = Parsed {
+            literal: Vec::new(),
+            math: None,
+            breaks: std::collections::HashSet::new(),
+        };
+        let options = crate::document::markdown_options();
+        for (event, r) in Parser::new_ext(text, options).into_offset_iter() {
+            match event {
+                Event::Code(_)
+                | Event::InlineHtml(_)
+                | Event::Html(_)
+                | Event::Start(Tag::Link {
+                    link_type: LinkType::Autolink | LinkType::Email,
+                    ..
+                }) => parsed.literal.push((r, true)),
+                // A wikilink shows its target raw but smart-punctuates a
+                // label, so `[[#|---]]` read as a dash with the escape out
+                // and kept a backslash with it in. Neither is the message:
+                // break it open.
+                Event::Start(Tag::Link {
+                    link_type: LinkType::WikiLink { .. },
+                    ..
+                }) => parsed.literal.push((r, false)),
+                Event::InlineMath(_) | Event::DisplayMath(_) => {
+                    parsed.math = parsed.math.or(Some(r.start));
+                    parsed.literal.push((r, true));
+                }
+                Event::HardBreak => {
+                    parsed.breaks.insert(r.start);
+                }
+                _ => {}
+            }
+        }
+        parsed
+    }
+
+    /// The opener of the first construct that would show one of these
+    /// backslashes.
+    fn showing(&self, at: &[(usize, usize, Esc)], which: impl Fn(Esc) -> bool) -> Option<usize> {
+        self.literal
+            .iter()
+            .filter(|(r, plain_ok)| {
+                let first = at.partition_point(|&(t, ..)| t <= r.start);
+                at[first..]
+                    .iter()
+                    .take_while(|&&(t, ..)| t < r.end)
+                    .any(|&(_, _, kind)| which(kind) || (kind == Esc::Plain && !plain_ok))
+            })
+            .map(|(r, _)| r.start)
+            .min()
+    }
+
+    /// The opener of a construct holding offset `t` in which a hyphen or
+    /// `$` escape is taken out.
+    fn inside(&self, t: usize) -> Option<usize> {
+        self.literal
+            .iter()
+            .filter(|(r, plain_ok)| *plain_ok && r.start < t && t < r.end)
+            .map(|(r, _)| r.start)
+            .min()
+    }
+}
+
+/// Settle `plan` against the parse of its own output, until every
+/// backslash it added is read as an escape or a hard break:
+///
+/// 1. a [`Esc::Keep`] or [`Esc::Break`] inside a code span, raw HTML, an
+///    autolink or math — or any escape inside a wikilink — is shown there,
+///    so that construct is broken open, its opener escaped, and the
+///    paragraph parsed again;
+/// 2. a [`Esc::Plain`] inside one is taken out, since neither smart
+///    punctuation nor math reaches there, and the result parsed again, to
+///    prove taking it out changed no construct;
+/// 3. a [`Esc::Break`] the parser does not read as a hard break is taken
+///    out.
+///
+/// Each round that does not finish escapes one more `` ` ``, `<`, `$` or
+/// `[` for good, or takes out at least one break, and neither is ever
+/// undone, so the rounds are bounded by the count of those. A round is one
+/// parse, two when a hyphen or `$` sat in a code span; a paragraph that
+/// holds none of the characters that open a construct, and no break, is
+/// not parsed. The two give-ups (an opener with nothing left to escape,
+/// the bound running out) are not known to be reachable; the property in
+/// `hostile_messages` is what says so.
+fn settle(mut plan: Plan) -> String {
+    let breaks = plan.esc.values().filter(|&&k| k == Esc::Break).count();
+    let openers = plan
+        .base
+        .bytes()
+        .filter(|b| matches!(b, b'`' | b'<' | b'$' | b'['))
+        .count();
+    if plan.esc.is_empty() || (openers == 0 && breaks == 0) {
+        return plan.render(|_| true).0;
+    }
+    for _ in 0..=openers + breaks {
+        let (text, at) = plan.render(|_| true);
+        let parsed = Parsed::of(&text);
+        if let Some(open) = parsed.showing(&at, |k| k != Esc::Plain) {
+            if plan.break_open(open, &at) {
+                continue;
+            }
+            return text;
+        }
+        // Take out the hyphen and `$` escapes a construct holds, each
+        // remembered with the construct, and parse what is left.
+        let held: Vec<(usize, usize)> = at
+            .iter()
+            .filter(|&&(_, _, k)| k == Esc::Plain)
+            .filter_map(|&(t, pos, _)| parsed.inside(t).map(|open| (pos, open)))
+            .collect();
+        let (text, at2, parsed) = if held.is_empty() {
+            (text, at, parsed)
+        } else {
+            // `held` is in plan order, so a binary search finds a position.
+            let (text2, at2) =
+                plan.render(|pos| held.binary_search_by_key(&pos, |&(p, _)| p).is_err());
+            let parsed2 = Parsed::of(&text2);
+            (text2, at2, parsed2)
+        };
+        let progress = if let Some(open) = parsed.showing(&at2, |_| true).or(parsed.math) {
+            plan.break_open(open, &at2)
+        } else if let Some(&(_, open)) = held.iter().find(|&&(pos, _)| {
+            let t = pos + at2.partition_point(|&(_, p, _)| p < pos);
+            parsed.inside(t).is_none()
+        }) {
+            // Taking the escape out unmade the construct that held it:
+            // break that construct instead, in the text it formed in.
+            let (_, at1) = plan.render(|_| true);
+            plan.break_open(open, &at1)
+        } else {
+            let unread: Vec<usize> = at2
+                .iter()
+                .filter(|&&(t, _, k)| k == Esc::Break && !parsed.breaks.contains(&t))
+                .map(|&(_, pos, _)| pos)
+                .collect();
+            if unread.is_empty() {
+                return text;
+            }
+            for pos in unread {
+                plan.esc.remove(&pos);
+            }
+            true
+        };
+        if !progress {
+            return text;
+        }
+    }
+    plan.render(|_| true).0
 }
 
 /// Leading columns of whitespace, a tab reaching the next multiple of four
@@ -368,100 +523,55 @@ fn indent_cols(l: &str) -> usize {
 }
 
 /// A record line, shown exactly as written: every inline character
-/// escaped ([`escape_inline`], which leaves no code span or autolink for a
-/// hyphen escape to land inside), the few line starts it leaves able to
-/// open a block — a list marker, a setext underline, a definition —
-/// escaped too, and no hyphen pair left for smart punctuation.
-fn record_safe(l: &str) -> String {
-    let mut s = escape_inline(l);
-    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
-    if s.starts_with(['-', '+', '=', ':']) {
-        s.insert(0, '\\');
-    } else if (1..=9).contains(&digits) && matches!(s.as_bytes().get(digits), Some(b'.' | b')')) {
-        s.insert(digits, '\\');
+/// escaped ([`escape_inline`]), and the few line starts that leaves able
+/// to open a block — a list marker, a setext underline, a definition —
+/// escaped too.
+fn record_safe(l: &str, plan: &mut Plan) {
+    let start = plan.base.len();
+    for c in l.chars() {
+        if is_inline_special(c) {
+            plan.escape_next();
+        }
+        plan.base.push(c);
     }
-    keep_hyphens(&s).into_owned()
+    let digits = l.bytes().take_while(u8::is_ascii_digit).count();
+    if l.starts_with(['-', '+', '=', ':']) {
+        plan.esc.insert(start, Esc::Keep);
+    } else if (1..=9).contains(&digits) && matches!(l.as_bytes().get(digits), Some(b'.' | b')')) {
+        plan.esc.insert(start + digits, Esc::Keep);
+    }
 }
 
-/// Escape hyphens so smart punctuation finds no pair to turn into a dash —
-/// outside code spans, where a backslash is literal, and outside
-/// autolinks, where it would change the address. An escaped hyphen ends a
-/// run, so only a hyphen followed by another unescaped one needs it.
+/// Escape hyphens so smart punctuation finds no pair to turn into a dash,
+/// and every `$`: a `$` in a commit message is shell (`$$`, `$HOME`), and
+/// math is the one inline construct that outranks a code span — `$$` lines
+/// around a backtick run swallowed it.
 ///
-/// Every `$` is escaped too. A `$` in a commit message is shell (`$$`,
-/// `$HOME`), and math is the one inline construct that outranks a code
-/// span: `$$` lines around a backtick run swallowed it, so the span this
-/// scan had skipped over was never a span and its `--` became a dash.
-/// Ask the document's parser, with math disabled, for the actual code-span
-/// and autolink boundaries before escaping the remaining text.
-fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
-    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
-
-    if !s.contains("--") && !s.contains('$') {
-        return s.into();
-    }
-
-    let options = crate::document::markdown_options()
-        & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
-    // Planned on the text as it will be AFTER escaping, as far as the parse
-    // goes: the escapes below break every `<!--` (its `--` is escaped), so
-    // a comment must not exist in the plan either. It did: `<!--` swallowed
-    // the next line's backtick, a later `` `--x` `` was planned as a code
-    // span and left alone, and in the escaped text — comment gone, backtick
-    // free — the span it closed left `--x` outside it, a dash. Same length,
-    // so every offset carries over; a letter, not a space, or `*<!--` reads
-    // as `* !--`, a list item the escaped text never has.
-    let plan = s.replace("<!--", "x!--");
-    let mut protected = Parser::new_ext(&plan, options)
-        .into_offset_iter()
-        .filter_map(|(event, range)| match event {
-            Event::Code(_)
-            | Event::Start(Tag::Link {
-                link_type: LinkType::Autolink | LinkType::Email,
-                ..
-            }) => Some(range),
-            _ => None,
-        })
-        .peekable();
-    let b = s.as_bytes();
-    let mut out = String::with_capacity(s.len() + 8);
-    let mut i = 0;
-    while i < b.len() {
-        // A range that began inside something already copied (an escape
-        // pair) can no longer be met at its start; drop it rather than let
-        // it block every range after it.
-        while protected.peek().is_some_and(|range| range.start < i) {
-            protected.next();
-        }
-        if protected.peek().is_some_and(|range| range.start == i) {
-            let range = protected.next().expect("peeked protected span");
-            out.push_str(&s[range.clone()]);
-            i = range.end;
+/// Planned everywhere, code spans included: [`settle`] takes out the ones
+/// a code span, an autolink or raw HTML would show, on the parse of the
+/// final text. An escaped hyphen ends a run, so only a hyphen followed by
+/// another unescaped one needs it; an escape pair the author wrote is
+/// already literal.
+fn escape_dashes(plan: &mut Plan) {
+    let b = plan.base.as_bytes();
+    let mut add = Vec::new();
+    let mut after_backslash = false;
+    for i in 0..b.len() {
+        let escaped = after_backslash || plan.esc.contains_key(&i);
+        after_backslash = false;
+        if escaped {
             continue;
         }
         match b[i] {
-            // An escape pair is copied whole: its character is literal.
-            b'\\' if i + 1 < b.len() => {
-                let n = 1 + s[i + 1..].chars().next().map_or(0, char::len_utf8);
-                out.push_str(&s[i..i + n]);
-                i += n;
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                out.push_str("\\-");
-                i += 1;
-            }
-            b'$' => {
-                out.push_str("\\$");
-                i += 1;
-            }
-            _ => {
-                let n = s[i..].chars().next().map_or(1, char::len_utf8);
-                out.push_str(&s[i..i + n]);
-                i += n;
-            }
+            b'\\' => after_backslash = true,
+            b'$' => add.push(i),
+            b'-' if b.get(i + 1) == Some(&b'-') && !plan.esc.contains_key(&(i + 1)) => add.push(i),
+            _ => {}
         }
     }
-    out.into()
+    for i in add {
+        plan.esc.insert(i, Esc::Plain);
+    }
 }
 
 /// `Author: …`, `AuthorDate: …`, `Merge: …`, `Reflog message: …` — the
@@ -489,16 +599,21 @@ fn is_trailer_line(l: &str) -> bool {
         && key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
 
+/// Does `c` mean something inline?
+fn is_inline_special(c: char) -> bool {
+    matches!(
+        c,
+        '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '!' | '|' | '~' | '&' | '$'
+    )
+}
+
 /// Backslash-escape every character that means something inline, so a
-/// record line or a file path reads exactly as git wrote it: `<mail>` keeps
-/// its brackets instead of becoming an autolink, `*` and `_` stay literal.
+/// file path reads exactly as git wrote it: `<mail>` keeps its brackets
+/// instead of becoming an autolink, `*` and `_` stay literal.
 fn escape_inline(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for c in s.chars() {
-        if matches!(
-            c,
-            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '!' | '|' | '~' | '&' | '$'
-        ) {
+        if is_inline_special(c) {
             out.push('\\');
         }
         out.push(c);
@@ -514,20 +629,15 @@ fn escape_inline(s: &str) -> String {
 /// neutralizing only what followed the first marker left the `#` free.
 /// What is left after the last marker is neutralized, and each marker is
 /// written back with one space — whatever whitespace followed it.
-fn block_safe(line: &str) -> std::borrow::Cow<'_, str> {
+fn block_safe(line: &str, plan: &mut Plan) {
     let mut rest = line;
-    let mut markers = String::new();
     while let Some(marker_len) = list_marker(rest) {
         let (marker, after) = rest.split_at(marker_len);
-        markers.push_str(marker.trim_end());
-        markers.push(' ');
+        plan.base.push_str(marker.trim_end());
+        plan.base.push(' ');
         rest = after.trim_start();
     }
-    if markers.is_empty() {
-        return neutralize(line);
-    }
-    markers.push_str(&neutralize(rest));
-    markers.into()
+    neutralize(rest, plan);
 }
 
 /// The byte length of a leading `-`, `*`, `+`, `1.` or `1)` marker and the
@@ -551,18 +661,17 @@ fn list_marker(line: &str) -> Option<usize> {
 /// (a rule, or a setext underline that would turn the line above into a
 /// heading). Inline markup at the start — `` `code` ``, `*emphasis*`,
 /// `[a link](x)` — is left alone, because it cannot leave its paragraph.
-fn neutralize(line: &str) -> std::borrow::Cow<'_, str> {
+fn neutralize(line: &str, plan: &mut Plan) {
     if !line.is_empty() && line.chars().all(|c| "-=*_|: \t".contains(c)) {
         // Every glyph, not just the first: `\---` would still read `--` as
         // an en dash, so the line would print as `-–`.
-        let mut out = String::with_capacity(line.len() * 2);
         for c in line.chars() {
             if c.is_ascii_punctuation() {
-                out.push('\\');
+                plan.escape_next();
             }
-            out.push(c);
+            plan.base.push(c);
         }
-        return out.into();
+        return;
     }
     let opens_block = line.starts_with(['#', '>', '<', '|', ':'])
         || line.starts_with("```")
@@ -571,10 +680,9 @@ fn neutralize(line: &str) -> std::borrow::Cow<'_, str> {
         // runs onto the next line, which vanishes all the same.
         || (line.starts_with('[') && (line.contains("]:") || !line.contains(']')));
     if opens_block {
-        format!("\\{line}").into()
-    } else {
-        line.into()
+        plan.escape_next();
     }
+    plan.base.push_str(line);
 }
 
 /// Turn a unified diff — or `git log`/`git show` output — into markdown.
@@ -1358,6 +1466,27 @@ Author: B <b@example.com>
             "<a@b>",
             "\\-",
             "        ",
+            "<b>",
+            "</b>",
+            "<kbd>",
+            "<a x=\"--`\">",
+            "<!DOCTYPE",
+            "<?",
+            "]]>",
+            "<![CDATA[",
+            "<a",
+            "x=\"",
+            "\">",
+            "$x",
+            "x$",
+            "<https://a",
+            "[[",
+            "]]",
+            "](",
+            ")",
+            "<script>",
+            "</script>",
+            "<!-->",
         ];
 
         fn line() -> impl Strategy<Value = String> {
@@ -1421,8 +1550,9 @@ Author: B <b@example.com>
             );
         }
 
-        /// The plan's stand-in for `<!--` must not open a block either: a
-        /// space made `*<!--` a list item in the plan alone.
+        /// No escape may open a block the message does not have. (The
+        /// layered pass planned with a stand-in for `<!--`, and a space
+        /// there made `*<!--` a list item in the plan alone.)
         #[test]
         fn the_plan_never_opens_a_block_the_message_does_not_have() {
             for mid in ["x<!--", "*<!--", "-<!--", "+<!--", "1.<!--"] {
@@ -1452,6 +1582,38 @@ Author: B <b@example.com>
             let (headings, structure) = stolen_structure(src);
             assert_eq!(headings, ["commit 0abcdef01234"]);
             assert!(structure.is_empty(), "{structure:?}");
+        }
+
+        /// Shapes where one escaping layer planned on a parse the next one
+        /// changed, each found by the property below once it asserted "no
+        /// backslash the author did not write" (2026-11-14). The first:
+        /// `<!--` swallowed a backtick until its `--` was escaped, and the
+        /// freed backtick opened a code span over escapes. The second and
+        /// third: a wikilink shows its target raw, and smart-punctuates its
+        /// label. The last: an inline HTML attribute's backtick paired
+        /// with one on the line above once the comment was broken.
+        #[test]
+        fn every_added_backslash_is_read_as_an_escape() {
+            for (message, keeps) in [
+                ("><!--\n```\n>\n``-->``", "-->"),
+                ("<![CDATA[[x]:\n>\n]]>", "[x]:"),
+                ("[[#|---|---|]]>", "---|---|"),
+                ("1.<!--\n`-->\n\t<a x=\"--`\">", "--`"),
+            ] {
+                let mut src =
+                    String::from("commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A\n\n");
+                for l in message.lines() {
+                    let _ = writeln!(src, "    {l}");
+                }
+                let md = to_markdown(&src);
+                let doc = Document::parse(&md);
+                assert!(
+                    !doc.text.contains(['\\', '\u{2013}', '\u{2014}']),
+                    "{message:?}: {:?}\n{md}",
+                    doc.text
+                );
+                assert!(doc.text.contains(keeps), "{message:?}: {:?}", doc.text);
+            }
         }
 
         proptest! {
@@ -1487,6 +1649,12 @@ Author: B <b@example.com>
                 let doc = Document::parse(&to_markdown(&src));
                 prop_assert!(
                     !doc.text.contains(['\u{2013}', '\u{2014}']),
+                    "{:?}\n{}", doc.text, to_markdown(&src)
+                );
+                // Every escape and hard break this pass adds is consumed by
+                // the parser: a backslash on screen is one the author wrote.
+                prop_assert!(
+                    doc.text.matches('\\').count() <= src.matches('\\').count(),
                     "{:?}\n{}", doc.text, to_markdown(&src)
                 );
                 if !src.contains('<') {
