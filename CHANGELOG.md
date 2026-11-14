@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A drag whose button was let go outside the window ends when the pointer comes back**,
+  copying what it selected, instead of scrolling on to the end of the document.
+
 - **Auto-read (`A`) scrolls in a document opened from the file list**; it announced itself
   there and then stood still.
 

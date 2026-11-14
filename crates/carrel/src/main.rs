@@ -1782,10 +1782,6 @@ impl EdgeClock {
 }
 
 impl Pointer {
-    /// The window changed size: every coordinate remembered here belongs to
-    /// a frame that no longer exists. Whether a selection is in flight is
-    /// not a coordinate — the button is still down, and its release in the
-    /// new frame still ends that selection.
     /// A button went down: whatever drag was live is over, even if its
     /// release never arrived (one let go outside the window can be lost),
     /// so neither its selection nor its edge clock carries into this press.
@@ -1794,6 +1790,10 @@ impl Pointer {
         self.edge = None;
     }
 
+    /// The window changed size: every coordinate remembered here belongs to
+    /// a frame that no longer exists. Whether a selection is in flight is
+    /// not a coordinate — the button is still down, and its release in the
+    /// new frame still ends that selection.
     fn forget_geometry(&mut self) {
         *self = Self {
             selecting: self.selecting,
@@ -3321,11 +3321,30 @@ fn mouse_action(
                 std::mem::take(&mut ptr.selecting).then_some(Action::SelectRelease)
             }
         }
-        // Decoration only, and last: every button the pointer could be over
-        // has already had its chance to mean something.
-        MouseEventKind::Moved => hover_action(m, app, targets),
+        MouseEventKind::Moved => motion_action(m, app, targets, ptr),
         _ => None,
     }
+}
+
+/// A motion report with no button held. While a drag is live it is the
+/// release the terminal never sent (one let go outside the window), since
+/// any-motion tracking reports a held button as `Drag`: without this the
+/// edge clock went on scrolling to the end of the document and the
+/// selection grew until the next click. Otherwise decoration only, and
+/// last: every button the pointer could be over has had its chance.
+fn motion_action(
+    m: MouseEvent,
+    app: &App,
+    targets: &Targets,
+    ptr: &mut Pointer,
+) -> Option<carrel::action::Action> {
+    if ptr.selecting {
+        ptr.selecting = false;
+        ptr.edge = None;
+        return Some(carrel::action::Action::SelectRelease);
+    }
+    ptr.dragging = None;
+    hover_action(m, app, targets)
 }
 
 /// A drag that began on the text extends the selection, clamped to the
@@ -3930,6 +3949,41 @@ mod tests {
     /// the text**, and stops on release, on the pointer coming back, on
     /// Esc, on a pane, and on resize. Outside a drag it must not shorten
     /// the poll at all: an idle reader keeps its CPU idle.
+    /// A release lost outside the window: any-motion tracking reports
+    /// buttonless motion, which proves the button is up. The drag ends there
+    /// (copying what it selected) instead of the edge clock scrolling the
+    /// document to its end.
+    #[test]
+    fn buttonless_motion_after_a_lost_release_ends_the_drag() {
+        let src = (0..80).fold(String::new(), |mut s, i| {
+            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("para{i:02} words\n\n"));
+            s
+        });
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(&src), 40, 12);
+        app.on_resize(40, 12);
+        let targets = Targets::default();
+        let mut ptr = Pointer::default();
+        let mut clock = EdgeClock::default();
+        let (x, y) = (app.text_x_now() + 2, app.text_y());
+        let status = app.text_y() + app.text_h();
+        for (kind, row) in [
+            (MouseEventKind::Down(MouseButton::Left), y),
+            (MouseEventKind::Drag(MouseButton::Left), status),
+            (MouseEventKind::Moved, y + 3),
+        ] {
+            if let Some(a) = mouse_action(mouse(kind, x, row), &app, &targets, &mut ptr) {
+                carrel::app::update(&mut app, a);
+            }
+        }
+        assert_eq!(clock.timeout(&mut ptr, &app, Instant::now()), Duration::MAX);
+        assert!(
+            !ptr.selecting && app.sel_anchor.is_none(),
+            "the drag is over"
+        );
+        let copied = app.clipboard.as_deref().unwrap_or_default();
+        assert!(copied.starts_with("ra00 words"), "and copied: {copied:?}");
+    }
+
     #[test]
     fn the_edge_clock_ticks_only_while_a_drag_is_held_outside_the_text() {
         use carrel::action::Action;
