@@ -7,6 +7,10 @@ the declared MSRV **1.95** (`rust-version` in `Cargo.toml`, set by `merman`'s fl
 `cargo check --workspace --all-targets --locked`. Keep the two toolchain pins in `ci.yml` and
 `release.yml` equal; bump them deliberately with the local toolchain (clippy runs with
 `-D warnings`, so a moving `stable` would break CI on days nobody changed anything).
+Run the local clippy gate on the pinned toolchain too — `cargo +1.97 clippy --workspace
+--all-targets` — when the default toolchain is newer: lints differ in both directions. On
+2026-11-14 a default of 1.98 passed three pushes that 1.97's `duration_suboptimal_units`
+failed in CI.
 
 rustup was installed with `--no-modify-path` on the maintainer's machine, so `cargo` may not be
 on `PATH` in a fresh shell: `. "$HOME/.cargo/env"`.

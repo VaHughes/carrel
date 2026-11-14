@@ -95,6 +95,19 @@ Last updated: 2026-11-14 (adversarial bug hunt)
     sooner than 3× its last parse; a 52 MB file opens in about 1.4 s instead of up to
     17 s (one layout on open, tab columns measured only when a tab comes, huge paragraphs
     wrapped per visible chunk); the idle rescan waits 50× its last cost (2 s to 5 min).
+  - *Round two* (a second black-box tester, a second fuzz run and two more cold reviews,
+    against the merged fixes): images re-plan when the file list's root moves (the
+    verdict had stuck both ways — one way bypassed containment); a direct open is rooted
+    at the working directory when the file is inside it; saves keep a file's mode and
+    refuse a read-only file, new state files are 0600; Ctrl-H erases in every text
+    input; a drag may start on a gap row or past a line's end; a wrapped folded heading
+    ends its last row with `…`; a file read empty twice keeps its bookmarks; a reload
+    never leaves the reader under a fold; a cut pipe keeps its label through Back, and
+    the no-tty fallback says it was cut; a `<!--` in a commit message no longer turns a
+    later `--` into a dash (keep_hyphens planned on a parse its own escapes changed).
+  - *Process.* CI's clippy is pinned to 1.97 and this machine's default is 1.98: three
+    pushes passed locally and failed CI on `duration_suboptimal_units`. Run clippy as
+    `cargo +1.97 clippy` (DEVELOPMENT.md).
 
 - Unreleased (2026-11-11) — **small reading improvements, with no new dependencies or
   settings.** All five local gates passed: **1,472 tests passed, zero failed, two
@@ -485,12 +498,17 @@ planned:
   64 MB file of one-line headings still costs gigabytes.
 - Math with more than 64 commands in a row separated by at most one atom
   (`\alpha \alpha …`) shows as source.
+- A reload hold keeps the OLDEST place it could not find: edit the paragraph being read,
+  delete it, then undo the delete, and a reader who never moved lands on the paragraph
+  after it rather than back on the edited one.
+- Ctrl-W and Ctrl-U do not edit text inputs (Ctrl-H does). They would need a delete-word
+  and clear-line intent in seven inputs whose Backspace differs.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
-Known defects: the bugs reproduced on 2026-11-11 have fixes and regression coverage;
-all local gates and extended randomized checks passed. See Recently completed.
+Known defects: none recorded. Everything the 2026-11-14 hunt reproduced has a fix and a
+break-checked regression test, apart from the limits listed above; see Recently completed.
 
 The Q29/Q33 architecture follow-ups are done (see Recently completed). What a GTK frontend
 would still find: the TUI's `App` is sized in cells and stays in `carrel`, deliberately — a
