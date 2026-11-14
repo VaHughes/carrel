@@ -52,7 +52,7 @@ Last updated: 2026-11-14 (adversarial bug hunt)
   TUI state machine), a black-box pty tester, a terminal-escape and security hunter, a
   hostile-filesystem hunter and two cold code reviewers found about forty reproduced
   defects; every one fixed test-first, each test break-checked against the old code. Cold
-  reviews of the fixes then found six regressions in them, also fixed. Gates: **1,577
+  reviews of the fixes then found six regressions in them, also fixed. Gates: **1,607
   tests**, zero-warning clippy, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
   1.95; height pass 5.3 ms/MB, parse 2.7 ms/MB (`cargo bench --bench wrap`).
   - *Security.* Printed output (`FILE PATTERN`, `--tasks`, the piped list, every error
