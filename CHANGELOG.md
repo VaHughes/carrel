@@ -6,6 +6,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 - **Undoing an edit brings a reader who never moved back to their paragraph**, even
   through an edit, a deletion and the undo of both.
+- **A selection can be longer than a screen**: hold a drag on the status row (or above
+  the text) and the document scrolls under it, faster the further out the pointer is,
+  until you let go.
 
 - **`git log | carrel` shows fewer stray backslashes**: none inside a backtick span that
   runs across a `#` line, and none from a line break where the message's own markdown

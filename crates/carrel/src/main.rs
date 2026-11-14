@@ -1630,8 +1630,74 @@ struct Pointer {
     /// click that already acted — on a link, a chip, a footnote mark — and
     /// means nothing, however many words are still selected from earlier.
     selecting: bool,
+    /// Where a selection drag is being held outside the text, so the
+    /// [`EdgeClock`] knows to keep scrolling toward it. `None` while the
+    /// pointer is over the text, and after any release, press or resize.
+    edge: Option<(u16, u16)>,
     clicks: Clicks,
     wheel: Wheel,
+}
+
+/// Drag autoscroll's clock. Crossterm reports a drag only when the pointer
+/// MOVES, so a hand held still on the status row produced nothing and the
+/// selection stopped at the last visible row — a selection longer than a
+/// screen could not be made. While a drag is held outside the text this
+/// wakes the loop every [`carrel::app::DRAG_SCROLL_MS`] and sends
+/// [`carrel::action::Action::DragScroll`]; otherwise it never wakes it.
+#[derive(Default)]
+struct EdgeClock {
+    next: Option<Instant>,
+}
+
+impl EdgeClock {
+    /// The cell to scroll toward, if a drag is still held there: the button
+    /// still down on a selection (`Esc` drops the anchor), and no pane or
+    /// footnote box up to own the pointer. Anything else forgets the cell,
+    /// so the clock stops for good rather than waking on a dead drag.
+    fn held(ptr: &mut Pointer, app: &App) -> Option<(u16, u16)> {
+        if !ptr.selecting || app.sel_anchor.is_none() || app.pane().is_some() || app.peek.is_some()
+        {
+            ptr.edge = None;
+        }
+        ptr.edge
+    }
+
+    /// How long the event loop may sleep for this clock's sake: forever
+    /// unless a drag is held outside the text.
+    fn timeout(&mut self, ptr: &mut Pointer, app: &App, now: Instant) -> Duration {
+        if Self::held(ptr, app).is_none() {
+            self.next = None;
+            return Duration::MAX;
+        }
+        let next = *self
+            .next
+            .get_or_insert(now + Duration::from_millis(carrel::app::DRAG_SCROLL_MS));
+        next.saturating_duration_since(now)
+    }
+
+    /// Send the tick if one is due now; what it did, or `Idle`.
+    fn run(&mut self, ptr: &mut Pointer, app: &mut App) -> Outcome {
+        self.fire(ptr, app, Instant::now())
+            .map_or(Outcome::Idle, |tick| update(app, tick))
+    }
+
+    /// The tick due at `now`, if one is.
+    fn fire(
+        &mut self,
+        ptr: &mut Pointer,
+        app: &App,
+        now: Instant,
+    ) -> Option<carrel::action::Action> {
+        let Some(at) = Self::held(ptr, app) else {
+            self.next = None;
+            return None;
+        };
+        if self.next.is_some_and(|t| now >= t) {
+            self.next = Some(now + Duration::from_millis(carrel::app::DRAG_SCROLL_MS));
+            return Some(carrel::action::Action::DragScroll(at));
+        }
+        None
+    }
 }
 
 impl Pointer {
@@ -1639,6 +1705,14 @@ impl Pointer {
     /// a frame that no longer exists. Whether a selection is in flight is
     /// not a coordinate — the button is still down, and its release in the
     /// new frame still ends that selection.
+    /// A button went down: whatever drag was live is over, even if its
+    /// release never arrived (one let go outside the window can be lost),
+    /// so neither its selection nor its edge clock carries into this press.
+    const fn pressed(&mut self) {
+        self.selecting = false;
+        self.edge = None;
+    }
+
     fn forget_geometry(&mut self) {
         *self = Self {
             selecting: self.selecting,
@@ -1865,6 +1939,7 @@ fn run_loop(
     let mut backlinks: Option<Receiver<carrel::links::Msg>> = None;
     let mut backlinks_for: Option<PathBuf> = None;
     let mut next_auto: Option<Instant> = None;
+    let mut edge = EdgeClock::default();
     // The tags page, asked for from inside a document: see `TagScan`.
     let mut tag_scan = TagScan::new();
     let mut siblings = Siblings::new();
@@ -1900,7 +1975,8 @@ fn run_loop(
             .map_or(Duration::from_millis(100), |d| {
                 d.saturating_duration_since(Instant::now())
             })
-            .min(auto_timeout);
+            .min(auto_timeout)
+            .min(edge.timeout(&mut ptr, &app, Instant::now()));
 
         if event::poll(timeout)? {
             // A read error means the input stream is gone. Exit rather than
@@ -1960,6 +2036,9 @@ fn run_loop(
             if update(&mut app, carrel::action::Action::AutoTick) == Outcome::Quit {
                 break;
             }
+        }
+        if edge.run(&mut ptr, &mut app) == Outcome::Quit {
+            break;
         }
 
         if resize.apply(&mut app) {
@@ -2528,6 +2607,7 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
     let mut resize = Resize::default();
     let mut painted = Painted::default();
     let mut repaint = true;
+    let mut edge = EdgeClock::default();
 
     loop {
         // Same draw path as run(): documents opened FROM the home screen must
@@ -2560,9 +2640,12 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
         // While a scan or search is live, wake often enough to stream.
         let busy = scan.busy() || grep.busy() || tag_scan.busy() || preview.busy();
         let idle = if busy { 16 } else { 100 };
-        let timeout = resize.deadline.map_or(Duration::from_millis(idle), |d| {
-            d.saturating_duration_since(Instant::now())
-        });
+        let timeout = resize
+            .deadline
+            .map_or(Duration::from_millis(idle), |d| {
+                d.saturating_duration_since(Instant::now())
+            })
+            .min(edge.timeout(&mut ptr, &app, Instant::now()));
 
         if event::poll(timeout)? {
             let Ok(ev) = event::read() else { break };
@@ -2599,6 +2682,9 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
         // there is no open file to watch), and the same desktop palette.
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
         desktop.poll();
+        if edge.run(&mut ptr, &mut app) == Outcome::Quit {
+            break;
+        }
 
         if resize.apply(&mut app) {
             painted.targets.clear();
@@ -3047,7 +3133,7 @@ fn mouse_action(
     use carrel::keys::{drag_target, thumb_geometry};
 
     if matches!(m.kind, MouseEventKind::Down(_)) {
-        ptr.selecting = false;
+        ptr.pressed();
     }
     if app.lightbox.is_some() {
         return if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -3160,7 +3246,7 @@ fn mouse_action(
             ))),
             // Only a drag that started on the text extends, clamped to the
             // nearest text: off it, a release used to copy nothing.
-            None if ptr.selecting => app.doc_drag_at(m.column, m.row).map(Action::SelectDrag),
+            None if ptr.selecting => selection_drag(m, app, ptr),
             None => None,
         },
         MouseEventKind::Up(MouseButton::Left) => {
@@ -3176,6 +3262,15 @@ fn mouse_action(
         MouseEventKind::Moved => hover_action(m, app, targets),
         _ => None,
     }
+}
+
+/// A drag that began on the text extends the selection, clamped to the
+/// nearest text: off it, a release used to copy nothing. Held above or below
+/// the text, the [`EdgeClock`] takes over from here; back inside, it stops.
+fn selection_drag(m: MouseEvent, app: &App, ptr: &mut Pointer) -> Option<carrel::action::Action> {
+    ptr.edge = (app.drag_edge(m.row) != 0).then_some((m.column, m.row));
+    app.doc_drag_at(m.column, m.row)
+        .map(carrel::action::Action::SelectDrag)
 }
 
 /// The preferences every entry point applies to a fresh `App`.
@@ -3765,6 +3860,86 @@ mod tests {
             row,
             modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
         }
+    }
+
+    /// **The drag-autoscroll clock runs only while a drag is held outside
+    /// the text**, and stops on release, on the pointer coming back, on
+    /// Esc, on a pane, and on resize. Outside a drag it must not shorten
+    /// the poll at all: an idle reader keeps its CPU idle.
+    #[test]
+    fn the_edge_clock_ticks_only_while_a_drag_is_held_outside_the_text() {
+        use carrel::action::Action;
+        let src = (0..40).fold(String::new(), |mut s, i| {
+            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("para{i:02} words\n\n"));
+            s
+        });
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(&src), 40, 12);
+        app.on_resize(40, 12);
+        let targets = Targets::default();
+        let mut ptr = Pointer::default();
+        let mut clock = EdgeClock::default();
+        let t0 = Instant::now();
+        let tick = Duration::from_millis(carrel::app::DRAG_SCROLL_MS);
+        let down = MouseEventKind::Down(MouseButton::Left);
+        let drag = MouseEventKind::Drag(MouseButton::Left);
+        let up = MouseEventKind::Up(MouseButton::Left);
+        let (x, y) = (app.text_x_now() + 2, app.text_y());
+        let status = app.text_y() + app.text_h();
+        let act = |app: &mut App, ptr: &mut Pointer, kind, col, row| {
+            if let Some(a) = mouse_action(mouse(kind, col, row), app, &targets, ptr) {
+                carrel::app::update(app, a);
+            }
+        };
+
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), Duration::MAX, "idle");
+        act(&mut app, &mut ptr, down, x, y);
+        act(&mut app, &mut ptr, drag, x, y + 1);
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), Duration::MAX, "inside");
+
+        act(&mut app, &mut ptr, drag, x, status);
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), tick, "held below");
+        assert_eq!(clock.fire(&mut ptr, &app, t0), None, "not due yet");
+        assert_eq!(
+            clock.fire(&mut ptr, &app, t0 + tick),
+            Some(Action::DragScroll((x, status)))
+        );
+        assert_eq!(clock.timeout(&mut ptr, &app, t0 + tick), tick, "and again");
+
+        // Back inside: stopped.
+        act(&mut app, &mut ptr, drag, x, y + 2);
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), Duration::MAX);
+        assert_eq!(clock.fire(&mut ptr, &app, t0 + tick * 9), None);
+
+        // Out again, then released: stopped.
+        act(&mut app, &mut ptr, drag, x, status);
+        assert!(clock.timeout(&mut ptr, &app, t0) <= tick);
+        act(&mut app, &mut ptr, up, x, status);
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), Duration::MAX, "released");
+        assert_eq!(clock.fire(&mut ptr, &app, t0 + tick * 9), None);
+
+        // Out again, then Esc: stopped, though the button is still down.
+        // (Each press two rows from the last: within a cell of it is a
+        // double click, which selects a word and starts no drag.)
+        act(&mut app, &mut ptr, down, x, y + 2);
+        act(&mut app, &mut ptr, drag, x, status);
+        assert!(clock.timeout(&mut ptr, &app, t0) <= tick);
+        carrel::app::update(&mut app, Action::Dismiss);
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), Duration::MAX, "esc");
+
+        // Out again, then a pane: stopped.
+        act(&mut app, &mut ptr, down, x, y + 4);
+        act(&mut app, &mut ptr, drag, x, status);
+        assert!(clock.timeout(&mut ptr, &app, t0) <= tick);
+        carrel::app::update(&mut app, Action::HelpToggle);
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), Duration::MAX, "pane");
+        carrel::app::update(&mut app, Action::HelpToggle);
+
+        // Out again, then a resize: stopped.
+        act(&mut app, &mut ptr, down, x, y + 6);
+        act(&mut app, &mut ptr, drag, x, status);
+        assert!(clock.timeout(&mut ptr, &app, t0) <= tick);
+        ptr.forget_geometry();
+        assert_eq!(clock.timeout(&mut ptr, &app, t0), Duration::MAX, "resize");
     }
 
     /// A release belongs to the press it ends. With words still selected

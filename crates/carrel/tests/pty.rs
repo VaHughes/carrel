@@ -1334,6 +1334,93 @@ fn a_drag_released_on_a_blank_row_still_copies_the_text_it_crossed() {
     );
 }
 
+/// Every OSC 52 payload in `raw`, decoded.
+fn osc52_payloads(raw: &str) -> Vec<String> {
+    fn val(c: u8) -> Option<u32> {
+        Some(u32::from(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        }))
+    }
+    raw.split("\x1b]52;c;")
+        .skip(1)
+        .map(|rest| {
+            let b64 = rest.split(['\x07', '\x1b']).next().unwrap_or("");
+            let (mut bits, mut n, mut out) = (0u32, 0, Vec::new());
+            for v in b64.bytes().filter_map(val) {
+                bits = (bits << 6) | v;
+                n += 6;
+                if n >= 8 {
+                    n -= 8;
+                    out.push((bits >> n) as u8);
+                    bits &= (1 << n) - 1;
+                }
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        })
+        .collect()
+}
+
+/// **A drag held still on the status row keeps scrolling**, and the
+/// selection grows with it. Crossterm reports a drag only when the pointer
+/// moves, so the hand held below the text used to select only what was on
+/// screen at the press: nothing longer than a screen could be copied.
+#[test]
+fn a_drag_held_on_the_status_row_scrolls_and_copies_what_was_off_screen() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    // No heading, so no breadcrumb band: the text starts on row 2 (1-based)
+    // at column 3, and the 20-row pty shows doc rows 0..17 — para00 through
+    // para08. Everything from para09 on starts off screen.
+    let body = (0..40).fold(String::new(), |mut s, i| {
+        let _ = write!(s, "para{i:02} words\n\n");
+        s
+    });
+    std::fs::write(d.path().join("doc.md"), body).unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    // Wait (bounded) for the first paint before pressing, and for the copy
+    // before quitting, so a loaded machine slows the test rather than
+    // failing it. Press on "para00" (row 2), drag onto the status row
+    // (row 19), send NOTHING for a second and a half, release there.
+    let cmd = format!(
+        "( i=0; while [ $i -lt 150 ] && ! grep -qF 'para00' '{out}' 2>/dev/null; do \
+             sleep 0.1; i=$((i+1)); done; sleep 0.3; \
+           printf '\\033[<0;3;2M\\033[<32;10;19M'; sleep 1.5; \
+           printf '\\033[<0;10;19m'; i=0; \
+           while [ $i -lt 150 ] && ! grep -qF ']52;' '{out}' 2>/dev/null; do \
+             sleep 0.1; i=$((i+1)); done; \
+           printf 'q' ) | \
+         XDG_CONFIG_HOME='{dir}/cfg' XDG_STATE_HOME='{dir}/state' XDG_CACHE_HOME='{dir}/cache' \
+         HOME='{dir}' timeout 90 script -fqec 'stty rows 20 cols 76; {bin} doc.md' '{out}' \
+         >/dev/null 2>&1",
+        out = out.display(),
+        dir = d.path().display(),
+    );
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let payloads = osc52_payloads(&captured(&out));
+    let copied = payloads.last().expect("the release copied something");
+    assert!(copied.starts_with("para00"), "{copied:?}");
+    // Four ticks bring para10 on screen; a second and a half is thirty.
+    assert!(
+        copied.contains("para10"),
+        "the held drag scrolled and selected text that was off screen: {copied:?}"
+    );
+}
+
 #[test]
 fn a_right_click_opens_a_menu_and_a_click_on_a_row_acts() {
     if !script_available() {

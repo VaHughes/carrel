@@ -1079,13 +1079,14 @@ mod tests {
             A::HomeNormalMode | A::PickerCancel => KeyboardOnly, // Esc, and a click outside
 
             // --- not intents at all ---
-            A::SearchKey(_) => Internal, // typing
-            A::HelpKey(_) => Internal,   // typing, on the help sheet
-            A::Hover(_) => Internal,     // decoration; it decides nothing
-            A::AutoTick => Internal,     // a clock
-            A::HomeOpenTags => Internal, // the tag scan finishing
-            A::Absorb => Internal,       // dropped at the hit-test
-            A::PaneClose => Chrome,      // a click beside any open pane
+            A::SearchKey(_) => Internal,  // typing
+            A::HelpKey(_) => Internal,    // typing, on the help sheet
+            A::Hover(_) => Internal,      // decoration; it decides nothing
+            A::AutoTick => Internal,      // a clock
+            A::DragScroll(_) => Internal, // a clock, while a drag is held
+            A::HomeOpenTags => Internal,  // the tag scan finishing
+            A::Absorb => Internal,        // dropped at the hit-test
+            A::PaneClose => Chrome,       // a click beside any open pane
         }
     }
 

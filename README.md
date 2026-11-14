@@ -229,7 +229,7 @@ Carrel captures the mouse, so clicks reach it rather than your terminal. What th
 | **A row in a pane** | The outline, the bookmark list and both link panes open the row under the pointer. |
 | **Beside an open pane** | Closes the pane, and does nothing else — the click never lands on what is underneath. One pane is open at a time; the **`≡`** opens the menu in place of whatever pane is up, and a key on a pane's border (`esc close`, `↑ ↓`) is a button for that key. |
 | **The margin outline** | Click a section to jump to it. |
-| **Text** | Drag to select; release copies it. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
+| **Text** | Drag to select; release copies it. Hold the drag above or below the text and the document scrolls to select more. Double-click takes the word, triple-click the whole block — which is how you copy a code block cleanly, with no gutter and no wrapping. |
 | **The scrollbar** | Drag the thumb, or click the track to jump to that position. It is notched where the document's sections begin. The wheel scrolls, and gathers speed if you keep spinning it. |
 | **Hovering** | Whatever the pointer is over lights up, if clicking it would do something. Decoration only — a click always resolves from where it landed. |
 

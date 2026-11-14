@@ -498,7 +498,6 @@ planned:
   needs a byte of its own per rule row.
 - Valid UTF-8 holding a NUL opens as text (files and pipes alike); only invalid UTF-8 is
   checked for NULs.
-- A drag below the text does not scroll the document.
 - An image outside the folder has no way to be loaded (links ask for a second Enter).
 - Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a
   64 MB file of one-line headings still costs gigabytes.

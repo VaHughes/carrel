@@ -91,7 +91,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::FootnoteJump => "%",
         A::FollowToggle => "F",
         A::AutoToggle => "A",
-        A::AutoTick => return None,
+        A::AutoTick | A::DragScroll(_) => return None,
         A::CodeStep(_) => "] [",
         A::TaskStep(_) => "X",
         A::ChangeStep(_) => "c",

@@ -215,6 +215,10 @@ pub enum Action {
     /// The event loop's heartbeat while auto-read is on. Inert otherwise,
     /// so a stray late tick can never move anything.
     AutoTick,
+    /// The event loop's clock while a selection drag is held above or below
+    /// the text, at the pointer's cell: scroll toward it and extend the
+    /// selection to the newly visible edge row. Inert with no drag live.
+    DragScroll((u16, u16)),
     /// Move the block cursor to the next/previous CODE block.
     CodeStep(i32),
     /// `X`: jump to the next GFM task item, wrapping. Count-multiplied.
@@ -652,6 +656,7 @@ impl Action {
             | Self::PeekGo
             | Self::PeekScroll(..)
             | Self::AutoTick
+            | Self::DragScroll(..)
             | Self::HelpKey(..)
             | Self::HelpRun(..)
             | Self::ScrollTo(..)
@@ -1216,6 +1221,7 @@ mod intent_tests {
             Action::ScrollTo(9),
             Action::PeekScroll(1),
             Action::AutoTick,
+            Action::DragScroll((1, 2)),
             Action::Absorb,
             Action::PaneClose,
             Action::MenuPick(0),

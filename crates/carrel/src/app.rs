@@ -217,6 +217,7 @@ impl Pane {
             | A::FoldAt(_)
             | A::SelectAnchor(_)
             | A::SelectDrag(_)
+            | A::DragScroll(_)
             | A::SelectRelease
             | A::SelectWord(_)
             | A::SelectBlock(_)
@@ -811,6 +812,15 @@ pub const READING_WPM: usize = 200;
 /// clock; this only documents the pace. 300 ms is two hundred rows a minute
 /// — brisk enough to feel like reading, gentle enough to stop mid-sentence.
 pub const AUTO_READ_MS: u64 = 300;
+
+/// How often a selection drag held above or below the text scrolls it. The
+/// event loop owns the clock, as for [`AUTO_READ_MS`]. 50 ms is twenty rows
+/// a second on the status row — near what a GUI text view does — and each
+/// row further out adds a row per tick, up to [`DRAG_SCROLL_MAX`].
+pub const DRAG_SCROLL_MS: u64 = 50;
+
+/// The most rows one drag-autoscroll tick moves.
+pub const DRAG_SCROLL_MAX: u32 = 3;
 
 /// Why a document cannot be left while a note on it is being written.
 const LEAVE_WITH_DRAFT: &str = "a note is being written — save it (Enter) or cancel it (Esc) first";
@@ -3147,6 +3157,31 @@ impl App {
         caret(if at_start { r.doc.start } else { r.doc.end })
     }
 
+    /// How far outside the text rows a dragging pointer is: negative rows
+    /// above the text, positive below, `0` inside it. This is what drives
+    /// drag autoscroll — a drag could only ever select what was on screen,
+    /// because crossterm reports nothing while the pointer is held still on
+    /// the status row, so a selection longer than a screen could not be
+    /// made at all.
+    ///
+    /// Row 0 counts as above when the text starts there (a window too short
+    /// for the top margin): a pointer cannot leave the terminal, so the
+    /// edge row is the only way to say "further up".
+    #[must_use]
+    pub fn drag_edge(&self, row: u16) -> i32 {
+        let top = self.text_y();
+        let bottom = top + self.text_h(); // first row below the text
+        if row < top {
+            -i32::from(top - row)
+        } else if row >= bottom {
+            i32::from(row - bottom) + 1
+        } else if row == 0 {
+            -1
+        } else {
+            0
+        }
+    }
+
     /// Where a left press that is not on a character starts a selection.
     ///
     /// `doc_span_at` first, then the same clamps a release gets, so a drag
@@ -4226,7 +4261,7 @@ fn peek_and_tags(app: &mut App, action: Action) -> Option<Outcome> {
             // page that scrolled on under it left the box describing a mark
             // that was no longer on screen — besides which, the reader is
             // reading the footnote.
-            Action::AutoTick => {
+            Action::AutoTick | Action::DragScroll(_) => {
                 app.peek = Some(peek);
                 return Some(Outcome::Idle);
             }
@@ -4446,6 +4481,7 @@ fn withdraw_tags_request(app: &mut App, action: Action) {
             | Action::HomeOpenTags
             | Action::MenuHover(_)
             | Action::AutoTick
+            | Action::DragScroll(_)
     ) && app.tags == crate::tags::Request::Wanted
     {
         app.tags = crate::tags::Request::Idle;
@@ -4573,14 +4609,14 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     // early below still counts as having been done.
     app.first_run &= matches!(
         action,
-        Action::Hover(_) | Action::MenuHover(_) | Action::AutoTick
+        Action::Hover(_) | Action::MenuHover(_) | Action::AutoTick | Action::DragScroll(_)
     );
     // A click's fold is undone only by the press that completes it as a
     // double-click; anything else in between — a menu's "Select word"
     // included — means the click stood.
     if !matches!(
         action,
-        Action::SelectWord(_) | Action::Hover(_) | Action::AutoTick
+        Action::SelectWord(_) | Action::Hover(_) | Action::AutoTick | Action::DragScroll(_)
     ) {
         app.click_fold = None;
     }
@@ -5682,6 +5718,35 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             // `Some` offered `Copy selection` rows that copied nothing.
             app.selection = (start < end).then_some(start..end);
             Outcome::Redraw
+        }
+        // Drag autoscroll: the pointer is held above or below the text, so
+        // scroll a step toward it and extend the selection to whatever the
+        // edge row now shows — exactly what the next motion report would do
+        // if the hand moved. A plain scroll, so folds never change and the
+        // document ends stop it.
+        Action::DragScroll((col, row)) => {
+            if app.sel_anchor.is_none() || app.pane().is_some() {
+                return Outcome::Idle;
+            }
+            let edge = app.drag_edge(row);
+            if edge == 0 {
+                return Outcome::Idle;
+            }
+            let step = edge.unsigned_abs().min(DRAG_SCROLL_MAX);
+            let step = i32::try_from(step).unwrap_or(1) * edge.signum();
+            let before = app.view.scroll_row;
+            app.view.scroll_by(&app.doc, &app.layout, step, h);
+            if app.view.scroll_row == before {
+                return Outcome::Idle;
+            }
+            // Scrolling up off a growing pipe's end is a move away from it.
+            if step < 0 {
+                app.following = false;
+            }
+            match app.doc_drag_at(col, row) {
+                Some(at) => reader_update(app, Action::SelectDrag(at)),
+                None => Outcome::Redraw,
+            }
         }
         Action::SelectRelease => {
             let pressed = app.sel_anchor.take();
