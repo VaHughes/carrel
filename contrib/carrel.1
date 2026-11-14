@@ -805,7 +805,15 @@ is safe to edit by hand: unknown keys and
 comments are ignored, so a config written for another version still opens. Of
 a key repeated by hand the FIRST line wins, except
 .BR place ,
-where every line counts. The nine keys are
+where every line counts. A value is everything after the first
+.BR = ,
+taken literally with the spaces at its ends trimmed: there is no quoting and no
+escaping, so a backslash or a quote is part of the value. A folder whose name
+holds a line break or control character, starts or ends with a space, or is not
+UTF\-8 is used for the session but not saved. A line that is not UTF\-8 is
+skipped when reading; while one is there, or while the file cannot be read,
+carrel saves no setting rather than rewrite what it could not read.
+The nine keys are
 .RS
 .TP
 .B max_width

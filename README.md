@@ -334,7 +334,10 @@ through the terminal clipboard (OSC 52) before closing the page or quitting.
 
 Optional. Carrel writes `$XDG_CONFIG_HOME/carrel/config` (or `~/.config/carrel/config`) itself
 when you change a setting in the app, and you can edit it by hand. One `key = value` per line
-(`place` may repeat); unknown keys and `#` comments are ignored.
+(`place` may repeat); unknown keys and `#` comments are ignored. Values are literal, with no
+quoting or escaping. A folder whose name has a line break or control character, or a space at
+either end, is used for the session but not saved. While the file holds a line that is not
+UTF-8, or cannot be read, carrel saves no setting rather than rewrite what it could not read.
 
 | Key | Default | What it does |
 |---|---|---|

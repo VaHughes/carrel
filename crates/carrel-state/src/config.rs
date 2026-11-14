@@ -110,7 +110,47 @@ pub struct Config {
 /// [`Config::default`] — every key absent, never an error.
 #[must_use]
 pub fn load_all_in(dir: &Path) -> Config {
-    parse_all(&std::fs::read_to_string(dir.join("config")).unwrap_or_default())
+    parse_all(&readable_lines(
+        &std::fs::read(dir.join("config")).unwrap_or_default(),
+    ))
+}
+
+/// The file's lines that are UTF-8, in order; the rest are dropped.
+///
+/// It was `read_to_string`, which fails on the whole file for one bad byte:
+/// a hand-written `# caf\xe9` (Latin-1) made EVERY key read as absent. Now a
+/// line that is not UTF-8 costs only itself — and a key on such a line is
+/// absent rather than guessed at, since a lossy path names a different folder.
+fn readable_lines(bytes: &[u8]) -> String {
+    bytes
+        .split(|&b| b == b'\n')
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The config's current text, for a writer about to rewrite it — or an
+/// error, so the writer writes NOTHING.
+///
+/// Both writers rewrite the whole file around their one line, and both took
+/// `read_to_string(..).unwrap_or_default()`: a file that was unreadable
+/// (mode 0200) or held one non-UTF-8 byte read as EMPTY, and the next `T`
+/// replaced the user's whole config with `theme = carrel-dark`. Only "no
+/// such file" means there is nothing to keep. Anything else we cannot carry
+/// through the rewrite unchanged is refused — the setting still applies for
+/// this run; it is only not remembered (the rule `marginalia::save_in`
+/// already follows).
+fn existing_text(path: &Path) -> std::io::Result<String> {
+    match std::fs::read(path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the config has a line that is not UTF-8, so it is left as it is",
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e),
+    }
 }
 
 /// `key = value` per line. Unknown keys and `#` comments are ignored, so a
@@ -227,7 +267,54 @@ pub fn load_root_in(dir: &Path) -> Option<PathBuf> {
 }
 
 pub fn save_root_in(dir: &Path, root: &Path) -> std::io::Result<()> {
-    upsert_key_in(dir, "root", &root.display().to_string())
+    upsert_key_in(dir, "root", path_value(root)?)
+}
+
+/// A path as a config value, or the reason it cannot be one.
+///
+/// `display()` replaced every invalid byte with U+FFFD, so a folder whose
+/// name was not UTF-8 was saved as the name of a DIFFERENT folder — one that
+/// does not exist. Refused instead, like any other value that cannot
+/// survive the trip (see [`one_line`]).
+fn path_value(p: &Path) -> std::io::Result<&str> {
+    p.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "its name is not valid UTF-8",
+        )
+    })
+}
+
+/// Refuse a value the one-line format cannot carry back unchanged.
+///
+/// A folder named `zz\nmouse = false\nroot = ` was written verbatim, and the
+/// config gained a `mouse = false` line nobody wrote — the next launch had
+/// the mouse off and a broken root. The values that cannot survive are
+/// exactly: anything that breaks a line (`lines()` splits on `\n`, a `\r`
+/// before it is eaten, and an editor may break on U+0085/U+2028/U+2029 too),
+/// any other control character, and a space at either end, which
+/// [`parse_all`] trims.
+///
+/// **Why refuse rather than quote or escape.** This file is written by hand
+/// as well as by the app, and every value in it today is bare and literal:
+/// `root = C:\foo` and `root = ~/notes\ backup` mean those backslashes, and
+/// `place = "/x"` means a folder whose name has quotes in it. Any escape or
+/// quoting syntax gives one of those spellings a new meaning, which is the
+/// break this file's whole design avoids (the module docs: the first value
+/// that needs quoting to survive is the trigger for real TOML, not for a
+/// home-grown dialect). The names refused here are ones nobody sets out to
+/// keep a library in; the choice still applies for the session, and the
+/// picker says it was not remembered.
+fn one_line(value: &str) -> std::io::Result<&str> {
+    let breaks = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    let why = if value.contains(breaks) {
+        "its name has a line break or control character"
+    } else if value.trim() != value {
+        "its name starts or ends with a space"
+    } else {
+        return Ok(value);
+    };
+    Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, why))
 }
 
 /// Write or replace ONE key, preserving every other line.
@@ -237,9 +324,12 @@ pub fn save_root_in(dir: &Path, root: &Path) -> std::io::Result<()> {
 /// Repeated keys (`place`) do not belong here; they have their own
 /// append-and-promote path in [`add_place_in`].
 fn upsert_key_in(dir: &Path, key: &str, value: &str) -> std::io::Result<()> {
+    // Every key goes through here, so every key is guarded — not only the
+    // two that carry a folder name today.
+    let value = one_line(value)?;
     std::fs::create_dir_all(dir)?;
     let path = dir.join("config");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = existing_text(&path)?;
     let mut out = String::new();
     let mut written = false;
     for line in existing.lines() {
@@ -282,10 +372,10 @@ fn place_value(line: &str) -> Option<&str> {
 }
 
 pub fn add_place_in(dir: &Path, root: &Path) -> std::io::Result<()> {
+    let me = one_line(path_value(root)?)?;
     std::fs::create_dir_all(dir)?;
     let path = dir.join("config");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let me = root.display().to_string();
+    let existing = existing_text(&path)?;
     let mut kept_places = 0usize;
     let mut lines: Vec<String> = existing
         .lines()
@@ -634,6 +724,152 @@ mod tests {
     #[test]
     fn a_missing_directory_is_not_an_error_on_load() {
         assert_eq!(load_root_in(Path::new("/nonexistent/xyzzy")), None);
+    }
+
+    /// A directory named `zz\nmouse = false\nroot = ` was saved verbatim by
+    /// the picker: the config gained a `mouse = false` line nobody wrote and
+    /// a broken root, and the next launch had the mouse off. A value that
+    /// cannot survive one line, trimmed, is refused — the file is untouched.
+    #[test]
+    fn a_folder_name_cannot_inject_lines_into_the_config() {
+        let d = tempfile::tempdir().unwrap();
+        save_root_in(d.path(), Path::new("/safe")).unwrap();
+        add_place_in(d.path(), Path::new("/safe")).unwrap();
+        let before = std::fs::read_to_string(d.path().join("config")).unwrap();
+        let hostile = Path::new("/x/zz\nmouse = false\nroot = ");
+        assert!(save_root_in(d.path(), hostile).is_err());
+        assert!(add_place_in(d.path(), hostile).is_err());
+        assert!(upsert_key_in(d.path(), "theme", "paper\nmouse = false").is_err());
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("config")).unwrap(),
+            before,
+            "a refused value writes nothing"
+        );
+        let c = load_all_in(d.path());
+        assert_eq!(c.mouse, None);
+        assert_eq!(c.root, Some(PathBuf::from("/safe")));
+        assert_eq!(c.places, vec![PathBuf::from("/safe")]);
+    }
+
+    /// Everything the one-line format can carry comes back exactly; what it
+    /// cannot (a line break, any control character, an edge space the reader
+    /// trims, a name that is not UTF-8) is refused rather than saved as a
+    /// different folder.
+    #[test]
+    fn hostile_folder_names_round_trip_or_are_refused() {
+        for name in [
+            "/a=b",
+            "/a = b",
+            r"/back\slash",
+            r"/~/notes\ backup",
+            "/#hash",
+            "/a # not a comment",
+            "/\"quoted\"",
+            "/inner  spaces",
+            "/caf\u{e9}",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            save_root_in(d.path(), Path::new(name)).unwrap();
+            add_place_in(d.path(), Path::new(name)).unwrap();
+            let c = load_all_in(d.path());
+            assert_eq!(c.root, Some(PathBuf::from(name)), "root {name:?}");
+            assert_eq!(c.places, vec![PathBuf::from(name)], "place {name:?}");
+        }
+        for name in [
+            "/a\nb",
+            "/a\rb",
+            "/a\tb",
+            "/a\u{7f}b",
+            "/a\u{1b}[31mb",
+            "/a\u{85}b",
+            "/a\u{2028}b",
+            "/trailing ",
+            " /leading",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            assert!(save_root_in(d.path(), Path::new(name)).is_err(), "{name:?}");
+            assert!(add_place_in(d.path(), Path::new(name)).is_err(), "{name:?}");
+            assert!(!d.path().join("config").exists(), "{name:?} wrote a file");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let d = tempfile::tempdir().unwrap();
+            let raw = Path::new(std::ffi::OsStr::from_bytes(b"/not\xffutf8"));
+            assert!(save_root_in(d.path(), raw).is_err());
+            assert!(add_place_in(d.path(), raw).is_err());
+        }
+    }
+
+    /// `# caf\xe9` — one Latin-1 comment — made `read_to_string` fail, so
+    /// EVERY key read as absent, and the next `T` rewrote the whole file as
+    /// the single line `theme = carrel-dark`. One bad line now costs only
+    /// itself at load, and a file that cannot be rewritten faithfully is not
+    /// rewritten at all.
+    #[test]
+    fn a_line_that_is_not_utf8_costs_only_itself_and_is_never_overwritten() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("config");
+        let bytes = b"theme = paper\n# caf\xe9\nroot = /caf\xe9\nmax_width = 70\n";
+        std::fs::write(&file, bytes).unwrap();
+        let c = load_all_in(d.path());
+        assert_eq!(c.theme.as_deref(), Some("paper"));
+        assert_eq!(c.max_width, Some(70));
+        assert_eq!(c.root, None, "a value that is not UTF-8 is not a path");
+        assert!(save_theme_in(d.path(), "carrel-dark").is_err());
+        assert!(save_hints_in(d.path(), false).is_err());
+        assert!(add_place_in(d.path(), Path::new("/p")).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), bytes, "file untouched");
+    }
+
+    /// Mode 0200 — writable, not readable — read as an empty file and was
+    /// then replaced by one line. A read error that is not "no such file"
+    /// means there is something there we cannot see, so leave it alone.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_config_is_never_replaced() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("config");
+        std::fs::write(&file, "theme = paper\nmax_width = 70\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o200)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            return; // root reads anything; nothing to test
+        }
+        assert!(save_theme_in(d.path(), "carrel-dark").is_err());
+        assert!(save_root_in(d.path(), Path::new("/r")).is_err());
+        assert!(add_place_in(d.path(), Path::new("/r")).is_err());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "theme = paper\nmax_width = 70\n"
+        );
+    }
+
+    /// The fix is on the WRITE side only, so a file a person typed reads as
+    /// it always did: backslashes stay literal, quotes stay part of the
+    /// value, `=` after the first stays in the value, and a `#` only
+    /// comments a line that starts with one.
+    #[test]
+    fn hand_written_configs_read_exactly_as_before() {
+        let c = parse_all(
+            "root = C:\\foo\n\
+             place = ~/notes\\ backup\n\
+             place = \"/quoted\"\n\
+             place = /a=b # still the value\n\
+             theme=paper\n\
+             # root = /commented\n",
+        );
+        assert_eq!(c.root, Some(PathBuf::from(r"C:\foo")));
+        assert_eq!(
+            c.places,
+            vec![
+                PathBuf::from(r"~/notes\ backup"),
+                PathBuf::from("\"/quoted\""),
+                PathBuf::from("/a=b # still the value"),
+            ]
+        );
+        assert_eq!(c.theme.as_deref(), Some("paper"));
     }
 
     /// One file, two readings of a boolean: `hints`/`breadcrumb` took

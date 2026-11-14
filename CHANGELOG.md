@@ -4,6 +4,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **The config file can no longer be rewritten behind your back.** Choosing a folder whose
+  name contains a line break used to write extra lines into the config (one named
+  `zz⏎mouse = false` turned the mouse off on the next launch). Such a folder, or one whose
+  name starts or ends with a space, now opens for the session and the picker says it was
+  not remembered. A config holding one non-UTF-8 line no longer loses every setting. A
+  config that cannot be read is no longer replaced by a single line the next time a
+  setting changes. Hand-written configs read exactly as before.
+
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves
