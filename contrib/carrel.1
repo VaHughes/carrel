@@ -747,6 +747,30 @@ or dropped onto the list opens that file \(em
 .B PLAN.md:42
 at the line \(em and a folder becomes the folder listed; while the filter,
 the search or the folder browser is taking typing, a paste is typing.
+.SS Typing
+These work in every place carrel takes typing: the search prompt, the
+outline and help filters, a note, and the home screen's filter, search and
+folder browser.
+.TP
+.BR Backspace ", " Ctrl\-H
+Erase the character before the cursor.
+.TP
+.B Ctrl\-W
+Erase the word before the cursor: any spaces, then everything back to the
+previous space. In the folder browser a
+.B /
+ends a word too, so
+.B ~/notes/drafts/
+becomes
+.BR ~/notes/ ,
+one folder at a time.
+.TP
+.B Ctrl\-U
+Erase the whole input; in a note, everything before the cursor on its line.
+Neither this nor
+.B Ctrl\-W
+climbs a folder when the folder browser's input is empty, as Backspace
+does: they edit text, and there is none.
 .SH EXIT STATUS
 .TP
 .B 0

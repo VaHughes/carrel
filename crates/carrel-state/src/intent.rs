@@ -57,6 +57,14 @@ pub enum SearchKey {
     Recall(Direction),
     Char(char),
     Backspace,
+    /// Erase the word before the end of the input: trailing whitespace,
+    /// then everything back to the previous whitespace (readline's
+    /// `unix-word-rubout`, Ctrl-W in a terminal). The folder picker reads a
+    /// `/` as whitespace too, so it erases one path component at a time.
+    DeleteWord,
+    /// Erase the whole input (Ctrl-U). Unlike `Backspace` on an empty folder
+    /// picker, it never climbs: it edits text and does not navigate.
+    Clear,
     /// Keep the matches, close the prompt.
     Accept,
     /// Discard the matches, close the prompt, restore the previous position.
@@ -69,6 +77,13 @@ pub enum NoteKey {
     Char(char),
     Newline,
     Backspace,
+    /// Erase the word before the cursor, readline's `unix-word-rubout`: a
+    /// line break counts as whitespace, so at a line's start it joins the
+    /// line to the one above and takes that line's last word.
+    DeleteWord,
+    /// Erase from the cursor back to the start of its line (Ctrl-U). At the
+    /// start of a line there is nothing before it, so it does nothing.
+    DeleteToLineStart,
     Delete,
     Left,
     Right,

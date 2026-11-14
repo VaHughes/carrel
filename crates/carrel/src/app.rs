@@ -4328,6 +4328,46 @@ fn backspace_grapheme(input: &mut String) {
     }
 }
 
+/// Where readline's `unix-word-rubout` (Ctrl-W) cuts `before`, the text
+/// before a cursor: back over trailing whitespace, then back over the word.
+///
+/// Over grapheme clusters, the unit Backspace erases, so a word ending in an
+/// emoji or a combining accent goes whole and a cluster is never split. A
+/// cluster is whitespace only when all of it is. With `path`, a `/` is a
+/// boundary too (readline's `unix-filename-rubout`, and what zsh's default
+/// `WORDCHARS` does): a typed path has no spaces in it, so in the folder
+/// picker the whitespace rule would erase all of `~/notes/drafts/` in one
+/// keystroke and make Ctrl-W a second Ctrl-U. The path rule takes `drafts`
+/// and leaves `~/notes/`, still a folder with its trailing slash, so the
+/// picker lists that folder's children at once — one level up, as a slip
+/// of the hand while completing a path wants.
+pub(crate) fn rubout_start(before: &str, path: bool) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    let boundary = |g: &str| g.chars().all(char::is_whitespace) || (path && g == "/");
+    let mut cut = before.len();
+    let mut clusters = before.grapheme_indices(true).rev().peekable();
+    while let Some((at, _)) = clusters.next_if(|(_, g)| boundary(g)) {
+        cut = at;
+    }
+    while let Some((at, _)) = clusters.next_if(|(_, g)| !boundary(g)) {
+        cut = at;
+    }
+    cut
+}
+
+/// One erasing key applied to a single-line input whose cursor is at its
+/// end: Backspace takes a cluster, Ctrl-W a word, Ctrl-U everything. Every
+/// input routes all three through here, so the side effects each input
+/// runs after an erase cannot follow one key and miss another.
+fn erase_input(input: &mut String, k: SearchKey, path: bool) {
+    match k {
+        SearchKey::Backspace => backspace_grapheme(input),
+        SearchKey::DeleteWord => input.truncate(rubout_start(input, path)),
+        SearchKey::Clear => input.clear(),
+        SearchKey::Char(_) | SearchKey::Accept | SearchKey::Cancel | SearchKey::Recall(_) => {}
+    }
+}
+
 fn pasted_line(text: &str) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     const LIMIT: usize = 256;
@@ -4941,9 +4981,9 @@ fn help_update(app: &mut App, action: Action) -> Outcome {
                 }
                 Outcome::Redraw
             }
-            SearchKey::Backspace => {
+            SearchKey::Backspace | SearchKey::DeleteWord | SearchKey::Clear => {
                 if let Some(h) = app.help.as_mut() {
-                    backspace_grapheme(&mut h.filter);
+                    erase_input(&mut h.filter, k, false);
                 }
                 Outcome::Redraw
             }
@@ -5067,9 +5107,9 @@ fn outline_update(app: &mut App, action: Action) -> Outcome {
                         o.filter.push(c);
                     }
                 }
-                SearchKey::Backspace => {
+                SearchKey::Backspace | SearchKey::DeleteWord | SearchKey::Clear => {
                     if let Some(o) = app.outline.as_mut() {
-                        backspace_grapheme(&mut o.filter);
+                        erase_input(&mut o.filter, k, false);
                     }
                 }
                 SearchKey::Accept => return outline_update(app, Action::OutlineJump),
@@ -5430,8 +5470,8 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                     h.hit_selected = 0;
                     h.grep_done = false;
                 }
-                SearchKey::Backspace => {
-                    backspace_grapheme(&mut h.query);
+                SearchKey::Backspace | SearchKey::DeleteWord | SearchKey::Clear => {
+                    erase_input(&mut h.query, k, false);
                     h.hits.clear();
                     h.hit_selected = 0;
                     h.grep_done = false;
@@ -5501,6 +5541,16 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
         Action::HomeKey(k) if h.mode == HomeMode::Picker => {
             match k {
                 SearchKey::Char(c) => h.picker.typed.push(c),
+                // Ctrl-W and Ctrl-U edit text and never navigate: on an
+                // empty input there is nothing to edit, so nothing happens —
+                // not the climb Backspace makes there, and not a relist that
+                // would move the highlight.
+                SearchKey::DeleteWord | SearchKey::Clear => {
+                    if h.picker.typed.is_empty() {
+                        return Outcome::Idle;
+                    }
+                    erase_input(&mut h.picker.typed, k, true);
+                }
                 SearchKey::Backspace => {
                     if h.picker.typed.is_empty() {
                         // Nothing to erase: climb instead, the keyboard twin
@@ -5548,8 +5598,8 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
                     h.filter.push(c);
                     h.refilter();
                 }
-                SearchKey::Backspace => {
-                    backspace_grapheme(&mut h.filter);
+                SearchKey::Backspace | SearchKey::DeleteWord | SearchKey::Clear => {
+                    erase_input(&mut h.filter, k, false);
                     h.refilter();
                 }
                 SearchKey::Accept | SearchKey::Recall(_) => return Outcome::Idle,
@@ -7384,10 +7434,10 @@ fn search_key(app: &mut App, k: SearchKey, h: u16) -> Outcome {
             }
             app.rerun_search();
         }
-        SearchKey::Backspace => {
+        SearchKey::Backspace | SearchKey::DeleteWord | SearchKey::Clear => {
             app.search_history.browsing = None;
             if let Mode::Search { input, .. } = &mut app.mode {
-                backspace_grapheme(input);
+                erase_input(input, k, false);
             }
             app.rerun_search();
         }
@@ -7422,6 +7472,38 @@ fn search_key(app: &mut App, k: SearchKey, h: u16) -> Outcome {
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+
+    /// Ctrl-W's cut, readline's `unix-word-rubout` over grapheme clusters.
+    #[test]
+    fn rubout_takes_trailing_space_then_one_word_and_never_splits_a_cluster() {
+        let cut = |s: &str, path: bool| s[..rubout_start(s, path)].to_string();
+        assert_eq!(cut("", false), "", "empty stays empty");
+        assert_eq!(cut("   ", false), "", "only whitespace goes whole");
+        assert_eq!(cut("one two", false), "one ");
+        assert_eq!(cut("one two  ", false), "one ", "trailing space first");
+        assert_eq!(cut("one\ttwo", false), "one\t");
+        // A script with no spaces is one word, as readline reads it.
+        assert_eq!(cut("你好 世界", false), "你好 ");
+        assert_eq!(cut("世界", false), "");
+        // A ZWJ sequence, a skin tone and a combining accent are each one
+        // cluster: the word goes whole and none is left half-erased.
+        assert_eq!(cut("go 👩\u{200d}💻👍🏽", false), "go ");
+        assert_eq!(cut("cafe\u{301} bar", false), "cafe\u{301} ");
+        assert_eq!(cut("x cafe\u{301}", false), "x ");
+        // A space carrying a combining mark is a visible accent, not
+        // whitespace, so it joins the word on both sides of it.
+        assert_eq!(cut("a \u{301}b", false), "");
+        // Outside the picker a slash is just a character.
+        assert_eq!(cut("~/notes/drafts/", false), "");
+        // In the picker it is a boundary: one component per press, and the
+        // folder keeps its trailing slash.
+        assert_eq!(cut("~/notes/drafts/", true), "~/notes/");
+        assert_eq!(cut("~/notes/drafts", true), "~/notes/");
+        assert_eq!(cut("~/notes/", true), "~/");
+        assert_eq!(cut("~/", true), "");
+        assert_eq!(cut("/", true), "");
+        assert_eq!(cut("/home//", true), "/");
+    }
 
     #[test]
     fn hints_toggle_flips_and_persists_only_into_the_injected_dir() {

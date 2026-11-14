@@ -240,6 +240,9 @@ pub const READER_HELP: &[HelpRow] = &[
         "find text; ↑/↓ past searches",
         Some(Action::SearchOpen(Direction::Forward)),
     ),
+    // Every text input's, not only the prompt's: the filters and a note
+    // too. A row, not a button — on the page Ctrl-U is half a page up.
+    ("Ctrl-W", "erase a word; Ctrl-U the line", None),
     (
         "n N F3",
         "next / previous match",
@@ -399,6 +402,7 @@ pub const HOME_HELP: &[HelpRow] = &[
     ("#", "tags, and their documents", Some(Action::HomeTags)),
     ("s", "sort: newest, name, read", Some(Action::HomeSort)),
     ("Esc", "clear the filter, then close", None),
+    ("Ctrl-W", "erase a word; Ctrl-U the line", None),
     ("§", "other", None),
     ("d", "choose another folder", Some(Action::PickerOpen)),
     ("Tab →", "go into the folder", None),

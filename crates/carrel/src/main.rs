@@ -4358,6 +4358,261 @@ mod tests {
         assert_eq!(app.outline.as_ref().map(|o| o.filter.as_str()), Some("t"));
     }
 
+    /// Press `ks` through the one dispatcher and `update`, as the loops do.
+    fn drive(keys: &mut Keys, app: &mut App, ks: &[KeyEvent]) {
+        for k in ks {
+            if let Some(a) = key_action(keys, app, *k) {
+                update(app, a);
+            }
+        }
+    }
+
+    fn typed(s: &str) -> Vec<KeyEvent> {
+        s.chars()
+            .map(|c| press(KeyCode::Char(c), KeyModifiers::NONE))
+            .collect()
+    }
+
+    /// Ctrl-W takes the word before the cursor and Ctrl-U the line, in all
+    /// seven inputs, through the real dispatcher — CJK, a ZWJ sequence and a
+    /// skin tone included — and on an empty input both do nothing at all:
+    /// the input stays open, empty, and nothing else moves.
+    #[test]
+    fn ctrl_w_and_ctrl_u_erase_in_all_seven_inputs_through_the_dispatcher() {
+        type Read = fn(&App) -> Option<String>;
+        let none = KeyModifiers::NONE;
+        let ctrl_w = press(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let ctrl_u = press(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let dir = tempfile::tempdir().unwrap();
+        let reader = || {
+            App::new(
+                "t.md".into(),
+                carrel_core::Document::parse("# Heading\n\nhello world\n\n## Two\n"),
+                80,
+                24,
+            )
+        };
+        let home = || App::new_home(dir.path().into(), vec![], 80, 24);
+        // (name, on the file list, the keys that open it, the input's text)
+        let inputs: [(&str, bool, Vec<KeyEvent>, Read); 7] = [
+            ("reader search", false, typed("/"), |a| match &a.mode {
+                carrel::app::Mode::Search { input, .. } => Some(input.clone()),
+                carrel::app::Mode::Normal => None,
+            }),
+            (
+                "help filter",
+                false,
+                vec![press(KeyCode::F(1), none)],
+                |a| a.help.as_ref().map(|h| h.filter.clone()),
+            ),
+            ("outline filter", false, typed("o"), |a| {
+                a.outline.as_ref().map(|o| o.filter.clone())
+            }),
+            ("note draft", false, typed("a"), |a| {
+                a.notes.draft.as_ref().map(|d| d.text.clone())
+            }),
+            ("home filter", true, typed("i"), |a| {
+                let h = a.home()?;
+                (h.mode == home::HomeMode::Filter).then(|| h.filter.clone())
+            }),
+            ("home search", true, typed("/"), |a| {
+                let h = a.home()?;
+                (h.mode == home::HomeMode::Search).then(|| h.query.clone())
+            }),
+            ("folder picker", true, typed("d"), |a| {
+                let h = a.home()?;
+                (h.mode == home::HomeMode::Picker).then(|| h.picker.typed.clone())
+            }),
+        ];
+        for (name, on_home, open, read) in inputs {
+            let mut app = if on_home { home() } else { reader() };
+            let mut keys = Keys::new();
+            drive(&mut keys, &mut app, &open);
+            assert_eq!(read(&app).as_deref(), Some(""), "{name}: opened empty");
+            // Nothing to erase: nothing happens, and the input stays up.
+            for key in [ctrl_w, ctrl_u] {
+                drive(&mut keys, &mut app, &[key]);
+                assert_eq!(read(&app).as_deref(), Some(""), "{name}: on empty");
+            }
+            drive(&mut keys, &mut app, &typed("go 你好 👩\u{200d}💻👍🏽"));
+            for want in ["go 你好 ", "go ", ""] {
+                drive(&mut keys, &mut app, &[ctrl_w]);
+                assert_eq!(read(&app).as_deref(), Some(want), "{name}: Ctrl-W");
+            }
+            drive(&mut keys, &mut app, &typed("cafe\u{301} 世界"));
+            drive(&mut keys, &mut app, &[ctrl_u]);
+            assert_eq!(read(&app).as_deref(), Some(""), "{name}: Ctrl-U");
+        }
+    }
+
+    /// The side effects Backspace runs after an erase run after Ctrl-W and
+    /// Ctrl-U too: the reader's search re-runs (and its highlights with it),
+    /// the file list refilters, a stale content search is thrown away so
+    /// the grep restarts, and the outline keeps its selection on the list.
+    #[test]
+    fn ctrl_w_and_ctrl_u_run_what_backspace_runs_after_an_erase() {
+        let ctrl_w = press(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let ctrl_u = press(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let esc = press(KeyCode::Esc, KeyModifiers::NONE);
+        let doc = "# Alpha\n\nhello world\n\nhello there\n\n## Beta gamma\n\n## Delta\n";
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(doc), 80, 24);
+        let mut keys = Keys::new();
+        let hits = |app: &App| app.matches.as_ref().map_or(0, carrel_core::Matches::len);
+
+        drive(&mut keys, &mut app, &typed("/hello wor"));
+        assert_eq!(hits(&app), 1);
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        assert_eq!(hits(&app), 2, "re-searched for `hello `");
+        drive(&mut keys, &mut app, &[ctrl_u]);
+        assert!(app.matches.is_none(), "an empty query highlights nothing");
+        assert!(app.searching(), "Ctrl-U clears; it does not close");
+        drive(&mut keys, &mut app, &[esc]);
+
+        drive(&mut keys, &mut app, &typed("ogamma zzz"));
+        assert!(app.outline_matches().is_empty());
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        assert_eq!(app.outline_matches().len(), 1, "refiltered to `gamma `");
+        drive(&mut keys, &mut app, &[ctrl_u]);
+        let all = app.outline_matches().len();
+        assert!(all >= 3, "every heading again: {all}");
+        let down = press(KeyCode::Down, KeyModifiers::NONE);
+        drive(&mut keys, &mut app, &[down, down]);
+        assert_eq!(app.outline.as_ref().unwrap().selected, 2);
+        drive(&mut keys, &mut app, &typed("delta zz"));
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        let last = app.outline_matches().len().saturating_sub(1);
+        assert!(app.outline.as_ref().unwrap().selected <= last, "clamped");
+
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = dir.path().join("alpha.md");
+        let beta = dir.path().join("beta.md");
+        let now = std::time::SystemTime::now();
+        let entries = [&beta, &alpha]
+            .map(|p| carrel::scan::Entry {
+                path: p.clone(),
+                mtime: now,
+            })
+            .to_vec();
+        let mut home = App::new_home(dir.path().into(), entries, 80, 24);
+        let shown = |app: &App| {
+            let h = app.home().unwrap();
+            h.filtered
+                .iter()
+                .map(|&i| h.entries[i].path.clone())
+                .collect::<Vec<_>>()
+        };
+        drive(&mut keys, &mut home, &typed("ialpha zz"));
+        assert!(shown(&home).is_empty());
+        drive(&mut keys, &mut home, &[ctrl_w]);
+        assert_eq!(
+            shown(&home),
+            std::slice::from_ref(&alpha),
+            "refiltered to `alpha `"
+        );
+        drive(&mut keys, &mut home, &[ctrl_u]);
+        assert_eq!(shown(&home).len(), 2, "every file again");
+        drive(&mut keys, &mut home, &[esc]);
+
+        drive(&mut keys, &mut home, &typed("/needle more"));
+        for key in [ctrl_w, ctrl_u] {
+            let h = home.home_mut().unwrap();
+            h.grep_done = true;
+            h.hit_selected = 3;
+            drive(&mut keys, &mut home, &[key]);
+            let h = home.home().unwrap();
+            assert!(!h.grep_done, "{key:?}: the grep restarts");
+            assert_eq!(h.hit_selected, 0, "{key:?}");
+            assert!(h.hits.is_empty(), "{key:?}");
+        }
+    }
+
+    /// In the folder picker Ctrl-W takes one path component, not the whole
+    /// path readline's whitespace rule would, and the list follows; Ctrl-U
+    /// and Ctrl-W on an empty input edit nothing and never climb, which
+    /// Backspace on an empty input does.
+    #[test]
+    fn in_the_picker_ctrl_w_takes_one_folder_and_neither_chord_climbs() {
+        let ctrl_w = press(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let ctrl_u = press(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("notes/drafts/old")).unwrap();
+        let mut app = App::new_home(root.join("notes"), vec![], 80, 24);
+        app.launch_dir = Some(root.join("notes"));
+        let mut keys = Keys::new();
+        drive(&mut keys, &mut app, &typed("d"));
+        let picker = |app: &App| app.home().unwrap().picker.clone();
+        let browsing = picker(&app).browsing;
+        assert_eq!(browsing, root.join("notes"));
+
+        let path = format!("{}/notes/drafts/", root.display());
+        drive(&mut keys, &mut app, &typed(&path));
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        assert_eq!(picker(&app).typed, format!("{}/notes/", root.display()));
+        assert!(
+            picker(&app).roots.contains(&root.join("notes/drafts")),
+            "relisted as the parent's children: {:?}",
+            picker(&app).roots
+        );
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        assert_eq!(picker(&app).typed, format!("{}/", root.display()));
+
+        drive(&mut keys, &mut app, &[ctrl_u]);
+        assert_eq!(picker(&app).typed, "");
+        let before = picker(&app);
+        for key in [ctrl_w, ctrl_u] {
+            drive(&mut keys, &mut app, &[key]);
+            let after = picker(&app);
+            assert_eq!(after.browsing, browsing, "{key:?} must not climb");
+            assert_eq!(after.selected, before.selected, "{key:?} moved nothing");
+            assert_eq!(app.home().unwrap().mode, home::HomeMode::Picker);
+        }
+        // The control: Backspace on the same empty input does climb.
+        let backspace = press(KeyCode::Backspace, KeyModifiers::NONE);
+        drive(&mut keys, &mut app, &[backspace]);
+        assert_eq!(picker(&app).browsing, root);
+    }
+
+    /// In a note, which has a cursor mid-text and several lines, Ctrl-W is
+    /// the word before the cursor and Ctrl-U erases back to the start of
+    /// the cursor's own line, never the lines above it.
+    #[test]
+    fn in_a_note_ctrl_w_and_ctrl_u_erase_before_the_cursor_on_its_line() {
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        let doc = carrel_core::Document::parse("# Heading\n\nhello world\n");
+        let mut app = App::new("t.md".into(), doc, 80, 24);
+        let mut keys = Keys::new();
+        let ctrl_w = press(KeyCode::Char('w'), ctrl);
+        let ctrl_u = press(KeyCode::Char('u'), ctrl);
+        let left = press(KeyCode::Left, none);
+        drive(&mut keys, &mut app, &typed("a"));
+        drive(&mut keys, &mut app, &typed("one two"));
+        drive(&mut keys, &mut app, &[press(KeyCode::Char('j'), ctrl)]);
+        drive(&mut keys, &mut app, &typed("three four"));
+        drive(&mut keys, &mut app, &[left, left]);
+        let draft = |app: &App| {
+            let d = app.notes.draft.as_ref().unwrap();
+            (d.text.clone(), d.cursor)
+        };
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        assert_eq!(draft(&app), ("one two\nthree ur".into(), 14));
+        drive(&mut keys, &mut app, &[ctrl_u]);
+        assert_eq!(draft(&app), ("one two\nur".into(), 8), "this line only");
+        drive(&mut keys, &mut app, &[ctrl_u]);
+        assert_eq!(draft(&app), ("one two\nur".into(), 8), "at a line start");
+        // Readline's rule: the line break is whitespace, so at a line's
+        // start Ctrl-W joins it to the line above and takes that word.
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        assert_eq!(draft(&app), ("one ur".into(), 4));
+        // Mid-text, with a cluster just before the cursor: it goes whole.
+        drive(&mut keys, &mut app, &[press(KeyCode::End, none)]);
+        drive(&mut keys, &mut app, &typed(" 👍🏽x"));
+        drive(&mut keys, &mut app, &[left]);
+        drive(&mut keys, &mut app, &[ctrl_w]);
+        assert_eq!(draft(&app), ("one ur x".into(), 7));
+    }
+
     /// **The defect**: the box said how much more there was and only the
     /// wheel could show it — every key closed the box. While the box says
     /// there is more, the page's own scroll keys scroll the box by the

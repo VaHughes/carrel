@@ -49,6 +49,8 @@ impl Keys {
                 KeyCode::Char('c') if ctrl => N::Cancel,
                 KeyCode::Char('s') if ctrl => N::Save,
                 KeyCode::Char('j') if ctrl => N::Newline,
+                KeyCode::Char('w') if ctrl => N::DeleteWord,
+                KeyCode::Char('u') if ctrl => N::DeleteToLineStart,
                 KeyCode::Enter => N::Save,
                 KeyCode::Backspace => N::Backspace,
                 KeyCode::Delete => N::Delete,
@@ -303,6 +305,11 @@ impl Keys {
             _ => {}
         }
 
+        if mode != HomeMode::Normal
+            && let Some(k) = erase_chord(key)
+        {
+            return Some(Action::HomeKey(k));
+        }
         match mode {
             HomeMode::Picker => match key.code {
                 // Two-stage escape, so `Esc` first clears a typed filter and
@@ -399,6 +406,9 @@ impl Keys {
     #[must_use]
     pub fn map_help(key: KeyEvent) -> Option<Action> {
         let key = erase_alias(key);
+        if let Some(k) = erase_chord(key) {
+            return Some(Action::HelpKey(k));
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('c') if ctrl => Some(Action::Quit),
@@ -531,6 +541,9 @@ impl Keys {
     #[must_use]
     pub fn map_outline(key: KeyEvent) -> Option<Action> {
         let key = erase_alias(key);
+        if let Some(k) = erase_chord(key) {
+            return Some(Action::OutlineKey(k));
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             // Ctrl-J/Ctrl-K for the same reason as `map_home`: the outline
@@ -558,6 +571,9 @@ impl Keys {
         // did nothing visible.
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Some(Action::Quit);
+        }
+        if let Some(k) = erase_chord(key) {
+            return Some(Action::SearchKey(k));
         }
         let k = match key.code {
             KeyCode::Up => SearchKey::Recall(Direction::Backward),
@@ -771,6 +787,24 @@ fn erase_alias(key: KeyEvent) -> KeyEvent {
     }
 }
 
+/// Ctrl-W and Ctrl-U, the two erasing chords every terminal input knows:
+/// the word before the cursor, and the whole line. Text inputs only —
+/// in the reader Ctrl-U is half a page up, and stays that.
+///
+/// Before these, [`is_chord`] made both do nothing in every carrel input,
+/// so a reader whose hands type Ctrl-W after a wrong word got silence and
+/// had to hold Backspace instead.
+fn erase_chord(key: KeyEvent) -> Option<SearchKey> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::ALT) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('w') => Some(SearchKey::DeleteWord),
+        KeyCode::Char('u') => Some(SearchKey::Clear),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::keymap::*;
@@ -839,6 +873,46 @@ mod tests {
             keys.map_home(ctrl_h, HomeMode::Normal),
             Some(Action::HomeUp)
         );
+    }
+
+    /// Ctrl-W and Ctrl-U erase in all seven text inputs, and only there:
+    /// the reader keeps Ctrl-U as half a page up, and the file list's
+    /// normal mode, which types nothing, gains no meaning for either.
+    #[test]
+    fn ctrl_w_and_ctrl_u_erase_in_every_text_input_and_nowhere_else() {
+        use crate::action::NoteKey;
+        use crate::home::HomeMode;
+        let chord = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let mut keys = Keys::new();
+        for (c, k, note) in [
+            ('w', SearchKey::DeleteWord, NoteKey::DeleteWord),
+            ('u', SearchKey::Clear, NoteKey::DeleteToLineStart),
+        ] {
+            let key = chord(c);
+            for mode in [HomeMode::Filter, HomeMode::Search, HomeMode::Picker] {
+                assert_eq!(
+                    keys.map_home(key, mode),
+                    Some(Action::HomeKey(k)),
+                    "{mode:?}"
+                );
+            }
+            assert_eq!(keys.map(key, true), Some(Action::SearchKey(k)));
+            assert_eq!(Keys::map_help(key), Some(Action::HelpKey(k)));
+            assert_eq!(Keys::map_outline(key), Some(Action::OutlineKey(k)));
+            assert_eq!(Keys::map_notes(key, true), Some(Action::NoteInput(note)));
+            // Alt on top is not the chord: it stays nothing, never text.
+            let alt = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::ALT);
+            assert_eq!(Keys::map_help(alt), None);
+            // Not in the notes LIST, which types nothing.
+            assert_eq!(Keys::map_notes(key, false), None);
+        }
+        assert_eq!(
+            keys.map(chord('u'), false),
+            Some(Action::Scroll(Span::HalfPage, -1)),
+            "the reader's Ctrl-U is untouched"
+        );
+        assert_eq!(keys.map_home(chord('w'), HomeMode::Normal), None);
+        assert_eq!(keys.map_home(chord('u'), HomeMode::Normal), None);
     }
 
     #[test]
@@ -1563,7 +1637,8 @@ mod tests {
         assert_eq!(
             inert(READER_HELP, false),
             [
-                "42G", // an example of a count, not a key
+                "42G",    // an example of a count, not a key
+                "Ctrl-W", // only while typing
                 "click copy",
                 "drag",
                 "2× click",
@@ -1587,9 +1662,10 @@ mod tests {
             [
                 "click",
                 "double-click",
-                "Tab",   // search results: only while searching
-                "Esc",   // only while typing
-                "Tab →", // the folder browser's
+                "Tab",    // search results: only while searching
+                "Esc",    // only while typing
+                "Ctrl-W", // only while typing
+                "Tab →",  // the folder browser's
                 "click a segment",
                 "right-click",
             ]

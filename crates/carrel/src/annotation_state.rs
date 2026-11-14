@@ -190,6 +190,18 @@ fn edit(draft: &mut Draft, key: NoteKey) {
             draft.text.drain(left..draft.cursor);
             draft.cursor = left;
         }
+        NoteKey::DeleteWord => {
+            let start = crate::app::rubout_start(&draft.text[..draft.cursor], false);
+            draft.text.drain(start..draft.cursor);
+            draft.cursor = start;
+        }
+        // The cursor's own line only: a draft is several lines, and Ctrl-U
+        // emptying all of them from the middle of one would lose a note.
+        NoteKey::DeleteToLineStart => {
+            let start = draft.text[..draft.cursor].rfind('\n').map_or(0, |i| i + 1);
+            draft.text.drain(start..draft.cursor);
+            draft.cursor = start;
+        }
         NoteKey::Delete => {
             draft.text.drain(draft.cursor..right);
         }

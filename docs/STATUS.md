@@ -503,8 +503,6 @@ planned:
   64 MB file of one-line headings still costs gigabytes.
 - Math with more than 64 commands in a row separated by at most one atom
   (`\alpha \alpha …`) shows as source.
-- Ctrl-W and Ctrl-U do not edit text inputs (Ctrl-H does). They would need a delete-word
-  and clear-line intent in seven inputs whose Backspace differs.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.

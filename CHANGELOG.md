@@ -12,6 +12,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A selection can be longer than a screen**: hold a drag on the status row (or above
   the text) and the document scrolls under it, faster the further out the pointer is,
   until you let go.
+- **Ctrl-W and Ctrl-U edit text.** In every filter, search prompt and note, Ctrl-W erases
+  the word before the cursor and Ctrl-U the whole input (in a note, the cursor's line up
+  to the cursor). In the folder browser Ctrl-W takes one folder of a typed path at a time.
 
 - **`git log | carrel` shows fewer stray backslashes**: none inside a backtick span that
   runs across a `#` line, and none from a line break where the message's own markdown

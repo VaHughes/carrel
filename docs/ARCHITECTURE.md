@@ -417,7 +417,12 @@ Key facts:
   home input/path opener, or reader search/help/outline; hidden panes and normal reading
   accept none. Single-line inputs take the first nonblank line, turn tabs into spaces,
   drop controls and cap each paste at 256 scalars without splitting a grapheme. Matching
-  runs once per paste. Backspace removes one grapheme in every text input.
+  runs once per paste. Backspace removes one grapheme in every text input; Ctrl-W
+  (`SearchKey::DeleteWord`, `NoteKey::DeleteWord`) removes readline's word over whole
+  graphemes, with `/` a boundary too in the folder picker, and Ctrl-U (`SearchKey::Clear`,
+  `NoteKey::DeleteToLineStart`) the input, or a note's line up to the cursor. All three
+  go through `app::erase_input`, so each input's after-erase work (re-search, refilter,
+  grep restart) runs once for any of them; neither chord climbs an empty picker.
 - **Commit-message hyphens follow the Markdown parser's inline boundaries.** The diff
   adapter parses each message run with the shared `document::markdown_options`, minus
   math and smart punctuation, and protects code spans and autolinks by source offsets
