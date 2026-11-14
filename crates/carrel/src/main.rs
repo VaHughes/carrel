@@ -1364,7 +1364,7 @@ const RESCAN_DUTY: u32 = 50;
 
 /// The longest a rescan ever waits, however slow the last walk was — a
 /// network mount still notices a new file within minutes.
-const RESCAN_MAX: Duration = Duration::from_secs(300);
+const RESCAN_MAX: Duration = Duration::from_mins(5);
 
 /// The pause before the next quiet rescan, given what the last walk cost:
 /// the walk itself plus the main thread's work folding its report into the
@@ -3640,7 +3640,7 @@ mod tests {
         // 100k files with a stat each and the reconciliation: the
         // 13%-of-a-core case, now about 2%.
         assert_eq!(rescan_pause(ms(300)), Duration::from_secs(15));
-        assert_eq!(rescan_pause(Duration::from_secs(60)), RESCAN_MAX);
+        assert_eq!(rescan_pause(Duration::from_mins(1)), RESCAN_MAX);
     }
 
     /// Re-parsing a growing pipe on every wake was quadratic; a parse now
