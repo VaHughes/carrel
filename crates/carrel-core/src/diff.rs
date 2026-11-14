@@ -246,25 +246,74 @@ fn emit_message(message: &[&str], out: &mut String) {
         // necessarily open a new item: only the Markdown parser knows which
         // lines share an inline context (and therefore a backtick span).
         let mut para = String::new();
+        // What this pass added that only means something OUTSIDE a code
+        // span: a record line's escapes, a line start made safe (`\\>`,
+        // `2\\)`), and every hard break.
+        let mut added = Vec::new();
         for (j, line) in p.iter().enumerate() {
-            let shown = if record(j) {
-                record_safe(line.trim())
+            let (shown, escaped) = if record(j) {
+                (record_safe(line.trim()), true)
             } else {
-                block_safe(line.trim()).into_owned()
+                match block_safe(line.trim()) {
+                    std::borrow::Cow::Borrowed(l) => (l.to_owned(), false),
+                    std::borrow::Cow::Owned(l) => (l, true),
+                }
             };
+            let at = para.len();
             para.push_str(&shown);
+            if escaped {
+                added.push(at..para.len());
+            }
             // A hard break around a record — unless the line already ends
             // in one: an odd run of backslashes is the author's own break,
             // and one more would escape it into a literal backslash.
             let own_break = shown.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1;
-            if j + 1 < p.len() && (record(j) || record(j + 1)) && !own_break {
+            // Nor before a list item, which starts its own line anyway: the
+            // paragraph ends there, and a break at its end is a backslash.
+            let next_item =
+                j + 1 < p.len() && !record(j + 1) && list_marker(p[j + 1].trim()).is_some();
+            if j + 1 < p.len() && (record(j) || record(j + 1)) && !own_break && !next_item {
+                added.push(para.len()..para.len() + 1);
                 para.push('\\');
             }
             para.push('\n');
         }
+        let para = unspan(para, &mut added);
         out.push_str(&keep_hyphens(&para));
         out.push('\n');
     }
+}
+
+/// Keep code spans off what this pass `added`: a backtick on one message
+/// line can open a span that a backtick lines later closes, and inside it a
+/// record line's escapes and the hard breaks around it are literal — a
+/// `#<!--` line showed as `\\#\\<\\!\\--`. Such a span's opening backticks are
+/// escaped, so it never forms; asked again until none is left, since
+/// unpairing one backtick can pair the next differently.
+fn unspan(mut s: String, added: &mut [std::ops::Range<usize>]) -> String {
+    use pulldown_cmark::{Event, Options, Parser};
+    let options = crate::document::markdown_options()
+        & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
+    for _ in 0..s.matches('`').count() {
+        let crossing = Parser::new_ext(&s, options)
+            .into_offset_iter()
+            .find_map(|(event, r)| {
+                matches!(event, Event::Code(_))
+                    .then_some(r)
+                    .filter(|r| added.iter().any(|a| a.start < r.end && r.start < a.end))
+            });
+        let Some(r) = crossing else {
+            break;
+        };
+        let run = s[r.start..].bytes().take_while(|&b| b == b'`').count();
+        let escaped = "\\`".repeat(run);
+        s.replace_range(r.start..r.start + run, &escaped);
+        for a in added.iter_mut().filter(|a| a.start >= r.start) {
+            a.start += run;
+            a.end += run;
+        }
+    }
+    s
 }
 
 /// Leading columns of whitespace, a tab reaching the next multiple of four
@@ -1283,6 +1332,42 @@ Author: B <b@example.com>
         /// indents them, and maybe a file.
         fn commit() -> impl Strategy<Value = (Vec<String>, bool)> {
             (prop::collection::vec(line(), 1..8), any::<bool>())
+        }
+
+        /// A backtick span across a record line made its escapes literal.
+        #[test]
+        fn a_record_line_inside_a_backtick_span_shows_no_backslashes() {
+            for mid in ["#<!--", "# Conflicts:", "#\tsrc/a.rs"] {
+                let src = format!(
+                    "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A (a at example.com)\n\n    a `b\n    {mid}\n    `<!--`\n\n"
+                );
+                let doc = Document::parse(&to_markdown(&src));
+                assert!(
+                    !doc.text.contains('\\'),
+                    "{mid}: {:?}\n{}",
+                    doc.text,
+                    to_markdown(&src)
+                );
+                assert!(
+                    doc.text.contains('`'),
+                    "the unpaired backtick shows: {:?}",
+                    doc.text
+                );
+            }
+        }
+
+        /// The hard break after a record line is not added before a list
+        /// item, which ends the paragraph: the break showed as `\\`.
+        #[test]
+        fn no_hard_break_shows_before_a_list_item() {
+            let src = "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A (a at example.com)\n\n    \t#\n    1.\t#\n\n";
+            let doc = Document::parse(&to_markdown(src));
+            assert!(
+                !doc.text.contains('\\'),
+                "{:?}\n{}",
+                doc.text,
+                to_markdown(src)
+            );
         }
 
         /// The plan's stand-in for `<!--` must not open a block either: a

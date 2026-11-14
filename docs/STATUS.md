@@ -515,10 +515,12 @@ release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
 Known defects:
 
-- `git log | carrel`: a message line starting `#<!--` inside a backtick span that runs
-  across lines shows its line escapes (`\#\<\!`) as literal backslashes (found
-  2026-11-14 by a cold review; predates that day). The escaping of message lines does
-  not know which lines a multi-line code span covers.
+- `git log | carrel`: an escape or hard break the message-to-markdown pass adds can show as
+  a literal backslash when the message's own markdown ends a paragraph where the pass did
+  not expect it. Two shapes are fixed (a backtick span running across an escaped line —
+  `unspan`; a hard break before a list item); asserting "no backslash the author did not
+  write" in `hostile_messages::only_the_headings_it_wrote` still fails on others, e.g. the
+  message lines `- #`, `        #`, `+`. Cosmetic; predates 2026-11-14.
 
 Everything else the 2026-11-14 hunt reproduced has a fix and a break-checked regression
 test, apart from the limits listed above; see Recently completed.

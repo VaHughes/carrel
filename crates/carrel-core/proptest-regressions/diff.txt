@@ -13,3 +13,5 @@ cc 1c539cdb965fc47ac0cd5b1840219ce333fe28c412c1ee1f1dbeb1fcc954c614 # shrinks to
 cc e56ab3668812dcc7bc6d503f6489af6443bf737e81624cd1be90d4d24100be6c # shrinks to commits = [(["><:", "-->"], false)]
 cc f05f5bfee610ba3d88abe2e6ad6ed92a1243a975a3b52771ff1e39c73ef84468 # shrinks to commits = [(["$$", "```$$", "<!--``"], false)]
 cc 1842daf1f095804b16c362ecf014c5ab457e6ce2474dde106c12aa2a07047254 # shrinks to commits = [(["`", "2)\t`--x`"], false)]
+cc 32c8a9d8fcb51865bb5d87370546afb9400705d8b6d210f494044de6512333ec # shrinks to commits = [(["\t#", "1.\t#"], false)]
+cc 424341f5f6c6f5012c202b451cfa49869680e523064f1bf78ff3459f383d7cef # shrinks to commits = [(["- #", "        #", "+"], false)]
