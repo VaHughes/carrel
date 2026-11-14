@@ -372,6 +372,15 @@ impl Layout {
         if rows.is_empty() || doc.node_for_block(b).doc.is_empty() {
             return 0;
         }
+        // A block drawn as art — an image, a diagram, rendered display math —
+        // is rows that hold no byte, every one empty at the block's start,
+        // so the search below found none of them and fell back to the gap:
+        // with the art on top, a resize, reload or resume put the reader
+        // below it. No byte names one art row over another, so every byte
+        // of the block names its first.
+        if self.block_rows.contains_key(&b) && anchor < doc.node_for_block(b).doc.end {
+            return 0;
+        }
         // An EMPTY text row — the blank first line of math shown as its
         // source — holds no byte, so "the first row ending after the
         // anchor" skipped it and its own anchor came back a row late. It is

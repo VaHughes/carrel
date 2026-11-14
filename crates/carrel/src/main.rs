@@ -2538,20 +2538,25 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
         && k.modifiers.contains(KeyModifiers::CONTROL)
         && app.selection.is_some()
     {
+        keys.reset();
         return Some(carrel::action::Action::SelectRelease);
     }
     // A peek's own key is Enter. Its others are the page's scroll keys,
     // read in the reader's arm below and only while the box says there is
     // more (`App::peek_key`); every other key closes it and then does what
     // it always does.
-    if app.peek.is_some() && k.code == KeyCode::Enter {
+    // Only a box on screen: one too big for the page is not painted, and a
+    // box nobody can see owns no keys. A count or a `g` typed before it is
+    // spent here, as every early answer in this function spends it.
+    if app.peek_drawn() && k.code == KeyCode::Enter {
+        keys.reset();
         return Some(carrel::action::Action::PeekGo);
     }
     // ...and `q` closes it and stops there, as it closes every pane. As
     // "any other key" it closed the box and then the document under it.
     // Only over the reader's own map: a pane or prompt above the box owns
     // its letters, and `q` typed into a filter is text.
-    if app.peek.is_some()
+    if app.peek_drawn()
         && k.code == KeyCode::Char('q')
         && !k
             .modifiers
@@ -4161,10 +4166,94 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 3);
-        // A box that fits keeps the reading row, which is then true: its
-        // `↓` closes the box and scrolls the page, and so does the key.
-        let short = long_peek(1, 60, 20);
-        assert_eq!(carrel::footer::of(&short).word, "reading");
+    }
+
+    /// A box that fits takes no scroll key but does take Enter, so its row
+    /// is its own too. It used to fall through to whatever was under it:
+    /// with a link picked, the chip said `enter follow` while Enter went to
+    /// the footnote.
+    #[test]
+    fn every_footer_chip_over_a_short_footnote_does_what_its_key_does() {
+        use carrel::action::Action;
+        let src = "Body[^n] text and [a link](x.md).\n\n[^n]: short note\n";
+        for pick_link in [false, true] {
+            let mut app = App::new("t.md".into(), carrel_core::Document::parse(src), 60, 20);
+            if pick_link {
+                update(&mut app, Action::LinkStep(1));
+                assert!(app.selected_link.is_some());
+            }
+            let byte = u32::try_from(app.doc.text.find("[^n]").unwrap()).unwrap();
+            update(&mut app, Action::FootnotePeek { at: (4, 0), byte });
+            assert!(app.peek_drawn() && app.peek_scrolls().is_none());
+            let f = carrel::footer::of(&app);
+            assert_eq!(f.word, "footnote");
+            let mut checked = 0;
+            for h in f.hints {
+                let Some(click) = h.click else { continue };
+                let code = match h.key {
+                    "enter" => KeyCode::Enter,
+                    "esc" => KeyCode::Esc,
+                    other => panic!("unmapped footnote hint {other:?}"),
+                };
+                let mut keys = Keys::new();
+                let got = key_action(&mut keys, &app, press(code, KeyModifiers::NONE));
+                assert_eq!(
+                    got,
+                    Some(click),
+                    "{} {} (link picked: {pick_link})",
+                    h.key,
+                    h.label
+                );
+                checked += 1;
+            }
+            assert_eq!(checked, 2);
+        }
+    }
+
+    /// Enter over a box is an answer of its own, and spends a count or a
+    /// `g` typed before it, as every other early answer does.
+    #[test]
+    fn enter_over_a_footnote_spends_a_pending_count_or_prefix() {
+        use carrel::action::{Action, Span};
+        let none = KeyModifiers::NONE;
+        for prefix in ['3', 'g'] {
+            let mut app = long_peek(1, 60, 20);
+            let mut keys = Keys::new();
+            assert_eq!(
+                key_action(&mut keys, &app, press(KeyCode::Char(prefix), none)),
+                None
+            );
+            let a = key_action(&mut keys, &app, press(KeyCode::Enter, none));
+            assert_eq!(a, Some(Action::PeekGo));
+            update(&mut app, a.unwrap());
+            assert!(app.peek.is_none());
+            let j = key_action(&mut keys, &app, press(KeyCode::Char('j'), none));
+            assert_eq!(
+                j,
+                Some(Action::Scroll(Span::Line, 1)),
+                "`{prefix}` outlived Enter"
+            );
+        }
+    }
+
+    /// A box too big for the page is not drawn, and owns no keys: `q`
+    /// closes the document as it would with no box, not the invisible box.
+    #[test]
+    fn a_footnote_box_nobody_can_see_takes_neither_q_nor_enter() {
+        use carrel::action::Action;
+        let none = KeyModifiers::NONE;
+        let app = long_peek(1, 60, 5);
+        assert!(app.peek.is_some() && !app.peek_drawn());
+        let mut keys = Keys::new();
+        assert_eq!(
+            key_action(&mut keys, &app, press(KeyCode::Char('q'), none)),
+            Some(Action::CloseFile)
+        );
+        assert_ne!(
+            key_action(&mut keys, &app, press(KeyCode::Enter, none)),
+            Some(Action::PeekGo)
+        );
+        assert_eq!(carrel::footer::of(&app).word, "reading");
     }
 
     /// The scrollbar is as tall as the text, not as tall as the terminal.

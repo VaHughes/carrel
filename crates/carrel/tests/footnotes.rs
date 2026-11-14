@@ -94,9 +94,10 @@ fn clicking_a_mark_shows_the_footnote_where_the_mark_is() {
         .join("\n");
     assert!(text.contains("Because the measurement said so"), "{text}");
     // Its button covers its own label, above the document's own targets.
+    // (The footer offers `enter go to it` too; this is the box's own.)
     let (_, go, z) = targets
         .iter()
-        .find(|(a, _, _)| *a == Action::PeekGo)
+        .find(|(a, g, _)| *a == Action::PeekGo && g.y >= boxed.y && g.y < boxed.y + boxed.h)
         .copied()
         .expect("the way to the footnote itself");
     assert_eq!(under(&buf, go), "[ go to it ]");

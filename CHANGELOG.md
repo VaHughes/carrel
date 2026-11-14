@@ -4,6 +4,17 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
+  its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
+  offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves
+  a typed count or `g` armed for the next key. A box too small to draw no longer takes
+  `q` or Enter. A live reload closes an open right-click menu, whose rows acted on the
+  old text, and keeps the bookmark list's selection on a row that exists. Rendered
+  display math (and any image or diagram) at the top of the screen stays there after a
+  resize or reload, instead of jumping below it. The outline preselects the section the
+  blank row on top belongs to. A bare URL copies exactly what the author typed even when
+  the paragraph also contains an `&` or a backslash.
+
 - Pasted line and heading references on Home now recognize spaced and extensionless filenames,
   preserving literal backslashes and quotes before shell decoding.
 

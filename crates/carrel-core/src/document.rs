@@ -230,6 +230,26 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
     out
 }
 
+/// `url` with smart punctuation undone: the quotes, dashes and ellipsis
+/// pulldown-cmark makes of `'`, `"`, `--`, `---` and `...` put back as
+/// typed. Only for comparing a displayed URL with one in the source — a
+/// curly quote the author typed comes back straight here, matches no
+/// source URL, and the displayed URL stands.
+fn unsmartened(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    for c in url.chars() {
+        match c {
+            '\u{2018}' | '\u{2019}' => out.push('\''),
+            '\u{201C}' | '\u{201D}' => out.push('"'),
+            '\u{2013}' => out.push_str("--"),
+            '\u{2014}' => out.push_str("---"),
+            '\u{2026}' => out.push_str("..."),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// GFM extended autolinks: bare `www.` runs and bare `http://` / `https://`
 /// URLs.
 ///
@@ -1761,7 +1781,6 @@ impl<'a> Builder<'a> {
             return;
         }
         let mut hits = extended_autolinks(t);
-        let found = hits.len();
         // A URL cut short is worse than no link: it copies another page.
         // `https://x.com/a\_b` and `https://x.com/_private_` reach here as
         // `…/a` and `…/` — so a URL that ends where the run does, when the
@@ -1776,17 +1795,32 @@ impl<'a> Builder<'a> {
         // The URL a link copies is the one the AUTHOR typed. Smart
         // punctuation rewrites the text (`it's` becomes `it’s`, `--` an en
         // dash), and a URL built from that names a different page — so where
-        // the source differs, the same scan over the source gives the URLs,
-        // paired by order. Not where it holds an entity or an escape, whose
-        // decoded form is the one meant; and not if the two scans disagree
-        // on how many there are.
+        // the source differs, the same scan over the source gives the URLs.
+        // Each displayed URL takes the next source URL it IS once smart
+        // punctuation is undone (`unsmartened`); one that is no source URL —
+        // an entity or an escape in it, whose decoded form is the one meant —
+        // keeps its own. Paired one by one, not by the run: a `Q&A` or a
+        // `C:\dir` elsewhere in the paragraph used to turn the pairing off
+        // for every URL in it, and a `'` the source scan reads as a boundary,
+        // where the display's `’` is not, gave the source one link more and
+        // did the same.
         let raw = &self.source[src.clone()];
-        let typed = (raw != t && !raw.contains(['&', '\\']))
-            .then(|| extended_autolinks(raw))
-            .filter(|s| s.len() == found);
+        let typed = if raw == t {
+            Vec::new()
+        } else {
+            extended_autolinks(raw)
+        };
+        let mut next_typed = 0usize;
         let mut cursor = 0usize;
-        for (n, (range, url)) in hits.into_iter().enumerate() {
-            let url = typed.as_ref().map_or(url, |s| s[n].1.clone());
+        for (range, url) in hits {
+            let plain = unsmartened(&url);
+            let url = match typed[next_typed..].iter().position(|(_, u)| *u == plain) {
+                Some(i) => {
+                    next_typed += i + 1;
+                    typed[next_typed - 1].1.clone()
+                }
+                None => url,
+            };
             if range.start > cursor {
                 // The prefix's source range is unknowable byte-for-byte once
                 // we split, so it is Substituted, not Verbatim — the same rule
@@ -5278,6 +5312,26 @@ mod tests {
         assert_eq!(runs[0].1, "https://e.com/it's--here");
         let runs = link_runs("see www.e.com/it's--here now\n");
         assert_eq!(runs[0].1, "http://www.e.com/it's--here");
+    }
+
+    /// Paired URL by URL, not by the run: an `&` or a `\` anywhere in the
+    /// paragraph turned the pairing off for every URL in it, and a source
+    /// scan finding one link more than the display did the same.
+    #[test]
+    fn a_bare_url_is_the_typed_one_whatever_else_the_paragraph_holds() {
+        let runs = link_runs("Q&A: see https://en.wikipedia.org/wiki/Murphy's_law today\n");
+        assert_eq!(runs[0].1, "https://en.wikipedia.org/wiki/Murphy's_law");
+        let runs = link_runs("C:\\dir and https://e.com/a--b today\n");
+        assert_eq!(runs[0].1, "https://e.com/a--b");
+        let runs = link_runs("a'www.a.com and www.b.com/it's here\n");
+        assert_eq!(runs.last().unwrap().1, "http://www.b.com/it's", "{runs:?}");
+        // Two URLs, the first decoded from an entity: each pairs alone.
+        let runs = link_runs("https://e.com/?a=1&amp;b=2 and https://e.com/it's\n");
+        assert_eq!(runs[0].1, "https://e.com/?a=1&b=2", "{runs:?}");
+        assert_eq!(runs[1].1, "https://e.com/it's", "{runs:?}");
+        // A curly quote the author typed is the author's.
+        let runs = link_runs("see https://e.com/it\u{2019}s now\n");
+        assert_eq!(runs[0].1, "https://e.com/it\u{2019}s");
     }
 
     /// What is not a bare URL stays text.

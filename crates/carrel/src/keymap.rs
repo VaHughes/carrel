@@ -607,6 +607,10 @@ pub const HINT_PEEK: &[Hint] = &[
     hint("enter", "go to it", Action::PeekGo),
     hint("esc", "close", Action::Dismiss),
 ];
+pub const HINT_PEEK_FITS: &[Hint] = &[
+    hint("enter", "go to it", Action::PeekGo),
+    hint("esc", "close", Action::Dismiss),
+];
 pub const HINT_LIGHTBOX: &[Hint] = &[
     hint("→", "next image", Action::ImageStep(1)),
     hint("esc", "close", Action::Dismiss),

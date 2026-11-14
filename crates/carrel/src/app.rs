@@ -1955,6 +1955,10 @@ impl App {
         self.changed.clear();
         self.change_base = None;
         self.step_cursor = None;
+        // A menu's rows carry the doc bytes of the parse it was opened on
+        // (`Select word`, `Copy section`, `Fold`), so after a reload they
+        // would select, copy or fold whatever text now sits at those bytes.
+        self.menu = None;
     }
 
     /// Re-read the open file in place: same document identity, new content.
@@ -2072,9 +2076,12 @@ impl App {
             *saved = place.resolve(&self.doc).0;
         }
         self.carry_marks(&marks);
-        if self.marks.is_empty() {
-            self.mark_list = None;
-        }
+        // Carrying can merge marks (two whose blocks became one) or drop
+        // them all, and the open list's selection indexes the old ones.
+        self.mark_list = self
+            .mark_list
+            .filter(|_| !self.marks.is_empty())
+            .map(|i| i.min(self.marks.len() - 1));
         self.apply_fold_keys(&folds);
         self.lay_out_new_document();
         if let Some(old) = self.matches.take() {
@@ -3035,6 +3042,16 @@ impl App {
     pub fn peek_page(&self) -> std::ops::Range<u16> {
         let top = self.text_y();
         top..top.saturating_add(self.text_h()).min(self.rows)
+    }
+
+    /// Whether an open footnote box is on screen. A box too big for the
+    /// page is not painted, and a box nobody can see owns no keys: Enter,
+    /// `q` and the footer all ask this, never `peek.is_some()`.
+    #[must_use]
+    pub fn peek_drawn(&self) -> bool {
+        self.peek.as_ref().is_some_and(|p| {
+            crate::peek::is_drawn(p.zone(&self.doc, self.peek_fit(), self.cols, self.peek_page()))
+        })
     }
 
     /// How many rows the open footnote box shows, when it is drawn and the
@@ -5900,8 +5917,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Redraw;
             }
             // Pre-select the section being read: the last heading at or
-            // before the block containing the anchor.
-            let at = app.doc.block_at_doc(DocByte(app.view.anchor));
+            // before the block on the top row. Not the anchor's block: a gap
+            // row's anchor is the separator after the block above it, which
+            // `block_at_doc` gives to the next block — a heading, often — so
+            // the breadcrumb named one section and the outline the next.
+            let at = app.layout.block_at_row(app.view.scroll_row);
             let selected = heads.iter().rposition(|b| *b <= at).unwrap_or(0);
             app.outline = Some(Outline {
                 filter: String::new(),
@@ -10558,5 +10578,124 @@ diff --git a/x.rs b/x.rs
                 );
             }
         }
+    }
+
+    /// The bookmark list's selection indexes the marks, and a reload can
+    /// merge or drop them. Enter on the row the list showed selected did
+    /// nothing, because the index pointed past the last mark.
+    #[test]
+    fn a_reload_that_drops_a_bookmark_keeps_the_list_selection_on_a_row() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("m.md");
+        std::fs::write(&f, "one\n\ntwo\n\nthree\n").unwrap();
+        let src = std::fs::read_to_string(&f).unwrap();
+        let mut a = App::new("m.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(f.clone());
+        let two = a.doc.node_for_block(BlockIdx(1)).doc.start;
+        let three = a.doc.node_for_block(BlockIdx(2)).doc.start;
+        a.marks = vec![two, three];
+        update(&mut a, Action::MarkListToggle);
+        update(&mut a, Action::MarkListMove(1));
+        assert_eq!(a.mark_list, Some(1));
+        std::fs::write(&f, "one\n\ntwo\n").unwrap();
+        a.reload().unwrap();
+        assert_eq!(a.marks.len(), 1, "{:?}", a.marks);
+        assert_eq!(a.mark_list, Some(0), "re-clamped to the one row left");
+        update(&mut a, Action::MarkListJump);
+        assert!(a.mark_list.is_none(), "Enter jumped and closed the list");
+        // And a reload that leaves no marks closes the list.
+        update(&mut a, Action::MarkListToggle);
+        assert!(a.mark_list.is_some());
+        std::fs::write(&f, "").unwrap();
+        a.reload().unwrap();
+        assert!(a.marks.is_empty());
+        assert!(a.mark_list.is_none());
+    }
+
+    /// A menu's rows carry the doc bytes of the parse it opened on; a
+    /// reload under it made `Select word` on "alpha" select "first".
+    #[test]
+    fn a_reload_closes_an_open_menu() {
+        let src = "first paragraph here\n\nsecond alpha word\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 60, 20);
+        let byte = u32::try_from(a.doc.text.find("alpha").unwrap()).unwrap();
+        update(
+            &mut a,
+            Action::MenuOpen {
+                at: (5, 5),
+                byte: Some(byte),
+            },
+        );
+        assert!(a.menu.is_some());
+        a.reload_from(
+            "# A brand new heading on top\n\nfirst paragraph here\n\nsecond alpha word\n",
+        );
+        assert!(a.menu.is_none(), "the menu's bytes belong to the old parse");
+        update(&mut a, Action::MenuPick(0));
+        assert!(
+            a.selection.is_none(),
+            "a pick after the reload does nothing"
+        );
+    }
+
+    /// Rendered display math is art: rows that hold no byte. With one of
+    /// them on top, a same-size resize put the reader on the gap below
+    /// the art. Every art row now restores to the block's first.
+    #[test]
+    fn rows_of_art_on_top_restore_to_the_art_not_below_it() {
+        let src = include_str!("../tests/corpus/conformance.md");
+        for (cols, rows) in [(40u16, 14u16), (80, 24), (120, 30)] {
+            let mut a = App::new("t.md".into(), Document::parse(src), cols, rows);
+            let h = a.text_h();
+            let mut seen = 0;
+            for i in 0..a.doc.block_count() {
+                let b = BlockIdx(i as u32);
+                if !matches!(a.doc.node_for_block(b).kind, carrel_core::NodeKind::Math) {
+                    continue;
+                }
+                let content = a.layout.content_height(&a.doc, b);
+                if content < 2 {
+                    continue; // shown inline or as source: not art
+                }
+                let first = a.layout.row_start(b);
+                for row in first..first + content {
+                    if row > a.layout.max_scroll(h) {
+                        continue;
+                    }
+                    a.view.scroll_to(&a.doc, &a.layout, row, h);
+                    a.on_resize(cols, rows);
+                    assert_eq!(
+                        a.view.scroll_row, first,
+                        "{cols}x{rows}: art row {row} of the block at {first} came back elsewhere"
+                    );
+                    seen += 1;
+                }
+            }
+            assert!(
+                seen > 0,
+                "{cols}x{rows}: the corpus has display math shown as art"
+            );
+        }
+    }
+
+    /// With the blank row above a heading on top, the reader is still in
+    /// the section above, as the breadcrumb says; the outline used to
+    /// preselect the heading below.
+    #[test]
+    fn the_outline_preselects_the_section_a_gap_row_is_in() {
+        let tail = "more\n\n".repeat(40);
+        let src = format!("# One\n\nfirst body\n\n# Two\n\nsecond body\n\n{tail}");
+        let mut a = App::new("t.md".into(), Document::parse(&src), 60, 20);
+        let body = BlockIdx(1);
+        let gap = a.layout.row_start(body) + a.layout.content_height(&a.doc, body);
+        let h = a.text_h();
+        a.view.scroll_to(&a.doc, &a.layout, gap, h);
+        assert_eq!(
+            a.layout.block_at_row(a.view.scroll_row),
+            body,
+            "the gap under the body is on top"
+        );
+        update(&mut a, Action::OutlineToggle);
+        assert_eq!(a.outline.as_ref().unwrap().selected, 0, "still in One");
     }
 }

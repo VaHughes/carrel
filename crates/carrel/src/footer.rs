@@ -64,12 +64,16 @@ pub fn of(app: &App) -> Footer {
             HomeMode::Normal => f('●', "browse", keymap::HINT_HOME_BROWSE),
         };
     }
-    // A footnote box that takes the scroll keys says so, and its chips are
-    // its own: the reading row's `↑/↓` would scroll the page from a click
-    // while the key scrolls the box. A box that fits takes no scroll key,
-    // so the reading row stays — and stays true.
+    // A footnote box on screen says so, and its chips are its own: the
+    // reading row's `↑/↓` would scroll the page from a click while the key
+    // scrolls the box, and a picked link's `enter follow` would follow the
+    // link from a click while Enter goes to the footnote. A box that fits
+    // takes no scroll key, so its row offers none.
     if app.peek_scrolls().is_some() {
         return f('◎', "footnote", keymap::HINT_PEEK);
+    }
+    if app.peek_drawn() {
+        return f('◎', "footnote", keymap::HINT_PEEK_FITS);
     }
     if app.selected_link.is_some() {
         return f('●', "link picked", keymap::HINT_LINK);
