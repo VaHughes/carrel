@@ -313,9 +313,20 @@ fn math_view(path: &std::path::Path, stamp: Stamp, text: &str) -> Option<std::sy
 
 /// The trimmed text of 1-based source line `lineno`.
 fn source_line(text: &str, lineno: u32) -> String {
-    text.split('\n')
-        .nth(lineno.saturating_sub(1) as usize)
-        .unwrap_or_default()
+    // The line `Document::line_of` numbered, by the same line endings.
+    let b = text.as_bytes();
+    let mut at = Some(0);
+    for _ in 1..lineno {
+        at = at.and_then(|i| carrel_core::next_line_start(b, i));
+    }
+    let Some(start) = at else {
+        return String::new();
+    };
+    let end = b[start..]
+        .iter()
+        .position(|&c| c == b'\n' || c == b'\r')
+        .map_or(b.len(), |i| start + i);
+    text[start..end]
         .trim()
         .chars()
         .filter(|c| !c.is_control())
@@ -391,6 +402,19 @@ pub fn render_results(root: &std::path::Path, query: &str, hits: &[Hit]) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The context row quotes the line `line_of` numbered, by the same
+    /// endings — a lone `\r` included.
+    #[test]
+    fn the_context_row_is_the_numbered_line_whatever_the_line_endings() {
+        assert_eq!(
+            source_line("alpha\r\rbeta\r\rthe needle here\r", 5),
+            "the needle here"
+        );
+        assert_eq!(source_line("a\r\nb\r\nc", 3), "c");
+        assert_eq!(source_line("a\nb", 2), "b");
+        assert_eq!(source_line("a\nb", 9), "");
+    }
     use std::time::SystemTime;
 
     fn entry(p: &std::path::Path) -> Entry {

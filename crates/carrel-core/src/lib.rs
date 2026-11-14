@@ -47,7 +47,7 @@ pub mod source_filter;
 pub use diff::{looks_like_diff, to_markdown};
 pub use document::{
     AlertKind, Document, Frontmatter, Inline, LinkId, Marker, MetaFormat, MetaLine, Node, NodeKind,
-    Prefix, Prov, ProvKind, Style, frontmatter, meta_split,
+    Prefix, Prov, ProvKind, Style, frontmatter, line_endings, meta_split, next_line_start,
 };
 pub use highlight::{Token, TokenKind};
 pub use hyphen::{Hyphenation, hyphenation_for};

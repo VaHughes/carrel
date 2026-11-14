@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Old Mac line endings number lines correctly.** In a file whose lines end in a lone
+  carriage return, a search hit said line 1 and quoted the start of the file; `path:line`
+  copies and `FILE:N` used the same wrong count.
+
 - **The config file can no longer be rewritten behind your back.** Choosing a folder whose
   name contains a line break used to write extra lines into the config (one named
   `zz⏎mouse = false` turned the mouse off on the next launch). Such a folder, or one whose

@@ -230,6 +230,37 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
     out
 }
 
+/// How many line endings `b` holds, counted the way the markdown spec does: a
+/// `\n`, a `\r\n`, or a `\r` alone. Counting only `\n` numbered every line
+/// of a file with old Mac (`\r`) endings as line 1, while the parser read
+/// them as separate lines — so a search hit's `#L` link and its context row
+/// named the start of the file.
+#[must_use]
+pub fn line_endings(b: &[u8]) -> u32 {
+    let mut n = 0u32;
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'\n' || (c == b'\r' && b.get(i + 1) != Some(&b'\n')) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Where the line after the one holding byte `from` starts, by
+/// [`line_endings`]'s rule; `None` on the last line.
+#[must_use]
+pub fn next_line_start(b: &[u8], from: usize) -> Option<usize> {
+    let i = from
+        + b.get(from..)?
+            .iter()
+            .position(|&c| c == b'\n' || c == b'\r')?;
+    Some(if b[i] == b'\r' && b.get(i + 1) == Some(&b'\n') {
+        i + 2
+    } else {
+        i + 1
+    })
+}
+
 /// `url` with smart punctuation undone: the quotes, dashes and ellipsis
 /// pulldown-cmark makes of `'`, `"`, `--`, `---` and `...` put back as
 /// typed. Only for comparing a displayed URL with one in the source — a
@@ -1065,8 +1096,8 @@ impl Document {
     pub fn line_start(&self, line: u32) -> DocByte {
         let mut at = 0usize;
         for _ in 1..line {
-            match self.source[at..].find('\n') {
-                Some(i) => at += i + 1,
+            match next_line_start(self.source.as_bytes(), at) {
+                Some(i) => at = i,
                 None => return DocByte(self.text.len() as u32),
             }
         }
@@ -1078,9 +1109,9 @@ impl Document {
     pub fn line_of(&self, d: DocByte) -> u32 {
         let src = (self.line_src(d) as usize).min(self.source.len());
         // Bytes, not `str`: a provenance offset inside a substituted run is
-        // not promised to sit on a character boundary. Pieces between
-        // newlines number one more than the newlines, which is the line.
-        self.source.as_bytes()[..src].split(|&b| b == b'\n').count() as u32
+        // not promised to sit on a character boundary. The line is one more
+        // than the line endings before it.
+        line_endings(&self.source.as_bytes()[..src]) + 1
     }
 
     /// The source offset that decides which LINE a doc offset is on.
