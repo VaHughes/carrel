@@ -1199,7 +1199,7 @@ impl Images {
             P::Kitty => "kitty graphics",
             P::Sixel => "sixel graphics",
             P::Iterm2 => "iTerm2 graphics",
-            P::Halfblocks => "blocks of colour — no graphics protocol selected",
+            P::Halfblocks => "blocks of color — no graphics protocol selected",
         }
     }
 

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-11 (final session wrap-up)
+Last updated: 2026-11-14 (adversarial bug hunt)
 
 ## Current state
 
@@ -16,8 +16,9 @@ Last updated: 2026-11-11 (final session wrap-up)
   artifacts after `release.yml`'s `--target` hit a 403 (fixed on `main`, unproven until
   the next tag). Its nix build fails one test that assumed `/tmp`; fixed on `main`, so
   the nixpkgs PR should wait for the next release.
-- **Unreleased work (2026-10-31 through 2026-11-11):** the GUI-preparation work from
-  Q29/Q33, three known limits cleared, and the reading-input and navigation fixes below. The next release is the first with
+- **Unreleased work (2026-10-31 through 2026-11-14):** the GUI-preparation work from
+  Q29/Q33, three known limits cleared, the reading-input and navigation fixes, and the
+  2026-11-14 adversarial hunt's fixes below. The next release is the first with
   three crates, so it is also the first test of `publish.yml` publishing `carrel-state`
   (not yet on crates.io; the name was free on 2026-10-31).
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
@@ -45,6 +46,55 @@ Last updated: 2026-11-11 (final session wrap-up)
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-11-14) — **an adversarial bug hunt: seven hunters, then cold reviews
+  of the fixes.** Two fuzzers (cargo-fuzz over core, a random-sequence harness over the
+  TUI state machine), a black-box pty tester, a terminal-escape and security hunter, a
+  hostile-filesystem hunter and two cold code reviewers found about forty reproduced
+  defects; every one fixed test-first, each test break-checked against the old code. Cold
+  reviews of the fixes then found six regressions in them, also fixed. Gates: **1,577
+  tests**, zero-warning clippy, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
+  1.95; height pass 5.3 ms/MB, parse 2.7 ms/MB (`cargo bench --bench wrap`).
+  - *Security.* Printed output (`FILE PATTERN`, `--tasks`, the piped list, every error
+    naming a file) sanitized: document text drops controls, names are escaped (`\x1b`,
+    `\\`, non-UTF-8 as `\xNN`, bidi overrides) — `plain::clean_text`, `plain::shown`.
+    Every clipboard write is a `Clip` (`carrel_state::clip`): no C0 but `\n`/`\t`, no
+    C1, CR, DEL, soft hyphen or bidi override; one-line fields carry no newline. A folder
+    name can no longer inject config lines (values with a line break, control or edge
+    space are refused, not escaped — the format stays literal). Images obey the folder
+    rule links obey (`escapes_root`, canonicalized) and are decoded once per path, shrunk
+    to what a terminal shows, under a 256 MiB document budget; a FIFO image cannot block.
+  - *Data loss.* Config and state files a version cannot read are never replaced; a
+    non-UTF-8 line costs only itself; `write_atomic` keeps a symlink; non-UTF-8 paths are
+    their own state keys; the entry being saved survives the positions cap; a line with
+    more fields than this version writes is preserved.
+  - *Places.* A kept place saves both neighbours' hashes (`^<prev>,<next>` on the
+    unreleased kept form); `state::pick` chooses among repeated blocks the copy with the
+    most like neighbours, nearest count breaking ties, and `None` when the saved copy is
+    gone (the source place stands). Live reload carries marks by the same rule. A
+    reload that cannot find the place or a mark holds the last good one (`ReloadHold`),
+    tried FIRST on the next reload while the reader has not moved — `: > f` then a full
+    write comes back exactly; a paragraph rewritten for good is followed by its new text.
+  - *Reader.* Footnote box: Enter/`q` only when drawn (`App::peek_drawn`), Enter spends a
+    pending count or `g`, a box that fits has its own chips. A reload closes a menu and
+    clamps the bookmark list. Art blocks (images, diagrams, display math) on the top row
+    restore to themselves. Outline and breadcrumb name the section a gap row is in. `zM`
+    lands on the outermost folded heading. Drags that end off the text clamp to the
+    nearest text (`App::doc_drag_at`); a double click on a heading word no longer folds;
+    an overlay edge splits no wide character.
+  - *Input.* Bare URLs copy what was typed (each pairs with the next source URL equal as
+    typed or unsmartened). Lossy UTF-8 everywhere with one binary rule
+    (`carrel_state::text::decode_document`: a NUL in the first 8000 bytes of invalid
+    UTF-8, or over a quarter replaced); a note says how many bytes were replaced. The home
+    filter matches the shown relative path. Ctrl/Alt chords never type. `FILE:0` opens
+    at the top; a negative width is refused; a lone CR is a line ending for line numbers.
+  - *Core.* Verbatim provenance means byte-identical to the source. Math is pre-scanned:
+    group depth over 256 or a bare-argument chain over 64 shows as source (pulldown-latex
+    was quadratic in depth and overflowed its stack on `\sqrt\sqrt…`).
+  - *Performance.* A pipe stops at 64 MB or 2,000,000 lines with a note, re-parsing no
+    sooner than 3× its last parse; a 52 MB file opens in about 1.4 s instead of up to
+    17 s (one layout on open, tab columns measured only when a tab comes, huge paragraphs
+    wrapped per visible chunk); the idle rescan waits 50× its last cost (2 s to 5 min).
 
 - Unreleased (2026-11-11) — **small reading improvements, with no new dependencies or
   settings.** All five local gates passed: **1,472 tests passed, zero failed, two
@@ -423,6 +473,18 @@ planned:
   design: letters are the filter; the border says `esc close`).
 - The lightbox and the notes pane cover the whole frame, `≡` and the lamp included (by
   design; both have their own buttons).
+- A card-view rule row on top of the screen comes back one row lower after a resize, and
+  the trailing rule a card higher: a rule row is named by the next card's first byte,
+  which that card's own first row also holds (found by fuzzing, 2026-11-14). Fixing it
+  needs a byte of its own per rule row.
+- Valid UTF-8 holding a NUL opens as text (files and pipes alike); only invalid UTF-8 is
+  checked for NULs.
+- A drag below the text does not scroll the document.
+- An image outside the folder has no way to be loaded (links ask for a second Enter).
+- Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a
+  64 MB file of one-line headings still costs gigabytes.
+- Math with more than 64 commands in a row separated by at most one atom
+  (`\alpha \alpha …`) shows as source.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
@@ -437,6 +499,16 @@ state machine over them, dispatching on `Intent` with one explicit arm for what 
 implement. The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
+
+- 2026-11-14: **a file named on the command line is rooted at the working directory
+  when it lies inside it**, else at its own folder — so `carrel docs/guide.md` shows
+  `../assets/x.png` and follows in-repo links without asking; the README's "the folder
+  you are standing in". Images outside the root are never opened.
+- 2026-11-14: **config values that cannot round-trip are refused, not escaped**; the
+  file stays bare `key = value`, so every hand-written config reads as before.
+- 2026-11-14: a short footnote box shows `footnote` chips (`enter go to it`, `esc
+  close`) instead of the reading row — the reading row's chips would not do what the keys
+  do while it is open.
 
 - 2026-11-11: **Improve existing reading gestures before adding another pane.** Search recall,
   safe paste, stable return positions and Home continuity fit the novice workflow without
