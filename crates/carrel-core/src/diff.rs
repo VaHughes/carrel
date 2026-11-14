@@ -317,7 +317,15 @@ fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
 
     let options = crate::document::markdown_options()
         & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
-    let mut protected = Parser::new_ext(s, options)
+    // Planned on the text as it will be AFTER escaping, as far as the parse
+    // goes: the escapes below break every `<!--` (its `--` is escaped), so
+    // a comment must not exist in the plan either. It did: `<!--` swallowed
+    // the next line's backtick, a later `` `--x` `` was planned as a code
+    // span and left alone, and in the escaped text — comment gone, backtick
+    // free — the span it closed left `--x` outside it, a dash. Same length,
+    // so every offset carries over.
+    let plan = s.replace("<!--", " !--");
+    let mut protected = Parser::new_ext(&plan, options)
         .into_offset_iter()
         .filter_map(|(event, range)| match event {
             Event::Code(_)
@@ -332,6 +340,12 @@ fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(s.len() + 8);
     let mut i = 0;
     while i < b.len() {
+        // A range that began inside something already copied (an escape
+        // pair) can no longer be met at its start; drop it rather than let
+        // it block every range after it.
+        while protected.peek().is_some_and(|range| range.start < i) {
+            protected.next();
+        }
         if protected.peek().is_some_and(|range| range.start == i) {
             let range = protected.next().expect("peeked protected span");
             out.push_str(&s[range.clone()]);
@@ -1268,6 +1282,22 @@ Author: B <b@example.com>
         /// indents them, and maybe a file.
         fn commit() -> impl Strategy<Value = (Vec<String>, bool)> {
             (prop::collection::vec(line(), 1..8), any::<bool>())
+        }
+
+        /// Shrunk by the property below (2026-11-14): `<!--` swallowed the
+        /// next line's backtick in the plan, and escaping it undid that.
+        #[test]
+        fn an_html_comment_opener_does_not_turn_a_later_code_span_into_a_dash() {
+            let src = "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A (a at example.com)\n\n    -<!--\n    `-->\n    `--x`\n\n";
+            let doc = Document::parse(&to_markdown(src));
+            assert!(
+                !doc.text.contains(['\u{2013}', '\u{2014}']),
+                "{:?}",
+                doc.text
+            );
+            let (headings, structure) = stolen_structure(src);
+            assert_eq!(headings, ["commit 0abcdef01234"]);
+            assert!(structure.is_empty(), "{structure:?}");
         }
 
         proptest! {

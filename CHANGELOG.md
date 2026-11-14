@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A `<!--` in a commit message no longer turns a later `--` into a dash** when a
+  backtick sits between them (`git log | carrel`).
+
 - **Ctrl-H erases.** In every filter, search prompt and note, Ctrl-H is Backspace — what
   terminals set up for `^H`, and Ctrl+Backspace in many, actually send. It did nothing.
 
