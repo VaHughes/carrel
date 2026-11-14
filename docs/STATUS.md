@@ -504,6 +504,12 @@ planned:
 - Math with more than 64 commands in a row separated by at most one atom
   (`\alpha \alpha …`) shows as source.
 
+For the owner (2026-11-14, not changed — "keybindings stay exactly as they are"): outside
+text inputs, an unbound Ctrl or Alt chord acts as its bare letter, in the reader and on the
+file list alike — Ctrl-D on the file list opens the folder picker (a shell user's exit
+reflex), Ctrl-T toggles tables, Alt-Q closes the document. Making chords inert would be
+one guard per keymap; the text inputs already have it (`keys::is_chord`).
+
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
