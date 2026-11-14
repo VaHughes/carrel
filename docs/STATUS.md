@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-14 (adversarial bug hunt)
+Last updated: 2026-11-14 (adversarial bug hunt; open items cleared)
 
 ## Current state
 
@@ -46,6 +46,30 @@ Last updated: 2026-11-14 (adversarial bug hunt)
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-11-14, afternoon) — **the open items cleared, each through its own
+  cold review.** Built on the owner's two decisions (outside images: click to show, per
+  image; Ctrl-W/Ctrl-U in every text input):
+  - *Outside images:* a click opens the lightbox, which names the file (relative path,
+    symlink target, end kept at any width); consent only from its `[show]` or a second
+    Enter, keyed to a plan generation, for the session; only the consented block re-plans.
+  - *Line editing:* Ctrl-W/Ctrl-U in seven inputs, side effects as Backspace; in the picker
+    `/` ends a word; in a note neither crosses a line, and Home/End keep to the line.
+  - *Drag autoscroll* (`EdgeClock`), in one `Clocks` with auto-read, which the file list's
+    loop never ticked; a buttonless motion ends a drag whose release was lost; a drag
+    survives a re-parse, so a streaming pipe can be selected from.
+  - *Places:* the reload hold keeps the reader's place and the latest few; a paragraph
+    edited where it stands is not held (`Place::edited_in_place`).
+  - *Cards:* every rule row has a byte of its own (`layout::rule_byte`); a table's line end
+    names its line in the column view.
+  - *git log:* escapes are planned and settled against the final parse (`diff::settle`),
+    breaking a code span at both ends, a few parses per paragraph (15 s → 26 ms at 300 KB);
+    a lone CR cannot open a block; bare URLs with `--` link and keep their hyphens.
+  - *Parser:* an empty-label wikilink (`[[x|]]`, a pulldown-cmark 0.13.4 replay bug) is read
+    as if escaped (`mask_empty_labels`); a NUL is binary even in valid UTF-8; math symbols
+    never count toward the nesting guard.
+  Gates: **1,676 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging,
+  `cargo doc -D warnings`, MSRV 1.95; parse 1.6 ms/MB, height pass 5.5 ms/MB.
 
 - Unreleased (2026-11-14) — **an adversarial bug hunt: seven hunters, then cold reviews
   of the fixes.** Two fuzzers (cargo-fuzz over core, a random-sequence harness over the
