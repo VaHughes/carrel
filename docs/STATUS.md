@@ -497,12 +497,11 @@ planned:
   rule has none of its own and keeps the next card's first. Every other rule is named by
   the `\n` ending the card above it (`layout::card_rows`, guarded by
   `view::tests::every_card_row_restores_to_itself`).
-- Valid UTF-8 holding a NUL opens as text (files and pipes alike); only invalid UTF-8 is
-  checked for NULs.
+- Math with more than 64 argument-taking commands in a row separated by at most one atom
+  (`\hat a\hat a …`) shows as source; symbols (`\alpha`, `\cdot`, …) never count
+  (`math::NO_ARGUMENT`).
 - Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a
   64 MB file of one-line headings still costs gigabytes.
-- Math with more than 64 commands in a row separated by at most one atom
-  (`\alpha \alpha …`) shows as source.
 
 For the owner (2026-11-14, not changed — "keybindings stay exactly as they are"): outside
 text inputs, an unbound Ctrl or Alt chord acts as its bare letter, in the reader and on the

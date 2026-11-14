@@ -76,20 +76,18 @@ impl Utf8Carry {
 
 /// A whole document's bytes as text, and how many sequences were replaced.
 ///
-/// Valid UTF-8 is taken as it is, without a copy. Anything else decodes
-/// lossily — unless it is binary, which is an `InvalidData` error: a NUL in
-/// the first 8000 bytes, or replacement characters making up more than a
-/// quarter of what decoded. A Latin-1 page has one bad byte per accented
+/// Binary is an `InvalidData` error: a NUL in the first 8000 bytes (git's
+/// rule), whatever else the bytes are — ASCII written as UTF-16 with no BOM
+/// is valid UTF-8 and every other byte a NUL, and opened as spaced-out
+/// noise; a markdown file never holds one. Otherwise valid UTF-8 is taken
+/// as it is, without a copy, and anything else decodes lossily unless
+/// replacement characters make up more than a quarter of what decoded. A Latin-1 page has one bad byte per accented
 /// letter; an image or an archive is mostly bad bytes.
 ///
 /// # Errors
 ///
 /// `InvalidData` when the bytes are not UTF-8 and look binary.
 pub fn decode_document(bytes: Vec<u8>) -> std::io::Result<(String, usize)> {
-    let bytes = match String::from_utf8(bytes) {
-        Ok(text) => return Ok((text, 0)),
-        Err(e) => e.into_bytes(),
-    };
     let not_text = || {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -99,6 +97,10 @@ pub fn decode_document(bytes: Vec<u8>) -> std::io::Result<(String, usize)> {
     if bytes[..bytes.len().min(SNIFF)].contains(&0) {
         return Err(not_text());
     }
+    let bytes = match String::from_utf8(bytes) {
+        Ok(text) => return Ok((text, 0)),
+        Err(e) => e.into_bytes(),
+    };
     let mut carry = Utf8Carry::default();
     let mut text = carry.push(&bytes);
     let mut replaced = carry.replaced();
@@ -148,5 +150,25 @@ mod tests {
         // No NUL, but more garbage than text.
         assert!(decode_document(vec![0xff; 64]).is_err());
         assert!(decode_document(b"ab\xff\xfe\xfd".to_vec()).is_err());
+    }
+
+    /// A NUL makes bytes binary even when they are valid UTF-8: ASCII
+    /// written as UTF-16 with no BOM is exactly that, and opened as noise.
+    #[test]
+    fn a_nul_is_binary_even_in_valid_utf8() {
+        let utf16: Vec<u8> = "# Title\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert!(
+            std::str::from_utf8(&utf16).is_ok(),
+            "the case is valid UTF-8"
+        );
+        assert!(decode_document(utf16).is_err());
+        assert!(decode_document(b"a\0b".to_vec()).is_err());
+        assert_eq!(
+            decode_document(b"plain\n".to_vec()).unwrap(),
+            ("plain\n".to_string(), 0)
+        );
     }
 }

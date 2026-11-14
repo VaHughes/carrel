@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A file holding a NUL byte is refused as binary even when it is valid UTF-8** (ASCII
+  saved as UTF-16 opened as spaced-out noise), and **long runs of math symbols**
+  (`\alpha \alpha …`) render as math instead of falling back to source.
+
 - **A drag whose button was let go outside the window ends when the pointer comes back**,
   copying what it selected, instead of scrolling on to the end of the document.
 

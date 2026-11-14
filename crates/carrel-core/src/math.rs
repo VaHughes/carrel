@@ -183,6 +183,147 @@ const MAX_BARE_CHAIN: u32 = 64;
 /// chain: an operator, `&`, `\\`, a second token. A group starts a fresh
 /// chain inside it: measured, `\sqrt\sqrt{`×1 000 does not recurse, because
 /// the parser walks a braced group without a native frame per level.
+/// Control words that take no argument — symbols, operators, relations,
+/// arrows, dots, spacing, function names — sorted for `binary_search`.
+const NO_ARGUMENT: &[&[u8]] = &[
+    b"Delta",
+    b"Gamma",
+    b"Lambda",
+    b"Leftarrow",
+    b"Leftrightarrow",
+    b"Omega",
+    b"Phi",
+    b"Pi",
+    b"Psi",
+    b"Rightarrow",
+    b"Sigma",
+    b"Theta",
+    b"Upsilon",
+    b"Xi",
+    b"aleph",
+    b"alpha",
+    b"approx",
+    b"ast",
+    b"beta",
+    b"bigcap",
+    b"bigcup",
+    b"bot",
+    b"bullet",
+    b"cap",
+    b"cdot",
+    b"cdots",
+    b"chi",
+    b"circ",
+    b"cong",
+    b"cos",
+    b"cosh",
+    b"cot",
+    b"csc",
+    b"cup",
+    b"ddots",
+    b"deg",
+    b"delta",
+    b"det",
+    b"dim",
+    b"div",
+    b"dots",
+    b"ell",
+    b"emptyset",
+    b"epsilon",
+    b"equiv",
+    b"eta",
+    b"exists",
+    b"exp",
+    b"forall",
+    b"gamma",
+    b"gcd",
+    b"ge",
+    b"geq",
+    b"gg",
+    b"hbar",
+    b"in",
+    b"inf",
+    b"infty",
+    b"int",
+    b"iota",
+    b"kappa",
+    b"lambda",
+    b"land",
+    b"ldots",
+    b"le",
+    b"leftarrow",
+    b"leftrightarrow",
+    b"leq",
+    b"lim",
+    b"ll",
+    b"ln",
+    b"lnot",
+    b"log",
+    b"lor",
+    b"mapsto",
+    b"max",
+    b"mid",
+    b"min",
+    b"mp",
+    b"mu",
+    b"nabla",
+    b"ne",
+    b"neg",
+    b"neq",
+    b"ni",
+    b"notin",
+    b"nu",
+    b"oint",
+    b"omega",
+    b"oplus",
+    b"otimes",
+    b"parallel",
+    b"partial",
+    b"perp",
+    b"phi",
+    b"pi",
+    b"pm",
+    b"prime",
+    b"prod",
+    b"propto",
+    b"psi",
+    b"qquad",
+    b"quad",
+    b"rho",
+    b"rightarrow",
+    b"sec",
+    b"setminus",
+    b"sigma",
+    b"sim",
+    b"simeq",
+    b"sin",
+    b"sinh",
+    b"star",
+    b"subset",
+    b"subseteq",
+    b"sum",
+    b"sup",
+    b"supset",
+    b"supseteq",
+    b"tan",
+    b"tanh",
+    b"tau",
+    b"theta",
+    b"times",
+    b"to",
+    b"top",
+    b"triangle",
+    b"uparrow",
+    b"upsilon",
+    b"varepsilon",
+    b"varphi",
+    b"vartheta",
+    b"vdots",
+    b"wedge",
+    b"xi",
+    b"zeta",
+];
+
 fn nesting(latex: &str) -> (u32, u32) {
     /// `chain`: commands in the current run; `gap`: plain tokens since the
     /// last of them.
@@ -241,6 +382,13 @@ fn nesting(latex: &str) -> (u32, u32) {
                         }
                         i += 1;
                     }
+                    // A symbol takes no argument, so it nests nothing: it is
+                    // a token, like a letter. Counting it as a link showed
+                    // `\alpha \alpha …` (65 and up) as source. Only names
+                    // known to take none are here: a command left off counts
+                    // as a link, which errs toward refusing, never toward
+                    // the stack overflow the chain guards against.
+                    word if NO_ARGUMENT.binary_search(&word).is_ok() => run.token(),
                     _ => {
                         run.chain += 1;
                         run.gap = 0;
@@ -544,6 +692,13 @@ mod tests {
         }
     }
 
+    /// `binary_search` needs the list sorted, and a typo'd order would
+    /// silently count a symbol as a link (refusing math) — or worse.
+    #[test]
+    fn the_no_argument_list_is_sorted_and_unique() {
+        assert!(NO_ARGUMENT.windows(2).all(|w| w[0] < w[1]));
+    }
+
     #[test]
     fn nesting_within_the_limit_still_parses() {
         let n = 100;
@@ -560,9 +715,15 @@ mod tests {
         // Siblings and ordinary formulas are short chains.
         assert_eq!(nesting(r"\frac{a}{b}\frac{c}{d}").1, 1);
         assert_eq!(nesting(r"\frac 12\frac 34").1, 1);
-        assert_eq!(nesting(&r"\alpha+\beta\cdot x_1 ".repeat(500)).1, 2);
+        assert_eq!(nesting(&r"\alpha+\beta\cdot x_1 ".repeat(500)).1, 0);
+        // Symbols nest nothing: any number of them in a row is no chain.
+        let symbols = format!("{}x", r"\alpha ".repeat(500));
+        assert_eq!(nesting(&symbols).1, 0);
+        assert!(parse(&symbols).is_some(), "shown as math, not source");
+        // But an argument-taking command between them still links.
+        assert!(nesting(&r"\sqrt\alpha".repeat(200)).1 > MAX_BARE_CHAIN);
         assert_eq!(
-            nesting(&r"\alpha & \beta \\ ".repeat(500)).1,
+            nesting(&r"\hat a & \bar b \\ ".repeat(500)).1,
             1,
             "a matrix row break and a cell end a chain"
         );
