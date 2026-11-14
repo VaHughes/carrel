@@ -155,3 +155,26 @@ fn a_missing_hostile_name_is_escaped_in_the_error() {
     let out = run_in(dir.path(), &["--latest", "gone\u{1b}c"]);
     assert_clean(&out, "the --latest error");
 }
+
+/// Four files whose names `to_string_lossy` and an unescaped backslash
+/// printed as two lines: the listing must name all four differently.
+#[cfg(unix)]
+#[test]
+fn the_piped_home_listing_keeps_colliding_names_apart() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    for name in [&b"a\\x1b.md"[..], b"a\x1b.md", b"n\xff.md", b"n\xfe.md"] {
+        std::fs::write(dir.path().join(std::ffi::OsStr::from_bytes(name)), "# x\n").unwrap();
+    }
+    let out = run_in(dir.path(), &["."]);
+    assert!(out.status.success(), "{out:?}");
+    assert_clean(&out, "carrel . | cat");
+    let s = String::from_utf8_lossy(&out.stdout);
+    for spelled in [r"a\\x1b.md", r"a\x1b.md", r"n\xff.md", r"n\xfe.md"] {
+        assert!(
+            s.lines().any(|l| l.ends_with(&format!("/{spelled}"))),
+            "{spelled} missing: {s}"
+        );
+    }
+    assert!(!s.contains('\u{fffd}'), "a byte collapsed to U+FFFD: {s}");
+}

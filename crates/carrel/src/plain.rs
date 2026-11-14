@@ -69,42 +69,76 @@ pub fn clean_text(text: &str) -> String {
 /// carrel meant, nor type it back. Document text is prose, where a visible
 /// `\x1b` is noise and dropping is what `push_text` already does.
 ///
-/// A backslash is left alone, so a name that literally contains `\x1b`
-/// prints the same as one containing ESC. Escaping every backslash would
-/// mangle every ordinary name that has one to make an adversarial pair
-/// distinguishable; the dangerous half — the byte reaching the terminal —
-/// is closed either way.
+/// The spelling is unambiguous, so it can be read back: a backslash is
+/// written `\\`, and a byte that is not UTF-8 is written `\xNN` (see
+/// [`shown`]). Without that, `a\x1b.md` — a name that literally holds a
+/// backslash — and `a<ESC>.md` printed as one line, and so did every pair of
+/// names differing only in a non-UTF-8 byte, which `to_string_lossy` turns
+/// into U+FFFD: the same collapse `carrel_state::state` fixed for its own
+/// keys. A name with none of these characters is borrowed, unchanged.
 ///
 /// Found by the 2026-11 security hunt: a file named `README\x1bc.md` in the
 /// folder reset the terminal when `carrel README.md` offered it as "did you
 /// mean", and `carrel . | cat` printed every name raw.
 #[must_use]
 pub fn shown_name(name: &str) -> std::borrow::Cow<'_, str> {
-    use std::fmt::Write as _;
-    let hostile =
-        |c: char| c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
-    if !name.chars().any(hostile) {
+    if !name.chars().any(needs_escape) {
         return std::borrow::Cow::Borrowed(name);
     }
     let mut out = String::with_capacity(name.len() + 8);
-    for c in name.chars() {
+    push_escaped(&mut out, name);
+    std::borrow::Cow::Owned(out)
+}
+
+/// What [`shown_name`] rewrites: control characters, the bidi embedding,
+/// override and isolate controls, and the backslash its escapes start with.
+fn needs_escape(c: char) -> bool {
+    c == '\\' || c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+fn push_escaped(out: &mut String, text: &str) {
+    use std::fmt::Write as _;
+    for c in text.chars() {
         let _ = match c {
-            c if hostile(c) && (c as u32) < 0x80 => write!(out, "\\x{:02x}", c as u32),
-            c if hostile(c) => write!(out, "\\u{{{:x}}}", c as u32),
+            '\\' => {
+                out.push_str("\\\\");
+                Ok(())
+            }
+            c if needs_escape(c) && (c as u32) < 0x80 => write!(out, "\\x{:02x}", c as u32),
+            c if needs_escape(c) => write!(out, "\\u{{{:x}}}", c as u32),
             c => {
                 out.push(c);
                 Ok(())
             }
         };
     }
-    std::borrow::Cow::Owned(out)
 }
 
-/// [`shown_name`] for a path. Lossy on a name that is not UTF-8, exactly as
-/// `Path::display` is — U+FFFD is printable and harmless.
+/// [`shown_name`] for a path, losslessly: a byte that is not UTF-8 is
+/// written `\xNN`, where `Path::display` wrote U+FFFD and made `\xff.md` and
+/// `\xfe.md` the same name on screen. `carrel_state::state::escape_path`
+/// walks the bytes the same way, but its escape set is the state file's
+/// (tab, newline, backslash) and leaves ESC raw, so the two do not share a
+/// body — only the shape.
 #[must_use]
 pub fn shown(path: &std::path::Path) -> String {
-    shown_name(&path.to_string_lossy()).into_owned()
+    #[cfg(unix)]
+    {
+        use std::fmt::Write as _;
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut out = String::new();
+        for chunk in path.as_os_str().as_bytes().utf8_chunks() {
+            push_escaped(&mut out, chunk.valid());
+            for b in chunk.invalid() {
+                let _ = write!(out, "\\x{b:02x}");
+            }
+        }
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        shown_name(&path.to_string_lossy()).into_owned()
+    }
 }
 
 /// Open one text row: push the block separator into `out`, and return the
@@ -304,6 +338,28 @@ mod name_tests {
     fn a_path_is_shown_through_the_same_escape() {
         let p = std::path::Path::new("dir\u{1b}c/README\u{9b}.md");
         assert_eq!(shown(p), r"dir\x1bc/README\u{9b}.md");
+    }
+
+    #[test]
+    fn a_literal_backslash_escape_and_the_control_it_spells_differ() {
+        assert_eq!(shown_name("a\\x1b.md"), r"a\\x1b.md");
+        assert_ne!(shown_name("a\\x1b.md"), shown_name("a\u{1b}.md"));
+        assert_eq!(shown_name(r"a\b"), r"a\\b");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bytes_that_are_not_utf8_are_written_as_hex_not_collapsed() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let ff = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/d/\xff.md"));
+        let fe = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/d/\xfe.md"));
+        assert_eq!(shown(ff), r"/d/\xff.md");
+        assert_ne!(shown(ff), shown(fe));
+        // A literal `\xff` in a UTF-8 name is a third, distinct spelling.
+        assert_ne!(shown(ff), shown(std::path::Path::new(r"/d/\xff.md")));
+        // A mixed name keeps its valid parts, escaped by the same rule.
+        let mixed = std::path::Path::new(std::ffi::OsStr::from_bytes(b"\x1b\xc3(\\.md"));
+        assert_eq!(shown(mixed), r"\x1b\xc3(\\.md");
     }
 
     #[test]

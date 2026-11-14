@@ -126,3 +126,63 @@ fn piped_linear_output_keeps_the_width_contract_a_file_gets() {
         assert_eq!(run_linear(args, &src, false), styled, "{args:?}");
     }
 }
+
+/// The binary on `args` with `input` (bytes) piped in: (stdout, stderr, ok).
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, String, bool) {
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_carrel"))
+        .args(args)
+        .env("HOME", scratch.path())
+        .env("XDG_CONFIG_HOME", scratch.path())
+        .env("XDG_STATE_HOME", scratch.path())
+        .env("XDG_CACHE_HOME", scratch.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("binary runs");
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    // A refusal may exit before reading it all; a broken pipe here is fine.
+    let _ = stdin.write_all(input);
+    drop(stdin);
+    let out = child.wait_with_output().expect("binary exits");
+    (
+        out.stdout,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.success(),
+    )
+}
+
+/// An executable's first bytes: invalid UTF-8 with NULs, which the file
+/// path refuses as "not text". The pipe printed them as U+FFFD soup and
+/// exited 0, because it decoded with `Utf8Carry` and no binary rule.
+const BINARY: &[u8] =
+    b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0\x03\0>\0\x01\0\0\0\xf0\x9b\xff\xfe\xc3\x28";
+
+#[test]
+fn binary_on_a_pipe_is_refused_by_every_whole_read_path() {
+    for args in [&["--plain", "-"][..], &["--render", "-"], &["-", "ELF"]] {
+        let (out, err, ok) = run_bytes(args, BINARY);
+        assert!(!ok, "{args:?} accepted binary");
+        assert!(
+            out.is_empty(),
+            "{args:?} printed {:?}",
+            String::from_utf8_lossy(&out)
+        );
+        assert!(err.contains("not text"), "{args:?}: {err}");
+    }
+}
+
+#[test]
+fn a_pipe_and_a_file_decide_alike() {
+    let dir = tempfile::tempdir().unwrap();
+    // A stray Latin-1 byte reads, binary is refused, and both ways in agree.
+    for input in [&b"caf\xe9 au lait\n"[..], BINARY, b"a\0b\n"] {
+        let file = dir.path().join("doc.md");
+        std::fs::write(&file, input).unwrap();
+        let by_file = run_bytes(&["--plain", file.to_str().unwrap()], b"");
+        let by_pipe = run_bytes(&["--plain", "-"], input);
+        assert_eq!(by_pipe.0, by_file.0, "stdout differs for {input:?}");
+        assert_eq!(by_pipe.2, by_file.2, "exit differs for {input:?}");
+    }
+}

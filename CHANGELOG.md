@@ -20,7 +20,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   (`carrel FILE PATTERN`), `--tasks`, the piped file listing and every error naming a
   file printed document text and file names raw, so a hostile file could retitle, clear
   or reset your terminal. Document text now drops control characters; a file name shows
-  them as visible escapes (`\x1b`, `\u{202e}`), bidi overrides included.
+  them as visible escapes (`\x1b`, `\u{202e}`), bidi overrides included, with a
+  backslash written `\\` and a byte that is not UTF-8 as `\xff`, so two different
+  names never print alike.
+- **A binary piped into `--plain -`, `--render -` or `- PATTERN` is refused** as "not
+  text", as the same bytes in a file already were, instead of printing U+FFFD soup.
 - **The clipboard carries only what the screen showed.** `y`, a mouse selection and
   "copy as a quote" copied escape sequences and control bytes hidden in a code block, so
   a paste into a shell could end bracketed paste early and run a command nobody saw.

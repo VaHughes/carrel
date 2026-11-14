@@ -436,11 +436,17 @@ fn print_tasks(path: &Path) -> ExitCode {
 /// Read all of stdin, refusing at the 32-bit position ceiling exactly as
 /// `check_document_size` does for files.
 ///
-/// Decoded by the streaming reader's own rule (`Utf8Carry`): an invalid
-/// sequence is U+FFFD. `read_to_string` refused the whole input instead, so
+/// Decoded by the rule a FILE is read by (`text::decode_document`): a stray
+/// invalid sequence is U+FFFD, and input that looks binary is refused as
+/// "not text". `read_to_string` refused the whole input instead, so
 /// `printf 'caf\xe9' | carrel` opened while the same bytes through
 /// `--plain -`, `--render -` or `carrel | cat` died with Rust's raw
-/// "stream did not contain valid UTF-8".
+/// "stream did not contain valid UTF-8" — and the `Utf8Carry` that replaced
+/// it had no binary rule, so `head -c 3000 /usr/bin/ls | carrel --plain -`
+/// printed U+FFFD soup and exited 0 where the same bytes as a file were
+/// refused. Every caller reads the whole input before printing anything, so
+/// refusing costs nothing; the streaming TUI never comes through here and
+/// by design never refuses.
 fn read_stdin_capped() -> std::io::Result<String> {
     use std::io::Read;
     let mut bytes = Vec::new();
@@ -448,10 +454,9 @@ fn read_stdin_capped() -> std::io::Result<String> {
         .lock()
         .take(u64::from(u32::MAX))
         .read_to_end(&mut bytes)?;
-    let mut carry = carrel::stream::Utf8Carry::default();
-    let mut src = carry.push(&bytes);
-    src.push_str(&carry.finish());
-    if bytes.len() >= u32::MAX as usize || src.len() >= u32::MAX as usize {
+    let too_big = bytes.len() >= u32::MAX as usize;
+    let (src, _) = carrel::text::decode_document(bytes)?;
+    if too_big || src.len() >= u32::MAX as usize {
         return Err(std::io::Error::other(
             "stdin exceeds 4 GiB; carrel positions are 32-bit byte offsets",
         ));
