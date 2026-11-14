@@ -1147,8 +1147,9 @@ struct Images {
     picker: Picker,
     rx: Option<Receiver<ImageMsg>>,
     protocols: HashMap<BlockIdx, StatefulProtocol>,
-    /// The file the current pipeline belongs to; a document change restarts it.
-    for_file: Option<std::path::PathBuf>,
+    /// The file and library root the current pipeline was planned for
+    /// ([`images::sync_key`]); a change in either restarts it.
+    synced: (Option<PathBuf>, Option<PathBuf>),
     initialized: bool,
 }
 
@@ -1178,7 +1179,7 @@ impl Images {
             picker,
             rx: None,
             protocols: HashMap::new(),
-            for_file: None,
+            synced: (None, None),
             initialized: false,
         }
     }
@@ -1205,31 +1206,19 @@ impl Images {
 
     /// (Re)start decoding when the open document changed.
     fn sync(&mut self, app: &mut App) {
-        if app.is_home() || (self.initialized && app.file == self.for_file) {
+        let key = images::sync_key(app);
+        if app.is_home() || (self.initialized && key == self.synced) {
             return;
         }
         self.initialized = true;
-        self.for_file.clone_from(&app.file);
+        self.synced = key;
+        // Drop the worker for the old plan before planning the new one, so
+        // nothing it still sends lands on a block the new plan refused.
+        self.rx = None;
         self.protocols.clear();
         let fs = self.picker.font_size();
         app.font_px = (fs.width, fs.height);
-        let base = app.file.as_deref().and_then(std::path::Path::parent);
-        let reqs = images::local_image_requests(&app.doc, base);
-        // The links' containment rule, through the links' root: an image
-        // outside the folder is never opened, and keeps its alt text.
-        let (reqs, outside) = images::contain(reqs, app.library_root());
-        if !outside.is_empty() && app.note.is_none() {
-            app.note = Some(format!(
-                "{} image{} {}",
-                outside.len(),
-                if outside.len() == 1 { "" } else { "s" },
-                images::OUTSIDE_FOLDER
-            ));
-        }
-        for block in outside {
-            app.image_errors
-                .insert(block, images::OUTSIDE_FOLDER.to_string());
-        }
+        let reqs = images::plan(app);
         // Nothing wider than the terminal can ever be painted.
         let text_px = u32::from(app.cols) * u32::from(fs.width);
         let caps = images::DecodeCaps::for_terminal(text_px);
@@ -2057,7 +2046,7 @@ fn poll_stream(
         let started = Instant::now();
         let text = app.piped.clone().unwrap_or_default();
         app.reload_from(&text);
-        images.for_file = None;
+        images.synced = (None, None);
         images.initialized = false;
         diagrams.for_file = None;
         pace.last = Some((Instant::now(), started.elapsed()));
@@ -2126,7 +2115,7 @@ fn poll_reload(
     match reloader.poll(app.file.as_deref(), app.mtime) {
         Some(Reload::Changed) => match app.reload() {
             Ok(()) => {
-                images.for_file = None;
+                images.synced = (None, None);
                 images.initialized = false;
                 diagrams.for_file = None;
             }

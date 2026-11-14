@@ -79,6 +79,57 @@ impl DecodeCaps {
 /// What a block outside the folder says instead of its picture.
 pub const OUTSIDE_FOLDER: &str = "outside this folder, so it was not opened";
 
+/// What decides whether the open document's images need planning again:
+/// the file AND the folder it is read within.
+///
+/// Keyed on the file alone, the verdict stuck when the file list moved and
+/// the same document was opened again. After Backspace from `docs` to the
+/// project, `../assets` images stayed refused until the file was touched;
+/// after the picker narrowed the root from the project to `docs`, they
+/// still rendered, which let a stale verdict walk past containment.
+#[must_use]
+pub fn sync_key(app: &crate::app::App) -> (Option<PathBuf>, Option<PathBuf>) {
+    (app.file.clone(), app.library_root().map(Path::to_path_buf))
+}
+
+/// Plan the open document's images: forget every earlier verdict, refuse
+/// what lies outside the library, and return what is left to decode.
+///
+/// Forgetting first matters when the same parse is planned under a new
+/// root: a refusal recorded under the old one must not survive, and
+/// neither may the dimensions of an image that is now outside.
+pub fn plan(app: &mut crate::app::App) -> Vec<(BlockIdx, PathBuf)> {
+    let had = !app.image_dims.is_empty();
+    app.image_dims.clear();
+    app.image_errors.clear();
+    if had {
+        app.relayout();
+    }
+    let base = app.file.as_deref().and_then(Path::parent);
+    let reqs = local_image_requests(&app.doc, base);
+    // The links' containment rule, through the links' root: an image
+    // outside the folder is never opened, and keeps its alt text.
+    let (reqs, outside) = contain(reqs, app.library_root());
+    if !outside.is_empty() && app.note.is_none() {
+        app.note = Some(outside_note(outside.len()));
+    }
+    for block in outside {
+        app.image_errors.insert(block, OUTSIDE_FOLDER.to_string());
+    }
+    reqs
+}
+
+/// "1 image outside this folder…", "2 images outside this folder…": the
+/// note once said "2 images … so it was not opened".
+#[must_use]
+pub fn outside_note(n: usize) -> String {
+    if n == 1 {
+        format!("1 image {OUTSIDE_FOLDER}")
+    } else {
+        format!("{n} images outside this folder, so they were not opened")
+    }
+}
+
 /// What the decode worker reports.
 #[derive(Debug)]
 pub enum ImageMsg {
@@ -491,6 +542,94 @@ mod tests {
         assert!(
             matches!(second, ImageMsg::Decoded(BlockIdx(1), _)),
             "{second:?}"
+        );
+    }
+
+    /// proj/docs/x.md with `../assets/y.png`, `local.png` and an absolute
+    /// path to y.png, read from a file list rooted at `root`.
+    fn reading_x_from(root: &str) -> (tempfile::TempDir, crate::app::App) {
+        let d = tempfile::tempdir().unwrap();
+        let proj = d.path().canonicalize().unwrap().join("proj");
+        std::fs::create_dir_all(proj.join("docs")).unwrap();
+        std::fs::create_dir_all(proj.join("assets")).unwrap();
+        let y = write_png(&proj.join("assets"), "y.png", 2, 2);
+        write_png(&proj.join("docs"), "local.png", 2, 2);
+        let x = proj.join("docs/x.md");
+        std::fs::write(
+            &x,
+            format!(
+                "![up](../assets/y.png)\n\n![local](local.png)\n\n![abs]({})\n",
+                y.display()
+            ),
+        )
+        .unwrap();
+        let mut a = crate::app::App::new_home(proj.join(root), vec![], 80, 24);
+        a.open_path(&x).unwrap();
+        (d, a)
+    }
+
+    fn refused(a: &crate::app::App) -> usize {
+        a.image_errors
+            .values()
+            .filter(|e| *e == OUTSIDE_FOLDER)
+            .count()
+    }
+
+    #[test]
+    fn moving_the_file_list_up_replans_the_same_document() {
+        use crate::action::Action;
+        let (_d, mut a) = reading_x_from("docs");
+        let before = sync_key(&a);
+        assert_eq!(plan(&mut a).len(), 1);
+        assert_eq!(refused(&a), 2);
+        assert_eq!(a.note.as_deref(), Some(outside_note(2).as_str()));
+        // q, Backspace, Enter on the same file.
+        let x = a.file.clone().unwrap();
+        crate::app::update(&mut a, Action::CloseFile);
+        crate::app::update(&mut a, Action::HomeUp);
+        a.open_path(&x).unwrap();
+        assert_ne!(sync_key(&a), before, "a new root must replan");
+        assert_eq!(plan(&mut a).len(), 3);
+        assert_eq!(refused(&a), 0);
+    }
+
+    #[test]
+    fn narrowing_the_root_refuses_what_it_used_to_allow() {
+        let (_d, mut a) = reading_x_from("");
+        let before = sync_key(&a);
+        assert_eq!(plan(&mut a).len(), 3);
+        a.image_dims.insert(BlockIdx(0), (2, 2));
+        // The same parse planned under a narrower root forgets what the
+        // wider one decoded.
+        let docs = a.file.as_deref().unwrap().parent().unwrap().to_path_buf();
+        a.home_stash.as_mut().unwrap().root = docs;
+        assert_ne!(sync_key(&a), before);
+        assert_eq!(plan(&mut a).len(), 1);
+        assert_eq!(refused(&a), 2);
+        assert!(a.image_dims.is_empty(), "{:?}", a.image_dims);
+        // And widening again forgets the refusals the narrow root made.
+        let proj = a
+            .home_stash
+            .as_ref()
+            .unwrap()
+            .root
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        a.home_stash.as_mut().unwrap().root = proj;
+        assert_eq!(plan(&mut a).len(), 3);
+        assert_eq!(refused(&a), 0);
+    }
+
+    #[test]
+    fn the_note_agrees_with_its_count() {
+        assert_eq!(
+            outside_note(1),
+            "1 image outside this folder, so it was not opened"
+        );
+        assert_eq!(
+            outside_note(2),
+            "2 images outside this folder, so they were not opened"
         );
     }
 }

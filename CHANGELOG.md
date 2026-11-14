@@ -63,7 +63,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   file list when it moves (Backspace, the folder picker, a favorite), and a file named on
   the command line is read within the folder you are standing in when it lies inside it,
   so `carrel docs/guide.md` shows `../assets/` images and follows links there without
-  asking.
+  asking. Reopening a document after the folder moved judges its images against the new
+  folder, not the one it was first opened under.
 
 - **Dragging a selection off the text still copies it.** Releasing past the end of a
   line, on the blank row under a paragraph, in the margin, or on the status row now
