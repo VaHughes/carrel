@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Auto-read (`A`) scrolls in a document opened from the file list**; it announced itself
+  there and then stood still.
+
 - **Undoing an edit brings a reader who never moved back to their paragraph**, even
   through an edit, a deletion and the undo of both.
 - **A selection can be longer than a screen**: hold a drag on the status row (or above

@@ -1638,6 +1638,72 @@ struct Pointer {
     wheel: Wheel,
 }
 
+/// Every clock both event loops keep, asked and run in one call each so a
+/// loop cannot keep one and forget another — which is how `A` came to
+/// scroll nothing in a document opened from the file list.
+#[derive(Default)]
+struct Clocks {
+    auto: AutoClock,
+    edge: EdgeClock,
+}
+
+impl Clocks {
+    /// How long the loop may sleep for every clock's sake.
+    fn timeout(&mut self, ptr: &mut Pointer, app: &App) -> Duration {
+        let now = Instant::now();
+        self.auto
+            .timeout(app, now)
+            .min(self.edge.timeout(ptr, app, now))
+    }
+
+    /// Send whatever tick is due.
+    fn run(&mut self, ptr: &mut Pointer, app: &mut App) -> Outcome {
+        if self.auto.run(app) == Outcome::Quit {
+            return Outcome::Quit;
+        }
+        self.edge.run(ptr, app)
+    }
+}
+
+/// Auto-read's clock (`A`), shared by both event loops: the reader's own
+/// loop had it and the file list's did not, so `A` scrolled nothing in a
+/// document opened from the list. One struct, so the loops cannot drift.
+#[derive(Default)]
+struct AutoClock {
+    next: Option<Instant>,
+}
+
+impl AutoClock {
+    /// How long the loop may sleep for this clock: forever while auto-read
+    /// is off. Arms on the first call after it is turned on.
+    fn timeout(&mut self, app: &App, now: Instant) -> Duration {
+        if !app.auto_read {
+            self.next = None;
+            return Duration::MAX;
+        }
+        let next = *self
+            .next
+            .get_or_insert(now + Duration::from_millis(carrel::app::AUTO_READ_MS));
+        next.saturating_duration_since(now)
+    }
+
+    /// Send the tick if one is due. Called every pass of a loop, never from
+    /// inside its resize branch: `pending` is only set by `Event::Resize`,
+    /// so a tick nested there fired only while a window was being dragged,
+    /// `A` scrolled nothing, and the never-advancing deadline spun the poll
+    /// at 100% of a core.
+    fn run(&mut self, app: &mut App) -> Outcome {
+        let now = Instant::now();
+        match self.next {
+            Some(t) if app.auto_read && now >= t => {
+                self.next = Some(now + Duration::from_millis(carrel::app::AUTO_READ_MS));
+                update(app, carrel::action::Action::AutoTick)
+            }
+            _ => Outcome::Idle,
+        }
+    }
+}
+
 /// Drag autoscroll's clock. Crossterm reports a drag only when the pointer
 /// MOVES, so a hand held still on the status row produced nothing and the
 /// selection stopped at the last visible row — a selection longer than a
@@ -1938,8 +2004,7 @@ fn run_loop(
     // closes — which is what stops an abandoned walk on its next send.
     let mut backlinks: Option<Receiver<carrel::links::Msg>> = None;
     let mut backlinks_for: Option<PathBuf> = None;
-    let mut next_auto: Option<Instant> = None;
-    let mut edge = EdgeClock::default();
+    let mut clocks = Clocks::default();
     // The tags page, asked for from inside a document: see `TagScan`.
     let mut tag_scan = TagScan::new();
     let mut siblings = Siblings::new();
@@ -1959,24 +2024,14 @@ fn run_loop(
         }
         repaint = true; // only a motion burst turns this off, and only briefly
 
-        // Auto-read's heartbeat: schedule on the same wake budget as the
-        // resize debounce, so one `poll` timeout serves both clocks.
-        if app.auto_read && next_auto.is_none() {
-            next_auto = Some(Instant::now() + Duration::from_millis(carrel::app::AUTO_READ_MS));
-        } else if !app.auto_read {
-            next_auto = None;
-        }
-        let auto_timeout = next_auto.map_or(Duration::MAX, |d| {
-            d.saturating_duration_since(Instant::now())
-        });
-        // Wake in time to apply a debounced resize even with no input arriving.
+        // Wake in time to apply a debounced resize even with no input
+        // arriving, and for every clock: one `poll` timeout serves them all.
         let timeout = resize
             .deadline
             .map_or(Duration::from_millis(100), |d| {
                 d.saturating_duration_since(Instant::now())
             })
-            .min(auto_timeout)
-            .min(edge.timeout(&mut ptr, &app, Instant::now()));
+            .min(clocks.timeout(&mut ptr, &app));
 
         if event::poll(timeout)? {
             // A read error means the input stream is gone. Exit rather than
@@ -2022,22 +2077,7 @@ fn run_loop(
         poll_stream(&mut stream, &mut app, &mut images, &mut diagrams, &mut pace);
         desktop.poll();
 
-        // Auto-read's own clock, and NOT nested in the resize branch below:
-        // `pending` is only ever set by `Event::Resize`, so a tick guarded by
-        // it fires only while a window is being dragged. That is where this
-        // block used to live, which made `A` scroll nothing and — because
-        // `next_auto` then never advanced — drove `auto_timeout` to zero and
-        // spun the poll at 100% of a core. The unit tests could not see it:
-        // they call `update(.., AutoTick)` directly.
-        if let Some(t) = next_auto
-            && Instant::now() >= t
-        {
-            next_auto = Some(Instant::now() + Duration::from_millis(carrel::app::AUTO_READ_MS));
-            if update(&mut app, carrel::action::Action::AutoTick) == Outcome::Quit {
-                break;
-            }
-        }
-        if edge.run(&mut ptr, &mut app) == Outcome::Quit {
+        if clocks.run(&mut ptr, &mut app) == Outcome::Quit {
             break;
         }
 
@@ -2607,7 +2647,7 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
     let mut resize = Resize::default();
     let mut painted = Painted::default();
     let mut repaint = true;
-    let mut edge = EdgeClock::default();
+    let mut clocks = Clocks::default();
 
     loop {
         // Same draw path as run(): documents opened FROM the home screen must
@@ -2645,7 +2685,7 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
             .map_or(Duration::from_millis(idle), |d| {
                 d.saturating_duration_since(Instant::now())
             })
-            .min(edge.timeout(&mut ptr, &app, Instant::now()));
+            .min(clocks.timeout(&mut ptr, &app));
 
         if event::poll(timeout)? {
             let Ok(ev) = event::read() else { break };
@@ -2682,7 +2722,7 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
         // there is no open file to watch), and the same desktop palette.
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
         desktop.poll();
-        if edge.run(&mut ptr, &mut app) == Outcome::Quit {
+        if clocks.run(&mut ptr, &mut app) == Outcome::Quit {
             break;
         }
 

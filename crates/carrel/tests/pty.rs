@@ -302,6 +302,45 @@ fn auto_read_drifts_to_the_end_without_a_resize() {
     );
 }
 
+/// The same drift in a document opened from the file list, which runs in
+/// the home loop: that loop had no auto-read clock, so `A` announced itself
+/// and then scrolled nothing.
+#[test]
+fn auto_read_drifts_in_a_document_opened_from_the_file_list() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let body = "a paragraph to scroll past\n\n".repeat(12);
+    std::fs::write(d.path().join("doc.md"), format!("# Drift\n\n{body}")).unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    let out = d.path().join("pty-capture");
+    let cmd = format!(
+        "( sleep 1.5; printf '\\r'; sleep 1.5; printf 'A'; sleep 6; printf 'Q' ) | \
+         XDG_CONFIG_HOME='{dir}/cfg' XDG_STATE_HOME='{dir}/state' XDG_CACHE_HOME='{dir}/cache' \
+         HOME='{dir}' timeout 40 script -qec 'stty rows 20 cols 76; {bin}' '{out}' >/dev/null 2>&1",
+        dir = d.path().display(),
+        out = out.display(),
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(d.path())
+        .status()
+        .expect("sh must run");
+    assert!(status.success(), "the binary must exit cleanly");
+    let raw = captured(&out);
+    assert!(
+        raw.contains("auto-read"),
+        "pressing A must announce itself: {raw:?}"
+    );
+    assert!(
+        raw.contains("the end"),
+        "auto-read must reach the end in a document opened from the list too"
+    );
+}
+
 #[test]
 fn a_signal_still_hands_the_terminal_back() {
     if !script_available() {
