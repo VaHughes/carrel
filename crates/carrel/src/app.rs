@@ -3599,7 +3599,11 @@ pub fn open_failure_reason(e: &std::io::Error) -> String {
 /// The same reason, as the line the binary prints before exiting 1.
 #[must_use]
 pub fn explain_open_error(path: &Path, e: &std::io::Error) -> String {
-    format!("carrel: {}: {}", path.display(), open_failure_reason(e))
+    format!(
+        "carrel: {}: {}",
+        crate::plain::shown(path),
+        open_failure_reason(e)
+    )
 }
 
 impl crate::peek::Drawn for App {

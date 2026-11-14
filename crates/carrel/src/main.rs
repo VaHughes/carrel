@@ -403,13 +403,13 @@ fn print_tasks(path: &Path) -> ExitCode {
             let doc = carrel_core::Document::parse(&src);
             let report = carrel::plain::task_report(&doc);
             if report.is_empty() {
-                say!("carrel: no task lists in {}", path.display());
+                say!("carrel: no task lists in {}", carrel::plain::shown(path));
                 return ExitCode::FAILURE;
             }
             emit(&report)
         }
         Err(e) => {
-            say!("carrel: cannot read {}: {e}", path.display());
+            say!("carrel: cannot read {}: {e}", carrel::plain::shown(path));
             ExitCode::FAILURE
         }
     }
@@ -796,7 +796,10 @@ fn home_root(explicit: Option<&Path>) -> (PathBuf, Option<String>) {
             Some(saved) if saved.is_dir() => (saved, None),
             Some(saved) => (
                 cwd.clone(),
-                Some(format!("saved directory is gone: {}", saved.display())),
+                Some(format!(
+                    "saved directory is gone: {}",
+                    carrel::plain::shown(&saved)
+                )),
             ),
             None => (cwd.clone(), None),
         },
@@ -810,7 +813,7 @@ fn open_latest(explicit: Option<&Path>) -> ExitCode {
     if let Some(dir) = explicit
         && !dir.is_dir()
     {
-        say!("carrel: {} is not a folder", dir.display());
+        say!("carrel: {} is not a folder", carrel::plain::shown(dir));
         return ExitCode::FAILURE;
     }
     // Here, or the folder named — never the folder saved for the file
@@ -821,7 +824,10 @@ fn open_latest(explicit: Option<&Path>) -> ExitCode {
     let root = explicit.map_or_else(|| cwd.clone(), |p| cwd.join(p));
     let (entries, _) = scan::walk_blocking(&root);
     let Some(newest) = carrel::cli::latest(&entries) else {
-        say!("carrel: no markdown documents under {}", root.display());
+        say!(
+            "carrel: no markdown documents under {}",
+            carrel::plain::shown(&root)
+        );
         return ExitCode::FAILURE;
     };
     // As a path, never through a string: a name that is not UTF-8 is still
@@ -838,10 +844,10 @@ fn open_home(explicit: Option<&Path>) -> ExitCode {
         let mut out = format!(
             "{} markdown file(s) under {}\n",
             entries.len(),
-            root.display()
+            carrel::plain::shown(&root)
         );
         for e in entries.iter().take(50) {
-            let _ = writeln!(out, "  {}", e.path.display());
+            let _ = writeln!(out, "  {}", carrel::plain::shown(&e.path));
         }
         return emit(&out);
     }
@@ -892,7 +898,7 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
             if e.kind() == std::io::ErrorKind::NotFound
                 && let Some(near) = carrel::cli::suggest_file(path)
             {
-                say!("carrel: did you mean {}?", near.display());
+                say!("carrel: did you mean {}?", carrel::plain::shown(&near));
             }
             return ExitCode::FAILURE;
         }
@@ -3383,7 +3389,7 @@ fn print_plain(path: &Path, width: u16) -> ExitCode {
             emit(&carrel::plain::render(&doc, width))
         }
         Err(e) => {
-            say!("carrel: {}: {e}", path.display());
+            say!("carrel: {}: {e}", carrel::plain::shown(path));
             ExitCode::FAILURE
         }
     }
@@ -3400,7 +3406,7 @@ fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
         rows_total += wrap(&doc, BlockIdx(i as u32), width, &cluster_width, |_| {});
     }
 
-    let _ = writeln!(out, "{}", path.display());
+    let _ = writeln!(out, "{}", carrel::plain::shown(path));
     let _ = writeln!(out, "  {} bytes source", src.len());
     let _ = writeln!(out, "  {} bytes display text", doc.text.len());
     let _ = writeln!(out, "  {} blocks", doc.block_count());
@@ -3425,7 +3431,13 @@ fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
             }
         });
         if let Some((text, (c0, c1))) = hit {
-            let _ = writeln!(out, "    {}. cols {c0}..{c1}  │ {}", n + 1, text.trim());
+            // The document's own line, which a hostile file fills with
+            // `ESC ]0;…BEL` or a C1 CSI: printed raw, searching a file
+            // retitled or cleared the terminal the report went to. The
+            // column numbers above are measured on the unfiltered row, which
+            // is what the reader's own coordinates mean.
+            let line = carrel::plain::clean_text(&text);
+            let _ = writeln!(out, "    {}. cols {c0}..{c1}  │ {}", n + 1, line.trim());
         }
     }
     if matches.len() > 10 {

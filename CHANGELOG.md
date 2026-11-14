@@ -12,6 +12,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   config that cannot be read is no longer replaced by a single line the next time a
   setting changes. Hand-written configs read exactly as before.
 
+- **Terminal escapes no longer leak through carrel's printed output.** The search report
+  (`carrel FILE PATTERN`), `--tasks`, the piped file listing and every error naming a
+  file printed document text and file names raw, so a hostile file could retitle, clear
+  or reset your terminal. Document text now drops control characters; a file name shows
+  them as visible escapes (`\x1b`, `\u{202e}`), bidi overrides included.
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves

@@ -45,6 +45,68 @@ pub(crate) fn push_text(out: &mut String, text: &str) {
     );
 }
 
+/// One line of document text, safe to print: `push_text`'s filter, for the
+/// paths outside this module that copy document text to a terminal — the
+/// `carrel FILE PATTERN` hit lines and the `--tasks` items. Those printed
+/// `Document::text` raw, so a file you only searched could retitle or clear
+/// the terminal the report went to.
+#[must_use]
+pub fn clean_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    push_text(&mut out, text);
+    out
+}
+
+/// A file or folder NAME, safe to print on a terminal: every control
+/// character becomes a visible escape (`\x1b`, `\x0a`, `\u{9b}`), and so do
+/// the bidirectional embedding, override and isolate controls (U+202A..=202E,
+/// U+2066..=2069), which reorder what follows them on screen: a U+202E
+/// before `gpj.md` makes `x.md` with that tail display as ending `dm.jpg`.
+///
+/// Escaped rather than dropped, unlike document text: a name is an
+/// identifier, and `a\x1b.md` and `a.md` are two different files that
+/// dropping would print identically — the reader could not tell which one
+/// carrel meant, nor type it back. Document text is prose, where a visible
+/// `\x1b` is noise and dropping is what `push_text` already does.
+///
+/// A backslash is left alone, so a name that literally contains `\x1b`
+/// prints the same as one containing ESC. Escaping every backslash would
+/// mangle every ordinary name that has one to make an adversarial pair
+/// distinguishable; the dangerous half — the byte reaching the terminal —
+/// is closed either way.
+///
+/// Found by the 2026-11 security hunt: a file named `README\x1bc.md` in the
+/// folder reset the terminal when `carrel README.md` offered it as "did you
+/// mean", and `carrel . | cat` printed every name raw.
+#[must_use]
+pub fn shown_name(name: &str) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write as _;
+    let hostile =
+        |c: char| c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    if !name.chars().any(hostile) {
+        return std::borrow::Cow::Borrowed(name);
+    }
+    let mut out = String::with_capacity(name.len() + 8);
+    for c in name.chars() {
+        let _ = match c {
+            c if hostile(c) && (c as u32) < 0x80 => write!(out, "\\x{:02x}", c as u32),
+            c if hostile(c) => write!(out, "\\u{{{:x}}}", c as u32),
+            c => {
+                out.push(c);
+                Ok(())
+            }
+        };
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// [`shown_name`] for a path. Lossy on a name that is not UTF-8, exactly as
+/// `Path::display` is — U+FFFD is printable and harmless.
+#[must_use]
+pub fn shown(path: &std::path::Path) -> String {
+    shown_name(&path.to_string_lossy()).into_owned()
+}
+
 /// Open one text row: push the block separator into `out`, and return the
 /// opening of the line itself — quote bars, indent, and the list prefix.
 ///
@@ -151,7 +213,10 @@ pub fn task_report(doc: &carrel_core::Document) -> String {
             .unwrap_or("")
             .trim();
         out.push_str(if t.done { "- [x] " } else { "- [ ] " });
-        out.push_str(first);
+        // The task's own text, which the document chose: filtered like
+        // every other line this module prints, or a task item carrying
+        // `ESC ]0;…BEL` retitled the terminal `--tasks` was run in.
+        out.push_str(clean_text(first).trim());
         out.push('\n');
     }
     out
@@ -183,6 +248,70 @@ mod task_report_tests {
         let doc = carrel_core::Document::parse("- a\n- [ ] open\n- [x] done\n");
         let out = super::task_report(&doc);
         assert_eq!(out, "- [ ] open\n- [x] done\n", "{out}");
+    }
+
+    #[test]
+    fn task_text_carries_no_control_characters() {
+        let doc = carrel_core::Document::parse(super::CONTROL_BYTES_TASKS);
+        let out = super::task_report(&doc);
+        assert!(
+            out.contains("- [ ] ta") && out.contains("- [x] do"),
+            "{out}"
+        );
+        assert!(out.chars().all(|c| !c.is_control() || c == '\n'), "{out:?}");
+    }
+}
+
+#[cfg(test)]
+const CONTROL_BYTES_TASKS: &str = "- [ ] ta\u{1b}]0;X\u{7}sk \u{9b}2J\n- [x] do\u{1b}c\r\u{8}ne\n";
+
+#[cfg(test)]
+mod name_tests {
+    use super::{clean_text, shown, shown_name};
+
+    #[test]
+    fn an_ordinary_name_is_borrowed_unchanged() {
+        assert!(matches!(
+            shown_name("docs/PLAN ü.md"),
+            std::borrow::Cow::Borrowed("docs/PLAN ü.md")
+        ));
+    }
+
+    #[test]
+    fn control_characters_in_a_name_become_visible_escapes() {
+        assert_eq!(shown_name("a\u{1b}]0;X\u{7}.md"), r"a\x1b]0;X\x07.md");
+        assert_eq!(
+            shown_name("l\nb\tc\r\u{8}\u{7f}"),
+            r"l\x0ab\x09c\x0d\x08\x7f"
+        );
+        assert_eq!(shown_name("c1\u{9b}2J"), r"c1\u{9b}2J");
+    }
+
+    #[test]
+    fn bidi_controls_in_a_name_are_escaped() {
+        assert_eq!(shown_name("bidi\u{202e}dm.txt"), r"bidi\u{202e}dm.txt");
+        assert_eq!(shown_name("\u{2066}x\u{2069}"), r"\u{2066}x\u{2069}");
+        // Arabic and Hebrew letters are content, not controls.
+        assert_eq!(shown_name("שלום.md"), "שלום.md");
+    }
+
+    #[test]
+    fn two_names_differing_by_a_control_still_print_differently() {
+        assert_ne!(shown_name("a\u{1b}.md"), shown_name("a.md"));
+    }
+
+    #[test]
+    fn a_path_is_shown_through_the_same_escape() {
+        let p = std::path::Path::new("dir\u{1b}c/README\u{9b}.md");
+        assert_eq!(shown(p), r"dir\x1bc/README\u{9b}.md");
+    }
+
+    #[test]
+    fn document_text_drops_controls_and_keeps_the_rest() {
+        assert_eq!(
+            clean_text("He\u{1b}]0;P\u{7}llo \u{9b}2J\r\u{8}w\u{ad}orld"),
+            "He]0;Pllo 2Jworld"
+        );
     }
 }
 
