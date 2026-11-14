@@ -52,7 +52,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   rather than a file is refused instead of stalling every image after it. A picture named
   many times is decoded once, pictures wider than the terminal are shrunk when loaded,
   and a document's images share one memory budget: twenty references to one large PNG
-  used to exhaust memory and crash with the terminal left broken.
+  used to exhaust memory and crash with the terminal left broken. The folder follows the
+  file list when it moves (Backspace, the folder picker, a favorite), and a file named on
+  the command line is read within the folder you are standing in when it lies inside it,
+  so `carrel docs/guide.md` shows `../assets/` images and follows links there without
+  asking.
 
 - **Dragging a selection off the text still copies it.** Releasing past the end of a
   line, on the blank row under a paragraph, in the margin, or on the status row now

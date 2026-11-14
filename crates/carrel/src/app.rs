@@ -22,6 +22,13 @@ use crate::view::ViewState;
 /// What the event loop must do after a transition.
 ///
 /// The `App` never draws and never exits; it only reports what is now true.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Idle,
+    Redraw,
+    Quit,
+}
+
 /// Does `target` resolve outside `root`? The one containment rule, shared by
 /// links ([`App::escapes_library`]) and images (`images::contain`), so a
 /// document cannot reach a file through `![](…)` that `[](…)` would have to
@@ -38,11 +45,36 @@ pub fn escapes_root(root: &Path, target: &Path) -> bool {
     !target.starts_with(&root)
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    Idle,
-    Redraw,
-    Quit,
+/// The root a file opened directly is read within: the folder you are
+/// standing in when the file lies inside it, else the file's own folder.
+///
+/// Rooting at the file's own folder alone refused `![](../assets/x.png)` in
+/// `carrel docs/guide.md`, the most ordinary repository layout there is,
+/// even though the reader typed the command standing at the repository's
+/// top. The working directory is "the folder you are standing in" from the
+/// README, so this never widens past what the reader chose; a file outside
+/// it (`carrel ../x/doc.md`, `carrel /tmp/a.md`) keeps its own folder.
+///
+/// `Path::new("doc.md").parent()` is `Some("")`, which canonicalizes to an
+/// error and would silently disable containment, so an empty parent means
+/// the working directory.
+#[must_use]
+pub fn direct_open_root(file: &Path, cwd: Option<&Path>) -> PathBuf {
+    let own = match file.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    // Both must resolve: `escapes_root` answers "inside" when either cannot,
+    // which is right for a target about to fail its own open and wrong for
+    // choosing how wide a root to grant.
+    let inside = cwd.is_some_and(|cwd| match (cwd.canonicalize(), file.canonicalize()) {
+        (Ok(cwd), Ok(file)) => file.starts_with(cwd),
+        _ => false,
+    });
+    match cwd {
+        Some(cwd) if inside => cwd.to_path_buf(),
+        _ => own,
+    }
 }
 
 #[derive(Debug)]
@@ -563,10 +595,13 @@ pub struct App {
     /// The BINARY sets this at startup; forgetting that shows up in the pty
     /// smoke, not as a stomped developer config. (A home.rs test once wrote
     /// `root = /tmp/.tmpXXXXXX` into the real config on every test run.)
-    /// The directory this reading session is rooted at — the home screen's
-    /// root, or the directory the opened file came from. Injected by the
-    /// binary like [`Self::config_dir`], and fixed for the session: a link
-    /// followed out of it does not move it.
+    /// The root for a session with no file list: a file opened directly
+    /// ([`direct_open_root`]) or a pipe (the working directory). Injected by
+    /// the binary like [`Self::config_dir`], and fixed for the session: a
+    /// link followed out of it does not move it.
+    ///
+    /// Read it through [`Self::library_root`], never directly: when there
+    /// is a file list, ITS root is the library, and that one moves.
     ///
     /// `None` disables containment, which is what the state layer's own
     /// tests want; the binary always sets it.
@@ -1530,10 +1565,7 @@ impl App {
     /// in front or behind, else the folder this reading session is rooted at.
     #[must_use]
     pub fn tags_root(&self) -> Option<PathBuf> {
-        self.home()
-            .or(self.home_stash.as_deref())
-            .map(|h| h.root.clone())
-            .or_else(|| self.library_root.clone())
+        self.library_root().map(Path::to_path_buf)
     }
 
     /// Open the tags page AT a tag: its section expanded and at the top.
@@ -1833,9 +1865,23 @@ impl App {
     /// the open that follows reports that itself.
     #[must_use]
     pub fn escapes_library(&self, target: &Path) -> bool {
-        self.library_root
-            .as_deref()
+        self.library_root()
             .is_some_and(|root| escapes_root(root, target))
+    }
+
+    /// The folder this session reads within, for links and images alike.
+    ///
+    /// The file list's root when there is one, in front or behind, because
+    /// that is the folder the reader is browsing and it moves: Backspace,
+    /// the folder picker and a favorite all change it. A copy taken at
+    /// startup went stale on the first move, and every image in a document
+    /// under the new root was refused as "outside this folder".
+    #[must_use]
+    pub fn library_root(&self) -> Option<&Path> {
+        self.home()
+            .or(self.home_stash.as_deref())
+            .map(|h| h.root.as_path())
+            .or(self.library_root.as_deref())
     }
 
     /// The second Enter on the same link: `true` once, then forgotten.
@@ -2512,10 +2558,7 @@ impl App {
             .canonicalize()
             .or_else(|_| std::path::absolute(&dir))
             .unwrap_or(dir);
-        let root = self
-            .library_root
-            .as_deref()
-            .and_then(|r| r.canonicalize().ok());
+        let root = self.library_root().and_then(|r| r.canonicalize().ok());
         let mut dead = std::collections::HashSet::new();
         for i in 0..self.doc.links.len().min(MAX) {
             let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
@@ -11287,5 +11330,58 @@ diff --git a/x.rs b/x.rs
             a.doc.block_at_doc(DocByte(t)),
             "mark dragged to {got:?}"
         );
+    }
+
+    /// The library is the file list's root, read live: Backspace moved the
+    /// list to the parent, but a copy taken at startup still named the child,
+    /// so an image beside a document in a sibling folder was refused.
+    #[test]
+    fn the_library_follows_the_file_list_when_it_moves() {
+        let d = tempfile::tempdir().unwrap();
+        let px = d.path().canonicalize().unwrap();
+        std::fs::create_dir_all(px.join("A")).unwrap();
+        std::fs::create_dir_all(px.join("B")).unwrap();
+        std::fs::write(px.join("A/a.md"), "# a\n").unwrap();
+        std::fs::write(px.join("B/b.md"), "![pic](pic.png)\n").unwrap();
+        std::fs::write(px.join("B/pic.png"), b"png").unwrap();
+        let mut a = App::new_home(px.join("A"), vec![], 80, 24);
+        assert_eq!(a.library_root(), Some(px.join("A").as_path()));
+        update(&mut a, Action::HomeUp);
+        assert_eq!(a.library_root(), Some(px.as_path()));
+        // Reading from the list keeps the list's root behind the document.
+        a.open_path(&px.join("B/b.md")).unwrap();
+        assert_eq!(a.library_root(), Some(px.as_path()));
+        assert!(!a.escapes_library(&px.join("B/pic.png")));
+        assert!(a.escapes_library(d.path().parent().unwrap()));
+    }
+
+    #[test]
+    fn a_file_opened_directly_is_rooted_at_the_cwd_it_lies_inside() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().canonicalize().unwrap().join("repo");
+        let other = d.path().canonicalize().unwrap().join("other");
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        std::fs::create_dir_all(repo.join("assets")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let guide = repo.join("docs/guide.md");
+        std::fs::write(&guide, "![x](../assets/x.png)\n").unwrap();
+        std::fs::write(repo.join("assets/x.png"), b"png").unwrap();
+        let far = other.join("doc.md");
+        std::fs::write(&far, "x\n").unwrap();
+
+        // `carrel docs/guide.md` from the repository: ../assets is inside.
+        let root = direct_open_root(&guide, Some(&repo));
+        assert_eq!(root, repo);
+        assert!(!escapes_root(&root, &repo.join("docs/../assets/x.png")));
+        // `carrel ../other/doc.md` from the repository: its own folder only,
+        // so the repository it was opened from is outside.
+        let root = direct_open_root(&far, Some(&repo));
+        assert_eq!(root, other);
+        assert!(escapes_root(&root, &repo.join("assets/x.png")));
+        // No working directory, or a file that does not resolve: own folder.
+        assert_eq!(direct_open_root(&guide, None), repo.join("docs"));
+        let ghost = repo.join("docs/ghost.md");
+        assert_eq!(direct_open_root(&ghost, Some(&repo)), repo.join("docs"));
+        assert_eq!(direct_open_root(Path::new("doc.md"), None), Path::new("."));
     }
 }

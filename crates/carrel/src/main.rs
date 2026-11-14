@@ -1211,7 +1211,7 @@ impl Images {
         let reqs = images::local_image_requests(&app.doc, base);
         // The links' containment rule, through the links' root: an image
         // outside the folder is never opened, and keeps its alt text.
-        let (reqs, outside) = images::contain(reqs, app.library_root.as_deref());
+        let (reqs, outside) = images::contain(reqs, app.library_root());
         if !outside.is_empty() && app.note.is_none() {
             app.note = Some(format!(
                 "{} image{} {}",
@@ -1746,15 +1746,10 @@ fn run(
         .state_dir
         .as_deref()
         .is_some_and(carrel::state::is_first_run_in);
-    // Rooted at the document's own directory: links inside the project follow
-    // silently, links out of it ask first. See `App::escapes_library`.
-    // `Path::new("doc.md").parent()` is `Some("")`, which canonicalizes to an
-    // error and would silently disable containment — the working directory is
-    // what an empty parent means.
-    app.library_root = Some(match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    });
+    // Links and images inside the root follow silently, links out of it ask
+    // first and images out of it are not opened. See `direct_open_root`.
+    let cwd = std::env::current_dir().ok();
+    app.library_root = Some(carrel::app::direct_open_root(path, cwd.as_deref()));
     // The file and its folder are known now, which is what resolving a
     // `[[note]]` and finding a dead link both needed.
     app.index_links();
@@ -2371,7 +2366,8 @@ fn home_app(root: &Path, note: Option<String>, size: (u16, u16), images: &Images
         .state_dir
         .as_deref()
         .is_some_and(carrel::state::is_first_run_in);
-    app.library_root = Some(root.to_path_buf());
+    // No `library_root` here: with a file list, its root IS the library,
+    // and `App::library_root()` reads it live as the list moves.
     apply_config(&mut app);
     load_resume(&mut app);
     set_home_prefs(&mut app);

@@ -48,7 +48,9 @@ shared vault, a downloaded README, anything you did not write — and a link in 
 path on the machine. Links resolving inside your folder follow as they always have; one
 resolving outside names the path and waits for a second Enter, so leaving is something you do
 rather than something a document does to you. Images obey the same rule: one whose path leads
-outside the folder is never opened and shows its alt text instead. Both paths are canonicalised,
+outside the folder is never opened and shows its alt text instead. A file you name directly is
+read within the folder you are standing in when it lies inside it, so `carrel docs/guide.md`
+can show `../assets/diagram.png`, and within its own folder when it does not. Both paths are canonicalised,
 so a symlink out of the tree is caught too. The walk itself never follows symlinks and never reads an ignore file
 above your root.
 
