@@ -512,6 +512,10 @@ file list alike — Ctrl-D on the file list opens the folder picker (a shell use
 reflex), Ctrl-T toggles tables, Alt-Q closes the document. Making chords inert would be
 one guard per keymap; the text inputs already have it (`keys::is_chord`).
 
+Upstream: pulldown-cmark 0.13.4 repeats the rest of a paragraph after an empty-label
+wikilink (`[[x|]] abc` read `]] abc abc`); `document::EmptyLabelGuard` mends the event
+stream, and can go when a release fixes it.
+
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
@@ -519,7 +523,10 @@ Known defects: none open. The last, stray backslashes in `git log | carrel`, is 
 by planning every escape the message-to-markdown pass adds as data and settling it
 against the parse of the final text (`diff::settle`), instead of layering string passes
 that each planned on a parse the next one changed; `only_the_headings_it_wrote` now
-asserts no backslash the author did not write.
+asserts no backslash the author did not write. Settling breaks every offending construct
+a parse finds at once (a code span by both its backtick runs) and escapes every opener
+after 16 rounds, so a paragraph settles in a few parses. Still open, accepted: an email
+autolink with `--` or `$` in its local part (`<a--b@c.d>`) shows as text, not a link.
 
 Everything else the 2026-11-14 hunt reproduced has a fix and a break-checked regression
 test, apart from the limits listed above; see Recently completed.

@@ -7,6 +7,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A selection survives a live reload and a streaming pipe**: dragging over `agent | carrel`
   while it runs, or over a file being saved, copies on release instead of losing the drag.
 - **Home and End in a note go to the ends of the cursor's line**, not of the whole note.
+- **`git log | carrel` keeps a message's code spans and links**: breaking one span no
+  longer re-pairs every backtick after it, a list item's wrapped line keeps its `code`,
+  a bare URL with `--` or `$` in it links, a lone carriage return cannot open a heading
+  or fence, and a 50 KB message settles in milliseconds instead of seconds. In every
+  document, `[[x|]]` no longer repeats the rest of its paragraph, and a bare URL shows
+  the hyphens it was typed with.
 
 - **A file holding a NUL byte is refused as binary even when it is valid UTF-8** (ASCII
   saved as UTF-16 opened as spaced-out noise), and **long runs of math symbols**

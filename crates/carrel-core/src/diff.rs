@@ -206,6 +206,21 @@ impl FileDiff {
 /// against the parse of the text it produces ([`settle`]), never against
 /// a parse of something else.
 fn emit_message(message: &[&str], out: &mut String) {
+    // A lone CR is a line ending to the markdown parser but not to
+    // `str::lines`, so the line start after one was never neutralized:
+    // `body\r# stolen\r```` stole a heading and opened a fence over every
+    // later commit. It is shown as the space it looks like.
+    let spaced: Vec<std::borrow::Cow<'_, str>> = message
+        .iter()
+        .map(|l| {
+            if l.contains('\r') {
+                l.replace('\r', " ").into()
+            } else {
+                (*l).into()
+            }
+        })
+        .collect();
+    let message: Vec<&str> = spaced.iter().map(AsRef::as_ref).collect();
     let mut paras: Vec<&[&str]> = Vec::new();
     for chunk in message.split(|l| l.trim().is_empty()) {
         if !chunk.is_empty() {
@@ -239,10 +254,30 @@ fn emit_message(message: &[&str], out: &mut String) {
         } else {
             p.len()
         };
-        let record = |j: usize| {
-            let l: &str = p[j];
-            j >= trailers || indent_cols(l) >= base + 4 || l.trim_start().starts_with('#')
-        };
+        // An indented line is four columns deeper than the text it sits
+        // under: the message, or the list item it continues. Measured from
+        // the message alone, an item's second line — indented to the item's
+        // text, as people wrap them — was a record, its `code` shown with
+        // its backticks.
+        let mut item: Option<usize> = None;
+        let records: Vec<bool> = p
+            .iter()
+            .enumerate()
+            .map(|(j, l)| {
+                let cols = indent_cols(l);
+                if item.is_some_and(|text| cols < text) {
+                    item = None;
+                }
+                let is = j >= trailers
+                    || cols >= item.unwrap_or(base) + 4
+                    || l.trim_start().starts_with('#');
+                if !is && let Some(marker) = list_marker(l.trim_start()) {
+                    item = Some(cols + marker);
+                }
+                is
+            })
+            .collect();
+        let record = |j: usize| records[j];
         let mut plan = Plan::default();
         for (j, line) in p.iter().enumerate() {
             if record(j) {
@@ -295,6 +330,9 @@ enum Esc {
 struct Plan {
     base: String,
     esc: BTreeMap<usize, Esc>,
+    /// Hyphens and `$`s left unescaped because a bare URL holds them, in
+    /// order. `settle` escapes any the reader would not link after all.
+    bare: Vec<usize>,
 }
 
 impl Plan {
@@ -319,17 +357,58 @@ impl Plan {
         (text, at)
     }
 
-    /// Stop the construct whose opener is at `text_at` forming: escape its
-    /// backtick run, its `<` or its `$`. `false` when there is nothing left
-    /// to escape there, which `settle` takes as no progress.
-    fn break_open(&mut self, text_at: usize, at: &[(usize, usize, Esc)]) -> bool {
-        let pos = text_at - at.partition_point(|&(t, ..)| t < text_at);
+    /// Does a backslash the author wrote escape `base[k]`? It does when it
+    /// ends an odd run of backslashes that nothing of ours escapes.
+    fn author_escapes(&self, k: usize) -> bool {
+        let b = self.base.as_bytes();
+        let mut escapes = false;
+        let mut j = k;
+        while j > 0 && b[j - 1] == b'\\' {
+            j -= 1;
+            if self.esc.contains_key(&j) {
+                // Ours escapes this one, which ends the run that counts.
+                break;
+            }
+            escapes = !escapes;
+        }
+        escapes && !self.esc.contains_key(&k)
+    }
+
+    /// Stop the construct spanning `r` in the rendered text forming: escape
+    /// its `<`, `$` or `[`, or both backtick runs of a code span. `false`
+    /// when there is nothing left to escape, which `settle` takes as no
+    /// progress.
+    ///
+    /// Both runs, because a span's closer is a backtick run like any other:
+    /// with only the opener escaped it opened a span with the NEXT run, and
+    /// every later span in the paragraph paired one run off — `a `b` /
+    /// `<c>` d `e` f` read as `a `b <c>de` f`.
+    fn break_open(&mut self, r: &std::ops::Range<usize>, at: &[(usize, usize, Esc)]) -> bool {
+        let base_of = |t: usize| t - at.partition_point(|&(u, ..)| u < t);
+        let pos = base_of(r.start);
         let b = self.base.as_bytes();
         match b.get(pos) {
             Some(b'`') => {
                 let run = b[pos..].iter().take_while(|&&c| c == b'`').count();
                 for k in pos..pos + run {
                     self.esc.insert(k, Esc::Keep);
+                }
+                // The closer: the backtick run the range ends with, in the
+                // rendered text, where an inserted backslash ends a run.
+                let mut k = base_of(r.end - 1);
+                if r.end - r.start > run && b.get(k) == Some(&b'`') {
+                    // A backtick the author escaped is literal once the span
+                    // is gone; a backslash put before it would be escaped
+                    // by the author's instead, and free it: a span closed
+                    // by an escaped-looking backtick read `\\`` broken.
+                    while !self.author_escapes(k) {
+                        let starts_run = self.esc.contains_key(&k);
+                        self.esc.insert(k, Esc::Keep);
+                        if starts_run || k == 0 || b[k - 1] != b'`' {
+                            break;
+                        }
+                        k -= 1;
+                    }
                 }
                 true
             }
@@ -348,23 +427,74 @@ struct Parsed {
     /// Each range starts at its construct's opener. The flag says whether
     /// a hyphen or `$` escape may simply be taken out there.
     literal: Vec<(std::ops::Range<usize>, bool)>,
-    /// Where math begins. All of it is broken open: a message is shell.
-    math: Option<usize>,
+    /// Where math is. All of it is broken open: a message is shell.
+    math: Vec<std::ops::Range<usize>>,
     breaks: std::collections::HashSet<usize>,
+    /// The ranges flagged droppable, in order.
+    droppable: Vec<std::ops::Range<usize>>,
+    /// The bare URLs the reader would link, in order, when asked for.
+    linked: Vec<std::ops::Range<usize>>,
 }
 
 impl Parsed {
     /// Parsed with the document's own options, math and all — the parse
     /// the reader will make of this text.
-    fn of(text: &str) -> Self {
-        use pulldown_cmark::{Event, LinkType, Parser, Tag};
+    fn of(text: &str, urls: bool) -> Self {
+        use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
         let mut parsed = Parsed {
             literal: Vec::new(),
-            math: None,
+            math: Vec::new(),
             breaks: std::collections::HashSet::new(),
+            droppable: Vec::new(),
+            linked: Vec::new(),
         };
-        let options = crate::document::markdown_options();
-        for (event, r) in Parser::new_ext(text, options).into_offset_iter() {
+        let mut events = crate::document::body_events(text).peekable();
+        // Inside a link or a code block the reader links no bare URL.
+        let mut no_urls = 0usize;
+        while let Some((event, r)) = events.next() {
+            if urls {
+                match &event {
+                    Event::Start(Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_)) => {
+                        no_urls += 1;
+                    }
+                    Event::End(TagEnd::Link | TagEnd::Image | TagEnd::CodeBlock) => {
+                        no_urls = no_urls.saturating_sub(1);
+                    }
+                    Event::Text(first) if no_urls == 0 => {
+                        // One text run, as `Document` coalesces it, and
+                        // the bare URLs it would link there.
+                        let mut shown = first.to_string();
+                        let mut end = r.end;
+                        while let Some((Event::Text(next), at)) = events.peek() {
+                            if at.start != end {
+                                break;
+                            }
+                            shown.push_str(next);
+                            end = at.end;
+                            events.next();
+                        }
+                        let runs_on = !matches!(
+                            events.peek(),
+                            None | Some((Event::End(_) | Event::SoftBreak | Event::HardBreak, _))
+                        ) && text[end..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| !c.is_whitespace() && c != '<');
+                        // Linked AND shown as typed: a URL the reader
+                        // cannot pair with its source (an entity in it)
+                        // shows its smart punctuation.
+                        let raw = &text[r.start..end];
+                        parsed.linked.extend(
+                            crate::document::bare_urls(&shown, raw, runs_on)
+                                .into_iter()
+                                .filter_map(|u| u.typed)
+                                .map(|t| r.start + t.start..r.start + t.end),
+                        );
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             match event {
                 Event::Code(_)
                 | Event::InlineHtml(_)
@@ -382,7 +512,7 @@ impl Parsed {
                     ..
                 }) => parsed.literal.push((r, false)),
                 Event::InlineMath(_) | Event::DisplayMath(_) => {
-                    parsed.math = parsed.math.or(Some(r.start));
+                    parsed.math.push(r.clone());
                     parsed.literal.push((r, true));
                 }
                 Event::HardBreak => {
@@ -391,12 +521,22 @@ impl Parsed {
                 _ => {}
             }
         }
+        parsed.droppable = parsed
+            .literal
+            .iter()
+            .filter(|(_, ok)| *ok)
+            .map(|(r, _)| r.clone())
+            .collect();
+        parsed.droppable.sort_by_key(|r| r.start);
         parsed
     }
 
-    /// The opener of the first construct that would show one of these
-    /// backslashes.
-    fn showing(&self, at: &[(usize, usize, Esc)], which: impl Fn(Esc) -> bool) -> Option<usize> {
+    /// Every construct that would show one of these backslashes.
+    fn showing(
+        &self,
+        at: &[(usize, usize, Esc)],
+        which: impl Fn(Esc) -> bool,
+    ) -> Vec<std::ops::Range<usize>> {
         self.literal
             .iter()
             .filter(|(r, plain_ok)| {
@@ -406,18 +546,19 @@ impl Parsed {
                     .take_while(|&&(t, ..)| t < r.end)
                     .any(|&(_, _, kind)| which(kind) || (kind == Esc::Plain && !plain_ok))
             })
-            .map(|(r, _)| r.start)
-            .min()
+            .map(|(r, _)| r.clone())
+            .collect()
     }
 
-    /// The opener of a construct holding offset `t` in which a hyphen or
-    /// `$` escape is taken out.
-    fn inside(&self, t: usize) -> Option<usize> {
-        self.literal
-            .iter()
-            .filter(|(r, plain_ok)| *plain_ok && r.start < t && t < r.end)
-            .map(|(r, _)| r.start)
-            .min()
+    /// The construct holding offset `t` in which a hyphen or `$` escape is
+    /// taken out. Those never nest (a code span, raw HTML, an autolink and
+    /// math hold no other), so the last one starting before `t` is the
+    /// only candidate — a binary search, since a paragraph of thousands of
+    /// code spans asked this once per escape.
+    fn inside(&self, t: usize) -> Option<std::ops::Range<usize>> {
+        let i = self.droppable.partition_point(|r| r.start < t);
+        let r = self.droppable[..i].last()?;
+        (t < r.end).then(|| r.clone())
     }
 }
 
@@ -449,64 +590,131 @@ fn settle(mut plan: Plan) -> String {
         .bytes()
         .filter(|b| matches!(b, b'`' | b'<' | b'$' | b'['))
         .count();
-    if plan.esc.is_empty() || (openers == 0 && breaks == 0) {
+    if plan.bare.is_empty() && (plan.esc.is_empty() || (openers == 0 && breaks == 0)) {
         return plan.render(|_| true).0;
     }
-    for _ in 0..=openers + breaks {
+    // Break every construct one parse finds at once, not the first: one at
+    // a time made a paragraph of N of them N parses of the whole paragraph,
+    // and a 50 KB message took seconds.
+    let break_all = |plan: &mut Plan, found: &[std::ops::Range<usize>], at: &[_]| {
+        let mut progress = false;
+        for r in found {
+            progress |= plan.break_open(r, at);
+        }
+        progress
+    };
+    let bare = plan.bare.len();
+    for round in 0..=openers + breaks + bare + FALLBACK_ROUND {
+        if round == FALLBACK_ROUND {
+            // Still unsettled: a paragraph built to cascade. Escape every
+            // opener there is, so no construct can form and only the
+            // breaks are left to settle — a bound on the work, at the cost
+            // of this paragraph's own code spans and links.
+            let b = plan.base.as_bytes();
+            let open: Vec<usize> = b
+                .iter()
+                .enumerate()
+                .filter(|&(i, c)| matches!(c, b'`' | b'<' | b'$' | b'[') && !plan.author_escapes(i))
+                .map(|(i, _)| i)
+                .collect();
+            for i in open {
+                plan.esc.insert(i, Esc::Keep);
+            }
+        }
         let (text, at) = plan.render(|_| true);
-        let parsed = Parsed::of(&text);
-        if let Some(open) = parsed.showing(&at, |k| k != Esc::Plain) {
-            if plan.break_open(open, &at) {
+        let parsed = Parsed::of(&text, false);
+        let found = parsed.showing(&at, |k| k != Esc::Plain);
+        if !found.is_empty() {
+            if break_all(&mut plan, &found, &at) {
                 continue;
             }
             return text;
         }
         // Take out the hyphen and `$` escapes a construct holds, each
         // remembered with the construct, and parse what is left.
-        let held: Vec<(usize, usize)> = at
+        let held: Vec<(usize, std::ops::Range<usize>)> = at
             .iter()
             .filter(|&&(_, _, k)| k == Esc::Plain)
-            .filter_map(|&(t, pos, _)| parsed.inside(t).map(|open| (pos, open)))
+            .filter_map(|&(t, pos, _)| parsed.inside(t).map(|r| (pos, r)))
             .collect();
-        let (text, at2, parsed) = if held.is_empty() {
-            (text, at, parsed)
+        let (text, at2, parsed2) = if held.is_empty() && plan.bare.is_empty() {
+            (text, at.clone(), parsed)
         } else {
             // `held` is in plan order, so a binary search finds a position.
             let (text2, at2) =
-                plan.render(|pos| held.binary_search_by_key(&pos, |&(p, _)| p).is_err());
-            let parsed2 = Parsed::of(&text2);
+                plan.render(|pos| held.binary_search_by_key(&pos, |(p, _)| *p).is_err());
+            let parsed2 = Parsed::of(&text2, !plan.bare.is_empty());
             (text2, at2, parsed2)
         };
-        let progress = if let Some(open) = parsed.showing(&at2, |_| true).or(parsed.math) {
-            plan.break_open(open, &at2)
-        } else if let Some(&(_, open)) = held.iter().find(|&&(pos, _)| {
-            let t = pos + at2.partition_point(|&(_, p, _)| p < pos);
-            parsed.inside(t).is_none()
-        }) {
-            // Taking the escape out unmade the construct that held it:
-            // break that construct instead, in the text it formed in.
-            let (_, at1) = plan.render(|_| true);
-            plan.break_open(open, &at1)
-        } else {
-            let unread: Vec<usize> = at2
-                .iter()
-                .filter(|&&(t, _, k)| k == Esc::Break && !parsed.breaks.contains(&t))
-                .map(|&(_, pos, _)| pos)
-                .collect();
-            if unread.is_empty() {
-                return text;
+        let mut found = parsed2.showing(&at2, |_| true);
+        found.extend(parsed2.math.iter().cloned());
+        if !found.is_empty() {
+            if break_all(&mut plan, &found, &at2) {
+                continue;
             }
+            return text;
+        }
+        // Taking an escape out unmade the construct that held it: break
+        // that construct instead, in the text it formed in.
+        let unmade: Vec<std::ops::Range<usize>> = held
+            .iter()
+            .filter(|(pos, _)| {
+                let t = pos + at2.partition_point(|&(_, p, _)| p < *pos);
+                parsed2.inside(t).is_none()
+            })
+            .map(|(_, r)| r.clone())
+            .collect();
+        if !unmade.is_empty() {
+            if break_all(&mut plan, &unmade, &at) {
+                continue;
+            }
+            return text;
+        }
+        let unread: Vec<usize> = at2
+            .iter()
+            .filter(|&&(t, _, k)| k == Esc::Break && !parsed2.breaks.contains(&t))
+            .map(|&(_, pos, _)| pos)
+            .collect();
+        if !unread.is_empty() {
             for pos in unread {
                 plan.esc.remove(&pos);
             }
-            true
-        };
-        if !progress {
+            continue;
+        }
+        if !plan.escape_unlinked(&at2, &parsed2) {
             return text;
         }
     }
     plan.render(|_| true).0
 }
+
+impl Plan {
+    /// Escape each hyphen or `$` left bare for a URL the reader does not
+    /// link after all — cut by markup, inside a link label, in a record
+    /// line — like any other. `false` when every one is linked.
+    fn escape_unlinked(&mut self, at: &[(usize, usize, Esc)], parsed: &Parsed) -> bool {
+        let unlinked: Vec<usize> = self
+            .bare
+            .iter()
+            .copied()
+            .filter(|&pos| {
+                let t = pos + at.partition_point(|&(_, p, _)| p < pos);
+                let i = parsed.linked.partition_point(|r| r.start <= t);
+                parsed.linked[..i].last().is_none_or(|r| t >= r.end)
+            })
+            .collect();
+        self.bare.retain(|p| !unlinked.contains(p));
+        for &pos in &unlinked {
+            self.esc.insert(pos, Esc::Plain);
+        }
+        !unlinked.is_empty()
+    }
+}
+
+/// The round of [`settle`] after which a paragraph that has not settled
+/// has every opener escaped. Ordinary messages settle in one or two; the
+/// cold review's 50 KB cascades in two or three.
+const FALLBACK_ROUND: usize = 16;
 
 /// Leading columns of whitespace, a tab reaching the next multiple of four
 /// as markdown counts it.
@@ -554,21 +762,44 @@ fn record_safe(l: &str, plan: &mut Plan) {
 /// already literal.
 fn escape_dashes(plan: &mut Plan) {
     let b = plan.base.as_bytes();
+    // A bare URL is found in one unbroken run of text, and an escape cuts
+    // the run: `see https://x.example/a--b ok` was no link. The reader
+    // shows a URL's hyphens as typed, so they need no escape; a `$` pair in
+    // one that reads as math is broken open by `settle`. The scan is over
+    // the plain text, so it finds URLs the reader will not link (an
+    // `<http://…>` autolink's tail, a record line's): `settle` checks each
+    // against the final parse and escapes those.
+    let urls = crate::document::extended_autolinks(&plan.base);
+    let mut url = urls.iter().map(|(r, _)| r.clone()).peekable();
     let mut add = Vec::new();
+    let mut bare = Vec::new();
     let mut after_backslash = false;
     for i in 0..b.len() {
+        while url.peek().is_some_and(|r| r.end <= i) {
+            url.next();
+        }
+        let in_url = url.peek().is_some_and(|r| r.start <= i);
         let escaped = after_backslash || plan.esc.contains_key(&i);
         after_backslash = false;
         if escaped {
             continue;
         }
-        match b[i] {
-            b'\\' => after_backslash = true,
-            b'$' => add.push(i),
-            b'-' if b.get(i + 1) == Some(&b'-') && !plan.esc.contains_key(&(i + 1)) => add.push(i),
-            _ => {}
+        let wanted = match b[i] {
+            b'\\' => {
+                after_backslash = true;
+                false
+            }
+            b'$' => true,
+            b'-' => b.get(i + 1) == Some(&b'-') && !plan.esc.contains_key(&(i + 1)),
+            _ => false,
+        };
+        if wanted && in_url {
+            bare.push(i);
+        } else if wanted {
+            add.push(i);
         }
     }
+    plan.bare = bare;
     for i in add {
         plan.esc.insert(i, Esc::Plain);
     }
@@ -616,7 +847,8 @@ fn escape_inline(s: &str) -> String {
         if is_inline_special(c) {
             out.push('\\');
         }
-        out.push(c);
+        // A lone CR would end the heading line; see `emit_message`.
+        out.push(if c == '\r' { ' ' } else { c });
     }
     out
 }
@@ -1487,6 +1719,10 @@ Author: B <b@example.com>
             "<script>",
             "</script>",
             "<!-->",
+            "https://a",
+            " www.a.b/",
+            "\r",
+            "[[x|]]",
         ];
 
         fn line() -> impl Strategy<Value = String> {
@@ -1592,6 +1828,13 @@ Author: B <b@example.com>
         /// third: a wikilink shows its target raw, and smart-punctuates its
         /// label. The last: an inline HTML attribute's backtick paired
         /// with one on the line above once the comment was broken.
+        ///
+        /// Round two (a cold review of the settling pass): a span closed
+        /// by a backtick the author escaped, which a backslash of ours in
+        /// front of would free; a bare URL left unescaped that the reader
+        /// then did not link (an empty-label wikilink after it joined its
+        /// text run); an empty-label wikilink, which the reader shows as
+        /// typed, holding a line-start escape.
         #[test]
         fn every_added_backslash_is_read_as_an_escape() {
             for (message, keeps) in [
@@ -1599,6 +1842,9 @@ Author: B <b@example.com>
                 ("<![CDATA[[x]:\n>\n]]>", "[x]:"),
                 ("[[#|---|---|]]>", "---|---|"),
                 ("1.<!--\n`-->\n\t<a x=\"--`\">", "--`"),
+                ("<a x=\"--`\">\n>\\`--x`\n>\n`--x`", "--x"),
+                ("<http://a--b>2)[[x|]]-->", "a--b"),
+                ("-[[\n|]]>", "|]]"),
             ] {
                 let mut src =
                     String::from("commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A\n\n");

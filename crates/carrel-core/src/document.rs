@@ -281,6 +281,109 @@ fn unsmartened(url: &str) -> String {
     out
 }
 
+/// pulldown-cmark 0.13.4 gets a wikilink with an empty label wrong.
+/// `[[x|]] abc` arrives as a link opened over `[[x|]]` that holds `]]` and
+/// then the REST of the paragraph, correctly parsed, then the link's
+/// `End`, then that rest a second time — `]] abc abc` on screen — and the
+/// second copy is misparsed (`[[y]]` in it is no wikilink).
+///
+/// So the link is shown as the text it was typed as, its `]]` dropped, the
+/// rest it holds kept, and the replay after its `End` dropped: every leaf
+/// event, and every container opened, that starts before the furthest
+/// source already emitted (`high`), with the `End` of each container it
+/// dropped. A kept `End` reaching `high` with nothing pending turns the
+/// guard off again, so it costs nothing until a document has the shape
+/// and changes nothing in one that does not.
+#[derive(Default)]
+struct EmptyLabelGuard {
+    /// The empty-label links still open, by range.
+    bogus: Vec<Range<usize>>,
+    /// Containers of the replay that were dropped, by range.
+    dropped: Vec<Range<usize>>,
+    /// The end of the furthest source emitted while the guard is on.
+    high: Option<usize>,
+}
+
+impl EmptyLabelGuard {
+    fn pass<'a>(
+        &mut self,
+        src: &'a str,
+        ev: Event<'a>,
+        r: Range<usize>,
+    ) -> Option<(Event<'a>, Range<usize>)> {
+        if let Event::Start(Tag::Link {
+            link_type: LinkType::WikiLink { has_pothole: true },
+            ..
+        }) = &ev
+            && src[r.clone()].ends_with("|]]")
+            && self.high.is_none_or(|h| r.start >= h)
+        {
+            self.bogus.push(r.clone());
+            self.high = Some(r.end);
+            // As text, with its backslash escapes read as text reads
+            // them: `[[a\|]]` shows `[[a|]]`, not its backslash.
+            let typed = &src[r.clone()];
+            let text: pulldown_cmark::CowStr<'a> = if typed.contains('\\') {
+                let mut out = String::with_capacity(typed.len());
+                let mut chars = typed.chars().peekable();
+                while let Some(c) = chars.next() {
+                    match chars.peek() {
+                        Some(&n) if c == '\\' && n.is_ascii_punctuation() => {
+                            out.push(n);
+                            chars.next();
+                        }
+                        _ => out.push(c),
+                    }
+                }
+                out.into()
+            } else {
+                typed.into()
+            };
+            return Some((Event::Text(text), r));
+        }
+        let Some(high) = self.high else {
+            return Some((ev, r));
+        };
+        match ev {
+            Event::End(_) => {
+                if self.bogus.last() == Some(&r) {
+                    self.bogus.pop();
+                    return None;
+                }
+                if self.dropped.last() == Some(&r) {
+                    self.dropped.pop();
+                    return None;
+                }
+                if self.bogus.is_empty() && self.dropped.is_empty() && r.end >= high {
+                    self.high = None;
+                }
+                Some((ev, r))
+            }
+            Event::Start(_) if r.start < high => {
+                self.dropped.push(r);
+                None
+            }
+            Event::Start(_) => Some((ev, r)),
+            _ if r.start < high => None,
+            _ => {
+                self.high = Some(high.max(r.end));
+                Some((ev, r))
+            }
+        }
+    }
+}
+
+/// The parser's events for markdown with no frontmatter, as the reader
+/// takes them: through [`EmptyLabelGuard`]. `diff` checks its escapes
+/// against exactly this stream, since a stream it did not share is a
+/// parse it did not check.
+pub(crate) fn body_events(src: &str) -> impl Iterator<Item = (Event<'_>, Range<usize>)> {
+    let mut guard = EmptyLabelGuard::default();
+    Parser::new_ext(src, markdown_options())
+        .into_offset_iter()
+        .filter_map(move |(ev, r)| guard.pass(src, ev, r))
+}
+
 /// GFM extended autolinks: bare `www.` runs and bare `http://` / `https://`
 /// URLs.
 ///
@@ -293,7 +396,7 @@ fn unsmartened(url: &str) -> String {
 /// Returns byte ranges into `text` paired with the URL to register, in
 /// order and never overlapping. A `www.` run gets `http://` per GFM —
 /// carrel does not guess at transport.
-fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
+pub(crate) fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
     let mut out = www_autolinks(text);
     out.extend(scheme_autolinks(text));
     out.sort_by_key(|(r, _)| r.start);
@@ -310,12 +413,102 @@ fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
     out
 }
 
+/// A bare URL in one text run: where it shows (`shown`, in the display
+/// text), the address it copies, and — when it is paired with a URL in
+/// the source — where that was typed (`typed`, in the source text) and
+/// whether the two are the same text (`exact`).
+pub(crate) struct BareUrl {
+    pub(crate) shown: Range<usize>,
+    pub(crate) url: String,
+    pub(crate) typed: Option<Range<usize>>,
+    pub(crate) exact: bool,
+}
+
+/// The bare URLs the reader links in a text run `t`, whose source is
+/// `raw`. `runs_on`: the run goes straight on into markup.
+///
+/// Shared with `diff`, which must know exactly which URLs these are: it
+/// leaves a URL's `--` unescaped only where this links it, and an escape
+/// anywhere else is the dash it is there to stop.
+pub(crate) fn bare_urls(t: &str, raw: &str, runs_on: bool) -> Vec<BareUrl> {
+    let mut hits = extended_autolinks(t);
+    // A URL cut short is worse than no link: it copies another page.
+    // `https://x.com/a\_b` and `https://x.com/_private_` reach here as
+    // `…/a` and `…/` — so a URL that ends where the run does, when the
+    // run goes on into markup, is left as the text it looks like.
+    if runs_on && hits.last().is_some_and(|(r, _)| r.end == t.len()) {
+        hits.pop();
+    }
+    if raw == t {
+        return hits
+            .into_iter()
+            .map(|(shown, url)| BareUrl {
+                typed: Some(shown.clone()),
+                shown,
+                url,
+                exact: true,
+            })
+            .collect();
+    }
+    // The URL a link copies is the one the AUTHOR typed. Smart
+    // punctuation rewrites the text (`it's` becomes `it’s`, `--` an en
+    // dash), and a URL built from that names a different page — so where
+    // the source differs, the same scan over the source gives the URLs.
+    // Each displayed URL takes the next source URL it IS once smart
+    // punctuation is undone (`unsmartened`); one that is no source URL —
+    // an entity or an escape in it, whose decoded form is the one meant —
+    // keeps its own. Paired one by one, not by the run: a `Q&A` or a
+    // `C:\dir` elsewhere in the paragraph used to turn the pairing off
+    // for every URL in it, and a `'` the source scan reads as a boundary,
+    // where the display's `’` is not, gave the source one link more and
+    // did the same.
+    let typed = if hits.is_empty() {
+        Vec::new()
+    } else {
+        extended_autolinks(raw)
+    };
+    let mut next_typed = 0usize;
+    hits.into_iter()
+        .map(|(shown, url)| {
+            // The first source URL still unpaired that is this one, as
+            // typed or once smart punctuation is undone — asked together,
+            // in order: asking only for the undone form let `it’s` (typed
+            // curly) take a later `it's`, and the two swapped addresses.
+            let plain = unsmartened(&url);
+            match typed[next_typed..]
+                .iter()
+                .position(|(_, u)| *u == url || *u == plain)
+            {
+                Some(i) => {
+                    next_typed += i + 1;
+                    let (r, u) = &typed[next_typed - 1];
+                    BareUrl {
+                        exact: *u == url,
+                        shown,
+                        url: u.clone(),
+                        typed: Some(r.clone()),
+                    }
+                }
+                None => BareUrl {
+                    shown,
+                    url,
+                    typed: None,
+                    exact: false,
+                },
+            }
+        })
+        .collect()
+}
+
 /// Trimmed from the end of a bare URL: sentence punctuation, and the
 /// quotes and ellipsis an author wraps or ends it with — in the curly
 /// forms smart punctuation turns them into as well, since the display
-/// text is what this scans.
+/// text is what this scans. Both curly forms: a `"` that ends a URL
+/// with nothing after it becomes an OPENING quote, `x="` read `x=“`, and
+/// left in, the displayed URL no longer matched the typed one.
 const AUTOLINK_TRAIL: &[char] = &[
-    '?', '!', '.', ',', ':', ';', '*', '_', '~', '\'', '"', '\u{2019}', '\u{201D}', '\u{2026}',
+    '?', '!', '.', ',', ':', ';', '*', '_', '~', '\'', '"', '\u{2018}', '\u{2019}', '\u{201C}',
+    '\u{201D}', '\u{2026}',
 ];
 
 /// Where a bare URL starting at `start` ends: the first whitespace or `<`,
@@ -1820,54 +2013,34 @@ impl<'a> Builder<'a> {
             self.push(t, src, ProvKind::Verbatim);
             return;
         }
-        let mut hits = extended_autolinks(t);
-        // A URL cut short is worse than no link: it copies another page.
-        // `https://x.com/a\_b` and `https://x.com/_private_` reach here as
-        // `…/a` and `…/` — so a URL that ends where the run does, when the
-        // run goes on into markup, is left as the text it looks like.
-        if runs_on && hits.last().is_some_and(|(r, _)| r.end == t.len()) {
-            hits.pop();
-        }
+        let hits = bare_urls(t, &self.source[src.clone()], runs_on);
         if hits.is_empty() {
             self.push_scripted(t, src, ProvKind::Verbatim);
             return;
         }
-        // The URL a link copies is the one the AUTHOR typed. Smart
-        // punctuation rewrites the text (`it's` becomes `it’s`, `--` an en
-        // dash), and a URL built from that names a different page — so where
-        // the source differs, the same scan over the source gives the URLs.
-        // Each displayed URL takes the next source URL it IS once smart
-        // punctuation is undone (`unsmartened`); one that is no source URL —
-        // an entity or an escape in it, whose decoded form is the one meant —
-        // keeps its own. Paired one by one, not by the run: a `Q&A` or a
-        // `C:\dir` elsewhere in the paragraph used to turn the pairing off
-        // for every URL in it, and a `'` the source scan reads as a boundary,
-        // where the display's `’` is not, gave the source one link more and
-        // did the same.
-        let raw = &self.source[src.clone()];
-        let typed = if raw == t {
-            Vec::new()
-        } else {
-            extended_autolinks(raw)
-        };
-        let mut next_typed = 0usize;
         let mut cursor = 0usize;
-        for (range, url) in hits {
-            // The first source URL still unpaired that is this one, as
-            // typed or once smart punctuation is undone — asked together,
-            // in order: asking only for the undone form let `it’s` (typed
-            // curly) take a later `it's`, and the two swapped addresses.
-            let plain = unsmartened(&url);
-            let url = match typed[next_typed..]
-                .iter()
-                .position(|(_, u)| *u == url || *u == plain)
-            {
-                Some(i) => {
-                    next_typed += i + 1;
-                    typed[next_typed - 1].1.clone()
-                }
-                None => url,
-            };
+        for BareUrl {
+            shown: range,
+            url,
+            typed,
+            exact,
+        } in hits
+        {
+            // Its hyphens are SHOWN as typed too: a dash is never part of an
+            // address, so `https://x/a--b` reading `a–b` showed one nobody
+            // could type back. (A `git log` message used to escape the `--`
+            // to keep it two hyphens, which cut the URL there and lost the
+            // link.) Quotes keep their curl: `it’s` still reads as prose.
+            let as_typed = typed.is_some() && !exact;
+            let shown: Cow<'_, str> =
+                if as_typed && t[range.clone()].contains(['\u{2013}', '\u{2014}']) {
+                    t[range.clone()]
+                        .replace('\u{2014}', "---")
+                        .replace('\u{2013}', "--")
+                        .into()
+                } else {
+                    Cow::Borrowed(&t[range.clone()])
+                };
             if range.start > cursor {
                 // The prefix's source range is unknowable byte-for-byte once
                 // we split, so it is Substituted, not Verbatim — the same rule
@@ -1891,7 +2064,7 @@ impl<'a> Builder<'a> {
             let prev_style = self.style;
             self.current_link = Some(id);
             self.style = self.style.insert(Style::LINK);
-            self.push(&t[range.clone()], src.clone(), ProvKind::Substituted);
+            self.push(&shown, src.clone(), ProvKind::Substituted);
             self.current_link = prev_link;
             self.style = prev_style;
             cursor = range.end;
@@ -2130,11 +2303,9 @@ impl<'a> Builder<'a> {
             || if src.starts_with('\u{feff}') { 3 } else { 0 },
             |(_, r)| r.end,
         );
-        front.into_iter().chain(
-            Parser::new_ext(&src[body..], markdown_options())
-                .into_offset_iter()
-                .map(move |(ev, r)| (ev, r.start + body..r.end + body)),
-        )
+        front
+            .into_iter()
+            .chain(body_events(&src[body..]).map(move |(ev, r)| (ev, r.start + body..r.end + body)))
     }
 
     /// Append display text and record its provenance.
