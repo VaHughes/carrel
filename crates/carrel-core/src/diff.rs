@@ -279,6 +279,7 @@ fn emit_message(message: &[&str], out: &mut String) {
             para.push('\n');
         }
         let para = unspan(para, &mut added);
+        let para = unbreak(para, &added);
         out.push_str(&keep_hyphens(&para));
         out.push('\n');
     }
@@ -290,7 +291,7 @@ fn emit_message(message: &[&str], out: &mut String) {
 /// `#<!--` line showed as `\\#\\<\\!\\--`. Such a span's opening backticks are
 /// escaped, so it never forms; asked again until none is left, since
 /// unpairing one backtick can pair the next differently.
-fn unspan(mut s: String, added: &mut [std::ops::Range<usize>]) -> String {
+fn unspan(mut s: String, added: &mut Vec<std::ops::Range<usize>>) -> String {
     use pulldown_cmark::{Event, Options, Parser};
     let options = crate::document::markdown_options()
         & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
@@ -312,8 +313,44 @@ fn unspan(mut s: String, added: &mut [std::ops::Range<usize>]) -> String {
             a.start += run;
             a.end += run;
         }
+        // These escapes are added text too: a span formed later around
+        // them would show them. Two bytes each, so `unbreak` never takes
+        // one for a hard break.
+        added.extend((0..run).map(|k| r.start + 2 * k..r.start + 2 * k + 2));
     }
     s
+}
+
+/// Drop each hard break this pass `added` that the parser does not read as
+/// one. A break is a backslash before a newline only inside a paragraph;
+/// at the end of a list item, before an indented line that continues it
+/// differently, or anywhere the message's own markdown ends a paragraph
+/// first, it is a literal backslash on the screen.
+fn unbreak(s: String, added: &[std::ops::Range<usize>]) -> String {
+    use pulldown_cmark::{Event, Options, Parser};
+    let breaks: Vec<usize> = added
+        .iter()
+        .filter(|a| a.len() == 1 && s.as_bytes().get(a.start) == Some(&b'\\'))
+        .map(|a| a.start)
+        .collect();
+    if breaks.is_empty() {
+        return s;
+    }
+    let options = crate::document::markdown_options()
+        & !(Options::ENABLE_MATH | Options::ENABLE_SMART_PUNCTUATION);
+    let read: std::collections::HashSet<usize> = Parser::new_ext(&s, options)
+        .into_offset_iter()
+        .filter(|(e, _)| matches!(e, Event::HardBreak))
+        .map(|(_, r)| r.start)
+        .collect();
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0;
+    for b in breaks.into_iter().filter(|b| !read.contains(b)) {
+        out.push_str(&s[last..b]);
+        last = b + 1;
+    }
+    out.push_str(&s[last..]);
+    out
 }
 
 /// Leading columns of whitespace, a tab reaching the next multiple of four
@@ -1361,6 +1398,20 @@ Author: B <b@example.com>
         #[test]
         fn no_hard_break_shows_before_a_list_item() {
             let src = "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A (a at example.com)\n\n    \t#\n    1.\t#\n\n";
+            let doc = Document::parse(&to_markdown(src));
+            assert!(
+                !doc.text.contains('\\'),
+                "{:?}\n{}",
+                doc.text,
+                to_markdown(src)
+            );
+        }
+
+        /// A break the parser does not read as one is dropped, wherever
+        /// the message's own markdown ended the paragraph first.
+        #[test]
+        fn no_hard_break_shows_where_the_message_ends_a_paragraph() {
+            let src = "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A (a at example.com)\n\n    - #\n            #\n    +\n\n";
             let doc = Document::parse(&to_markdown(src));
             assert!(
                 !doc.text.contains('\\'),

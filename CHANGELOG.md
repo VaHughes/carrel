@@ -5,7 +5,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 ## Unreleased
 
 - **`git log | carrel` shows fewer stray backslashes**: none inside a backtick span that
-  runs across a `#` line, and none before a list item.
+  runs across a `#` line, and none from a line break where the message's own markdown
+  already ends the paragraph.
 
 - **A document reopened from the file list shows its images again**, a theme change can
   no longer hang on a config path that is a FIFO, and saves work on filesystems that

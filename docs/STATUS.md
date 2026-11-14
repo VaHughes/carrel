@@ -517,10 +517,13 @@ Known defects:
 
 - `git log | carrel`: an escape or hard break the message-to-markdown pass adds can show as
   a literal backslash when the message's own markdown ends a paragraph where the pass did
-  not expect it. Two shapes are fixed (a backtick span running across an escaped line —
-  `unspan`; a hard break before a list item); asserting "no backslash the author did not
-  write" in `hostile_messages::only_the_headings_it_wrote` still fails on others, e.g. the
-  message lines `- #`, `        #`, `+`. Cosmetic; predates 2026-11-14.
+  not expect it. Fixed on 2026-11-14: a backtick span across an escaped line (`unspan`),
+  a hard break the parser does not read as one (`unbreak`), a break before a list item.
+  Asserting "no backslash the author did not write" in
+  `hostile_messages::only_the_headings_it_wrote` still fails on rarer shapes where an
+  HTML comment and a span interact, e.g. the message lines `><!--`, ```` ``` ````, `>`,
+  ``-->`` ``. Each escaping layer plans on a parse the next one changes; the lasting fix
+  is one pass that escapes against the final parse. Cosmetic; predates 2026-11-14.
 
 Everything else the 2026-11-14 hunt reproduced has a fix and a break-checked regression
 test, apart from the limits listed above; see Recently completed.
