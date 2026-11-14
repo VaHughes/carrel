@@ -40,4 +40,5 @@ pub mod marginalia;
 pub mod scan;
 pub mod state;
 pub mod tags;
+pub mod text;
 pub mod wiki;

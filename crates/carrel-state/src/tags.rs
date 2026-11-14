@@ -307,21 +307,25 @@ pub fn tags_of(path: &Path) -> Vec<String> {
     if f.take(BODY_MAX).read_to_end(&mut buf).is_err() {
         return Vec::new();
     }
-    as_text(&buf, buf.len() as u64 == BODY_MAX).map_or_else(Vec::new, tags_in)
+    let cut = buf.len() as u64 == BODY_MAX;
+    as_text(buf, cut).map_or_else(Vec::new, |t| tags_in(&t))
 }
 
-/// `bytes` as text, by the reader's rule: a file that is not UTF-8 does not
-/// open ("this is not text"), so it holds no tags either — a stray `#z` in a
-/// binary must not list a document that a click then refuses. A `cut` read
-/// may end inside a character; that tail is dropped, not judged.
-fn as_text(bytes: &[u8], cut: bool) -> Option<&str> {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => Some(text),
-        Err(e) if cut && e.error_len().is_none() => {
-            Some(std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap_or_default())
-        }
-        Err(_) => None,
+/// `bytes` as text, by the reader's rule ([`crate::text::decode_document`]):
+/// a binary does not open ("this is not text"), so it holds no tags either —
+/// a stray `#z` in one must not list a document that a click then refuses.
+/// A stray Latin-1 byte does open, so its tags count. A `cut` read may end
+/// inside a character; that tail is dropped, not judged.
+fn as_text(mut bytes: Vec<u8>, cut: bool) -> Option<String> {
+    if cut
+        && let Err(e) = std::str::from_utf8(&bytes)
+        && e.error_len().is_none()
+    {
+        bytes.truncate(e.valid_up_to());
     }
+    crate::text::decode_document(bytes)
+        .ok()
+        .map(|(text, _)| text)
 }
 
 /// [`tags_of`] over text already read.
@@ -1187,20 +1191,27 @@ mod tests {
 
     #[test]
     fn a_file_that_does_not_open_as_text_has_no_tags() {
-        // The reader refuses a file that is not UTF-8, so the tags page must
-        // not list it: a stray `#z` in random bytes once did, and the click
-        // said "cannot open".
+        // The reader refuses a binary, so the tags page must not list it: a
+        // stray `#z` in random bytes once did, and the click said "cannot
+        // open".
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bin.md");
-        std::fs::write(&path, b"\xff\xfe junk #zeta \x80 more").unwrap();
+        std::fs::write(&path, b"\xff\xfe\0 junk #zeta \x80 more").unwrap();
         assert_eq!(tags_of(&path), [] as [String; 0]);
         let path = dir.path().join("ok.md");
         std::fs::write(&path, "caf\u{e9} #zeta").unwrap();
         assert_eq!(tags_of(&path), ["zeta"]);
+        // A stray Latin-1 byte opens in the reader, so it lists here too.
+        let path = dir.path().join("latin1.md");
+        std::fs::write(&path, b"caf\xe9 #zeta").unwrap();
+        assert_eq!(tags_of(&path), ["zeta"]);
         // A read cut by the size cap may end mid-character; that is not
         // binary.
-        assert_eq!(as_text(&"é".as_bytes()[..1], true), Some(""));
-        assert_eq!(as_text(&"é".as_bytes()[..1], false), None);
+        assert_eq!(
+            as_text("é".as_bytes()[..1].to_vec(), true),
+            Some(String::new())
+        );
+        assert!(as_text(vec![0xff; 4], false).is_none());
     }
 
     #[test]

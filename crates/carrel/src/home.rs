@@ -660,8 +660,12 @@ impl Home {
             let mut scored: Vec<(i32, usize)> = base
                 .into_iter()
                 .filter_map(|i| {
-                    crate::fuzzy::score(&self.entries[i].path.to_string_lossy(), &needle)
-                        .map(|s| (s, i))
+                    // Score what the row shows: the path under the root. The
+                    // absolute path let the root's own letters match every
+                    // entry, so `alp` narrowed nothing.
+                    let path = &self.entries[i].path;
+                    let shown = path.strip_prefix(&self.root).unwrap_or(path);
+                    crate::fuzzy::score(&shown.to_string_lossy(), &needle).map(|s| (s, i))
                 })
                 .collect();
             scored.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
@@ -1683,6 +1687,37 @@ mod tests {
         h.refilter();
         assert_eq!(h.filtered.len(), 1);
         assert!(h.selected_path().unwrap().ends_with("gamma.md"));
+    }
+
+    /// The filter matches the path the row SHOWS — relative to the root —
+    /// never the absolute one. Against `/home/me/notes/alpha.md`, `alp`
+    /// found every file because the letters sat in parent directories, and
+    /// a single letter matched the whole list.
+    #[test]
+    fn the_filter_ignores_the_root_it_cannot_see() {
+        let mut h = Home::new(
+            PathBuf::from("/alps/root"),
+            vec![
+                Entry {
+                    path: PathBuf::from("/alps/root/alpha.md"),
+                    mtime: SystemTime::UNIX_EPOCH,
+                },
+                Entry {
+                    path: PathBuf::from("/alps/root/beta.md"),
+                    mtime: SystemTime::UNIX_EPOCH,
+                },
+                Entry {
+                    path: PathBuf::from("/alps/root/sub/gamma.md"),
+                    mtime: SystemTime::UNIX_EPOCH,
+                },
+            ],
+        );
+        h.filter = "alp".into();
+        h.refilter();
+        assert_eq!(h.filtered.len(), 1, "only alpha.md shows `alp`");
+        h.filter = "r".into();
+        h.refilter();
+        assert_eq!(h.filtered.len(), 0, "no displayed path has an r");
     }
 
     #[test]

@@ -203,7 +203,20 @@ fn take_mouse_flag(args: &mut Vec<String>) -> bool {
 /// thinks it is talking to `less`. `-` itself is the stdin marker and is
 /// never foreign; `--plain` and friends are carrel's own.
 fn is_foreign_pager_flag(a: &str) -> bool {
-    a.len() >= 2 && a.starts_with('-') && !a.starts_with("--") && !matches!(a, "-h" | "-V")
+    a.len() >= 2
+        && a.starts_with('-')
+        && !a.starts_with("--")
+        && !matches!(a, "-h" | "-V")
+        && !is_negative_number(a)
+}
+
+/// `-5`: not a flag anyone passes a pager, but a `[W]` typed wrong. It was
+/// dropped as one, so `--plain t.md -5` rendered at 80 and exited 0 though
+/// `--help` promises exit 1. Left in place, it reaches `width_arg`, which
+/// refuses it by name.
+fn is_negative_number(a: &str) -> bool {
+    a.strip_prefix('-')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn main() -> ExitCode {
@@ -360,10 +373,12 @@ const KNOWN_FLAGS: &[&str] = &[
 /// along with everything after it, so a file named `./-weird.md` stays
 /// openable.
 fn flag_complaint(args: &[String]) -> Option<String> {
-    if let Some(bad) = args
-        .iter()
-        .find(|a| a.len() > 1 && a.starts_with('-') && !KNOWN_FLAGS.contains(&a.as_str()))
-    {
+    if let Some(bad) = args.iter().find(|a| {
+        a.len() > 1
+            && a.starts_with('-')
+            && !KNOWN_FLAGS.contains(&a.as_str())
+            && !is_negative_number(a)
+    }) {
         // One suggestion, when one option is near: `--plian` is `--plain`.
         return Some(match carrel::cli::suggest_flag(bad, KNOWN_FLAGS) {
             Some(near) => format!("unknown option {bad} — did you mean {near}?"),
@@ -389,7 +404,10 @@ fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
             emit(&carrel::ansi::render(&doc, width))
         }
         Err(e) => {
-            say!("carrel: {e}");
+            match path {
+                Some(p) => say!("{}", carrel::app::explain_open_error(p, &e)),
+                None => say!("carrel: {e}"),
+            }
             ExitCode::FAILURE
         }
     }
@@ -409,7 +427,7 @@ fn print_tasks(path: &Path) -> ExitCode {
             emit(&report)
         }
         Err(e) => {
-            say!("carrel: cannot read {}: {e}", carrel::plain::shown(path));
+            say!("{}", carrel::app::explain_open_error(path, &e));
             ExitCode::FAILURE
         }
     }
@@ -417,14 +435,23 @@ fn print_tasks(path: &Path) -> ExitCode {
 
 /// Read all of stdin, refusing at the 32-bit position ceiling exactly as
 /// `check_document_size` does for files.
+///
+/// Decoded by the streaming reader's own rule (`Utf8Carry`): an invalid
+/// sequence is U+FFFD. `read_to_string` refused the whole input instead, so
+/// `printf 'caf\xe9' | carrel` opened while the same bytes through
+/// `--plain -`, `--render -` or `carrel | cat` died with Rust's raw
+/// "stream did not contain valid UTF-8".
 fn read_stdin_capped() -> std::io::Result<String> {
     use std::io::Read;
-    let mut src = String::new();
+    let mut bytes = Vec::new();
     std::io::stdin()
         .lock()
         .take(u64::from(u32::MAX))
-        .read_to_string(&mut src)?;
-    if src.len() >= u32::MAX as usize {
+        .read_to_end(&mut bytes)?;
+    let mut carry = carrel::stream::Utf8Carry::default();
+    let mut src = carry.push(&bytes);
+    src.push_str(&carry.finish());
+    if bytes.len() >= u32::MAX as usize || src.len() >= u32::MAX as usize {
         return Err(std::io::Error::other(
             "stdin exceeds 4 GiB; carrel positions are 32-bit byte offsets",
         ));
@@ -888,7 +915,7 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
     // Before the read, so a write that lands during it is seen as a change
     // rather than missed.
     let loaded = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-    let src = match carrel::app::read_document(path) {
+    let (src, replaced) = match carrel::app::read_document_counting(path) {
         Ok(s) => s,
         Err(e) => {
             say!("{}", carrel::app::explain_open_error(path, &e));
@@ -924,7 +951,7 @@ fn open_at(path: &Path, start: Option<&carrel::cli::Start>, pattern: Option<&str
         return emit(&carrel::plain::render(&doc, 80));
     }
 
-    match run(path, &src, start, loaded) {
+    match run(path, &src, start, loaded, replaced) {
         Ok(None) => ExitCode::SUCCESS,
         // The `⌂`: the reader is closed and the terminal restored, so the
         // home screen starts exactly as `carrel <DIR>` would. It is an
@@ -1647,6 +1674,7 @@ fn run(
     src: &str,
     start: Option<&carrel::cli::Start>,
     loaded: Option<std::time::SystemTime>,
+    replaced: usize,
 ) -> std::io::Result<Option<HomeRequest>> {
     let theme_note = startup_theme();
     // `.md` is never sniffed. `.diff`/`.patch` always are. `--diff` wins.
@@ -1710,6 +1738,11 @@ fn run(
     if let Some(start) = start {
         app.note = None;
         app.start_at(start);
+    }
+    // Outranks both: the reader is looking at text that is not quite what
+    // the file holds, and should know why a character shows as a box.
+    if let Some(note) = carrel::app::replaced_note(replaced) {
+        app.note = Some(note);
     }
     run_loop(terminal, app, images, None)
 }
@@ -3389,7 +3422,7 @@ fn print_plain(path: &Path, width: u16) -> ExitCode {
             emit(&carrel::plain::render(&doc, width))
         }
         Err(e) => {
-            say!("carrel: {}: {e}", carrel::plain::shown(path));
+            say!("{}", carrel::app::explain_open_error(path, &e));
             ExitCode::FAILURE
         }
     }

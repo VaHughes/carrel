@@ -55,9 +55,7 @@ impl Keys {
                 KeyCode::Right => N::Right,
                 KeyCode::Home => N::Home,
                 KeyCode::End => N::End,
-                KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
-                    N::Char(c)
-                }
+                KeyCode::Char(c) if !is_chord(key) => N::Char(c),
                 _ => return None,
             };
             return Some(Action::NoteInput(input));
@@ -303,7 +301,7 @@ impl Keys {
                 // Two-stage escape, so `Esc` first clears a typed filter and
                 // only then closes the overlay. `HomeKey` carries both.
                 KeyCode::Esc => Some(Action::HomeKey(SearchKey::Cancel)),
-                KeyCode::Char(c) => Some(Action::HomeKey(SearchKey::Char(c))),
+                KeyCode::Char(c) if !is_chord(key) => Some(Action::HomeKey(SearchKey::Char(c))),
                 KeyCode::Backspace => Some(Action::HomeKey(SearchKey::Backspace)),
                 // Browsing without choosing: into the highlight, or up one.
                 // `Tab` is free here — nothing else in the dialog wants it —
@@ -318,13 +316,13 @@ impl Keys {
             // is the exception: in search it reads the hits as a document,
             // and nothing typeable is lost by spending it.
             HomeMode::Filter => match key.code {
-                KeyCode::Char(c) => Some(Action::HomeKey(SearchKey::Char(c))),
+                KeyCode::Char(c) if !is_chord(key) => Some(Action::HomeKey(SearchKey::Char(c))),
                 KeyCode::Backspace => Some(Action::HomeKey(SearchKey::Backspace)),
                 KeyCode::Esc => Some(Action::HomeKey(SearchKey::Cancel)),
                 _ => None,
             },
             HomeMode::Search => match key.code {
-                KeyCode::Char(c) => Some(Action::HomeKey(SearchKey::Char(c))),
+                KeyCode::Char(c) if !is_chord(key) => Some(Action::HomeKey(SearchKey::Char(c))),
                 KeyCode::Backspace => Some(Action::HomeKey(SearchKey::Backspace)),
                 KeyCode::Esc => Some(Action::HomeKey(SearchKey::Cancel)),
                 KeyCode::Tab => Some(Action::HomeOpenResults),
@@ -408,7 +406,7 @@ impl Keys {
             KeyCode::PageDown => Some(Action::Scroll(Span::Page, 1)),
             KeyCode::PageUp => Some(Action::Scroll(Span::Page, -1)),
             KeyCode::Home => Some(Action::GoToStart),
-            KeyCode::Char(c) => Some(Action::HelpKey(SearchKey::Char(c))),
+            KeyCode::Char(c) if !is_chord(key) => Some(Action::HelpKey(SearchKey::Char(c))),
             KeyCode::Backspace => Some(Action::HelpKey(SearchKey::Backspace)),
             KeyCode::Esc => Some(Action::HelpKey(SearchKey::Cancel)),
             _ => None,
@@ -534,7 +532,7 @@ impl Keys {
             KeyCode::Down => Some(Action::OutlineMove(1)),
             KeyCode::Up => Some(Action::OutlineMove(-1)),
             KeyCode::Enter => Some(Action::OutlineJump),
-            KeyCode::Char(c) => Some(Action::OutlineKey(SearchKey::Char(c))),
+            KeyCode::Char(c) if !is_chord(key) => Some(Action::OutlineKey(SearchKey::Char(c))),
             KeyCode::Backspace => Some(Action::OutlineKey(SearchKey::Backspace)),
             KeyCode::Esc => Some(Action::OutlineKey(SearchKey::Cancel)),
             _ => None,
@@ -554,7 +552,7 @@ impl Keys {
         let k = match key.code {
             KeyCode::Up => SearchKey::Recall(Direction::Backward),
             KeyCode::Down => SearchKey::Recall(Direction::Forward),
-            KeyCode::Char(c) => SearchKey::Char(c),
+            KeyCode::Char(c) if !is_chord(key) => SearchKey::Char(c),
             KeyCode::Backspace => SearchKey::Backspace,
             KeyCode::Enter => SearchKey::Accept,
             KeyCode::Esc => SearchKey::Cancel,
@@ -735,6 +733,16 @@ pub fn drag_target(
     row.min(max_scroll)
 }
 
+/// Whether `key` is a Ctrl or Alt chord: a command or nothing, never text.
+///
+/// Every filter and prompt matched `Char(c)` without looking at modifiers,
+/// so Ctrl-D in the home search typed a `d` and Alt-x typed an `x`. Shift
+/// is not a chord — it is how capitals arrive.
+fn is_chord(key: KeyEvent) -> bool {
+    key.modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::keymap::*;
@@ -762,6 +770,54 @@ mod tests {
         for (name, got) in dispatchers {
             assert_eq!(got, Some(Action::Quit), "Ctrl-C must quit from {name}");
         }
+    }
+
+    /// A chord is a command or nothing — never text. Every text input
+    /// matched `Char(c)` without looking at the modifiers, so Ctrl-D typed
+    /// into the home search showed `search: held`, and Alt-x typed an `x`.
+    #[test]
+    fn no_ctrl_or_alt_chord_types_into_a_text_input() {
+        use crate::home::HomeMode;
+        let typed = |a: &Option<Action>| {
+            matches!(
+                a,
+                Some(
+                    Action::HomeKey(SearchKey::Char(_))
+                        | Action::HelpKey(SearchKey::Char(_))
+                        | Action::OutlineKey(SearchKey::Char(_))
+                        | Action::SearchKey(SearchKey::Char(_))
+                        | Action::NoteInput(crate::action::NoteKey::Char(_))
+                )
+            )
+        };
+        let mut keys = Keys::new();
+        for mods in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            for c in ('a'..='z').chain(['D', '/', ' ']) {
+                let key = KeyEvent::new(KeyCode::Char(c), mods);
+                let got = [
+                    ("home filter", keys.map_home(key, HomeMode::Filter)),
+                    ("home search", keys.map_home(key, HomeMode::Search)),
+                    ("picker", keys.map_home(key, HomeMode::Picker)),
+                    ("reader search", Keys::map_search(key)),
+                    ("help filter", Keys::map_help(key)),
+                    ("outline filter", Keys::map_outline(key)),
+                    ("note draft", Keys::map_notes(key, true)),
+                ];
+                for (name, a) in got {
+                    assert!(!typed(&a), "{mods:?}+{c} typed into the {name}: {a:?}");
+                }
+            }
+        }
+        // Shift is how capitals are typed, and must keep typing.
+        let shift_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        assert_eq!(
+            Keys::map_search(shift_a),
+            Some(Action::SearchKey(SearchKey::Char('A')))
+        );
     }
 
     use super::*;

@@ -30,6 +30,15 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   in bytes that are not UTF-8 no longer share a position, the document you just read is
   never evicted by entries from a clock that ran fast, and a line written by a newer
   carrel goes back unchanged instead of having its extra field folded into the path.
+- **Awkward input reads instead of failing.** A file or pipe with a stray non-UTF-8 byte
+  (a Windows-1252 README) opens everywhere, `--plain`, `--render`, `carrel | cat` and the
+  search report included, with the byte shown as U+FFFD and a note in the reader; only
+  what looks binary is refused, in words rather than Rust's error. The home filter
+  matches the path each row shows, not the folder above it, so `alp` finds `alpha.md`
+  instead of everything. Ctrl and Alt chords no longer type their letter into the
+  filters, the search prompts or a note. `--plain FILE -5` is refused as the width it
+  is, `FILE:0` opens at the top, and `carrel . TODO` says the folder is a folder.
+
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves

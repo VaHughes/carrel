@@ -11,51 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 /// 64 KiB, matching the layout chunker's granularity.
 const CHUNK: usize = 64 * 1024;
 
-/// Decodes a byte stream into `String`s across arbitrary chunk boundaries.
-#[derive(Debug, Default)]
-pub struct Utf8Carry {
-    carry: Vec<u8>,
-}
-
-impl Utf8Carry {
-    /// Decode everything decodable, holding back a trailing partial char.
-    pub fn push(&mut self, bytes: &[u8]) -> String {
-        self.carry.extend_from_slice(bytes);
-        let buf = std::mem::take(&mut self.carry);
-        let mut rest = buf.as_slice();
-        let mut out = String::with_capacity(buf.len());
-        loop {
-            match std::str::from_utf8(rest) {
-                Ok(valid) => {
-                    out.push_str(valid);
-                    break;
-                }
-                Err(error) => {
-                    let (valid, invalid) = rest.split_at(error.valid_up_to());
-                    out.push_str(std::str::from_utf8(valid).expect("valid UTF-8 prefix"));
-                    match error.error_len() {
-                        // Only an incomplete trailing character crosses a read.
-                        None => {
-                            self.carry.extend_from_slice(invalid);
-                            break;
-                        }
-                        Some(n) => {
-                            out.push('\u{FFFD}');
-                            rest = &invalid[n..];
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// EOF: whatever is still held back will never complete; show it lossily.
-    #[must_use]
-    pub fn finish(self) -> String {
-        String::from_utf8_lossy(&self.carry).into_owned()
-    }
-}
+pub use carrel_state::text::Utf8Carry;
 
 /// Read stdin on a thread, sending decoded chunks. Dropping the sender is
 /// the EOF signal, the same contract as `scan::spawn`'s channel.

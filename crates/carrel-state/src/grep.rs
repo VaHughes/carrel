@@ -219,14 +219,17 @@ impl Query {
     }
 }
 
-/// Count matches in one file; `None` when unreadable, oversized, non-UTF-8,
-/// or match-free.
+/// Count matches in one file; `None` when unreadable, oversized, binary, or
+/// match-free. Decoded by the reader's rule, so a file with a stray Latin-1
+/// byte is searched, as it opens.
 fn grep_file(q: &Query, path: &std::path::Path) -> Option<Hit> {
     let meta = std::fs::metadata(path).ok()?;
     if meta.len() > MAX_BYTES {
         return None;
     }
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::text::decode_document(std::fs::read(path).ok()?)
+        .ok()?
+        .0;
     // The source is the cheap filter: almost every file fails it, at
     // regex speed, and it never fails one the reader would match. One that
     // passes is parsed and counted by the reader's own search, over the

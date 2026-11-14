@@ -29,7 +29,7 @@
 // always used, so `crate::state` and `carrel::scan` keep meaning what they
 // meant. Rule 6 of check-discipline.sh reads this list: these are
 // terminal-free by the compiler, not by the script.
-pub use carrel_state::{config, fuzzy, grep, links, marginalia, scan, state, tags, wiki};
+pub use carrel_state::{config, fuzzy, grep, links, marginalia, scan, state, tags, text, wiki};
 
 pub mod action;
 pub mod annotation_render;

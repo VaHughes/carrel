@@ -1377,7 +1377,7 @@ impl App {
         // Before the read, so a write that lands during it shows up as a
         // change on the reloader's first look rather than being missed.
         let loaded = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        let src = read_document(path)?;
+        let (src, replaced) = read_document_counting(path)?;
         self.stash_pathless_state();
         // A `.md` file is never sniffed; `.diff`/`.patch` always are. Set
         // before parsing, because `parse_adapting` reads it.
@@ -1407,7 +1407,7 @@ impl App {
         // screen, which lists only `.md`/`.markdown`, pretended it was not
         // there. Say which it is doing rather than leaving the reader to
         // wonder why their plain text grew headings.
-        self.note = non_markdown_note(path);
+        self.note = replaced_note(replaced).or_else(|| non_markdown_note(path));
         self.results_root = None;
         self.forget_derived_state();
         // A different document: the panes that answered questions about the
@@ -3455,6 +3455,15 @@ pub fn check_document_size(path: &Path) -> std::io::Result<()> {
     // reach it, and killing it from another terminal used to leave the
     // terminal wrecked as well. `/dev/zero` read until the OOM killer came.
     // A markdown link is untrusted input, so `[x](./pipe.md)` was enough.
+    // A folder is the commonest of these, and "a pipe or device would
+    // block" was the wrong thing to tell someone who typed `carrel . TODO`.
+    if meta.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::IsADirectory,
+            "this is a folder, not a document — `carrel FOLDER` lists the \
+             markdown in it",
+        ));
+    }
     if !meta.is_file() {
         return Err(std::io::Error::other(
             "not a regular file — carrel reads documents, and a pipe or \
@@ -3614,13 +3623,34 @@ impl crate::peek::Drawn for App {
 }
 
 pub fn read_document(path: &Path) -> std::io::Result<String> {
+    read_document_counting(path).map(|(src, _)| src)
+}
+
+/// [`read_document`], and how many invalid UTF-8 sequences were replaced.
+///
+/// By the same rule a pipe is read by ([`crate::text::decode_document`]):
+/// a stray Latin-1 byte becomes U+FFFD rather than refusing the whole file,
+/// and only what looks binary is "not text".
+pub fn read_document_counting(path: &Path) -> std::io::Result<(String, usize)> {
     use std::io::Read as _;
     check_document_size(path)?;
-    let mut src = String::new();
+    let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(u64::from(u32::MAX))
-        .read_to_string(&mut src)?;
-    Ok(src)
+        .read_to_end(&mut bytes)?;
+    crate::text::decode_document(bytes)
+}
+
+/// What the status bar says when a document's bytes were not all UTF-8.
+#[must_use]
+pub fn replaced_note(replaced: usize) -> Option<String> {
+    match replaced {
+        0 => None,
+        1 => Some("1 stray byte was not UTF-8 and shows as \u{FFFD}".into()),
+        n => Some(format!(
+            "{n} stray bytes were not UTF-8 and show as \u{FFFD}"
+        )),
+    }
 }
 
 /// The one transition. Pure state, no drawing and no terminal.
@@ -9837,6 +9867,26 @@ diff --git a/x.rs b/x.rs
         let f = d.path().join("real.md");
         std::fs::write(&f, "# Real\n").unwrap();
         assert_eq!(read_document(&f).unwrap(), "# Real\n");
+    }
+
+    /// A Windows-1252 file with one stray byte could not be opened at all:
+    /// "this is not text", though a pipe of the same bytes read fine. It
+    /// opens now, with the byte as U+FFFD and a note saying why.
+    #[test]
+    fn a_stray_byte_opens_with_a_note_and_a_folder_is_called_one() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("old.md");
+        std::fs::write(&f, b"# caf\xe9\n").unwrap();
+        let mut a = app();
+        a.open_path(&f).expect("a stray byte is not a binary");
+        assert!(a.doc.text.contains("caf\u{FFFD}"), "{:?}", a.doc.text);
+        assert!(
+            a.note.as_deref().is_some_and(|n| n.contains("not UTF-8")),
+            "{:?}",
+            a.note
+        );
+        let e = check_document_size(d.path()).unwrap_err();
+        assert!(open_failure_reason(&e).contains("folder"), "{e}");
     }
 
     #[test]

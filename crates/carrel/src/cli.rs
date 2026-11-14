@@ -29,7 +29,8 @@ pub enum Start {
 ///   as itself; nothing is split off a name that is already an answer.
 /// - Otherwise a trailing `:LINE` or `:LINE:COL` is a line (the column is
 ///   accepted and ignored — a reader has rows, not a cursor), if what is
-///   left names a file.
+///   left names a file. Line 0 is the top, as a line past the end is the
+///   bottom.
 /// - Otherwise a `#fragment` is a section, if what is left names a file.
 ///   `#L42` is a line: GitHub's spelling of the same thing.
 /// - Anything else is returned whole, for the ordinary "no such file".
@@ -49,8 +50,8 @@ pub fn split_target(arg: &str) -> (PathBuf, Option<Start>) {
         && Path::new(path).is_file()
     {
         let start = match frag.strip_prefix('L').and_then(|n| n.parse::<u32>().ok()) {
-            Some(line) if line >= 1 => Start::Line(line),
-            _ => Start::Fragment(frag.to_string()),
+            Some(line) => Start::Line(line.max(1)),
+            None => Start::Fragment(frag.to_string()),
         };
         return (PathBuf::from(path), Some(start));
     }
@@ -63,7 +64,8 @@ fn line_suffix(arg: &str) -> Option<(&str, u32)> {
         (!s.is_empty() && s.len() <= 9 && s.bytes().all(|b| b.is_ascii_digit()))
             .then(|| s.parse::<u32>().ok())
             .flatten()
-            .filter(|&n| n >= 1)
+            // Line 0 is the top, as a line past the end is the bottom.
+            .map(|n| n.max(1))
     };
     let (head, last) = arg.rsplit_once(':')?;
     let last = number(last)?;
@@ -325,6 +327,23 @@ mod tests {
         assert_eq!(split_target(s), (f, None));
     }
 
+    /// Line 0 is the top, as a line past the end is the bottom. It was left
+    /// whole, so `PLAN.md:0` said "there is no such file" about a file that
+    /// was right there.
+    #[test]
+    fn line_zero_opens_at_the_top() {
+        let d = tempfile::tempdir().unwrap();
+        let f = touch(d.path(), "PLAN.md");
+        let s = f.to_str().unwrap();
+        for arg in [format!("{s}:0"), format!("{s}:0:0"), format!("{s}#L0")] {
+            assert_eq!(
+                split_target(&arg),
+                (f.clone(), Some(Start::Line(1))),
+                "{arg}"
+            );
+        }
+    }
+
     #[test]
     fn a_name_that_exists_is_never_split() {
         // Files really are called these things, and the literal name wins.
@@ -342,7 +361,6 @@ mod tests {
         let s = f.to_str().unwrap();
         for arg in [
             format!("{s}:"),
-            format!("{s}:0"),
             format!("{s}:abc"),
             format!("{s}:-3"),
             format!("{s}#"),
