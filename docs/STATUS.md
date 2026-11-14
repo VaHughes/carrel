@@ -500,6 +500,9 @@ planned:
 - Math with more than 64 argument-taking commands in a row separated by at most one atom
   (`\hat a\hat a …`) shows as source; symbols (`\alpha`, `\cdot`, …) never count
   (`math::NO_ARGUMENT`).
+- In a note draft, Up and Down are unbound: the box wraps at paint time
+  (`annotation_render::draft_rows`) and the editor does not know its width, so moving by
+  stored line would skip wrapped rows. Home and End go to the cursor's line.
 - Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a
   64 MB file of one-line headings still costs gigabytes.
 
@@ -528,6 +531,9 @@ state machine over them, dispatching on `Intent` with one explicit arm for what 
 implement. The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
+
+- 2026-11-14: **a drag across a collapsed section copies the hidden text too**, as
+  editors with folding do (the selection is a byte range; a fold hides rows, not text).
 
 - 2026-11-14: **an image outside the folder is shown when the reader asks, per image,
   for the session.** Its alt text is a `click to show` button (also a right-click row)

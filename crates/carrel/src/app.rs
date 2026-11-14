@@ -1434,6 +1434,69 @@ impl App {
     /// After a reload: each bookmark on the same block it was on, found by
     /// content; a block that is gone keeps its mark at its old place, snapped
     /// to whatever block is there now.
+    /// Hold what this reload could not find, against the reader's anchor
+    /// and marks as they now are; nothing to hold leaves no hold.
+    fn arm_hold(
+        &mut self,
+        places: Vec<crate::state::Place>,
+        carriers: Option<Vec<(crate::state::Kept, crate::state::Place)>>,
+    ) {
+        if !places.is_empty() || carriers.is_some() {
+            self.reload_hold = Some(ReloadHold {
+                places,
+                carriers,
+                anchor: self.view.anchor,
+                marks: self.marks.clone(),
+            });
+        }
+    }
+
+    /// The selection a drag is building, ready to outlive a re-parse — a
+    /// streaming pipe re-parses on every chunk, so without this nothing
+    /// could be selected from `agent | carrel` while it ran.
+    fn drag_carrier(&self) -> Option<DragCarrier> {
+        let anchor = self.sel_anchor?;
+        let sel = self.selection.clone();
+        let far = sel
+            .as_ref()
+            .map_or(0, |s| s.end)
+            .max(anchor.1)
+            .max(anchor.0) as usize;
+        let prefix = self
+            .doc
+            .text
+            .get(..far.min(self.doc.text.len()))?
+            .to_owned();
+        let at = |b: u32| crate::state::Place::kept(&self.doc, DocByte(b));
+        let (s0, s1) = sel
+            .as_ref()
+            .map_or((anchor.0, anchor.1), |s| (s.start, s.end));
+        Some(DragCarrier {
+            prefix,
+            anchor,
+            selection: sel,
+            places: [at(anchor.0), at(anchor.1), at(s0), at(s1)],
+        })
+    }
+
+    /// Put a carried drag back: as it was when the text up to it is
+    /// unchanged (an append), else each end where its kept place finds it,
+    /// and dropped — as before — when an end's text is gone.
+    fn carry_drag(&mut self, drag: Option<DragCarrier>) {
+        let Some(d) = drag else { return };
+        if self.doc.text.starts_with(&d.prefix) {
+            self.sel_anchor = Some(d.anchor);
+            self.selection = d.selection;
+            return;
+        }
+        if !d.places.iter().all(|p| p.finds_its_block(&self.doc)) {
+            return;
+        }
+        let [a0, a1, s0, s1] = d.places.map(|p| p.resolve(&self.doc).0);
+        self.sel_anchor = Some((a0, a1));
+        self.selection = d.selection.map(|_| s0.min(s1)..s0.max(s1));
+    }
+
     /// Whether every mark's block was found; `false` when one stood in at
     /// its old place instead.
     fn carry_marks(&mut self, carriers: &[(crate::state::Kept, crate::state::Place)]) -> bool {
@@ -2246,6 +2309,7 @@ impl App {
         });
         let folds = self.fold_keys();
         let fresh_marks = self.mark_carriers();
+        let drag = self.drag_carrier();
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
         crate::annotation_state::reanchor(self);
@@ -2304,22 +2368,18 @@ impl App {
         self.apply_fold_keys(&folds);
         self.lay_out_new_document();
         self.pull_out_of_folds();
+        self.carry_drag(drag);
         // Hold what is still missing: the oldest place that had it, so a
         // run of short writes cannot walk it away a step at a time.
-        let place_hold = if place_found {
+        let places = if place_found {
             Vec::new()
         } else {
             hold_places(held_places, fresh)
         };
-        let marks_hold = (!marks_found).then(|| held_marks.unwrap_or(fresh_marks));
-        if !place_hold.is_empty() || marks_hold.is_some() {
-            self.reload_hold = Some(ReloadHold {
-                places: place_hold,
-                carriers: marks_hold,
-                anchor: self.view.anchor,
-                marks: self.marks.clone(),
-            });
-        }
+        self.arm_hold(
+            places,
+            (!marks_found).then(|| held_marks.unwrap_or(fresh_marks)),
+        );
         if let Some(old) = self.matches.take() {
             let mut m = search(&self.doc, &old.pattern, old.flexible_ws);
             m.current = current_place.and_then(|place| {
@@ -3778,6 +3838,16 @@ struct ReloadHold {
 /// kept (one taken in an empty document) has nothing to find.
 fn kept_found(p: crate::state::Place, doc: &Document) -> bool {
     matches!(p, crate::state::Place::Src { block: Some(_), .. }) && p.finds_its_block(doc)
+}
+
+/// A selection in progress, carried across a re-parse: the old text up to
+/// its far end (to tell an append from an edit) and a kept place for each
+/// of its bytes.
+struct DragCarrier {
+    prefix: String,
+    anchor: (u32, u32),
+    selection: Option<std::ops::Range<u32>>,
+    places: [crate::state::Place; 4],
 }
 
 /// How many unfound places a reload hold keeps: the reader's own and the
@@ -10715,7 +10785,7 @@ diff --git a/x.rs b/x.rs
     }
 
     #[test]
-    fn reload_clears_the_selection_and_a_vanished_file_keeps_the_doc() {
+    fn reload_keeps_a_drag_clears_a_highlight_and_a_vanished_file_keeps_the_doc() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("live.md");
         std::fs::write(&f, SRC).unwrap();
@@ -10725,9 +10795,16 @@ diff --git a/x.rs b/x.rs
         update(&mut a, Action::SelectDrag((4, 5)));
         assert!(a.selection.is_some());
 
+        // A drag in progress outlives an append: the bytes it covers still
+        // mean the same text (tests/drag_reload.rs covers the edits).
         std::fs::write(&f, format!("{SRC}\nmore\n")).unwrap();
         a.reload().unwrap();
-        assert_eq!(a.selection, None, "old bytes, old meaning");
+        assert_eq!(a.selection, Some(0..5), "the drag goes on");
+        // A finished selection is a highlight of the old parse, and clears.
+        update(&mut a, Action::SelectRelease);
+        std::fs::write(&f, format!("{SRC}\nmore\nand more\n")).unwrap();
+        a.reload().unwrap();
+        assert_eq!(a.selection, None, "old highlight, old parse");
 
         std::fs::remove_file(&f).unwrap();
         assert!(a.reload().is_err(), "vanished file reports the error");

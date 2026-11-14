@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A selection survives a live reload and a streaming pipe**: dragging over `agent | carrel`
+  while it runs, or over a file being saved, copies on release instead of losing the drag.
+
 - **A file holding a NUL byte is refused as binary even when it is valid UTF-8** (ASCII
   saved as UTF-16 opened as spaced-out noise), and **long runs of math symbols**
   (`\alpha \alpha …`) render as math instead of falling back to source.
