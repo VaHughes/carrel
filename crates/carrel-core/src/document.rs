@@ -1844,8 +1844,15 @@ impl<'a> Builder<'a> {
         let mut next_typed = 0usize;
         let mut cursor = 0usize;
         for (range, url) in hits {
+            // The first source URL still unpaired that is this one, as
+            // typed or once smart punctuation is undone — asked together,
+            // in order: asking only for the undone form let `it’s` (typed
+            // curly) take a later `it's`, and the two swapped addresses.
             let plain = unsmartened(&url);
-            let url = match typed[next_typed..].iter().position(|(_, u)| *u == plain) {
+            let url = match typed[next_typed..]
+                .iter()
+                .position(|(_, u)| *u == url || *u == plain)
+            {
                 Some(i) => {
                     next_typed += i + 1;
                     typed[next_typed - 1].1.clone()
@@ -5368,6 +5375,18 @@ mod tests {
         // A curly quote the author typed is the author's.
         let runs = link_runs("see https://e.com/it\u{2019}s now\n");
         assert_eq!(runs[0].1, "https://e.com/it\u{2019}s");
+        // Twins that differ only by smart punctuation keep their own.
+        for (one, two) in [
+            ("it\u{2019}s", "it's"),
+            ("it's", "it\u{2019}s"),
+            ("a\u{2013}b", "a--b"),
+        ] {
+            let runs = link_runs(&format!(
+                "see https://e.com/{one} and https://e.com/{two} now\n"
+            ));
+            assert_eq!(runs[0].1, format!("https://e.com/{one}"), "{runs:?}");
+            assert_eq!(runs[1].1, format!("https://e.com/{two}"), "{runs:?}");
+        }
     }
 
     /// What is not a bare URL stays text.

@@ -343,52 +343,60 @@ pub struct Kept {
     /// block): which copy of a repeated text it was, when the count alone
     /// cannot say. `None` in a place saved before the field existed.
     pub prev: Option<u64>,
+    /// `block_hash` of the block after it ([`FIRST`] for the last), for the
+    /// same reason. `None` in a place saved before the field existed.
+    pub next: Option<u64>,
 }
 
-/// The `prev` of a document's first block, which has none.
+/// The `prev` of a document's first block and the `next` of its last,
+/// which have none.
 pub const FIRST: u64 = 0;
 
-/// Which of a document's blocks kept place `k` names, given each block's
-/// hash (`hash_of(i)`, any hash, so long as `k` was made with the same).
+/// Which of a document's blocks kept place `k` names, given every block's
+/// hash in order (any hash, so long as `k` was made with the same).
 ///
 /// A text that appears once is that block. One that repeats — a CHANGELOG's
-/// `### Fixed` under every release — is the copy with the same block before
-/// it, so a copy inserted above (a new release at the top) does not take
-/// the place over; of several such, the one whose count is nearest the one
-/// saved. Where no copy keeps its neighbour, the `nth` copy, as far as it
-/// still exists: a neighbour was edited. Where it no longer does, `None` —
+/// `### Fixed` under every release, an FAQ's `See the manual.` — is the copy
+/// whose neighbours are most like the saved ones: the block before it and
+/// the block after it each count one, so a copy inserted above (a new
+/// release at the top, with its own neighbours) does not take the place
+/// over, and neither does an earlier copy when only this one's neighbour
+/// was reworded — both sides are asked, not one. Among equally like copies,
+/// the one whose count is nearest the one saved. Where no copy has either
+/// neighbour, the `nth` copy, while it exists; where it does not, `None` —
 /// the block itself is gone, and the caller's own fallback (the source
 /// place) is nearer than any other copy, which may be fifty paragraphs
-/// away. A place saved without `prev` keeps the old rule: by count, and the
-/// last copy when there are fewer.
-pub fn pick(count: usize, hash_of: impl Fn(usize) -> u64, k: Kept) -> Option<usize> {
+/// away. A place saved without neighbours keeps the old rule: by count,
+/// and the last copy when there are fewer.
+#[must_use]
+pub fn pick(hashes: &[u64], k: Kept) -> Option<usize> {
     let nth = k.nth as usize;
     let mut rank = 0usize;
     let mut by_count = None;
     let mut last = None;
-    let mut ctx: Option<(usize, usize)> = None; // (distance in count, block)
-    let mut before = FIRST;
-    for i in 0..count {
-        let h = hash_of(i);
-        if h == k.hash {
-            if rank == nth {
-                by_count = Some(i);
-            }
-            last = Some(i);
-            if k.prev == Some(before) {
-                let d = rank.abs_diff(nth);
-                if ctx.is_none_or(|(best, _)| d < best) {
-                    ctx = Some((d, i));
-                }
-            }
-            rank += 1;
+    // (score, distance in count, block): the best copy by its neighbours.
+    let mut best: Option<(u8, usize, usize)> = None;
+    for (i, &h) in hashes.iter().enumerate() {
+        if h != k.hash {
+            continue;
         }
-        before = h;
+        if rank == nth {
+            by_count = Some(i);
+        }
+        last = Some(i);
+        let before = i.checked_sub(1).map_or(FIRST, |p| hashes[p]);
+        let after = hashes.get(i + 1).copied().unwrap_or(FIRST);
+        let score = u8::from(k.prev == Some(before)) + u8::from(k.next == Some(after));
+        let d = rank.abs_diff(nth);
+        if score > 0 && best.is_none_or(|(s, bd, _)| score > s || (score == s && d < bd)) {
+            best = Some((score, d, i));
+        }
+        rank += 1;
     }
-    match k.prev {
-        Some(_) => ctx.map(|(_, i)| i).or(by_count),
-        None => by_count.or(last),
+    if k.prev.is_none() && k.next.is_none() {
+        return by_count.or(last);
     }
+    best.map(|(_, _, i)| i).or(by_count)
 }
 
 /// A block's text, hashed the same way by every build: FNV-1a over its
@@ -443,6 +451,11 @@ impl Place {
             0 => FIRST,
             i => block_hash(doc, carrel_core::BlockIdx(i as u32 - 1)),
         };
+        let next = if b.get() + 1 < doc.block_count() {
+            block_hash(doc, carrel_core::BlockIdx(b.get() as u32 + 1))
+        } else {
+            FIRST
+        };
         Self::Src {
             src,
             delta,
@@ -451,6 +464,7 @@ impl Place {
                 nth: u32::try_from(nth).unwrap_or(u32::MAX),
                 off: i32::try_from(off).unwrap_or(0),
                 prev: Some(prev),
+                next: Some(next),
             }),
         }
     }
@@ -507,6 +521,9 @@ impl Place {
                 if let Some(p) = k.prev {
                     use std::fmt::Write as _;
                     let _ = write!(f, "^{p:016x}");
+                    if let Some(n) = k.next {
+                        let _ = write!(f, ",{n:016x}");
+                    }
                 }
                 f
             }
@@ -528,10 +545,13 @@ impl Place {
             None => None,
             Some(k) => {
                 let (hash, k) = k.split_once('.')?;
-                let (k, prev) = match k.split_once('^') {
-                    Some((k, p)) if p.len() == 16 => (k, Some(u64::from_str_radix(p, 16).ok()?)),
-                    Some(_) => return None,
-                    None => (k, None),
+                let hex = |h: &str| (h.len() == 16).then(|| u64::from_str_radix(h, 16).ok())?;
+                let (k, prev, next) = match k.split_once('^') {
+                    Some((k, ctx)) => match ctx.split_once(',') {
+                        Some((p, n)) => (k, Some(hex(p)?), Some(hex(n)?)),
+                        None => (k, Some(hex(ctx)?), None),
+                    },
+                    None => (k, None, None),
                 };
                 let at = k.find(['+', '-'])?;
                 if hash.len() != 16 {
@@ -542,6 +562,7 @@ impl Place {
                     nth: k[..at].parse().ok()?,
                     off: k[at..].parse().ok()?,
                     prev,
+                    next,
                 })
             }
         };
@@ -560,11 +581,10 @@ impl Place {
 /// text?" was fooled by a stale place on the separator before the right
 /// block's start, which `block_at_doc` gives to that block.
 fn found(doc: &carrel_core::Document, k: Kept) -> Option<i64> {
-    let b = pick(
-        doc.block_count(),
-        |i| block_hash(doc, carrel_core::BlockIdx(i as u32)),
-        k,
-    )?;
+    let hashes: Vec<u64> = (0..doc.block_count())
+        .map(|i| block_hash(doc, carrel_core::BlockIdx(i as u32)))
+        .collect();
+    let b = pick(&hashes, k)?;
     let node = doc.node_for_block(carrel_core::BlockIdx(b as u32));
     Some((i64::from(node.doc.start) + i64::from(k.off)).min(i64::from(node.doc.end)))
 }
@@ -931,7 +951,7 @@ pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Resul
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_kept_place_counts_repeated_paragraphs_and_a_gone_copy_keeps_its_source_place() {
+    fn a_kept_place_counts_repeated_paragraphs_and_reads_their_neighbours() {
         use carrel_core::{DocByte, Document};
 
         let old = Document::parse(
@@ -955,13 +975,12 @@ mod tests {
                 let byte = DocByte(start.checked_add_signed(offset).unwrap());
                 let place = Place::kept(&old, byte);
                 assert_eq!(place.resolve(&old), byte);
-                // The third copy is gone: its place is its source place,
-                // not the last copy left, which can be anywhere above.
-                let want = if i < 2 {
-                    new_starts[i].checked_add_signed(offset).unwrap()
-                } else {
-                    Place::of(&old, byte).resolve(&new).0
-                };
+                // The third copy is gone, but it was the last block, and
+                // so is the second copy now: the neighbour after it (the
+                // end) is the same, which makes it the most like copy. (A
+                // gone copy with no like copy keeps its source place —
+                // `tests/kept_copies.rs`.)
+                let want = new_starts[i.min(1)].checked_add_signed(offset).unwrap();
                 assert_eq!(place.resolve(&new).0, want, "copy {i} offset {offset}");
             }
         }
@@ -984,6 +1003,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // a table of cases
     fn a_place_is_spelled_with_its_sign_and_reads_back() {
         for (p, text) in [
             (
@@ -1020,6 +1040,7 @@ mod tests {
                         nth: 3,
                         off: -1,
                         prev: None,
+                        next: None,
                     }),
                 },
                 "s40+2@00000000000000ab.3-1",
@@ -1033,6 +1054,7 @@ mod tests {
                         nth: 0,
                         off: 12,
                         prev: None,
+                        next: None,
                     }),
                 },
                 "s0+0@ffffffffffffffff.0+12",
@@ -1046,9 +1068,24 @@ mod tests {
                         nth: 1,
                         off: 0,
                         prev: Some(0x1234),
+                        next: None,
                     }),
                 },
                 "s7-3@00000000000000ab.1+0^0000000000001234",
+            ),
+            (
+                Place::Src {
+                    src: 7,
+                    delta: 0,
+                    block: Some(Kept {
+                        hash: 0xab,
+                        nth: 0,
+                        off: 2,
+                        prev: Some(0x1234),
+                        next: Some(0),
+                    }),
+                },
+                "s7+0@00000000000000ab.0+2^0000000000001234,0000000000000000",
             ),
         ] {
             assert_eq!(p.encode(), text);

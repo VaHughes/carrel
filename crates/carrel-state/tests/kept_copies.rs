@@ -41,3 +41,24 @@ fn a_kept_place_whose_copy_is_deleted_stays_where_it_was() {
         &doc2.text[got.0 as usize..(got.0 as usize + 10).min(doc2.text.len())]
     );
 }
+#[test]
+fn rewording_the_block_before_one_copy_does_not_move_its_place_to_another() {
+    let mut before = String::from("# FAQ\n\n");
+    for _ in 0..3 {
+        before.push_str("Q: Why?\n\nSee the manual.\n\n");
+    }
+    let doc = Document::parse(&before);
+    let d = DocByte(doc.text.match_indices("See the manual.").nth(2).unwrap().0 as u32);
+    let p = Place::kept(&doc, d);
+    // the author rewords the third question only
+    let idx = before.match_indices("Q: Why?").nth(2).unwrap().0;
+    let after = format!("{}Q: Why is that?{}", &before[..idx], &before[idx + 7..]);
+    let doc2 = Document::parse(&after);
+    let got = p.resolve(&doc2);
+    let want = DocByte(doc2.text.match_indices("See the manual.").nth(2).unwrap().0 as u32);
+    assert_eq!(
+        got, want,
+        "landed on copy at byte {} (want {})",
+        got.0, want.0
+    );
+}

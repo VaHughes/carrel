@@ -1318,6 +1318,7 @@ impl App {
                     nth: u32::try_from(k).unwrap_or(u32::MAX),
                     off: 0,
                     prev: Some(b.checked_sub(1).map_or(crate::state::FIRST, |p| hashes[p])),
+                    next: Some(hashes.get(b + 1).copied().unwrap_or(crate::state::FIRST)),
                 };
                 (kept, crate::state::Place::of(&self.doc, DocByte(m)))
             })
@@ -1342,7 +1343,7 @@ impl App {
                 // The rule a saved place is found again by (`state::pick`):
                 // the copy with the same block before it, and the old place
                 // where the block itself is gone.
-                let b = crate::state::pick(hashes.len(), |i| hashes[i], kept).map_or_else(
+                let b = crate::state::pick(&hashes, kept).map_or_else(
                     || {
                         all = false;
                         self.doc.block_at_doc(place.resolve(&self.doc))
@@ -2077,15 +2078,16 @@ impl App {
         // for as long as the reader has not moved since: `cmd > PLAN.md`
         // empties the file, then writes it, and the reload in between
         // finds no paragraph to keep — chaining from that would lose the
-        // place for good. Moving, or setting a mark, lets go of it.
+        // place for good. Moving, or setting a mark, lets go of it. The
+        // held place is only ever tried FIRST, never instead: once it is
+        // gone for good (the paragraph was rewritten, not just briefly
+        // missing), the place this document gives is the one that follows
+        // the text, and the hold is let go of.
         let hold = self
             .reload_hold
             .take()
             .filter(|h| h.anchor == self.view.anchor && h.marks == self.marks);
-        let place = hold.as_ref().map_or_else(
-            || crate::state::Place::kept(&self.doc, DocByte(self.view.anchor)),
-            |h| h.place,
-        );
+        let fresh = crate::state::Place::kept(&self.doc, DocByte(self.view.anchor));
         let search_place = match self.mode {
             Mode::Search { saved, .. } => {
                 Some(crate::state::Place::kept(&self.doc, DocByte(saved)))
@@ -2099,9 +2101,7 @@ impl App {
                 .map(|range| crate::state::Place::kept(&self.doc, DocByte(range.start)))
         });
         let folds = self.fold_keys();
-        let marks = hold
-            .as_ref()
-            .map_or_else(|| self.mark_carriers(), |h| h.carriers.clone());
+        let fresh_marks = self.mark_carriers();
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
         crate::annotation_state::reanchor(self);
@@ -2123,12 +2123,20 @@ impl App {
         }
         // Resolve before laying out: unchanged paragraphs follow edits
         // above them; removed text falls back to a valid source position.
+        let held_place = hold.as_ref().and_then(|h| h.place);
+        let place = held_place
+            .filter(|p| kept_found(*p, &self.doc))
+            .unwrap_or(fresh);
         self.view.anchor = place.resolve(&self.doc).0;
         if let (Mode::Search { saved, .. }, Some(place)) = (&mut self.mode, search_place) {
             *saved = place.resolve(&self.doc).0;
         }
-        let place_found = place.finds_its_block(&self.doc);
-        let marks_found = self.carry_marks(&marks);
+        let place_found = kept_found(place, &self.doc);
+        let held_marks = hold.and_then(|h| h.carriers);
+        let marks_found = match &held_marks {
+            Some(carriers) if self.carry_marks(carriers) => true,
+            _ => self.carry_marks(&fresh_marks),
+        };
         // Carrying can merge marks (two whose blocks became one) or drop
         // them all, and the open list's selection indexes the old ones.
         self.mark_list = self
@@ -2137,10 +2145,16 @@ impl App {
             .map(|i| i.min(self.marks.len() - 1));
         self.apply_fold_keys(&folds);
         self.lay_out_new_document();
-        if !(place_found && marks_found) {
+        // Hold what is still missing: the oldest place that had it, so a
+        // run of short writes cannot walk it away a step at a time.
+        let place_hold = (!place_found)
+            .then(|| held_place.unwrap_or(fresh))
+            .filter(|p| matches!(p, crate::state::Place::Src { block: Some(_), .. }));
+        let marks_hold = (!marks_found).then(|| held_marks.unwrap_or(fresh_marks));
+        if place_hold.is_some() || marks_hold.is_some() {
             self.reload_hold = Some(ReloadHold {
-                place,
-                carriers: marks,
+                place: place_hold,
+                carriers: marks_hold,
                 anchor: self.view.anchor,
                 marks: self.marks.clone(),
             });
@@ -3517,10 +3531,16 @@ enum StepKind {
 /// since, and only uses the held place if not.
 #[derive(Debug, Clone)]
 struct ReloadHold {
-    place: crate::state::Place,
-    carriers: Vec<(crate::state::Kept, crate::state::Place)>,
+    place: Option<crate::state::Place>,
+    carriers: Option<Vec<(crate::state::Kept, crate::state::Place)>>,
     anchor: u32,
     marks: Vec<u32>,
+}
+
+/// Whether `p` kept its block and `doc` still has it. A place with no block
+/// kept (one taken in an empty document) has nothing to find.
+fn kept_found(p: crate::state::Place, doc: &Document) -> bool {
+    matches!(p, crate::state::Place::Src { block: Some(_), .. }) && p.finds_its_block(doc)
 }
 
 fn block_hashes(doc: &Document) -> Vec<u64> {
@@ -11178,5 +11198,94 @@ diff --git a/x.rs b/x.rs
         std::fs::write(&f, &full).unwrap();
         a.reload().unwrap();
         assert_eq!(a.view.anchor, moved, "not dragged back to Paragraph 100");
+    }
+
+    /// The hold is tried first, never instead: a paragraph rewritten for
+    /// good is followed by the place the new text gives.
+    #[test]
+    fn an_edit_to_the_paragraph_read_then_an_insert_above_keeps_to_that_paragraph() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("plan.md");
+        let mut body = String::new();
+        for n in 0..60 {
+            let _ = write!(
+                body,
+                "Paragraph {n} says something distinct about item {n}.\n\n"
+            );
+        }
+        let v1 = body.replace("Paragraph 30 says", "Paragraph 30 TARGET says");
+        let v2 = v1.replace("TARGET says", "TARGET (revised) says");
+        let mut pre = String::new();
+        for n in 0..40 {
+            let _ = write!(
+                pre,
+                "New preface paragraph {n} inserted above everything.\n\n"
+            );
+        }
+        let v3 = format!("{pre}{v2}");
+        std::fs::write(&f, &v1).unwrap();
+        let mut a = App::new("plan.md".into(), Document::parse(&v1), 80, 24);
+        a.file = Some(f.clone());
+        a.view.anchor = u32::try_from(a.doc.text.find("Paragraph 30 ").unwrap()).unwrap();
+        a.relayout();
+        std::fs::write(&f, &v2).unwrap();
+        a.reload().unwrap();
+        let blk = |a: &App| a.doc.block_at_doc(DocByte(a.view.anchor));
+        let t = u32::try_from(a.doc.text.find("Paragraph 30 ").unwrap()).unwrap();
+        assert_eq!(
+            blk(&a),
+            a.doc.block_at_doc(DocByte(t)),
+            "v2 still on its paragraph"
+        );
+        std::fs::write(&f, &v3).unwrap();
+        a.reload().unwrap();
+        let t = u32::try_from(a.doc.text.find("Paragraph 30 ").unwrap()).unwrap();
+        let got = &a.doc.text[a.view.anchor as usize..]
+            [..40.min(a.doc.text.len() - a.view.anchor as usize)];
+        assert_eq!(
+            blk(&a),
+            a.doc.block_at_doc(DocByte(t)),
+            "v3 dragged to {got:?}"
+        );
+    }
+
+    #[test]
+    fn an_edit_to_a_marked_paragraph_then_an_insert_above_keeps_the_mark_on_it() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("plan.md");
+        let mut body = String::new();
+        for n in 0..60 {
+            let _ = write!(
+                body,
+                "Paragraph {n} says something distinct about item {n}.\n\n"
+            );
+        }
+        let v1 = body.replace("Paragraph 30 says", "Paragraph 30 TARGET says");
+        let v2 = v1.replace("TARGET says", "TARGET (revised) says");
+        let mut pre = String::new();
+        for n in 0..40 {
+            let _ = write!(
+                pre,
+                "New preface paragraph {n} inserted above everything.\n\n"
+            );
+        }
+        let v3 = format!("{pre}{v2}");
+        std::fs::write(&f, &v1).unwrap();
+        let mut a = App::new("plan.md".into(), Document::parse(&v1), 80, 24);
+        a.file = Some(f.clone());
+        a.view.anchor = u32::try_from(a.doc.text.find("Paragraph 50 ").unwrap()).unwrap();
+        a.relayout();
+        a.marks = vec![u32::try_from(a.doc.text.find("Paragraph 30 ").unwrap()).unwrap()];
+        std::fs::write(&f, &v2).unwrap();
+        a.reload().unwrap();
+        std::fs::write(&f, &v3).unwrap();
+        a.reload().unwrap();
+        let t = u32::try_from(a.doc.text.find("Paragraph 30 ").unwrap()).unwrap();
+        let got = &a.doc.text[a.marks[0] as usize..][..40];
+        assert_eq!(
+            a.doc.block_at_doc(DocByte(a.marks[0])),
+            a.doc.block_at_doc(DocByte(t)),
+            "mark dragged to {got:?}"
+        );
     }
 }
