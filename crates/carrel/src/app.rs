@@ -2206,6 +2206,13 @@ impl App {
         let held_marks = hold.and_then(|h| h.carriers);
         let marks_found = match &held_marks {
             Some(carriers) if self.carry_marks(carriers) => true,
+            // A document with no blocks carries no marks, which is not the
+            // same as finding them: emptied twice before it was rewritten,
+            // the file dropped every bookmark at the second empty read.
+            Some(_) if fresh_marks.is_empty() => {
+                self.carry_marks(&fresh_marks);
+                false
+            }
             _ => self.carry_marks(&fresh_marks),
         };
         // Carrying can merge marks (two whose blocks became one) or drop
@@ -2216,6 +2223,7 @@ impl App {
             .map(|i| i.min(self.marks.len() - 1));
         self.apply_fold_keys(&folds);
         self.lay_out_new_document();
+        self.pull_out_of_folds();
         // Hold what is still missing: the oldest place that had it, so a
         // run of short writes cannot walk it away a step at a time.
         let place_hold = (!place_found)
@@ -2398,6 +2406,14 @@ impl App {
     /// neighbour of a row that no longer exists.
     fn after_fold_change(&mut self) {
         self.relayout();
+        self.pull_out_of_folds();
+    }
+
+    /// If the anchor's row is hidden by a fold, put it on the outermost
+    /// folded heading over it and restore the view there. Asked after a fold
+    /// changes and after a reload — a reload that deletes the heading the
+    /// reader sat on hands their place to text under the fold above.
+    fn pull_out_of_folds(&mut self) {
         let mut b = crate::view::anchor_block(&self.doc, self.view.anchor);
         // A gap row's anchor is the separator AFTER its block, which
         // `anchor_block` gives to the block below; the row belongs to the
@@ -5683,6 +5699,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             if let Some(i) = app.marks.iter().position(|&m| m == at) {
                 app.marks.remove(i);
                 app.note = Some("bookmark cleared".into());
+                // The open list's cursor indexes the marks.
+                app.mark_list = app
+                    .mark_list
+                    .filter(|_| !app.marks.is_empty())
+                    .map(|i| i.min(app.marks.len() - 1));
             } else {
                 app.marks.push(at);
                 app.marks.sort_unstable();
