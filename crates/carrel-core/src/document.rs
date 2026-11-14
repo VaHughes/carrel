@@ -2174,7 +2174,7 @@ impl<'a> Builder<'a> {
                 return;
             }
             let cut = s.len() - t.len();
-            let src = if kind == ProvKind::Verbatim && src.len() == s.len() {
+            let src = if kind == ProvKind::Verbatim && self.source.get(src.clone()) == Some(s) {
                 src.start + cut..src.end
             } else {
                 src
@@ -2206,10 +2206,15 @@ impl<'a> Builder<'a> {
         self.text.push_str(s);
         let end = self.text.len() as u32;
 
-        // Verbatim only when the byte lengths genuinely correspond. Tab
-        // expansion changes the length, which lands the run in Substituted
-        // exactly as entity decoding and smart punctuation already do.
-        let kind = if kind == ProvKind::Verbatim && src.len() == s.len() {
+        // Verbatim only when the text IS the source slice, byte for byte —
+        // that is what lets `to_doc`/`to_src` map by offset. Equal LENGTH is
+        // not enough: smart punctuation keeps it (`---` and `—`, `...` and
+        // `…` are three bytes each), and a coalesced run can net out equal
+        // (`''&amp;` against `‘’&`), and each such run sent `to_doc` into
+        // the middle of a character. Tab expansion, entity decoding and
+        // smart punctuation all land in Substituted. The compare is a
+        // memcmp over bytes just written, which costs nothing measurable.
+        let kind = if kind == ProvKind::Verbatim && self.source.get(src.clone()) == Some(s) {
             ProvKind::Verbatim
         } else if kind == ProvKind::Synthetic {
             ProvKind::Synthetic
@@ -5697,5 +5702,69 @@ mod tests {
         let d = Document::parse("Notes on #rust and #web/dev.\n");
         assert_eq!(d.text, "Notes on #rust and #web/dev.\n");
         assert!(!crate::search(&d, "#rust", false).is_empty());
+    }
+
+    /// `Verbatim` is a claim that the run's text IS its source slice, so
+    /// that `to_doc`/`to_src` may map byte for byte. It used to be decided
+    /// by length alone, and smart punctuation keeps length: `---` and `—`
+    /// are both three bytes, as are `...` and `…`, and a coalesced run of
+    /// `''&amp;` nets out equal (`‘’&` is seven bytes, so is the source).
+    /// Then `to_doc` landed inside a character and `to_src` named the wrong
+    /// byte. Found by fuzzing, minimized to `--&amp;`.
+    fn assert_provenance_exact(src: &str) {
+        let d = Document::parse(src);
+        for p in &d.prov {
+            if p.kind == ProvKind::Verbatim {
+                assert_eq!(
+                    &d.text[p.doc.start as usize..p.doc.end as usize],
+                    &src[p.src.start as usize..p.src.end as usize],
+                    "a Verbatim run that is not its source, in {src:?}"
+                );
+            }
+        }
+        // A source offset inside a character maps inside the same character
+        // of a Verbatim run, so only the source's own boundaries are asked.
+        for i in (0..=src.len()).filter(|&i| src.is_char_boundary(i)) {
+            let doc = d.to_doc(SrcByte(i as u32)).0 as usize;
+            assert!(
+                d.text.is_char_boundary(doc),
+                "to_doc({i}) = {doc}, inside a character, in {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn verbatim_provenance_is_the_source_itself() {
+        for src in [
+            "a---b c...d\n",
+            "''&amp;\n",
+            "--&amp;\n",
+            "\"quoted\" -- it's...\n",
+            "| a---b | c...d |\n|---|---|\n| ''&amp; | x |\n",
+            "- x\n\n  ```\n  y\n  ```\n  a---b\n",
+        ] {
+            assert_provenance_exact(src);
+        }
+        let d = Document::parse("''&amp;\n");
+        // The coalesced run is Substituted, so `to_src` gives its start — an
+        // answer before the `&amp;`, never the `;` inside it (6) as it was.
+        // Exactly 2 would need the run kept split per event, which the
+        // script and bare-URL passes rely on it not being.
+        let amp = d.text.find('&').unwrap() as u32;
+        assert!(d.to_src(DocByte(amp)) <= SrcByte(2));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1000))]
+        #[test]
+        fn verbatim_provenance_holds_for_any_mix(
+            parts in proptest::collection::vec(proptest::sample::select(&[
+                "a", " ", "--", "---", "...", "'", "\"", "&amp;", "&lt;", "\\*",
+                "*", "_", "`", "\t", "\n", "x^2^", "~y~", "www.a.com", "|", "#",
+                "é", "\u{2014}", "\n\n", "- ", "> ", "$x$", "[a](b)",
+            ][..]), 0..24)
+        ) {
+            assert_provenance_exact(&parts.concat());
+        }
     }
 }

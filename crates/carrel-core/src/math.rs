@@ -129,6 +129,10 @@ const MAX_DEPTH: u32 = 256;
 /// out. See [`MathClass`] for what the atoms carry.
 #[must_use]
 pub fn parse(latex: &str) -> Option<MathExpr> {
+    let (groups, bare) = nesting(latex);
+    if groups > MAX_DEPTH || bare > MAX_BARE_CHAIN {
+        return None;
+    }
     let storage = Storage::new();
     let mut events = Vec::new();
     for ev in Parser::new(latex, &storage) {
@@ -143,6 +147,114 @@ pub fn parse(latex: &str) -> Option<MathExpr> {
     } else {
         None
     }
+}
+
+/// How long a chain of commands may take each other as bare arguments.
+///
+/// `pulldown-latex` parses a bare argument by recursion: `\sqrt\sqrt…x`,
+/// `\frac 1\frac 1…x` and `\frac{1}\frac{1}…x` each nest native frames per
+/// command, and overflowed a 2 MiB thread stack — what home search's
+/// threads get — at about 150 deep in a debug build and 2 000 in release.
+/// Braced nesting does not recurse there, which is why this bound is far
+/// tighter than [`MAX_DEPTH`]. Nobody writes a bare chain longer than a
+/// few; the scan's chain can also be a run of siblings that only looks like
+/// one (`\vec{a}\vec{b}…` sixty-odd times), which costs that formula its
+/// rendering, never its text.
+const MAX_BARE_CHAIN: u32 = 64;
+
+/// How deeply `latex` nests, as `(groups, bare)`, by a linear scan that runs
+/// before the parser is allowed near it.
+///
+/// [`MAX_DEPTH`] in the walker came too late: `pulldown-latex` runs to
+/// completion first, its cost grows with the square of the group nesting —
+/// `{`×15 000 (30 KB of inline math) took a second of CPU, `{`×30 000 four
+/// — and a bare-argument chain overflows its stack (see [`MAX_BARE_CHAIN`]),
+/// which in the `panic = "abort"` release binary is the reader gone. Every
+/// caller comes through [`parse`] — inline math at document parse, display
+/// math in the frontend, and the `math_view` that home search reads — so
+/// refusing here protects them all, and the refusal is the documented one:
+/// the literal source is shown.
+///
+/// `groups` counts unescaped `{`/`}` (which every `_{`, `^{`, `\sqrt{` and
+/// `\frac{` nests through), `\left`/`\right` and `\begin`/`\end`; `\{` and
+/// `\}` are delimiters, not groups. `bare` counts control words in a row
+/// that could each be the next one's argument — at most one letter, digit
+/// or group between two of them (`\frac 1\frac`). Anything else ends a
+/// chain: an operator, `&`, `\\`, a second token. A group starts a fresh
+/// chain inside it: measured, `\sqrt\sqrt{`×1 000 does not recurse, because
+/// the parser walks a braced group without a native frame per level.
+fn nesting(latex: &str) -> (u32, u32) {
+    /// `chain`: commands in the current run; `gap`: plain tokens since the
+    /// last of them.
+    #[derive(Clone, Copy, Default)]
+    struct Run {
+        chain: u32,
+        gap: u32,
+    }
+    impl Run {
+        fn token(&mut self) {
+            self.gap += 1;
+            if self.gap > 1 {
+                self.chain = 0;
+            }
+        }
+        fn open(&mut self, stack: &mut Vec<Run>) {
+            stack.push(*self);
+            *self = Run::default();
+        }
+        fn close(&mut self, stack: &mut Vec<Run>) {
+            if let Some(saved) = stack.pop() {
+                *self = saved;
+            }
+            // The whole group is one token to the run outside it.
+            self.token();
+        }
+    }
+    let mut stack: Vec<Run> = Vec::new();
+    let mut run = Run::default();
+    let (mut groups, mut bare) = (0u32, 0u32);
+    let b = latex.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        i += 1;
+        match c {
+            b' ' | b'\t' | b'\n' | b'\r' | b'[' | b']' => {}
+            b'{' => run.open(&mut stack),
+            b'}' => run.close(&mut stack),
+            b'\\' => {
+                let name = b[i..]
+                    .iter()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .count();
+                match &b[i..i + name] {
+                    b"left" | b"begin" => run.open(&mut stack),
+                    b"right" | b"end" => run.close(&mut stack),
+                    // A control symbol, skipped so `\{` is not read as a
+                    // group: `\\` ends a row, anything else (`\{`, `\,`) is
+                    // one token.
+                    [] => {
+                        if b.get(i) == Some(&b'\\') {
+                            (run.chain, run.gap) = (0, 0);
+                        } else {
+                            run.token();
+                        }
+                        i += 1;
+                    }
+                    _ => {
+                        run.chain += 1;
+                        run.gap = 0;
+                    }
+                }
+                i += name;
+            }
+            c if c.is_ascii_alphanumeric() => run.token(),
+            _ => (run.chain, run.gap) = (0, 0),
+        }
+        groups = groups.max(stack.len() as u32);
+        bare = bare.max(run.chain);
+    }
+    (groups, bare)
 }
 
 /// Parse events until `stop` (or the end), returning them as one row.
@@ -381,6 +493,80 @@ fn content(c: &Content) -> MathExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The depth guard must run BEFORE `pulldown-latex`, whose cost is
+    /// quadratic in group nesting: `{`×15 000 took a second in release, and
+    /// the debug build here is slower still. Refused by the scan, each of
+    /// these is microseconds; reaching the parser, the first alone is tens of
+    /// seconds in a debug build, so the bound has room for any machine.
+    #[test]
+    fn deep_nesting_is_refused_before_the_parser_runs() {
+        let n = 20_000;
+        let shapes = [
+            format!("{}x{}", "{".repeat(n), "}".repeat(n)),
+            format!("{}x{}", r"\sqrt{".repeat(n), "}".repeat(n)),
+            format!("{}x{}", r"\frac{".repeat(n), "}{y}".repeat(n)),
+            format!("{}{}", "_{a".repeat(n), "}".repeat(n)),
+            format!("{}x{}", r"\left(".repeat(n), r"\right)".repeat(n)),
+            format!(
+                "{}x{}",
+                r"\begin{matrix}".repeat(n),
+                r"\end{matrix}".repeat(n)
+            ),
+        ];
+        let start = std::time::Instant::now();
+        for s in &shapes {
+            assert!(nesting(s).0 > MAX_DEPTH, "{:?}…", &s[..20]);
+            assert_eq!(parse(s), None);
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "deep math reached the parser: {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A bare-argument chain recurses inside `pulldown-latex` and overflowed
+    /// the stack — 150 deep was enough on a 2 MiB debug thread, which is what
+    /// this test runs on, so reaching the parser aborts the test binary.
+    #[test]
+    fn a_bare_argument_chain_is_refused_before_the_parser_runs() {
+        let n = 5_000;
+        for s in [
+            format!("{}x", r"\sqrt ".repeat(n)),
+            format!("{}x", r"\frac 1".repeat(n)),
+            format!("{}x y", r"\frac".repeat(n)),
+            format!("{}x", r"\frac{1}".repeat(n)),
+            format!("{}x", r"\mathrm ".repeat(n)),
+        ] {
+            assert!(nesting(&s).1 > MAX_BARE_CHAIN, "{:?}…", &s[..20]);
+            assert_eq!(parse(&s), None);
+        }
+    }
+
+    #[test]
+    fn nesting_within_the_limit_still_parses() {
+        let n = 100;
+        let s = format!("{}x{}", r"\sqrt{".repeat(n), "}".repeat(n));
+        assert_eq!(nesting(&s), (n as u32, 1));
+        assert!(parse(&s).is_some());
+        // Near both limits, the walker's own guard decides, without a crash.
+        let _ = parse(&format!("{}x{}", "{".repeat(256), "}".repeat(256)));
+        let _ = parse(&format!("{}x", r"\sqrt".repeat(64)));
+        // Escaped braces are delimiters, not groups; `\\` escapes itself.
+        assert_eq!(nesting(r"\{\{\{x\}\}\}").0, 0);
+        assert_eq!(nesting(r"a\\{b}").0, 1);
+        assert_eq!(nesting(r"\left(\frac{a}{b}\right)").0, 2);
+        // Siblings and ordinary formulas are short chains.
+        assert_eq!(nesting(r"\frac{a}{b}\frac{c}{d}").1, 1);
+        assert_eq!(nesting(r"\frac 12\frac 34").1, 1);
+        assert_eq!(nesting(&r"\alpha+\beta\cdot x_1 ".repeat(500)).1, 2);
+        assert_eq!(
+            nesting(&r"\alpha & \beta \\ ".repeat(500)).1,
+            1,
+            "a matrix row break and a cell end a chain"
+        );
+    }
 
     #[test]
     fn a_fraction_parses_to_num_and_den() {

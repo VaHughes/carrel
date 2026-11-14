@@ -55,6 +55,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   selects up to the nearest text, as a terminal does; a drag can also start in the left
   margin. Double-clicking a word in a heading selects it without collapsing the section,
   and a menu or pane opened over CJK text or emoji keeps its left border.
+- **Smart punctuation no longer throws off positions, and deeply nested math no longer
+  hangs or crashes.** A run like `a---b` or `''&amp;` was mapped to its source byte for
+  byte because the lengths happened to match, so a reload or a jump could land inside a
+  character. Math nested thousands deep (`{{{…x…}}}`) took seconds to parse, and a long
+  chain like `\sqrt\sqrt\sqrt…x` crashed the reader, while opening a document or
+  searching from the home screen; such math is now shown as its LaTeX source at once.
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves
