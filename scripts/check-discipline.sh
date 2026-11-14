@@ -100,7 +100,7 @@ echo
 echo "carrel terminal-free module check"
 SRC=crates/carrel/src
 PURE="action annotation_state ansi app breadcrumb cli diagrams footer \
-      home images keymap layout math_art menu peek plain status view"
+      home images keymap layout math_art menu peek plain status stream view"
 # Modules this crate re-exports from carrel-state (`pub use carrel_state::{…}`
 # in lib.rs): `crate::state` is one of those, and the compiler — not this
 # script — keeps it terminal-free, because carrel-state cannot depend on a

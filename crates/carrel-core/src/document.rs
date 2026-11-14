@@ -3953,6 +3953,26 @@ mod tests {
         assert_eq!(d.block_text(BlockIdx(0)), "a   b");
     }
 
+    /// A character that extends the cluster before it but arrives as the
+    /// start of its own push — a combining mark after a wikilink or inline
+    /// math — is measured JOINED with what precedes it, as layout measures
+    /// the run. Before the column became lazy (2026-11-14) each push was
+    /// measured alone, and `cluster_width` gives a lone mark one column, so
+    /// a tab later on the line came up a column short.
+    #[test]
+    fn a_tab_after_a_cluster_joined_across_pushes_measures_the_joined_run() {
+        for (src, want) in [
+            ("[[w]]\u{301}\n&Tab;x\n", "w\u{301}   x"),
+            ("$x$\u{301}\n&Tab;x\n", "x\u{301}   x"),
+        ] {
+            let d = Document::parse(src);
+            assert_eq!(d.block_text(BlockIdx(0)), want, "{src:?}");
+            // Exactly the joined run's width, which is one column.
+            let joined = &want[..want.find(' ').unwrap()];
+            assert_eq!(crate::layout::display_width(joined), 1);
+        }
+    }
+
     /// The column a tab expands from is measured lazily now — only when a
     /// tab arrives — so it must still count every run pushed before it on
     /// the line: wide characters, styled runs as separate pushes, text after

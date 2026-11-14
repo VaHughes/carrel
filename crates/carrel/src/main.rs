@@ -509,18 +509,44 @@ fn run_stdin_or_fallback() -> ExitCode {
             Some(home) => open_home_after_reader(home),
         }
     } else {
-        // The reader thread owns stdin now; collect through its channel
-        // — it reads to EOF regardless, so this is the whole document.
-        let src: String = rx
-            .iter()
-            .filter_map(|chunk| match chunk {
-                carrel::stream::Chunk::Text(text) => Some(text),
-                carrel::stream::Chunk::Stopped(_) => None,
-            })
-            .collect();
+        // The reader thread owns stdin now; collect through its channel. It
+        // reads to EOF or to `stream::LIMITS`, whichever comes first.
+        let (src, stopped) = collect_stream(&rx);
         let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
-        emit(&carrel::plain::render(&doc, 80))
+        let code = emit(&carrel::plain::render(&doc, 80));
+        // Said on stderr, so the document on stdout stays exactly what was
+        // read. The exit code stays what printing it earned: the limit is
+        // documented behaviour, not a failure, and what was printed is a
+        // whole document — the same answer the reader gives, which exits 0
+        // after showing a cut pipe. `head` is the precedent.
+        if let Some(stop) = stopped {
+            say!("{}", stopped_on_stderr(stop));
+        }
+        code
     }
+}
+
+/// Everything the stdin thread sent, and the limit it stopped at, if any.
+/// The fallback used to drop the stop in a `filter_map`, so a cut pipe
+/// printed its first 64 MB and exited as though that were all of it.
+fn collect_stream(rx: &Receiver<carrel::stream::Chunk>) -> (String, Option<carrel::stream::Stop>) {
+    let mut src = String::new();
+    let mut stopped = None;
+    for chunk in rx {
+        match chunk {
+            carrel::stream::Chunk::Text(text) => src.push_str(&text),
+            carrel::stream::Chunk::Stopped(stop) => stopped = Some(stop),
+        }
+    }
+    (src, stopped)
+}
+
+/// The fallback's line about a cut pipe. Fixed text and digits only.
+fn stopped_on_stderr(stop: carrel::stream::Stop) -> String {
+    format!(
+        "carrel: stopped reading at {} — the rest of stdin was not read",
+        stop.amount()
+    )
 }
 
 /// The continue-reading rows: remembered documents that still exist and
@@ -2054,19 +2080,18 @@ fn poll_stream(
     }
     if done {
         app.streaming = false;
+        // Kept on the App, not just written into the label: the pipe may be
+        // behind another document now, and the label and the note are both
+        // rebuilt from it whenever the pipe is shown (`App::pipe_label`).
+        if let Some(stop) = stopped {
+            app.pipe_stop = Some(stop);
+            app.pipe_stop_unseen = true;
+        }
         // EOF belongs to the pipe, not a watched file opened from it.
         if app.showing_pipe() {
             app.following = false;
-            app.path = match stopped {
-                Some(stop) => format!("(stdin — first {})", stop.amount()),
-                None => "(stdin)".into(),
-            };
-        }
-        if let Some(stop) = stopped {
-            app.set_note(format!(
-                "stopped reading at {} — the rest of the pipe was not read",
-                stop.amount()
-            ));
+            app.path = app.pipe_label();
+            app.announce_pipe_stop();
         }
         *stream = None;
     }
@@ -5390,3 +5415,103 @@ mod lightbox_pipeline_tests {
 
 #[cfg(test)]
 mod input_sequence_tests;
+
+/// A pipe cut at its limit, then left and returned to: the label and the
+/// note must follow the pipe, not the screen that happened to be up when
+/// the limit was reached (cold review, 2026-11-14).
+#[cfg(test)]
+mod stopped_pipe_tests {
+    use super::*;
+    use carrel::action::Action;
+    use carrel::app::update;
+    use carrel::stream::{Chunk, Stop};
+
+    fn piped_app() -> App {
+        let mut app = App::new("(stdin — streaming…)".into(), Document::parse(""), 40, 8);
+        app.streaming = true;
+        app.piped = Some(String::new());
+        app
+    }
+
+    fn poll(rx: &std::sync::mpsc::Receiver<Chunk>, app: &mut App, pace: &mut StreamPace) {
+        let mut stream = Some(rx);
+        poll_stream(
+            &mut stream,
+            app,
+            &mut Images::detect(),
+            &mut Diagrams::new(),
+            pace,
+        );
+    }
+
+    /// The no-tty fallback keeps the stop it used to filter away.
+    #[test]
+    fn the_fallback_knows_where_a_pipe_was_cut() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Chunk::Text("one\n".into())).unwrap();
+        tx.send(Chunk::Text("two\n".into())).unwrap();
+        tx.send(Chunk::Stopped(Stop::Bytes(64 << 20))).unwrap();
+        drop(tx);
+        let (src, stop) = collect_stream(&rx);
+        assert_eq!(src, "one\ntwo\n");
+        assert_eq!(stop, Some(Stop::Bytes(64 << 20)));
+        assert_eq!(
+            stopped_on_stderr(Stop::Bytes(64 << 20)),
+            "carrel: stopped reading at 64 MB — the rest of stdin was not read"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Chunk::Text("whole\n".into())).unwrap();
+        drop(tx);
+        assert_eq!(collect_stream(&rx), ("whole\n".into(), None));
+    }
+
+    #[test]
+    fn back_to_a_stopped_pipe_still_says_it_was_cut() {
+        let d = tempfile::tempdir().unwrap();
+        let t = d.path().join("t.md");
+        std::fs::write(&t, "# Target doc\n").unwrap();
+        let mut a = piped_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Chunk::Text(format!("intro\n\n[go]({})\n", t.display())))
+            .unwrap();
+        tx.send(Chunk::Stopped(Stop::Lines(3))).unwrap();
+        poll(&rx, &mut a, &mut StreamPace::default());
+        assert_eq!(a.path, "(stdin — first 3 lines)");
+        update(&mut a, Action::LinkStep(1));
+        update(&mut a, Action::LinkFollow);
+        assert_eq!(a.file.as_deref(), Some(t.as_path()));
+        update(&mut a, Action::Back);
+        assert!(a.doc.text.contains("intro"));
+        assert_eq!(
+            a.path, "(stdin — first 3 lines)",
+            "the cut is no longer reported"
+        );
+    }
+
+    #[test]
+    fn a_stop_arriving_while_away_is_reported_on_return() {
+        let d = tempfile::tempdir().unwrap();
+        let t = d.path().join("t.md");
+        std::fs::write(&t, "# Target doc\n").unwrap();
+        let mut app = piped_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Chunk::Text(format!("intro\n\n[go]({})\n", t.display())))
+            .unwrap();
+        let mut pace = StreamPace::default();
+        poll(&rx, &mut app, &mut pace);
+        update(&mut app, Action::LinkStep(1));
+        update(&mut app, Action::LinkFollow);
+        assert_eq!(app.file.as_deref(), Some(t.as_path()));
+        app.note = None;
+        tx.send(Chunk::Stopped(Stop::Lines(3))).unwrap();
+        poll(&rx, &mut app, &mut pace);
+        assert_eq!(app.note, None, "not news on another document's status bar");
+        update(&mut app, Action::Back);
+        assert!(app.doc.text.contains("intro"));
+        assert_eq!(app.path, "(stdin — first 3 lines)");
+        assert_eq!(
+            app.note.as_deref(),
+            Some("stopped reading at 3 lines — the rest of the pipe was not read")
+        );
+    }
+}

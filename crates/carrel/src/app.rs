@@ -472,6 +472,14 @@ pub struct App {
     /// The background stdin producer is still open, even on another page.
     /// Use `is_live_pipe()` for behavior of the document currently shown.
     pub streaming: bool,
+    /// The limit the pipe was cut at, if it was ([`crate::stream::Stop`]).
+    /// Kept on the pipe rather than written once into `path`: the label is
+    /// rebuilt whenever the pipe comes back into view, and rebuilding it
+    /// from `streaming` alone said plain `(stdin)` after a link round trip.
+    pub pipe_stop: Option<crate::stream::Stop>,
+    /// The cut has not been told yet — it happened while another document
+    /// was on screen, so the note waits for the pipe to be shown again.
+    pub pipe_stop_unseen: bool,
     /// The backlinks pane, while it is open. `None` means closed; the rows
     /// stream in from `links.rs` and the event loop appends them.
     pub backlinks: Option<Backlinks>,
@@ -1125,6 +1133,8 @@ impl App {
             path,
             file: None,
             streaming: false,
+            pipe_stop: None,
+            pipe_stop_unseen: false,
             backlinks: None,
             forward: None,
             mark_list: None,
@@ -1793,6 +1803,31 @@ impl App {
             && self.on_desk.is_none()
             && self.piped.is_some()
             && self.path.starts_with("(stdin")
+    }
+
+    /// The name a piped document goes by: still arriving, cut at a limit,
+    /// or whole.
+    #[must_use]
+    pub fn pipe_label(&self) -> String {
+        if self.streaming {
+            "(stdin — streaming…)".into()
+        } else if let Some(stop) = self.pipe_stop {
+            format!("(stdin — first {})", stop.amount())
+        } else {
+            "(stdin)".into()
+        }
+    }
+
+    /// The pipe is on screen: say it was cut, once, if that has not been
+    /// said where the reader could see it.
+    pub fn announce_pipe_stop(&mut self) {
+        if let Some(stop) = self.pipe_stop.filter(|_| self.pipe_stop_unseen) {
+            self.pipe_stop_unseen = false;
+            self.set_note(format!(
+                "stopped reading at {} — the rest of the pipe was not read",
+                stop.amount()
+            ));
+        }
     }
 
     /// Whether the document on screen is the still-arriving stdin stream.
@@ -6660,17 +6695,14 @@ fn go_to(app: &mut App, to: &Path, place: Place, h: u16) -> bool {
             entries: std::mem::take(&mut app.piped_notes),
             ..crate::annotation_state::Notes::default()
         };
-        app.path = if app.streaming {
-            "(stdin — streaming…)".into()
-        } else {
-            "(stdin)".into()
-        };
+        app.path = app.pipe_label();
         app.reload_from(&src);
         app.set_marks_from(&app.piped_marks.clone());
         if app.apply_fold_keys(&app.piped_folds.clone()) {
             app.relayout();
         }
         app.land_on(place.resolve(&app.doc).0, h);
+        app.announce_pipe_stop();
         return true;
     }
     match app.open_path(to) {
