@@ -551,19 +551,33 @@ impl Layout {
                         && !matches!(r.kind, carrel_core::RowKind::Decoration))
             })
             .unwrap_or(rows.len() - 1);
-        // A table line's `\n`, which no row of the column view holds, is
-        // the row ABOVE the line after it, as a separator byte is the gap
-        // above the next block. It is a card rule's byte (the `\n` before
-        // the next card), and through the column view it must come back as
-        // the line before that card's: the line after starts past the
-        // reader's anchor. Only the `\n`: a space elided at a card's wrap
-        // point is the next row's, as in a paragraph.
-        let idx = if matches!(node.kind, NodeKind::Table { .. })
-            && idx > 0
-            && anchor < rows[idx].doc.start
-            && doc.text.as_bytes().get(anchor as usize) == Some(&b'\n')
-        {
-            idx - 1
+        // A table byte that no row holds, BEFORE the line break that ends
+        // its line — the padding an aligned row elides and the line's own
+        // `\n` — is the row above it, the line it ends, as a separator byte
+        // is the gap above the next block. A card rule is named by such a
+        // `\n`, and through the aligned and column views it must come back
+        // as the line before that card's: the next line starts past the
+        // reader's anchor, and after the LAST line there is only the gap
+        // below the table, which scrolled the table off the top (cold
+        // review, 2026-11-14). A space elided at a card's wrap point has no
+        // line break after it, so it stays the next row's, as in a
+        // paragraph.
+        let content = rows.len().saturating_sub(gap_after(doc, b) as usize);
+        let held = rows.get(idx).is_some_and(|r| {
+            idx < content
+                && (r.doc.contains(&anchor) || (r.doc.is_empty() && r.doc.start == anchor))
+        });
+        let idx = if matches!(node.kind, NodeKind::Table { .. }) && !held && idx.min(content) > 0 {
+            let next = if idx < content {
+                rows[idx].doc.start
+            } else {
+                node.doc.end
+            };
+            let breaks = doc
+                .text
+                .get(anchor as usize..next.max(anchor) as usize)
+                .is_some_and(|t| t.contains('\n'));
+            if breaks { idx.min(content) - 1 } else { idx }
         } else {
             idx
         };

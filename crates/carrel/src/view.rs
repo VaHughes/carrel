@@ -403,12 +403,33 @@ mod tests {
                         failures.push((i, width, row, rule, restored, v.scroll_row, v.anchor));
                     }
                 }
+                // Every byte of a table — its line ends and padding, which
+                // no row of the aligned views holds, and a card rule's `\n`
+                // — names a row of the table, never the gap below it. The
+                // last line's `\n` (the trailing rule's byte) once fell
+                // through to the gap in the column view, scrolling the
+                // table off the top (cold review, 2026-11-14).
+                for t in (0..doc.block_count()).map(|t| BlockIdx(t as u32)) {
+                    let node = doc.node_for_block(t);
+                    if !matches!(node.kind, carrel_core::NodeKind::Table { .. }) {
+                        continue;
+                    }
+                    for at in node.doc.clone() {
+                        if !doc.text.is_char_boundary(at as usize) || anchor_block(&doc, at) != t {
+                            continue;
+                        }
+                        let sub = l.visual_row_of(&doc, t, at, Affinity::Right);
+                        if sub >= l.content_height(&doc, t) {
+                            failures.push((i, width, u32::MAX, columns, sub, at, at));
+                        }
+                    }
+                }
             }
         }
         assert!(rules > 100, "the fixture must reach card rules: {rules}");
         assert!(
             failures.is_empty(),
-            "{} table rows came back elsewhere (src, width, row, rule, restored, revealed, anchor): {:?}",
+            "{} table rows came back elsewhere (src, width, row, rule, restored, revealed, anchor; row u32::MAX: the table byte `anchor` named the gap, (src, width, MAX, column view, row, byte, byte)): {:?}",
             failures.len(),
             &failures[..failures.len().min(12)]
         );

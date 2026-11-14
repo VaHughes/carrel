@@ -45,6 +45,22 @@ fn top_visible_row(app: &App) -> std::ops::Range<u32> {
     }
 }
 
+/// Whether `anchor` is a table byte past the end of row `top` but still on
+/// its line — padding an aligned row elides, or the line's own `\n` (a card
+/// rule's byte) — which names the line it ends.
+fn ends_its_line(app: &App, top: &std::ops::Range<u32>, anchor: u32) -> bool {
+    let b = app.doc.block_at_doc(carrel_core::DocByte(anchor));
+    matches!(
+        app.doc.node_for_block(b).kind,
+        carrel_core::NodeKind::Table { .. }
+    ) && top.end <= anchor
+        && app
+            .doc
+            .text
+            .get(top.end as usize..anchor as usize)
+            .is_some_and(|t| t.chars().all(char::is_whitespace) && !t.contains('\n'))
+}
+
 proptest! {
     /// The reader keeps looking at the same text across a width change.
     #[test]
@@ -73,7 +89,7 @@ proptest! {
             // A card rule is named by the `\n` ending the card above it,
             // which the column view's rows do not hold either: there it is
             // the line that ends at it, just above the next card's line.
-            let line_end = top.end == before && app.doc.text.as_bytes()[before as usize] == b'\n';
+            let line_end = ends_its_line(&app, &top, before);
             prop_assert!(
                 top.contains(&before) || top.start == before || line_end,
                 "anchor {} is not on the top row {:?} at width {}", before, top, w2,
@@ -137,9 +153,17 @@ fn every_card_row_survives_a_resize_and_a_trip_through_the_column_view() {
         format!("| a | b | c |\n|---|---|---|\n| x | {long} | |\n| y | | |\n| z |\n\nafter\n"),
         format!("> | k | v |\n> |---|---|\n> | one | {long} |\n> | two | |\n\nafter\n"),
         format!("intro\n\n| k | v |\n|---|---|\n| one | {long} |\n| two | |"),
+        format!("intro\n\n| k | v |\n|---|---|\n| one | {long} |\n| two | {long} |\n\nafter\n"),
+        format!(
+            "intro\n\n- item\n\n  | k | v |\n  |---|---|\n  | one | {long} |\n  | two | {long} |\n"
+        ),
     ];
+    // Enough below every table that the column view can put it on top:
+    // a short page clamps, and the in-between check would prove nothing.
+    let srcs = srcs.map(|s| format!("{s}\n\n{}", "more\n\n".repeat(12)));
     let h = 6;
     let mut failures = Vec::new();
+    let mut between_failures = Vec::new();
     let mut rules = 0;
     for (i, src) in srcs.iter().enumerate() {
         for w1 in [20u16, 28, 40, 60] {
@@ -161,7 +185,19 @@ fn every_card_row_survives_a_resize_and_a_trip_through_the_column_view() {
                     let rule = matches!(r.kind, carrel_core::RowKind::Decoration)
                         && r.doc.start != node.doc.start;
                     rules += usize::from(rule);
+                    let anchor = app.view.anchor;
                     app.on_resize(w2, h);
+                    // In between, too: the column view's top row is the one
+                    // that holds the anchor — or, for a rule's `\n`, the
+                    // line that ends at it. The trailing rule's `\n` once
+                    // landed on the gap BELOW the table, scrolling it off.
+                    let top = top_visible_row(&app);
+                    let between = top.contains(&anchor)
+                        || top.start == anchor
+                        || ends_its_line(&app, &top, anchor);
+                    if !between {
+                        between_failures.push((i, w1, w2, row, rule, anchor, top));
+                    }
                     app.on_resize(w1, h);
                     if app.view.scroll_row != row {
                         failures.push((i, w1, w2, row, rule, app.view.scroll_row));
@@ -171,6 +207,10 @@ fn every_card_row_survives_a_resize_and_a_trip_through_the_column_view() {
         }
     }
     assert!(rules > 20, "the fixture must reach card rules: {rules}");
+    assert!(
+        between_failures.is_empty(),
+        "(src, w1, w2, row, rule, anchor, top row at w2): {between_failures:?}"
+    );
     assert!(
         failures.is_empty(),
         "(src, w1, w2, row, rule, came back at): {failures:?}"
