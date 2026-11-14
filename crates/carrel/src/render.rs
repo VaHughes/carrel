@@ -194,6 +194,7 @@ pub fn draw_full(
         paint_pane(frame, app, &mut painted.targets);
         paint_scrim(frame, app, &mut painted.targets);
         paint_menu(frame, app, &mut painted.targets);
+        blank_wide_cells_under_overlays(frame, &painted.targets);
         paint_hover(frame, app, &painted.targets);
         settle_links(frame, painted);
         return;
@@ -261,8 +262,34 @@ pub fn draw_full(
     // Last, and therefore on top of everything it was opened over.
     paint_peek(frame, app, &mut painted.targets);
     paint_menu(frame, app, &mut painted.targets);
+    blank_wide_cells_under_overlays(frame, &painted.targets);
     paint_hover(frame, app, &painted.targets);
     settle_links(frame, painted);
+}
+
+/// Blank a wide character that an overlay's left edge cuts in half.
+///
+/// A box drawn from column `x` writes its border into `x`, but a CJK
+/// character or emoji that STARTS at `x - 1` still claims both columns. The
+/// terminal draws it over the border, and when the character itself did not
+/// change, ratatui's diff skips the cell after it — so the `│` was never
+/// even sent, and the menu or pane lost its left edge on that row. A space
+/// in its place is what every terminal multiplexer shows for half a glyph.
+fn blank_wide_cells_under_overlays(frame: &mut Frame, targets: &Targets) {
+    let buf = frame.buffer_mut();
+    for t in targets.as_slice() {
+        if t.action != Action::Absorb || t.z < Z_OVERLAY || t.zone.x == 0 {
+            continue;
+        }
+        let x = t.zone.x - 1;
+        for y in t.zone.y..t.zone.y.saturating_add(t.zone.h) {
+            if let Some(cell) = buf.cell_mut((x, y))
+                && display_width(cell.symbol()) > 1
+            {
+                cell.set_symbol(" ");
+            }
+        }
+    }
 }
 
 /// The one pane that owns the screen, and nothing under it.
@@ -6015,6 +6042,43 @@ mod pane_frame_tests {
         t.draw(|f| draw_full(f, app, &mut painted, &mut HashMap::new()))
             .unwrap();
         (t.backend().buffer().clone(), painted)
+    }
+
+    /// A menu opened over CJK text whose left edge lands on the right half
+    /// of a character: the character must not survive into the border's
+    /// column, or the terminal draws it over the `│` (and ratatui's diff,
+    /// seeing the character unchanged, never sends the border at all).
+    #[test]
+    fn an_overlay_edge_never_sits_inside_a_wide_character() {
+        let src = "文".repeat(200);
+        let mut bad = Vec::new();
+        for x in 3..14 {
+            let mut a = App::new("t.md".into(), carrel_core::Document::parse(&src), 40, 16);
+            update(
+                &mut a,
+                Action::MenuOpen {
+                    at: (x, 3),
+                    byte: Some(0),
+                },
+            );
+            let (buf, painted) = paint(&a);
+            let Some(z) = painted
+                .targets
+                .as_slice()
+                .iter()
+                .find(|t| t.z == Z_MENU && t.action == Action::Absorb)
+                .map(|t| t.zone)
+            else {
+                panic!("no menu at {x}");
+            };
+            for y in z.y..z.y + z.h {
+                let left = buf[(z.x - 1, y)].symbol();
+                if display_width(left) > 1 {
+                    bad.push(format!("menu at x={}: {left:?} at row {y}", z.x));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
     }
 
     fn row_text(buf: &Buffer, y: u16, from: u16, to: u16) -> Vec<(u16, String)> {

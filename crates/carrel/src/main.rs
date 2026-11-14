@@ -1615,6 +1615,13 @@ fn doc_span_at(app: &App, col: u16, row: u16) -> Option<(u32, u32)> {
     app.doc_span_at(col, row)
 }
 
+/// Where a left press in the document starts a selection: the cluster
+/// under it, or — left of a row's text, in the margin — that row's start,
+/// so a drag can begin there the way it does in any terminal.
+fn press_span(app: &App, col: u16, row: u16) -> Option<(u32, u32)> {
+    doc_span_at(app, col, row).or_else(|| app.doc_row_start_left_of(col, row))
+}
+
 /// Copy to the system clipboard via OSC 52. Terminals without it ignore the
 /// sequence — the same graceful degradation as OSC 8.
 fn osc52(text: &str) -> std::io::Result<()> {
@@ -3018,7 +3025,7 @@ fn mouse_action(
             if let Some(b) = app.margin_row_at(m.column, m.row) {
                 return Some(Action::OutlineJumpTo(b));
             }
-            let span = doc_span_at(app, m.column, m.row)?;
+            let span = press_span(app, m.column, m.row)?;
             ptr.selecting = true;
             match ptr.clicks.press(m.column, m.row) {
                 2 => Some(Action::SelectWord(span.0)),
@@ -3034,7 +3041,10 @@ fn mouse_action(
                 total,
                 max_scroll,
             ))),
-            None => doc_span_at(app, m.column, m.row).map(Action::SelectDrag),
+            // Only a drag that started on the text extends, clamped to the
+            // nearest text: off it, a release used to copy nothing.
+            None if ptr.selecting => app.doc_drag_at(m.column, m.row).map(Action::SelectDrag),
+            None => None,
         },
         MouseEventKind::Up(MouseButton::Left) => {
             if ptr.dragging.is_some() {

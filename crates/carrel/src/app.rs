@@ -708,6 +708,12 @@ pub struct App {
     pub selection: Option<std::ops::Range<u32>>,
     /// The cluster the current drag started on. `None` when no drag is live.
     pub sel_anchor: Option<(u32, u32)>,
+    /// The byte a completed click on a heading just folded or unfolded at,
+    /// held for exactly one action: if that action is the second press of
+    /// a double-click, the fold is put back and the word under the FIRST
+    /// press is selected. A double-click on a heading word used to collapse
+    /// the section as well, because its first half is a completed click.
+    pub click_fold: Option<u32>,
     /// One-shot clipboard outbox: the state machine fills it, the event loop
     /// drains it into an OSC 52 escape. The state layer never does I/O.
     /// A [`Clip`], not a `String`, so no copy path can skip the cleaning.
@@ -1149,6 +1155,7 @@ impl App {
             mtime: None,
             selection: None,
             sel_anchor: None,
+            click_fold: None,
             clipboard: None,
             home_stash: None,
             cols,
@@ -2920,6 +2927,108 @@ impl App {
         ))
     }
 
+    /// Where a drag that has wandered off the text lands: the nearest caret
+    /// position, as an empty `(byte, byte)` span, so the selection's
+    /// `min`/`max` arithmetic takes exactly the text up to it and no more.
+    ///
+    /// [`Self::doc_span_at`] answers `None` anywhere that is not a character,
+    /// and a drag fed only through it dropped every motion off the text — so
+    /// a drag released on the blank row under a paragraph, in the margin, or
+    /// on the status row copied nothing at all. Every terminal and every GUI
+    /// clamps instead: right of a row is that row's end, left of it is its
+    /// start, a blank gap row is the end of the block above, and above or
+    /// below the text area is the first visible row's start or the last
+    /// one's end. `None` only when there is no text to land on.
+    #[must_use]
+    pub fn doc_drag_at(&self, col: u16, row: u16) -> Option<(u32, u32)> {
+        enum Side {
+            Start,
+            End,
+            Col,
+        }
+        if let Some(span) = self.doc_span_at(col, row) {
+            return Some(span);
+        }
+        let top = self.text_y();
+        let h = self.text_h();
+        if h == 0 || self.doc.block_count() == 0 {
+            return None;
+        }
+        let (row, side) = if row < top {
+            (top, Side::Start)
+        } else if row >= top + h {
+            (top + h - 1, Side::End)
+        } else {
+            (row, Side::Col)
+        };
+        let vrow = self.view.scroll_row + u32::from(row - top);
+        let caret = |b: u32| Some((b, b));
+        // Below the last row of the document — a short document leaves the
+        // bottom of the text area empty — is the end of everything.
+        let block = self.layout.block_at_row(vrow);
+        if vrow >= self.layout.total_rows() || block.get() >= self.doc.block_count() {
+            return caret(u32::try_from(self.doc.text.len()).unwrap_or(u32::MAX));
+        }
+        let mut rows = Vec::new();
+        self.layout.rows_for(&self.doc, block, &mut rows);
+        let sub = usize::try_from(vrow.saturating_sub(self.layout.row_start(block))).ok()?;
+        let Some(r) = rows.get(sub).map(|r| self.visible_row(r)) else {
+            return caret(self.doc.node_for_block(block).doc.end);
+        };
+        // A row that holds no byte: the gap a block owns below its text (or
+        // the bottom margin), a card's rule, an image's art. The gap row is
+        // empty AT THE BLOCK'S START, so taking it at face value ended a
+        // drag released under a paragraph at the paragraph's first byte.
+        // It is the end of the text above it in the block; art with no text
+        // above it is the block's start, and the gap below art its end.
+        if r.doc.is_empty() {
+            let above = rows[..sub]
+                .iter()
+                .rev()
+                .map(|r| self.visible_row(r))
+                .find(|r| !r.doc.is_empty());
+            let below_content = sub >= self.layout.content_height(&self.doc, block) as usize;
+            return caret(match above {
+                Some(a) => a.doc.end,
+                None if below_content => self.doc.node_for_block(block).doc.end,
+                None => r.doc.start,
+            });
+        }
+        let at_start = match side {
+            Side::Start => true,
+            Side::End => false,
+            Side::Col => {
+                let (block_x, _) = self.block_span_x(block);
+                col < block_x.saturating_add(r.indent)
+            }
+        };
+        caret(if at_start { r.doc.start } else { r.doc.end })
+    }
+
+    /// A press left of a text row — the margin, or a list item's marker
+    /// column — as a caret at that row's start, so a drag can begin there the
+    /// way it does in a terminal. Only on a row that holds text: a press on a
+    /// blank row still starts nothing.
+    #[must_use]
+    pub fn doc_row_start_left_of(&self, col: u16, row: u16) -> Option<(u32, u32)> {
+        let top = self.text_y();
+        if row < top || row >= top + self.text_h() {
+            return None;
+        }
+        let vrow = self.view.scroll_row + u32::from(row - top);
+        let block = self.layout.block_at_row(vrow);
+        if block.get() >= self.doc.block_count() {
+            return None;
+        }
+        let mut rows = Vec::new();
+        self.layout.rows_for(&self.doc, block, &mut rows);
+        let sub = usize::try_from(vrow.saturating_sub(self.layout.row_start(block))).ok()?;
+        let r = self.visible_row(rows.get(sub)?);
+        let (block_x, _) = self.block_span_x(block);
+        (!r.doc.is_empty() && col < block_x.saturating_add(r.indent))
+            .then_some((r.doc.start, r.doc.start))
+    }
+
     /// Effective pan is clamped against the current viewport on every use.
     #[must_use]
     pub fn table_offset(&self, block: BlockIdx) -> u32 {
@@ -4253,6 +4362,15 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         action,
         Action::Hover(_) | Action::MenuHover(_) | Action::AutoTick
     );
+    // A click's fold is undone only by the press that completes it as a
+    // double-click; anything else in between — a menu's "Select word"
+    // included — means the click stood.
+    if !matches!(
+        action,
+        Action::SelectWord(_) | Action::Hover(_) | Action::AutoTick
+    ) {
+        app.click_fold = None;
+    }
     // The pointer's cell is pure decoration, so it is answered before any
     // modal state gets a say: hover must never be able to change what a
     // menu or a pane would do.
@@ -5359,6 +5477,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 && let Some((byte, _)) = pressed
                 && fold_at(app, byte)
             {
+                app.click_fold = Some(byte);
                 return Outcome::Redraw;
             }
             copy_selection(app);
@@ -5392,6 +5511,18 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
         Action::SelectWord(byte) => {
+            // The second press of a double-click on a heading: its first
+            // press already toggled the fold. Undo that rather than defer
+            // every single click by the double-click interval — a beginner
+            // clicking a heading should see it fold at once — and take the
+            // word the first press was on, which the fold may have moved.
+            let byte = match app.click_fold.take() {
+                Some(first) => {
+                    fold_at(app, first);
+                    first
+                }
+                None => byte,
+            };
             app.selection = word_range_at(&app.doc.text, byte);
             Outcome::Redraw
         }
@@ -8708,6 +8839,47 @@ mod tests {
         update(&mut a, Action::SelectRelease);
         assert!(a.selection.is_none() || a.folded.is_empty());
         assert!(a.folded.is_empty(), "a drag is a selection, not a fold");
+    }
+
+    /// The frontend reports a double-click as press, release, then a second
+    /// press as `SelectWord`. The first half is a completed click, so it
+    /// folded the section — and selecting a heading word collapsed what was
+    /// under it.
+    #[test]
+    fn a_double_click_on_a_heading_word_selects_it_and_leaves_the_fold_alone() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        let alpha = heading_id(&a, "Alpha");
+        let at = a.doc.nodes[alpha.0 as usize].doc.start;
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        assert!(a.folded.contains(&alpha), "the first click folds, at once");
+        update(&mut a, Action::Hover((3, 3)));
+        update(&mut a, Action::SelectWord(at + 1));
+        assert!(!a.folded.contains(&alpha), "the second press puts it back");
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(a.clipboard.as_deref(), Some("Alpha"));
+
+        // Folded to begin with, a double-click leaves it folded.
+        update(&mut a, Action::FoldAt(at));
+        assert!(a.folded.contains(&alpha));
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        update(&mut a, Action::SelectWord(at + 1));
+        assert!(a.folded.contains(&alpha), "still folded");
+    }
+
+    /// Only the very next press undoes a click's fold: "Select word" from a
+    /// menu opened afterwards is not the second half of a double-click.
+    #[test]
+    fn a_later_select_word_does_not_undo_a_clicks_fold() {
+        let mut a = App::new("f.md".into(), Document::parse(FOLD_SRC), 40, 10);
+        let alpha = heading_id(&a, "Alpha");
+        let at = a.doc.nodes[alpha.0 as usize].doc.start;
+        update(&mut a, Action::SelectAnchor((at, at + 1)));
+        update(&mut a, Action::SelectRelease);
+        update(&mut a, Action::ScrollTo(0));
+        update(&mut a, Action::SelectWord(at + 1));
+        assert!(a.folded.contains(&alpha), "the click stood");
     }
 
     #[test]

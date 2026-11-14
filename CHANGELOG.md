@@ -46,6 +46,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   and a document's images share one memory budget: twenty references to one large PNG
   used to exhaust memory and crash with the terminal left broken.
 
+- **Dragging a selection off the text still copies it.** Releasing past the end of a
+  line, on the blank row under a paragraph, in the margin, or on the status row now
+  selects up to the nearest text, as a terminal does; a drag can also start in the left
+  margin. Double-clicking a word in a heading selects it without collapsing the section,
+  and a menu or pane opened over CJK text or emoji keeps its left border.
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves

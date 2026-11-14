@@ -1303,6 +1303,37 @@ fn the_conformance_corpus_survives_a_pty_round_trip() {
 /// The wave-B spec said mouse input was not scriptable end to end. It is:
 /// `ESC[<B;COL;ROWM` presses and `…m` releases, with `B` = 0 for the left
 /// button and 2 for the right, at 1-based coordinates.
+/// A drag released OFF the text still copies what it passed over. The real
+/// event loop is the only place the press, the drag and the release meet, so
+/// this proves the whole path: the release lands on the blank gap row under
+/// the paragraph, where no character is, and the OSC 52 payload is the
+/// paragraph. It used to be no payload at all.
+#[test]
+fn a_drag_released_on_a_blank_row_still_copies_the_text_it_crossed() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("doc.md"),
+        "# Head\n\nalpha beta gamma\n\nsecond para\n",
+    )
+    .unwrap();
+    // 1-based: the paragraph is row 5 from column 3; row 6 is the gap.
+    // Press on "a", drag (button 0 + motion = 32) onto the gap, release.
+    let cap = pty_run(
+        "doc.md",
+        r"\033[<0;3;5M\033[<32;40;6M\033[<0;40;6mq",
+        d.path(),
+    );
+    // base64("alpha beta gamma")
+    assert!(
+        cap.contains("YWxwaGEgYmV0YSBnYW1tYQ=="),
+        "the paragraph reached the clipboard"
+    );
+}
+
 #[test]
 fn a_right_click_opens_a_menu_and_a_click_on_a_row_acts() {
     if !script_available() {
