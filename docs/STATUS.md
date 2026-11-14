@@ -513,8 +513,9 @@ reflex), Ctrl-T toggles tables, Alt-Q closes the document. Making chords inert w
 one guard per keymap; the text inputs already have it (`keys::is_chord`).
 
 Upstream: pulldown-cmark 0.13.4 repeats the rest of a paragraph after an empty-label
-wikilink (`[[x|]] abc` read `]] abc abc`); `document::EmptyLabelGuard` mends the event
-stream, and can go when a release fixes it.
+wikilink (`[[x|]] abc` read `]] abc abc`); `document::body_events` reads such a link as
+if escaped (`mask_empty_labels` masks its brackets with same-length `%`, parses that, and
+re-borrows every string from the real source), and can go when a release fixes it.
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.

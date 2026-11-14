@@ -30,7 +30,7 @@ use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use pulldown_cmark::{
-    CodeBlockKind, Event, LinkType, MetadataBlockKind, Options, Parser, Tag, TagEnd,
+    CodeBlockKind, CowStr, Event, LinkType, MetadataBlockKind, Options, Parser, Tag, TagEnd,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -281,107 +281,175 @@ fn unsmartened(url: &str) -> String {
     out
 }
 
-/// pulldown-cmark 0.13.4 gets a wikilink with an empty label wrong.
-/// `[[x|]] abc` arrives as a link opened over `[[x|]]` that holds `]]` and
-/// then the REST of the paragraph, correctly parsed, then the link's
-/// `End`, then that rest a second time — `]] abc abc` on screen — and the
-/// second copy is misparsed (`[[y]]` in it is no wikilink).
+/// pulldown-cmark 0.13.4 gets a wikilink with an EMPTY label wrong.
+/// `[[x|]] abc` arrives as a link opened over `[[x|]]` that holds `]]`,
+/// then the rest of the paragraph, then the link's `End`, then that rest a
+/// second time: `]] abc abc` on screen. Wrapped in emphasis it is worse —
+/// `*[[x|]]* now` puts the closing `*` inside the link as text and the
+/// emphasis runs on to the paragraph's end.
 ///
-/// So the link is shown as the text it was typed as, its `]]` dropped, the
-/// rest it holds kept, and the replay after its `End` dropped: every leaf
-/// event, and every container opened, that starts before the furthest
-/// source already emitted (`high`), with the `End` of each container it
-/// dropped. A kept `End` reaching `high` with nothing pending turns the
-/// guard off again, so it costs nothing until a document has the shape
-/// and changes nothing in one that does not.
-#[derive(Default)]
-struct EmptyLabelGuard {
-    /// The empty-label links still open, by range.
-    bogus: Vec<Range<usize>>,
-    /// Containers of the replay that were dropped, by range.
-    dropped: Vec<Range<usize>>,
-    /// The end of the furthest source emitted while the guard is on.
-    high: Option<usize>,
-}
-
-impl EmptyLabelGuard {
-    fn pass<'a>(
-        &mut self,
-        src: &'a str,
-        ev: Event<'a>,
-        r: Range<usize>,
-    ) -> Option<(Event<'a>, Range<usize>)> {
-        if let Event::Start(Tag::Link {
+/// An event filter that dropped the replay got three things wrong in a
+/// cold review: a label that merely ENDS in `|` (`[[n|a|]]`, which the
+/// parser reads correctly) lost its link, the emphasis case kept its
+/// closer as text, and a replayed empty `[](u)` slipped through as a
+/// phantom link. So the parse is not mended, it is avoided: the document
+/// is read as if each empty-label wikilink were escaped (`\[\[x|\]\]`,
+/// which the parser reads right). Each one's `[[` and `]]` are masked with
+/// `%` — the same byte length, so every offset holds, and punctuation like
+/// the escape's backslash, so emphasis flanking reads it alike (one `)`
+/// for the smart-quote rule, see [`mask_empty_labels`]) — the masked
+/// text is parsed instead, and every string that parse
+/// borrows is taken back from the real source at the same offsets, which
+/// puts the brackets back.
+fn is_empty_label(text: &str, ev: &Event<'_>, r: &Range<usize>) -> bool {
+    matches!(
+        ev,
+        Event::Start(Tag::Link {
             link_type: LinkType::WikiLink { has_pothole: true },
             ..
-        }) = &ev
-            && src[r.clone()].ends_with("|]]")
-            && self.high.is_none_or(|h| r.start >= h)
-        {
-            self.bogus.push(r.clone());
-            self.high = Some(r.end);
-            // As text, with its backslash escapes read as text reads
-            // them: `[[a\|]]` shows `[[a|]]`, not its backslash.
-            let typed = &src[r.clone()];
-            let text: pulldown_cmark::CowStr<'a> = if typed.contains('\\') {
-                let mut out = String::with_capacity(typed.len());
-                let mut chars = typed.chars().peekable();
-                while let Some(c) = chars.next() {
-                    match chars.peek() {
-                        Some(&n) if c == '\\' && n.is_ascii_punctuation() => {
-                            out.push(n);
-                            chars.next();
-                        }
-                        _ => out.push(c),
-                    }
-                }
-                out.into()
+        })
+    ) && text.get(r.clone()).is_some_and(|s| {
+        // The pothole is the first `|`, escaped or not (`[[a\|]]` is a
+        // link to `a\`), so the label is empty exactly when that `|` is
+        // the one before `]]`.
+        s.starts_with("[[") && s.ends_with("|]]") && s.find('|') == Some(s.len() - 3)
+    })
+}
+
+/// How many masking rounds before the parse is taken as it stands. A mask
+/// can only uncover a wikilink the first parse folded into a replay, so
+/// one round almost always settles it.
+const MASK_ROUNDS: usize = 8;
+
+/// `src` with every empty-label wikilink masked (see [`is_empty_label`]),
+/// or `None` when it has none — the common case, which costs one
+/// substring search.
+fn mask_empty_labels(src: &str) -> Option<String> {
+    if !src.contains("|]]") {
+        return None;
+    }
+    let mut masked: Option<String> = None;
+    for _ in 0..MASK_ROUNDS {
+        let text = masked.as_deref().unwrap_or(src);
+        let found: Vec<Range<usize>> = Parser::new_ext(text, markdown_options())
+            .into_offset_iter()
+            .filter(|(ev, r)| is_empty_label(text, ev, r))
+            .map(|(_, r)| r)
+            .collect();
+        if found.is_empty() {
+            break;
+        }
+        let m = masked.get_or_insert_with(|| src.to_owned());
+        for r in found {
+            // ASCII for ASCII: char boundaries and offsets are untouched.
+            // Smart punctuation never opens a `'` after `]` or `)`, so
+            // before one the closing mask ends in `)`: with `%`, the `'`
+            // in `[[x|]]'s` opened a quote and read `‘`.
+            let close = if m.as_bytes().get(r.end) == Some(&b'\'') {
+                "%)"
             } else {
-                typed.into()
+                "%%"
             };
-            return Some((Event::Text(text), r));
+            m.replace_range(r.start..r.start + 2, "%%");
+            m.replace_range(r.end - 2..r.end, close);
         }
-        let Some(high) = self.high else {
-            return Some((ev, r));
-        };
-        match ev {
-            Event::End(_) => {
-                if self.bogus.last() == Some(&r) {
-                    self.bogus.pop();
-                    return None;
-                }
-                if self.dropped.last() == Some(&r) {
-                    self.dropped.pop();
-                    return None;
-                }
-                if self.bogus.is_empty() && self.dropped.is_empty() && r.end >= high {
-                    self.high = None;
-                }
-                Some((ev, r))
-            }
-            Event::Start(_) if r.start < high => {
-                self.dropped.push(r);
-                None
-            }
-            Event::Start(_) => Some((ev, r)),
-            _ if r.start < high => None,
-            _ => {
-                self.high = Some(high.max(r.end));
-                Some((ev, r))
+    }
+    masked
+}
+
+/// A string from the parse of `masked`, taken back from `src`: a borrow
+/// is re-borrowed at the same offsets, which restores any masked bracket.
+/// An owned string is a decoded entity or a smart quote or dash, which
+/// never holds a mask.
+fn unmasked<'a>(s: CowStr<'_>, masked: &str, src: &'a str) -> CowStr<'a> {
+    match s {
+        CowStr::Borrowed(b) => {
+            let off = (b.as_ptr() as usize).wrapping_sub(masked.as_ptr() as usize);
+            match off
+                .checked_add(b.len())
+                .filter(|&end| end <= masked.len())
+                .and_then(|end| src.get(off..end))
+            {
+                Some(back) => CowStr::Borrowed(back),
+                None => CowStr::from(b.to_owned()),
             }
         }
+        owned => owned.into_static(),
+    }
+}
+
+/// An event from the parse of `masked`, every string in it taken back
+/// from `src` (see [`unmasked`]).
+fn unmasked_event<'a>(ev: Event<'_>, masked: &str, src: &'a str) -> Event<'a> {
+    let u = |s: CowStr<'_>| unmasked(s, masked, src);
+    match ev {
+        Event::Start(tag) => Event::Start(match tag {
+            Tag::Heading {
+                level,
+                id,
+                classes,
+                attrs,
+            } => Tag::Heading {
+                level,
+                id: id.map(u),
+                classes: classes.into_iter().map(u).collect(),
+                attrs: attrs.into_iter().map(|(k, v)| (u(k), v.map(u))).collect(),
+            },
+            Tag::CodeBlock(CodeBlockKind::Fenced(info)) => {
+                Tag::CodeBlock(CodeBlockKind::Fenced(u(info)))
+            }
+            Tag::FootnoteDefinition(label) => Tag::FootnoteDefinition(u(label)),
+            Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            } => Tag::Link {
+                link_type,
+                dest_url: u(dest_url),
+                title: u(title),
+                id: u(id),
+            },
+            Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            } => Tag::Image {
+                link_type,
+                dest_url: u(dest_url),
+                title: u(title),
+                id: u(id),
+            },
+            // No string in it.
+            other => other.into_static(),
+        }),
+        Event::Text(s) => Event::Text(u(s)),
+        Event::Code(s) => Event::Code(u(s)),
+        Event::InlineMath(s) => Event::InlineMath(u(s)),
+        Event::DisplayMath(s) => Event::DisplayMath(u(s)),
+        Event::Html(s) => Event::Html(u(s)),
+        Event::InlineHtml(s) => Event::InlineHtml(u(s)),
+        Event::FootnoteReference(s) => Event::FootnoteReference(u(s)),
+        other => other.into_static(),
     }
 }
 
 /// The parser's events for markdown with no frontmatter, as the reader
-/// takes them: through [`EmptyLabelGuard`]. `diff` checks its escapes
-/// against exactly this stream, since a stream it did not share is a
-/// parse it did not check.
-pub(crate) fn body_events(src: &str) -> impl Iterator<Item = (Event<'_>, Range<usize>)> {
-    let mut guard = EmptyLabelGuard::default();
-    Parser::new_ext(src, markdown_options())
-        .into_offset_iter()
-        .filter_map(move |(ev, r)| guard.pass(src, ev, r))
+/// takes them: with every empty-label wikilink read as escaped (see
+/// [`is_empty_label`]). `diff` checks its escapes against exactly this
+/// stream, since a stream it did not share is a parse it did not check.
+pub(crate) fn body_events(src: &str) -> Box<dyn Iterator<Item = (Event<'_>, Range<usize>)> + '_> {
+    match mask_empty_labels(src) {
+        None => Box::new(Parser::new_ext(src, markdown_options()).into_offset_iter()),
+        Some(masked) => Box::new(
+            Parser::new_ext(&masked, markdown_options())
+                .into_offset_iter()
+                .map(|(ev, r)| (unmasked_event(ev, &masked, src), r))
+                .collect::<Vec<_>>()
+                .into_iter(),
+        ),
+    }
 }
 
 /// GFM extended autolinks: bare `www.` runs and bare `http://` / `https://`
@@ -415,13 +483,22 @@ pub(crate) fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
 
 /// A bare URL in one text run: where it shows (`shown`, in the display
 /// text), the address it copies, and — when it is paired with a URL in
-/// the source — where that was typed (`typed`, in the source text) and
-/// whether the two are the same text (`exact`).
+/// the source — where that was typed (`typed`, in the source text).
+/// `hyphens`: the display differs from what was typed, and its dashes are
+/// smart punctuation's, to be shown (and in `url`, copied) as the hyphens
+/// typed — paired or not.
 pub(crate) struct BareUrl {
     pub(crate) shown: Range<usize>,
     pub(crate) url: String,
     pub(crate) typed: Option<Range<usize>>,
-    pub(crate) exact: bool,
+    pub(crate) hyphens: bool,
+}
+
+/// `s` with smart punctuation's dashes put back as the hyphens they were
+/// typed as. Dashes only: a curly quote in a URL stays curly, since
+/// `it’s` still reads as prose.
+fn hyphenated(s: &str) -> String {
+    s.replace('\u{2014}', "---").replace('\u{2013}', "--")
 }
 
 /// The bare URLs the reader links in a text run `t`, whose source is
@@ -446,7 +523,7 @@ pub(crate) fn bare_urls(t: &str, raw: &str, runs_on: bool) -> Vec<BareUrl> {
                 typed: Some(shown.clone()),
                 shown,
                 url,
-                exact: true,
+                hyphens: false,
             })
             .collect();
     }
@@ -475,26 +552,31 @@ pub(crate) fn bare_urls(t: &str, raw: &str, runs_on: bool) -> Vec<BareUrl> {
             // in order: asking only for the undone form let `it’s` (typed
             // curly) take a later `it's`, and the two swapped addresses.
             let plain = unsmartened(&url);
-            match typed[next_typed..]
+            if let Some(i) = typed[next_typed..]
                 .iter()
                 .position(|(_, u)| *u == url || *u == plain)
             {
-                Some(i) => {
-                    next_typed += i + 1;
-                    let (r, u) = &typed[next_typed - 1];
-                    BareUrl {
-                        exact: *u == url,
-                        shown,
-                        url: u.clone(),
-                        typed: Some(r.clone()),
-                    }
-                }
-                None => BareUrl {
+                next_typed += i + 1;
+                let (r, u) = &typed[next_typed - 1];
+                BareUrl {
+                    hyphens: *u != url,
                     shown,
-                    url,
+                    url: u.clone(),
+                    typed: Some(r.clone()),
+                }
+            } else {
+                // An entity or an escape in it keeps it from pairing, but
+                // its dashes are still smart punctuation's unless the
+                // author typed one: `a--b?c&amp;d` showed and copied
+                // `a–b`, an address nobody could type back.
+                let hyphens = url.contains(['\u{2013}', '\u{2014}'])
+                    && !raw.contains(['\u{2013}', '\u{2014}']);
+                BareUrl {
+                    url: if hyphens { hyphenated(&url) } else { url },
+                    shown,
                     typed: None,
-                    exact: false,
-                },
+                    hyphens,
+                }
             }
         })
         .collect()
@@ -2022,8 +2104,8 @@ impl<'a> Builder<'a> {
         for BareUrl {
             shown: range,
             url,
-            typed,
-            exact,
+            hyphens,
+            ..
         } in hits
         {
             // Its hyphens are SHOWN as typed too: a dash is never part of an
@@ -2031,13 +2113,9 @@ impl<'a> Builder<'a> {
             // could type back. (A `git log` message used to escape the `--`
             // to keep it two hyphens, which cut the URL there and lost the
             // link.) Quotes keep their curl: `it’s` still reads as prose.
-            let as_typed = typed.is_some() && !exact;
             let shown: Cow<'_, str> =
-                if as_typed && t[range.clone()].contains(['\u{2013}', '\u{2014}']) {
-                    t[range.clone()]
-                        .replace('\u{2014}', "---")
-                        .replace('\u{2013}', "--")
-                        .into()
+                if hyphens && t[range.clone()].contains(['\u{2013}', '\u{2014}']) {
+                    hyphenated(&t[range.clone()]).into()
                 } else {
                     Cow::Borrowed(&t[range.clone()])
                 };
@@ -6015,6 +6093,8 @@ mod tests {
             "\"quoted\" -- it's...\n",
             "| a---b | c...d |\n|---|---|\n| ''&amp; | x |\n",
             "- x\n\n  ```\n  y\n  ```\n  a---b\n",
+            "see *[[x|]]* now -- [[y]]\n",
+            "[[a\\|]] b https://x.example/a--b?c&amp;d ok\n",
         ] {
             assert_provenance_exact(src);
         }
@@ -6035,6 +6115,9 @@ mod tests {
                 "a", " ", "--", "---", "...", "'", "\"", "&amp;", "&lt;", "\\*",
                 "*", "_", "`", "\t", "\n", "x^2^", "~y~", "www.a.com", "|", "#",
                 "é", "\u{2014}", "\n\n", "- ", "> ", "$x$", "[a](b)",
+                // Read through the empty-label mask, and a bare URL whose
+                // dashes are shown as typed.
+                "[[x|]]", "[[n|a|]]", "https://a.b/c--d",
             ][..]), 0..24)
         ) {
             assert_provenance_exact(&parts.concat());

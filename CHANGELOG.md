@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **`[[x|]]` reads exactly as `\[\[x|\]\]` would**: wrapped in `*`, `**` or `~~` it no
+  longer shows its closer and styles the rest of the paragraph, a label that ends in `|`
+  (`[[notes|a|]]`) is a link again, and no phantom link follows it. A bare URL with an
+  entity in it (`a--b?c&amp;d`) shows and copies its hyphens too.
 - **A selection survives a live reload and a streaming pipe**: dragging over `agent | carrel`
   while it runs, or over a file being saved, copies on release instead of losing the drag.
 - **Home and End in a note go to the ends of the cursor's line**, not of the whole note.
