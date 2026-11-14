@@ -19,6 +19,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **An image outside the folder can be shown when you ask**: its alt text is a
   `click to show` button, a right-click row, and the second Enter in its lightbox. It
   shows that one file until carrel exits; nothing is remembered.
+- **A table card's dividing line stays put on a resize**: with a divider on top, a resize,
+  reload or resume used to come back one row lower, and the last divider a whole card higher.
 - **`git log | carrel` shows fewer stray backslashes**: none inside a backtick span that
   runs across a `#` line, and none from a line break where the message's own markdown
   already ends the paragraph.

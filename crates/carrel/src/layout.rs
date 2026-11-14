@@ -516,8 +516,32 @@ impl Layout {
         // An EMPTY text row — the blank first line of math shown as its
         // source — holds no byte, so "the first row ending after the
         // anchor" skipped it and its own anchor came back a row late. It is
-        // the row its start names. Decoration rows are not: the gap and a
-        // card's rules name the row their start is already in.
+        // the row its start names. Decoration rows are not: the gap names
+        // the row its start is already in.
+        //
+        // A card's rule is found by its exact byte, FIRST: `card_rows`
+        // gives each a byte no other row holds, but after an empty last
+        // cell that byte sits before the cell's blank row, which the range
+        // search below would reach first. Rules are the decorations of a
+        // table not at its start (the gap is), as paint tells them apart.
+        // Never a byte a text row holds: the rule that has no byte of its
+        // own (`card_rows`' fallback) must not take the next card's first
+        // row away from it.
+        let node = doc.node_for_block(b);
+        let rule = (matches!(node.kind, NodeKind::Table { .. })
+            && !rows.iter().any(|r| r.doc.contains(&anchor)))
+        .then(|| {
+            rows.iter().position(|r| {
+                matches!(r.kind, carrel_core::RowKind::Decoration)
+                    && r.doc.is_empty()
+                    && r.doc.start == anchor
+                    && anchor != node.doc.start
+            })
+        })
+        .flatten();
+        if let Some(i) = rule {
+            return base + i as u32;
+        }
         let idx = rows
             .iter()
             .position(|r| {
@@ -527,6 +551,22 @@ impl Layout {
                         && !matches!(r.kind, carrel_core::RowKind::Decoration))
             })
             .unwrap_or(rows.len() - 1);
+        // A table line's `\n`, which no row of the column view holds, is
+        // the row ABOVE the line after it, as a separator byte is the gap
+        // above the next block. It is a card rule's byte (the `\n` before
+        // the next card), and through the column view it must come back as
+        // the line before that card's: the line after starts past the
+        // reader's anchor. Only the `\n`: a space elided at a card's wrap
+        // point is the next row's, as in a paragraph.
+        let idx = if matches!(node.kind, NodeKind::Table { .. })
+            && idx > 0
+            && anchor < rows[idx].doc.start
+            && doc.text.as_bytes().get(anchor as usize) == Some(&b'\n')
+        {
+            idx - 1
+        } else {
+            idx
+        };
         // END biases LEFT: an anchor exactly on a wrap point belongs to the
         // previous row. See `carrel_core::Affinity`.
         let idx = base as usize + idx;
@@ -775,29 +815,53 @@ fn card_gutter(
     (widest + 2).min(width / 3).max(2)
 }
 
+/// The byte that names the rule under card `r`: the `\n` ending that
+/// card's line, which no row of it holds (its rows end at or before it)
+/// and which comes before the next card's first byte. A rule used to be
+/// named by that first byte, which the next card's first row also
+/// holds, so a rule on top came back one row lower after a resize — and
+/// the trailing rule, pinned to the last card's first cell, a whole
+/// card higher.
+///
+/// An empty last cell holds the `\n` itself: its blank row sits at the
+/// line end. Then the rule takes the last of the three synthetic spaces
+/// before that cell, which no row holds either; `Layout::visual_row_of`
+/// finds a rule by its exact byte before it searches by range, so the
+/// blank row after it in byte order cannot claim it. A single column
+/// has no such space, and the trailing `\n` may not be the table's (a
+/// document without a final newline): those keep the next card's first
+/// byte, or the last card's, as before.
+fn rule_byte(node: &Node, cell_starts: &[u32], ends: &[u32], ncols: usize, r: usize) -> u32 {
+    let nrows = cell_starts.len() / ncols;
+    let e = ends[r];
+    let last = cell_starts[r * ncols + ncols - 1];
+    let fallback = cell_starts[(r + 1).min(nrows - 1) * ncols];
+    if last < e {
+        if e < node.doc.end { e } else { fallback }
+    } else if ncols > 1 && last > cell_starts[r * ncols + ncols - 2] + 1 {
+        last - 1
+    } else {
+        fallback
+    }
+}
+
 /// Emit one overflowing table as cards. Returns the row count.
 ///
 /// Legend (the header line, ordinary wrap, broken wherever a header cell
-/// carries padding), then per body row: a rule `Decoration` anchored at the
-/// row's first cell, then one run of rows per cell via `wrap_range` under
-/// the gutter. An empty cell — written empty, or missing and filled by the
-/// parse — emits one blank row so the card keeps its rhythm and its label. A trailing rule reuses the last body row's own start
-/// (`cell_starts[(nrows - 1) * ncols]`, the same anchor as the rule right
-/// before it) rather than `node.doc.end` or the table's true last content
-/// byte. Two anchors sound wrong for two different-looking rows, but both
-/// values are load-bearing for `StableViewport`, restored through
-/// `Layout::visual_row_of`'s `anchor < row.doc.end` search:
-/// - `node.doc.end` can sit one byte into the inter-block gap (a table
-///   followed by a blank line and another block) and `Document::block_at_doc`
-///   resolves it to the WRONG, following block.
-/// - even the table's own last content byte is exactly the maximum
-///   `doc.end` among this block's rows, so `anchor < row.doc.end` never finds
-///   a match for it and `visual_row_of` falls back to the row LAST in the
-///   list — which, after this trailing rule, is the unrelated block-gap row
-///   anchored at `node.doc.start`, not this one.
+/// carries padding), then per body row: a rule `Decoration`, then one run
+/// of rows per cell via `wrap_range` under the gutter, and a trailing rule
+/// under the last card. An empty cell — written empty, or missing and filled
+/// by the parse — emits one blank row so the card keeps its rhythm and its
+/// label.
 ///
-/// The chosen value is a real row boundary strictly inside the block and
-/// strictly less than the last row's own end, so it always resolves.
+/// **Each rule has a byte of its own**: the `\n` ending the card above it
+/// (`rule_byte` has the exceptions). A rule used to be named by the
+/// next card's first byte, which that card's first row also holds, so a
+/// rule on top came back one row lower after a resize, and the trailing
+/// rule — pinned to the last card's first cell — a whole card higher. The
+/// trailing rule's `\n` is the table's own, never `node.doc.end`, which
+/// can sit one byte into the gap after the block, where
+/// `Document::block_at_doc` hands it to the following block.
 #[allow(clippy::many_single_char_names)] // b, n, r, c, s: the table vocabulary
 pub fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sink: F) -> u32 {
     let node = doc.node_for_block(b);
@@ -810,7 +874,9 @@ pub fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sin
     let gutter = card_gutter(doc, cell_starts, ncols, ends[0], width);
     let indent = node.indent.saturating_add(gutter);
     let mut n = 0u32;
-    let rule = |sink: &mut F, at: u32, n: &mut u32| {
+    // The rule under card `card`, named by `rule_byte`.
+    let rule = |sink: &mut F, card: usize, n: &mut u32| {
+        let at = rule_byte(node, cell_starts, &ends, ncols, card);
         sink(Row {
             block: b,
             doc: at..at,
@@ -819,7 +885,6 @@ pub fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sin
         });
         *n += 1;
     };
-
     // Legend: the header line, at the block's own indent — in runs of
     // header cells that sit side by side with nothing but the three-space
     // gap between them (where paint puts the `·`). A header narrower than
@@ -860,7 +925,7 @@ pub fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sin
     }
 
     for r in 1..nrows {
-        rule(&mut sink, cell_starts[r * ncols], &mut n);
+        rule(&mut sink, r - 1, &mut n);
         for c in 0..ncols {
             let s = cell_starts[r * ncols + c];
             let e = if c + 1 < ncols {
@@ -906,7 +971,7 @@ pub fn card_rows<F: FnMut(Row)>(doc: &Document, b: BlockIdx, width: u16, mut sin
         }
     }
     if nrows > 1 {
-        rule(&mut sink, cell_starts[(nrows - 1) * ncols], &mut n);
+        rule(&mut sink, nrows - 1, &mut n);
     }
     n
 }
@@ -1412,17 +1477,24 @@ mod tests {
         };
         let ncols = cols.len();
         let nrows = cell_starts.len() / ncols;
-        // The trailing rule reuses the last body row's own start — the same
-        // anchor as the rule right before it — NOT `node.doc.end` or the
-        // table's true last content byte. Either of those is either outside
-        // the block (in the inter-block gap) or exactly the maximum
-        // `doc.end` among this block's rows, which `visual_row_of`'s
-        // `anchor < row.doc.end` search can never match. See the doc comment
-        // on `card_rows`.
-        assert_eq!(
-            rules.last().unwrap().doc.start,
-            cell_starts[(nrows - 1) * ncols]
-        );
+        // Each rule is named by the `\n` ending the card above it: a byte
+        // of the table that no row holds, so it names the rule and nothing
+        // else. The trailing rule takes the last line's `\n`, inside the
+        // block — never `node.doc.end`, which can sit in the gap after it
+        // and resolve to the following block. See the doc comment on
+        // `card_rows`.
+        let last = cell_starts[(nrows - 1) * ncols] as usize;
+        let want: Vec<u32> = (1..nrows)
+            .map(|r| cell_starts[r * ncols] - 1)
+            .chain([(last + doc.text[last..].find('\n').unwrap()) as u32])
+            .collect();
+        let got: Vec<u32> = rules.iter().map(|r| r.doc.start).collect();
+        assert_eq!(got, want);
+        for &at in &want {
+            assert!(at < node.doc.end);
+            assert_eq!(&doc.text[at as usize..=at as usize], "\n");
+            assert!(rows.iter().all(|r| !r.doc.contains(&at)), "{at}");
+        }
         // Value rows are inset by the gutter (widest header "description" + 2,
         // clamped to width/3 = 10 at width 30 — the same clamp exercised by
         // `the_gutter_clamps_to_a_third_of_the_viewport` below).

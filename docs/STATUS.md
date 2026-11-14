@@ -492,10 +492,11 @@ planned:
   design: letters are the filter; the border says `esc close`).
 - The lightbox and the notes pane cover the whole frame, `≡` and the lamp included (by
   design; both have their own buttons).
-- A card-view rule row on top of the screen comes back one row lower after a resize, and
-  the trailing rule a card higher: a rule row is named by the next card's first byte,
-  which that card's own first row also holds (found by fuzzing, 2026-11-14). Fixing it
-  needs a byte of its own per rule row.
+- In a single-column table shown as cards, the rule under an EMPTY body cell comes back
+  one row lower after a resize: the blank cell's row holds its line's only byte, so that
+  rule has none of its own and keeps the next card's first. Every other rule is named by
+  the `\n` ending the card above it (`layout::card_rows`, guarded by
+  `view::tests::every_card_row_restores_to_itself`).
 - Valid UTF-8 holding a NUL opens as text (files and pipes alike); only invalid UTF-8 is
   checked for NULs.
 - Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a

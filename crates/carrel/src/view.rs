@@ -103,9 +103,10 @@ pub fn row_anchor(doc: &Document, l: &Layout, row: u32) -> Option<u32> {
     }
     // §3.5 edge case: a decoration row has an empty doc range, but its
     // `doc.start` is already a meaningful anchor — image rows pin it to the
-    // enclosing node's start, and a card-mode rule row pins it to a table
-    // row's first cell (the trailing rule to the LAST row's, never
-    // `node.doc.end` — that offset can resolve past the block). Falling
+    // enclosing node's start, and a card-mode rule row to a byte of its own
+    // that no other row holds, the `\n` ending the card above it
+    // (`layout::card_rows`; never `node.doc.end`, which can resolve past
+    // the block). Falling
     // back to `node.doc.start` unconditionally (the pre-card-view
     // behaviour) collapsed every rule row inside a table to the table's own
     // top, losing the reader's actual row on a resize that lands exactly on
@@ -271,6 +272,143 @@ mod tests {
         assert!(
             failures.is_empty(),
             "{} rows came back elsewhere (width, row, restored, revealed, anchor): {:?}",
+            failures.len(),
+            &failures[..failures.len().min(12)]
+        );
+    }
+
+    /// Wide tables in the shapes that give a card's rows trouble: an empty
+    /// last cell (its row sits on the line's `\n`), a row missing cells, a
+    /// single column, a quote around the table, a table that ends the
+    /// document with and without a final newline, an empty header cell.
+    fn wide_tables() -> Vec<String> {
+        let long = "a value easily long enough to overflow any narrow terminal";
+        let mut out = vec![
+            format!(
+                "| name | description |\n|---|---|\n| alpha | {long} |\n| beta | short |\n\nafter\n"
+            ),
+            format!("| a | b | c |\n|---|---|---|\n| x | {long} | |\n| y | | |\n| z |\n\nafter\n"),
+            format!("| only |\n|---|\n| {long} |\n| |\n| {long} |\n\nafter\n"),
+            format!("> | k | v |\n> |---|---|\n> | one | {long} |\n> | two | |\n\nafter\n"),
+            format!("intro\n\n| k | v |\n|---|---|\n| one | {long} |\n| two | {long} |\n"),
+            format!("intro\n\n| k | v |\n|---|---|\n| one | {long} |\n| two | |"),
+            format!("|  | v |\n|---|---|\n| one | {long} |\n|  | {long} |\n\n# next\n"),
+            format!("- item\n\n  | k | v |\n  |---|---|\n  | one | {long} |\n  | two | {long} |\n"),
+        ];
+        // Generated: rows and columns of varying width, some cells empty.
+        for seed in 0..12u32 {
+            let ncols = 2 + seed % 3;
+            let nrows = 2 + seed % 4;
+            let mut s = String::from("lead\n\n|");
+            for c in 0..ncols {
+                s.push_str(" h");
+                s.push_str(&c.to_string());
+                s.push_str(" |");
+            }
+            s.push_str("\n|");
+            for _ in 0..ncols {
+                s.push_str("---|");
+            }
+            for r in 0..nrows {
+                s.push_str("\n|");
+                for c in 0..ncols {
+                    let k = (seed * 7 + r * 3 + c * 5) % 6;
+                    let cell = match k {
+                        0 => String::new(),
+                        1 => "w".into(),
+                        _ => long[..(k as usize * 9).min(long.len())].into(),
+                    };
+                    s.push(' ');
+                    s.push_str(&cell);
+                    s.push_str(" |");
+                }
+            }
+            s.push_str(if seed % 2 == 0 { "\n\ntail\n" } else { "\n" });
+            out.push(s);
+        }
+        out
+    }
+
+    /// The card view's rule rows round-trip like every other row. A rule
+    /// was named by the next card's first byte, which that card's first
+    /// row also holds, so a rule on top came back one row lower after a
+    /// resize, a reload or a resume — and the trailing rule, pinned to the
+    /// LAST card's first cell, came back a whole card higher (found by
+    /// fuzzing, 2026-11-14).
+    #[test]
+    fn every_card_row_restores_to_itself() {
+        let mut srcs = vec![include_str!("../tests/corpus/conformance.md").to_string()];
+        srcs.extend(wide_tables());
+        let mut failures = Vec::new();
+        let mut rules = 0;
+        for (i, src) in srcs.iter().enumerate() {
+            let doc = Document::parse(src);
+            // Cards, and the column view beside them, which must be
+            // unaffected: its rows are whole lines and hold no rule.
+            let modes = [12u16, 16, 20, 24, 30, 40, 56, 72, 120]
+                .into_iter()
+                .flat_map(|w| [(w, false), (w, true)]);
+            for (width, columns) in modes {
+                let lay =
+                    Layout::with_images(&doc, width, std::collections::HashMap::new(), columns);
+                let l = &lay;
+                let height = 5;
+                for row in 0..=l.max_scroll(height) {
+                    let b = l.block_at_row(row);
+                    let node = doc.node_for_block(b);
+                    if !matches!(node.kind, carrel_core::NodeKind::Table { .. }) {
+                        continue;
+                    }
+                    let mut v = ViewState::new();
+                    v.scroll_to(&doc, l, row, height);
+                    let mut rows = Vec::new();
+                    l.rows_for(&doc, b, &mut rows);
+                    let r = &rows[(row - l.row_start(b)) as usize];
+                    let rule = matches!(r.kind, carrel_core::RowKind::Decoration)
+                        && r.doc.start != node.doc.start;
+                    rules += usize::from(rule);
+                    // The one exception, bounded: a single-column table's
+                    // EMPTY body cell is a blank row on its line's `\n`,
+                    // the line's only byte, so the rule under it has no
+                    // byte of its own and keeps the next card's first.
+                    let sub = (row - l.row_start(b)) as usize;
+                    let ncols = match &node.kind {
+                        carrel_core::NodeKind::Table { cols, .. } => cols.len(),
+                        _ => 0,
+                    };
+                    if rule
+                        && ncols == 1
+                        && sub > 0
+                        && rows[sub - 1].doc.is_empty()
+                        && matches!(rows[sub - 1].kind, carrel_core::RowKind::Text { .. })
+                    {
+                        continue;
+                    }
+                    if rule {
+                        // The rule's byte is the table's own, and no text
+                        // row holds it: search, selection and clicks never
+                        // land on a rule.
+                        let at = v.anchor;
+                        assert!(doc.text.is_char_boundary(at as usize));
+                        assert_eq!(anchor_block(&doc, at), b, "src {i} w {width} row {row}");
+                        assert!(
+                            rows.iter().all(|t| !t.doc.contains(&at)),
+                            "src {i} w {width}: rule byte {at} is in a text row"
+                        );
+                    }
+                    v.restore(&doc, l, height);
+                    let restored = v.scroll_row;
+                    v.reveal(&doc, l, v.anchor, height, Where::Top);
+                    if restored != row || v.scroll_row != row {
+                        failures.push((i, width, row, rule, restored, v.scroll_row, v.anchor));
+                    }
+                }
+            }
+        }
+        assert!(rules > 100, "the fixture must reach card rules: {rules}");
+        assert!(
+            failures.is_empty(),
+            "{} table rows came back elsewhere (src, width, row, rule, restored, revealed, anchor): {:?}",
             failures.len(),
             &failures[..failures.len().min(12)]
         );

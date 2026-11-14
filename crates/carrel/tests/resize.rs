@@ -70,8 +70,12 @@ proptest! {
             "top row {:?} starts past the anchor {} at width {}", top, before, w2,
         );
         if app.view.scroll_row < app.layout.max_scroll(app.text_h()) {
+            // A card rule is named by the `\n` ending the card above it,
+            // which the column view's rows do not hold either: there it is
+            // the line that ends at it, just above the next card's line.
+            let line_end = top.end == before && app.doc.text.as_bytes()[before as usize] == b'\n';
             prop_assert!(
-                top.contains(&before) || top.start == before,
+                top.contains(&before) || top.start == before || line_end,
                 "anchor {} is not on the top row {:?} at width {}", before, top, w2,
             );
         }
@@ -116,4 +120,59 @@ proptest! {
         prop_assert_eq!(app.matches.as_ref().map(|m| m.ranges.clone()), ranges);
         prop_assert_eq!(app.matches.as_ref().and_then(|m| m.current), current);
     }
+}
+
+/// A card rule on top comes back as itself — after a resize to the same
+/// size, and after a round trip through the column view and back. A rule
+/// was named by the next card's first byte, which that card's first row
+/// also holds, so a rule on top came back one row lower, and the trailing
+/// rule a whole card higher (found by fuzzing, 2026-11-14).
+#[test]
+fn every_card_row_survives_a_resize_and_a_trip_through_the_column_view() {
+    let long = "a value easily long enough to overflow any narrow terminal";
+    let srcs = [
+        format!(
+            "lead\n\n| name | description |\n|---|---|\n| alpha | {long} |\n| beta | short |\n\nafter\n"
+        ),
+        format!("| a | b | c |\n|---|---|---|\n| x | {long} | |\n| y | | |\n| z |\n\nafter\n"),
+        format!("> | k | v |\n> |---|---|\n> | one | {long} |\n> | two | |\n\nafter\n"),
+        format!("intro\n\n| k | v |\n|---|---|\n| one | {long} |\n| two | |"),
+    ];
+    let h = 6;
+    let mut failures = Vec::new();
+    let mut rules = 0;
+    for (i, src) in srcs.iter().enumerate() {
+        for w1 in [20u16, 28, 40, 60] {
+            // The same size, then far past the card threshold and back.
+            for w2 in [w1, 200] {
+                let probe = App::new("t.md".into(), Document::parse(src), w1, h);
+                for row in 0..=probe.layout.max_scroll(probe.text_h()) {
+                    let mut app = App::new("t.md".into(), Document::parse(src), w1, h);
+                    let th = app.text_h();
+                    app.view.scroll_to(&app.doc, &app.layout, row, th);
+                    let b = app.layout.block_at_row(row);
+                    let node = app.doc.node_for_block(b);
+                    if !matches!(node.kind, carrel_core::NodeKind::Table { .. }) {
+                        continue;
+                    }
+                    let mut rows = Vec::new();
+                    app.layout.rows_for(&app.doc, b, &mut rows);
+                    let r = &rows[(row - app.layout.row_start(b)) as usize];
+                    let rule = matches!(r.kind, carrel_core::RowKind::Decoration)
+                        && r.doc.start != node.doc.start;
+                    rules += usize::from(rule);
+                    app.on_resize(w2, h);
+                    app.on_resize(w1, h);
+                    if app.view.scroll_row != row {
+                        failures.push((i, w1, w2, row, rule, app.view.scroll_row));
+                    }
+                }
+            }
+        }
+    }
+    assert!(rules > 20, "the fixture must reach card rules: {rules}");
+    assert!(
+        failures.is_empty(),
+        "(src, w1, w2, row, rule, came back at): {failures:?}"
+    );
 }
