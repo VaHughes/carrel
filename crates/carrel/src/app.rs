@@ -694,7 +694,8 @@ pub struct App {
     pub sel_anchor: Option<(u32, u32)>,
     /// One-shot clipboard outbox: the state machine fills it, the event loop
     /// drains it into an OSC 52 escape. The state layer never does I/O.
-    pub clipboard: Option<String>,
+    /// A [`Clip`], not a `String`, so no copy path can skip the cleaning.
+    pub clipboard: Option<Clip>,
     /// The home screen this document was opened from, if any. `q` restores
     /// it — entries, filter, and scroll intact — instead of quitting.
     pub home_stash: Option<Box<Home>>,
@@ -5821,7 +5822,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
                 return Outcome::Redraw;
             }
             let lines = text.lines().count();
-            app.clipboard = Some(text);
+            app.clipboard = Some(Clip::text(&text));
             app.note = Some(format!(
                 "copied {lines} line{}",
                 if lines == 1 { "" } else { "s" }
@@ -6459,7 +6460,7 @@ fn fold_at(app: &mut App, byte: u32) -> bool {
 /// pass strips them, because the clipboard is pasted into a shell as often as
 /// into a browser and a URL never legitimately contains one.
 fn copy_link(app: &mut App, dest: &str) -> Outcome {
-    let url: String = dest.chars().filter(|c| !c.is_control()).collect();
+    let url = Clip::line(dest);
     if url.is_empty() || url.len() > MAX_URL {
         app.note = Some("that link is too long to copy".to_string());
         return Outcome::Redraw;
@@ -6563,6 +6564,45 @@ fn link_follow(app: &mut App) -> Outcome {
 /// pasting.
 pub const CLIPBOARD_MAX: usize = 100_000;
 
+/// Text cleaned for the clipboard — the only thing [`App::clipboard`] holds.
+///
+/// The field is private, so the only ways in are [`Clip::text`] and
+/// [`Clip::line`] and no copy path can forget to clean. `copy_link` and
+/// `copy_line` each filtered on their own while `y`, a mouse selection and
+/// "copy as a quote" did not, and a code block hiding `ESC [201~`, Ctrl-U
+/// and a `curl …|sh` went to the clipboard byte for byte — ending a
+/// bracketed paste early and running what the screen never showed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Clip(String);
+
+impl Clip {
+    /// Multi-line content; see [`carrel_state::clip::text`].
+    #[must_use]
+    pub fn text(s: &str) -> Self {
+        Self(carrel_state::clip::text(s))
+    }
+
+    /// A one-line field — a path, a URL, a reference; see
+    /// [`carrel_state::clip::line`].
+    #[must_use]
+    pub fn line(s: &str) -> Self {
+        Self(carrel_state::clip::line(s))
+    }
+}
+
+impl std::ops::Deref for Clip {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<&str> for Clip {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
 /// Fill the clipboard outbox from the current selection — or say why not.
 fn copy_selection(app: &mut App) {
     let Some(sel) = app.selection.clone() else {
@@ -6580,6 +6620,7 @@ fn copy_selection(app: &mut App) {
     let Some(text) = app.doc.copy_text(sel.clone()) else {
         return;
     };
+    let text = Clip::text(&text);
     app.note = Some(format!("copied {} characters", text.chars().count()));
     app.clipboard = Some(text);
 }
@@ -6629,11 +6670,8 @@ impl App {
 /// Put `text` on the clipboard and say what was sent. One line, no control
 /// characters and no soft hyphens: this is pasted into a prompt or a shell.
 fn copy_line(app: &mut App, text: &str) -> Outcome {
-    let text: String = text
-        .chars()
-        .filter(|&c| !c.is_control() && c != '\u{AD}')
-        .collect();
-    app.note = Some(format!("copied {text}"));
+    let text = Clip::line(text);
+    app.note = Some(format!("copied {}", &*text));
     app.clipboard = Some(text);
     Outcome::Redraw
 }
@@ -6691,10 +6729,14 @@ fn copy_quote(app: &mut App) -> Outcome {
         }
         out.push('\n');
     }
-    let source = app
-        .reference_at(sel.start)
-        .unwrap_or_else(|| app.path.clone());
-    let sections = app.section_names(sel.start).join(" \u{203a} ");
+    // The signature is one line however the file and its headings are
+    // named: a newline in a file name ended the quote and put a command
+    // line of the file's choosing on the next row of the paste.
+    let source = Clip::line(
+        &app.reference_at(sel.start)
+            .unwrap_or_else(|| app.path.clone()),
+    );
+    let sections = Clip::line(&app.section_names(sel.start).join(" \u{203a} "));
     out.push_str("\n\u{2014} ");
     out.push_str(&source);
     if !sections.is_empty() {
@@ -6707,8 +6749,8 @@ fn copy_quote(app: &mut App) -> Outcome {
         app.note = Some("selection too large to copy".into());
         return Outcome::Redraw;
     }
-    app.note = Some(format!("copied a quote from {source}"));
-    app.clipboard = Some(out);
+    app.note = Some(format!("copied a quote from {}", &*source));
+    app.clipboard = Some(Clip::text(&out));
     Outcome::Redraw
 }
 

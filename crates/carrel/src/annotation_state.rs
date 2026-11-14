@@ -254,7 +254,7 @@ fn export(app: &mut App) {
                 app.note = Some(format!(
                     "Notes exported to {shown} (path sent to the terminal clipboard)"
                 ));
-                app.clipboard = Some(shown);
+                app.clipboard = Some(crate::app::Clip::line(&shown));
             }
             Err(error) => {
                 app.note = Some(format!(
@@ -267,7 +267,7 @@ fn export(app: &mut App) {
         if text.len() > crate::app::CLIPBOARD_MAX {
             app.note = Some("Notes are too large for the terminal clipboard.".into());
         } else {
-            app.clipboard = Some(text);
+            app.clipboard = Some(crate::app::Clip::text(&text));
             app.note = Some("Markdown notes sent to the terminal clipboard (OSC 52).".into());
         }
     }
@@ -288,7 +288,7 @@ fn copy_all(app: &mut App) {
         return;
     }
     let n = app.notes.entries.len();
-    app.clipboard = Some(text);
+    app.clipboard = Some(crate::app::Clip::text(&text));
     // Sent, not "copied": OSC 52 has no reply, so carrel cannot know.
     app.note = Some(format!(
         "{n} note{} sent to the terminal clipboard",

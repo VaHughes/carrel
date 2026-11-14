@@ -17,6 +17,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   file printed document text and file names raw, so a hostile file could retitle, clear
   or reset your terminal. Document text now drops control characters; a file name shows
   them as visible escapes (`\x1b`, `\u{202e}`), bidi overrides included.
+- **The clipboard carries only what the screen showed.** `y`, a mouse selection and
+  "copy as a quote" copied escape sequences and control bytes hidden in a code block, so
+  a paste into a shell could end bracketed paste early and run a command nobody saw.
+  Every copy now drops control characters other than line breaks and tabs, carriage
+  returns (CRLF becomes LF), bidi overrides and soft hyphens; a file name or heading in a
+  quote, a reference or the notes export can no longer start a new line.
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves

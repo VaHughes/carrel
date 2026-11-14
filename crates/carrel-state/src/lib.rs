@@ -20,6 +20,8 @@
 //! - [`scan`], [`grep`], [`tags`], [`links`], [`wiki`], [`fuzzy`]: finding
 //!   documents — the library walk, content search, the tag scan, link and
 //!   wikilink resolution, the filter's fuzzy match.
+//! - [`clip`]: what may go on the clipboard — the screen's text, without
+//!   the controls a paste into a shell would act on.
 //!
 //! **No API-stability promise.** This crate is versioned in lockstep with
 //! `carrel` and `carrel-core`, released from one tag, and each depends on the
@@ -28,6 +30,7 @@
 //!
 //! [Carrel]: https://github.com/VaHughes/carrel
 
+pub mod clip;
 pub mod config;
 pub mod fuzzy;
 pub mod grep;

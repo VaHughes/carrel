@@ -252,7 +252,10 @@ pub fn export_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Res
 /// Portable quote-and-note Markdown, including quotes no longer found in the file.
 #[must_use]
 pub fn export_markdown(file: &Path, annotations: &[Annotation]) -> String {
-    let mut output = format!("# Notes\n\nDocument: {}\n", file.display());
+    // One line, whatever the file is called: this is pasted (`copy all`),
+    // and a newline in a file name would start a second command line.
+    let shown = crate::clip::line(&file.display().to_string());
+    let mut output = format!("# Notes\n\nDocument: {shown}\n");
     for (index, annotation) in annotations.iter().enumerate() {
         let _ = write!(output, "\n## {}\n\n", index + 1);
         if annotation.range.is_none() {
