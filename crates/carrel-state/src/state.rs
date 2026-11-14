@@ -209,6 +209,56 @@ pub struct Kept {
     /// The display byte, from the block's start. Negative for the blank row
     /// above it, which a reader's view names by the separator before it.
     pub off: i32,
+    /// `block_hash` of the block before it ([`FIRST`] for the first
+    /// block): which copy of a repeated text it was, when the count alone
+    /// cannot say. `None` in a place saved before the field existed.
+    pub prev: Option<u64>,
+}
+
+/// The `prev` of a document's first block, which has none.
+pub const FIRST: u64 = 0;
+
+/// Which of a document's blocks kept place `k` names, given each block's
+/// hash (`hash_of(i)`, any hash, so long as `k` was made with the same).
+///
+/// A text that appears once is that block. One that repeats — a CHANGELOG's
+/// `### Fixed` under every release — is the copy with the same block before
+/// it, so a copy inserted above (a new release at the top) does not take
+/// the place over; of several such, the one whose count is nearest the one
+/// saved. Where no copy keeps its neighbour, the `nth` copy, as far as it
+/// still exists: a neighbour was edited. Where it no longer does, `None` —
+/// the block itself is gone, and the caller's own fallback (the source
+/// place) is nearer than any other copy, which may be fifty paragraphs
+/// away. A place saved without `prev` keeps the old rule: by count, and the
+/// last copy when there are fewer.
+pub fn pick(count: usize, hash_of: impl Fn(usize) -> u64, k: Kept) -> Option<usize> {
+    let nth = k.nth as usize;
+    let mut rank = 0usize;
+    let mut by_count = None;
+    let mut last = None;
+    let mut ctx: Option<(usize, usize)> = None; // (distance in count, block)
+    let mut before = FIRST;
+    for i in 0..count {
+        let h = hash_of(i);
+        if h == k.hash {
+            if rank == nth {
+                by_count = Some(i);
+            }
+            last = Some(i);
+            if k.prev == Some(before) {
+                let d = rank.abs_diff(nth);
+                if ctx.is_none_or(|(best, _)| d < best) {
+                    ctx = Some((d, i));
+                }
+            }
+            rank += 1;
+        }
+        before = h;
+    }
+    match k.prev {
+        Some(_) => ctx.map(|(_, i)| i).or(by_count),
+        None => by_count.or(last),
+    }
 }
 
 /// A block's text, hashed the same way by every build: FNV-1a over its
@@ -259,6 +309,10 @@ impl Place {
             .filter(|&i| block_hash(doc, carrel_core::BlockIdx(i as u32)) == hash)
             .count();
         let off = i64::from(d.0) - i64::from(doc.node_for_block(b).doc.start);
+        let prev = match b.get() {
+            0 => FIRST,
+            i => block_hash(doc, carrel_core::BlockIdx(i as u32 - 1)),
+        };
         Self::Src {
             src,
             delta,
@@ -266,6 +320,7 @@ impl Place {
                 hash,
                 nth: u32::try_from(nth).unwrap_or(u32::MAX),
                 off: i32::try_from(off).unwrap_or(0),
+                prev: Some(prev),
             }),
         }
     }
@@ -274,9 +329,9 @@ impl Place {
     /// a character boundary, whatever the file or the core did since.
     ///
     /// A place that kept its block goes where that block's text is now —
-    /// the same one of several, by count, as a live reload decides — so an
+    /// the same one of several, as a live reload decides ([`pick`]) — so an
     /// edit elsewhere in the file does not move it. A block that was itself
-    /// edited has no text to find, and the source place stands.
+    /// edited or removed has no text to find, and the source place stands.
     #[must_use]
     pub fn resolve(self, doc: &carrel_core::Document) -> carrel_core::DocByte {
         let at = match self {
@@ -294,6 +349,17 @@ impl Place {
         carrel_core::DocByte(at as u32)
     }
 
+    /// Whether this place's block is in `doc` — false only for a place
+    /// that kept its block ([`Self::kept`]) whose text `doc` no longer
+    /// has, where [`Self::resolve`] falls back to the source place.
+    #[must_use]
+    pub fn finds_its_block(self, doc: &carrel_core::Document) -> bool {
+        match self {
+            Self::Src { block: Some(k), .. } => found(doc, k).is_some(),
+            _ => true,
+        }
+    }
+
     fn encode(self) -> String {
         match self {
             Self::Legacy(d) => d.to_string(),
@@ -306,7 +372,14 @@ impl Place {
                 src,
                 delta,
                 block: Some(k),
-            } => format!("s{src}{delta:+}@{:016x}.{}{:+}", k.hash, k.nth, k.off),
+            } => {
+                let mut f = format!("s{src}{delta:+}@{:016x}.{}{:+}", k.hash, k.nth, k.off);
+                if let Some(p) = k.prev {
+                    use std::fmt::Write as _;
+                    let _ = write!(f, "^{p:016x}");
+                }
+                f
+            }
         }
     }
 
@@ -325,6 +398,11 @@ impl Place {
             None => None,
             Some(k) => {
                 let (hash, k) = k.split_once('.')?;
+                let (k, prev) = match k.split_once('^') {
+                    Some((k, p)) if p.len() == 16 => (k, Some(u64::from_str_radix(p, 16).ok()?)),
+                    Some(_) => return None,
+                    None => (k, None),
+                };
                 let at = k.find(['+', '-'])?;
                 if hash.len() != 16 {
                     return None;
@@ -333,6 +411,7 @@ impl Place {
                     hash: u64::from_str_radix(hash, 16).ok()?,
                     nth: k[..at].parse().ok()?,
                     off: k[at..].parse().ok()?,
+                    prev,
                 })
             }
         };
@@ -351,22 +430,12 @@ impl Place {
 /// text?" was fooled by a stale place on the separator before the right
 /// block's start, which `block_at_doc` gives to that block.
 fn found(doc: &carrel_core::Document, k: Kept) -> Option<i64> {
-    // Stop at the requested occurrence without allocating every hash or
-    // match. If that occurrence disappeared, retain the last surviving one.
-    let mut remaining = k.nth;
-    let mut last = None;
-    for i in 0..doc.block_count() {
-        let block = carrel_core::BlockIdx(i as u32);
-        if block_hash(doc, block) != k.hash {
-            continue;
-        }
-        last = Some(block);
-        if remaining == 0 {
-            break;
-        }
-        remaining -= 1;
-    }
-    let node = doc.node_for_block(last?);
+    let b = pick(
+        doc.block_count(),
+        |i| block_hash(doc, carrel_core::BlockIdx(i as u32)),
+        k,
+    )?;
+    let node = doc.node_for_block(carrel_core::BlockIdx(b as u32));
     Some((i64::from(node.doc.start) + i64::from(k.off)).min(i64::from(node.doc.end)))
 }
 
@@ -697,7 +766,7 @@ pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Resul
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_kept_place_counts_repeated_paragraphs_and_falls_back_to_the_last() {
+    fn a_kept_place_counts_repeated_paragraphs_and_a_gone_copy_keeps_its_source_place() {
         use carrel_core::{DocByte, Document};
 
         let old = Document::parse(
@@ -721,10 +790,14 @@ mod tests {
                 let byte = DocByte(start.checked_add_signed(offset).unwrap());
                 let place = Place::kept(&old, byte);
                 assert_eq!(place.resolve(&old), byte);
-                assert_eq!(
-                    place.resolve(&new).0,
-                    new_starts[i.min(1)].checked_add_signed(offset).unwrap()
-                );
+                // The third copy is gone: its place is its source place,
+                // not the last copy left, which can be anywhere above.
+                let want = if i < 2 {
+                    new_starts[i].checked_add_signed(offset).unwrap()
+                } else {
+                    Place::of(&old, byte).resolve(&new).0
+                };
+                assert_eq!(place.resolve(&new).0, want, "copy {i} offset {offset}");
             }
         }
         let gone = Document::parse("No matching paragraph.\n");
@@ -781,6 +854,7 @@ mod tests {
                         hash: 0xab,
                         nth: 3,
                         off: -1,
+                        prev: None,
                     }),
                 },
                 "s40+2@00000000000000ab.3-1",
@@ -793,9 +867,23 @@ mod tests {
                         hash: u64::MAX,
                         nth: 0,
                         off: 12,
+                        prev: None,
                     }),
                 },
                 "s0+0@ffffffffffffffff.0+12",
+            ),
+            (
+                Place::Src {
+                    src: 7,
+                    delta: -3,
+                    block: Some(Kept {
+                        hash: 0xab,
+                        nth: 1,
+                        off: 0,
+                        prev: Some(0x1234),
+                    }),
+                },
+                "s7-3@00000000000000ab.1+0^0000000000001234",
             ),
         ] {
             assert_eq!(p.encode(), text);

@@ -14,6 +14,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   resize or reload, instead of jumping below it. The outline preselects the section the
   blank row on top belongs to. A bare URL copies exactly what the author typed even when
   the paragraph also contains an `&` or a backslash.
+- **Places and bookmarks hold through edits that repeat text.** A place on a repeated
+  block (a CHANGELOG's `### Fixed` under every release) stays on its own copy when the
+  author adds another above; when its own copy is deleted it stays where it was rather
+  than jumping to a copy far away. A file emptied and rewritten (`cmd > PLAN.md`) while
+  open keeps the reading position and bookmarks, as long as you have not moved since.
+  `zM` from inside a subsection lands on the section still shown, and the heading bar
+  names the heading whose blank row is on top.
 
 - Pasted line and heading references on Home now recognize spaced and extensionless filenames,
   preserving literal backslashes and quotes before shell decoding.

@@ -44,8 +44,12 @@ pub fn of(app: &App, width: u16) -> Option<Crumb> {
     let node = app.doc.node_for_block(top_block);
     let mut path = app.doc.section_path(node.doc.start);
     // The pop rule: when the top visible block IS the innermost heading,
-    // showing it in the band would double it directly above itself.
-    if path.last() == Some(&node.id) {
+    // showing it in the band would double it directly above itself — but
+    // only while a row of the heading shows. With the blank row under it
+    // on top, the heading has scrolled off and the band went empty.
+    let heading_shows = app.view.scroll_row
+        < app.layout.row_start(top_block) + app.layout.content_height(&app.doc, top_block);
+    if path.last() == Some(&node.id) && heading_shows {
         path.pop();
     }
     let mut segments: Vec<(NodeId, String)> = path
@@ -180,5 +184,21 @@ mod tests {
             ["Inner"],
             "at worst the innermost survives alone"
         );
+    }
+
+    /// The blank row under a heading on top: the heading has scrolled off,
+    /// so the band names it, as it does one row further down.
+    #[test]
+    fn the_gap_under_a_heading_on_top_is_named_by_that_heading() {
+        let mut a = App::new("t.md".into(), Document::parse(SRC), 40, 12);
+        let inner = u32::try_from(a.doc.text.find("Inner").unwrap()).unwrap();
+        let b = a.doc.block_at_doc(carrel_core::DocByte(inner));
+        let gap = a.layout.row_start(b) + a.layout.content_height(&a.doc, b);
+        let h = a.text_h();
+        a.view.scroll_to(&a.doc, &a.layout, gap, h);
+        assert_eq!(a.view.scroll_row, gap, "the gap is on top");
+        let c = of(&a, 40).expect("a band");
+        let names: Vec<&str> = c.segments.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(names.last(), Some(&"Inner"), "{names:?}");
     }
 }

@@ -466,6 +466,9 @@ pub struct App {
     /// NOT survive an edit to the file, which is honest for a reader and is
     /// said so in the help.
     pub marks: Vec<u32>,
+    /// What the last reload could not find, kept for the next (see
+    /// `reload_from`). Private: nothing outside a reload reads it.
+    reload_hold: Option<ReloadHold>,
     /// May this document be sniffed as a raw diff? Set per document by
     /// whoever opened it — see `Self::parse_adapting`.
     pub diff_ok: bool,
@@ -1042,6 +1045,7 @@ impl App {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one field per line; splitting it hides none
     pub fn new(path: String, doc: Document, cols: u16, rows: u16) -> Self {
         let has_headings = doc
             .nodes
@@ -1068,6 +1072,7 @@ impl App {
             outline_margin: false,
             hyphenate: true,
             marks: Vec::new(),
+            reload_hold: None,
             diff_ok: false,
             diff_forced: None,
             following: false,
@@ -1273,7 +1278,7 @@ impl App {
 
     /// Each bookmark as its block's content hash, which same-content block
     /// it is (the `k`th, for a repeated line), and its place as a fallback.
-    fn mark_carriers(&self) -> Vec<(u64, usize, crate::state::Place)> {
+    fn mark_carriers(&self) -> Vec<(crate::state::Kept, crate::state::Place)> {
         if self.marks.is_empty() {
             return Vec::new();
         }
@@ -1284,7 +1289,13 @@ impl App {
                 let b = self.doc.block_at_doc(DocByte(m)).get();
                 let h = hashes[b];
                 let k = hashes[..b].iter().filter(|&&x| x == h).count();
-                (h, k, crate::state::Place::of(&self.doc, DocByte(m)))
+                let kept = crate::state::Kept {
+                    hash: h,
+                    nth: u32::try_from(k).unwrap_or(u32::MAX),
+                    off: 0,
+                    prev: Some(b.checked_sub(1).map_or(crate::state::FIRST, |p| hashes[p])),
+                };
+                (kept, crate::state::Place::of(&self.doc, DocByte(m)))
             })
             .collect()
     }
@@ -1292,30 +1303,35 @@ impl App {
     /// After a reload: each bookmark on the same block it was on, found by
     /// content; a block that is gone keeps its mark at its old place, snapped
     /// to whatever block is there now.
-    fn carry_marks(&mut self, carriers: &[(u64, usize, crate::state::Place)]) {
+    /// Whether every mark's block was found; `false` when one stood in at
+    /// its old place instead.
+    fn carry_marks(&mut self, carriers: &[(crate::state::Kept, crate::state::Place)]) -> bool {
         if carriers.is_empty() || self.doc.block_count() == 0 {
             self.marks.clear();
-            return;
+            return carriers.is_empty();
         }
+        let mut all = true;
         let hashes = block_hashes(&self.doc);
         let mut marks: Vec<u32> = carriers
             .iter()
-            .map(|&(h, k, place)| {
-                let b = hashes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &x)| x == h)
-                    .nth(k)
-                    .map_or_else(
-                        || self.doc.block_at_doc(place.resolve(&self.doc)),
-                        |(i, _)| BlockIdx(i as u32),
-                    );
+            .map(|&(kept, place)| {
+                // The rule a saved place is found again by (`state::pick`):
+                // the copy with the same block before it, and the old place
+                // where the block itself is gone.
+                let b = crate::state::pick(hashes.len(), |i| hashes[i], kept).map_or_else(
+                    || {
+                        all = false;
+                        self.doc.block_at_doc(place.resolve(&self.doc))
+                    },
+                    |i| BlockIdx(i as u32),
+                );
                 self.doc.node_for_block(b).doc.start
             })
             .collect();
         marks.sort_unstable();
         marks.dedup();
         self.marks = marks;
+        all
     }
 
     /// Put the bookmarks at `places` in the current document, each snapped
@@ -1372,6 +1388,7 @@ impl App {
         });
         self.mtime = loaded;
         self.table_offsets.clear();
+        self.reload_hold = None; // another document's
         self.doc = self.parse_adapting(&src);
         self.matches = None;
         self.forward = None;
@@ -1731,6 +1748,7 @@ impl App {
         // Generated markdown, never sniffed as a diff: it is already one.
         self.diff_ok = false;
         self.table_offsets.clear();
+        self.reload_hold = None; // another document's
         self.doc = self.parse_adapting(src);
         // Start with no bookmarks from the outgoing page. A retained desk
         // restores its own after this fresh parse.
@@ -2035,7 +2053,19 @@ impl App {
         // A new parse has new byte positions and node IDs. Carry the
         // reading context by content/name, as saved positions already do.
         // This is shared by file reloads and arriving chunks of a pipe.
-        let place = crate::state::Place::kept(&self.doc, DocByte(self.view.anchor));
+        // A place the last reload could not find is held (`reload_hold`)
+        // for as long as the reader has not moved since: `cmd > PLAN.md`
+        // empties the file, then writes it, and the reload in between
+        // finds no paragraph to keep — chaining from that would lose the
+        // place for good. Moving, or setting a mark, lets go of it.
+        let hold = self
+            .reload_hold
+            .take()
+            .filter(|h| h.anchor == self.view.anchor && h.marks == self.marks);
+        let place = hold.as_ref().map_or_else(
+            || crate::state::Place::kept(&self.doc, DocByte(self.view.anchor)),
+            |h| h.place,
+        );
         let search_place = match self.mode {
             Mode::Search { saved, .. } => {
                 Some(crate::state::Place::kept(&self.doc, DocByte(saved)))
@@ -2049,7 +2079,9 @@ impl App {
                 .map(|range| crate::state::Place::kept(&self.doc, DocByte(range.start)))
         });
         let folds = self.fold_keys();
-        let marks = self.mark_carriers();
+        let marks = hold
+            .as_ref()
+            .map_or_else(|| self.mark_carriers(), |h| h.carriers.clone());
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
         crate::annotation_state::reanchor(self);
@@ -2075,7 +2107,8 @@ impl App {
         if let (Mode::Search { saved, .. }, Some(place)) = (&mut self.mode, search_place) {
             *saved = place.resolve(&self.doc).0;
         }
-        self.carry_marks(&marks);
+        let place_found = place.finds_its_block(&self.doc);
+        let marks_found = self.carry_marks(&marks);
         // Carrying can merge marks (two whose blocks became one) or drop
         // them all, and the open list's selection indexes the old ones.
         self.mark_list = self
@@ -2084,6 +2117,14 @@ impl App {
             .map(|i| i.min(self.marks.len() - 1));
         self.apply_fold_keys(&folds);
         self.lay_out_new_document();
+        if !(place_found && marks_found) {
+            self.reload_hold = Some(ReloadHold {
+                place,
+                carriers: marks,
+                anchor: self.view.anchor,
+                marks: self.marks.clone(),
+            });
+        }
         if let Some(old) = self.matches.take() {
             let mut m = search(&self.doc, &old.pattern, old.flexible_ws);
             m.current = current_place.and_then(|place| {
@@ -2265,7 +2306,10 @@ impl App {
                 .doc
                 .section_path(anchor)
                 .iter()
-                .rev()
+                // The OUTERMOST folded heading: an inner one inside it is
+                // hidden too, so `zM` from a subsection pulled the anchor
+                // to a heading that was itself off the page, and the reader
+                // came back in the next section.
                 .find(|id| self.folded.contains(id))
             {
                 self.view.anchor = self.doc.nodes[id.0 as usize].doc.start;
@@ -3345,6 +3389,18 @@ enum StepKind {
 /// changed language and a link pointed somewhere else. Offsets are left out
 /// on purpose: they shift whenever anything earlier in the file does.
 /// [`block_hash`] for every block, in order.
+/// The reading place and bookmark carriers of the last document in which
+/// a reload found them, and what the reader's anchor and marks were after
+/// that reload — so a later reload can tell whether the reader has moved
+/// since, and only uses the held place if not.
+#[derive(Debug, Clone)]
+struct ReloadHold {
+    place: crate::state::Place,
+    carriers: Vec<(crate::state::Kept, crate::state::Place)>,
+    anchor: u32,
+    marks: Vec<u32>,
+}
+
 fn block_hashes(doc: &Document) -> Vec<u64> {
     (0..doc.block_count())
         .map(|i| block_hash(doc, BlockIdx(i as u32)))
@@ -4178,6 +4234,11 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
         // about. Neovim moves the text cursor for exactly this reason. And
         // before the rows are chosen, so `Next code block` is offered by
         // whether there is one after THIS block.
+        // A byte the document does not have — any byte of an empty one —
+        // names nothing under the pointer, and asked for a block that is
+        // not there. The terminal never sends one (its hit-test finds no
+        // span); a frontend that builds actions itself could.
+        let byte = byte.filter(|&b| (b as usize) < app.doc.text.len() && app.doc.block_count() > 0);
         if let Some(b) = byte {
             app.aim_at(b);
         }
@@ -10697,5 +10758,145 @@ diff --git a/x.rs b/x.rs
         );
         update(&mut a, Action::OutlineToggle);
         assert_eq!(a.outline.as_ref().unwrap().selected, 0, "still in One");
+    }
+
+    /// A live reload carries bookmarks by the rule saved places use: an
+    /// agent prepending a release to a CHANGELOG adds another `### Fixed`
+    /// above, and the mark on the old one moved up to the new one.
+    #[test]
+    fn a_reload_that_adds_a_copy_above_leaves_a_bookmark_on_its_own_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("c.md");
+        std::fs::write(&f, "# Log\n\n## Old\n\n### Fixed\n\n- old thing\n").unwrap();
+        let src = std::fs::read_to_string(&f).unwrap();
+        let mut a = App::new("c.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(f.clone());
+        let fixed = u32::try_from(a.doc.text.find("Fixed").unwrap()).unwrap();
+        a.marks = vec![
+            a.doc
+                .node_for_block(a.doc.block_at_doc(DocByte(fixed)))
+                .doc
+                .start,
+        ];
+        std::fs::write(
+            &f,
+            "# Log\n\n## New\n\n### Fixed\n\n- new thing\n\n## Old\n\n### Fixed\n\n- old thing\n",
+        )
+        .unwrap();
+        a.reload().unwrap();
+        let old = a.doc.text.rfind("Fixed").unwrap(); // the copy under Old
+        assert_eq!(a.marks.len(), 1);
+        assert_eq!(
+            a.doc.block_at_doc(DocByte(a.marks[0])),
+            a.doc.block_at_doc(DocByte(u32::try_from(old).unwrap())),
+            "the mark stays under ## Old"
+        );
+    }
+
+    /// `zM` from inside a subsection folds both levels; the reader belongs
+    /// on the outer heading, the one still on the page.
+    #[test]
+    fn collapse_all_from_a_subsection_lands_on_the_heading_still_shown() {
+        let mut src = String::new();
+        for n in 0..40 {
+            let _ = write!(src, "# S{n}\n\nintro\n\n## S{n} sub\n\n");
+            for l in 0..6 {
+                let _ = write!(src, "S{n} body {l}\n\n");
+            }
+        }
+        let mut a = App::new("t.md".into(), Document::parse(&src), 60, 20);
+        a.view.anchor = u32::try_from(a.doc.text.find("S20 body 3").unwrap()).unwrap();
+        a.relayout();
+        update(&mut a, Action::FoldAll);
+        let b = a.doc.block_at_doc(DocByte(a.view.anchor));
+        assert!(
+            a.layout.height(b) > 0,
+            "the anchor is on a row that is shown"
+        );
+        let top = a.layout.block_at_row(a.view.scroll_row);
+        let s20 = u32::try_from(a.doc.text.find("S20").unwrap()).unwrap();
+        assert_eq!(top, a.doc.block_at_doc(DocByte(s20)), "S20 is on top");
+    }
+
+    /// A frontend that builds its own actions can name a byte an empty
+    /// document does not have; the menu opens as the global one.
+    #[test]
+    fn a_menu_at_a_byte_of_an_empty_document_opens_without_a_panic() {
+        let mut a = App::new("t.md".into(), Document::parse(""), 80, 24);
+        update(
+            &mut a,
+            Action::MenuOpen {
+                at: (4, 5),
+                byte: Some(0),
+            },
+        );
+        assert!(a.menu.is_some());
+    }
+
+    /// `cmd > PLAN.md` empties the file, then writes it. The reload in
+    /// between had no paragraph to keep the place by, and the next one
+    /// chained from that: the reader came back at the top with no marks.
+    #[test]
+    fn an_empty_or_partial_write_in_between_loses_neither_the_place_nor_the_marks() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("plan.md");
+        let mut full = String::new();
+        for n in 0..200 {
+            let _ = write!(
+                full,
+                "Paragraph {n} says something distinct about item {n}.\n\n"
+            );
+        }
+        std::fs::write(&f, &full).unwrap();
+        for between in [String::new(), full[..1200].to_string()] {
+            let mut a = App::new("plan.md".into(), Document::parse(&full), 80, 24);
+            a.file = Some(f.clone());
+            let at = |a: &App, n: usize| {
+                u32::try_from(a.doc.text.find(&format!("Paragraph {n} ")).unwrap()).unwrap()
+            };
+            a.view.anchor = at(&a, 100);
+            a.relayout();
+            a.marks = vec![at(&a, 50)];
+            std::fs::write(&f, &between).unwrap();
+            a.reload().unwrap();
+            std::fs::write(&f, &full).unwrap();
+            a.reload().unwrap();
+            assert_eq!(
+                a.view.anchor,
+                at(&a, 100),
+                "the place, through {} bytes",
+                between.len()
+            );
+            assert_eq!(
+                a.marks,
+                vec![at(&a, 50)],
+                "the mark, through {} bytes",
+                between.len()
+            );
+        }
+    }
+
+    /// The hold is let go of the moment the reader moves: their new place
+    /// is theirs, and a later reload must not drag them back.
+    #[test]
+    fn a_reader_who_moves_after_a_short_write_keeps_where_they_moved_to() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("plan.md");
+        let mut full = String::new();
+        for n in 0..200 {
+            let _ = write!(full, "Paragraph {n} here.\n\n");
+        }
+        std::fs::write(&f, &full).unwrap();
+        let mut a = App::new("plan.md".into(), Document::parse(&full), 80, 24);
+        a.file = Some(f.clone());
+        a.view.anchor = u32::try_from(a.doc.text.find("Paragraph 100 ").unwrap()).unwrap();
+        a.relayout();
+        std::fs::write(&f, &full[..300]).unwrap();
+        a.reload().unwrap();
+        update(&mut a, Action::GoToStart);
+        let moved = a.view.anchor;
+        std::fs::write(&f, &full).unwrap();
+        a.reload().unwrap();
+        assert_eq!(a.view.anchor, moved, "not dragged back to Paragraph 100");
     }
 }
