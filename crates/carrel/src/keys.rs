@@ -43,6 +43,7 @@ impl Keys {
         use crate::action::NoteKey as N;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if editing {
+            let key = erase_alias(key);
             let input = match key.code {
                 KeyCode::Esc => N::Cancel,
                 KeyCode::Char('c') if ctrl => N::Cancel,
@@ -258,6 +259,12 @@ impl Keys {
     /// to the path and `j`/`k` cannot move; a path like `/home/jay` is
     /// untypeable otherwise. Arrows and `Ctrl-N`/`Ctrl-P` move there.
     pub fn map_home(&mut self, key: KeyEvent, mode: HomeMode) -> Option<Action> {
+        // Every mode but Normal is a text input.
+        let key = if mode == HomeMode::Normal {
+            key
+        } else {
+            erase_alias(key)
+        };
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
         // A pending `g` consumes this key, exactly as the reader's map() does —
@@ -391,6 +398,7 @@ impl Keys {
 
     #[must_use]
     pub fn map_help(key: KeyEvent) -> Option<Action> {
+        let key = erase_alias(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('c') if ctrl => Some(Action::Quit),
@@ -522,6 +530,7 @@ impl Keys {
     /// keys type, arrows and Ctrl-N/P move, Enter commits, Esc backs out.
     #[must_use]
     pub fn map_outline(key: KeyEvent) -> Option<Action> {
+        let key = erase_alias(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             // Ctrl-J/Ctrl-K for the same reason as `map_home`: the outline
@@ -540,6 +549,7 @@ impl Keys {
     }
 
     fn map_search(key: KeyEvent) -> Option<Action> {
+        let key = erase_alias(key);
         // Ctrl-C first, and BEFORE the `Char(c)` arm: raw mode clears ISIG, so
         // the terminal generates no SIGINT and this is the only place the
         // reflex can be honoured. Every other dispatcher already carries it;
@@ -743,6 +753,24 @@ fn is_chord(key: KeyEvent) -> bool {
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
+/// Ctrl-H as the Backspace it is, for the inputs that type.
+///
+/// crossterm maps only 0x7F to Backspace; 0x08 — what terminals and ssh
+/// setups configured for `^H` send, and Ctrl+Backspace in many terminals —
+/// arrives as Ctrl+h. Once [`is_chord`] stopped it typing an `h`, it did
+/// nothing at all, and those readers could not erase a filter. Text inputs
+/// only: elsewhere Backspace means Back, and Ctrl-H must not start to.
+fn erase_alias(key: KeyEvent) -> KeyEvent {
+    if key.code == KeyCode::Char('h')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+    {
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
+    } else {
+        key
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::keymap::*;
@@ -775,6 +803,44 @@ mod tests {
     /// A chord is a command or nothing — never text. Every text input
     /// matched `Char(c)` without looking at the modifiers, so Ctrl-D typed
     /// into the home search showed `search: held`, and Alt-x typed an `x`.
+    #[test]
+    fn ctrl_h_erases_in_every_text_input() {
+        // crossterm reads only 0x7F as Backspace; 0x08 arrives as Ctrl+h.
+        // Terminals and ssh setups that send ^H for Backspace — and
+        // Ctrl+Backspace in many terminals — could not erase at all once
+        // chords stopped typing.
+        use crate::home::HomeMode;
+        let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        let mut keys = Keys::new();
+        let back = Some(Action::HomeKey(SearchKey::Backspace));
+        assert_eq!(keys.map_home(ctrl_h, HomeMode::Filter), back);
+        assert_eq!(keys.map_home(ctrl_h, HomeMode::Search), back);
+        assert_eq!(keys.map_home(ctrl_h, HomeMode::Picker), back);
+        assert_eq!(
+            keys.map(ctrl_h, true),
+            Some(Action::SearchKey(SearchKey::Backspace))
+        );
+        assert_eq!(
+            Keys::map_help(ctrl_h),
+            Some(Action::HelpKey(SearchKey::Backspace))
+        );
+        assert_eq!(
+            Keys::map_outline(ctrl_h),
+            Some(Action::OutlineKey(SearchKey::Backspace))
+        );
+        assert_eq!(
+            Keys::map_notes(ctrl_h, true),
+            Some(Action::NoteInput(crate::action::NoteKey::Backspace))
+        );
+        // Only where text is typed: elsewhere Ctrl-H keeps its old meaning
+        // (none), and never becomes Backspace's Back or folder-up.
+        assert_ne!(keys.map(ctrl_h, false), Some(Action::Back));
+        assert_ne!(
+            keys.map_home(ctrl_h, HomeMode::Normal),
+            Some(Action::HomeUp)
+        );
+    }
+
     #[test]
     fn no_ctrl_or_alt_chord_types_into_a_text_input() {
         use crate::home::HomeMode;

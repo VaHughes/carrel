@@ -4077,6 +4077,49 @@ mod tests {
         KeyEvent::new(code, mods)
     }
 
+    /// 0x08 — `^H` Backspace, and Ctrl+Backspace in many terminals —
+    /// reaches carrel as Ctrl+h. Through the one dispatcher, it erases in
+    /// the reader's search prompt, the help filter and the outline filter.
+    #[test]
+    fn ctrl_h_erases_through_the_real_dispatcher() {
+        let none = KeyModifiers::NONE;
+        let doc = carrel_core::Document::parse("# Heading\n\nhello\n\n## Two\n");
+        let mut app = App::new("t.md".into(), doc, 80, 24);
+        let mut keys = Keys::new();
+        let mut type_keys = |app: &mut App, ks: &[KeyEvent]| {
+            for k in ks {
+                if let Some(a) = key_action(&mut keys, app, *k) {
+                    update(app, a);
+                }
+            }
+        };
+        let text = |s: &str| {
+            s.chars()
+                .map(|c| press(KeyCode::Char(c), none))
+                .collect::<Vec<_>>()
+        };
+        let ctrl_h = press(KeyCode::Char('h'), KeyModifiers::CONTROL);
+
+        type_keys(&mut app, &text("/hel"));
+        type_keys(&mut app, &[ctrl_h]);
+        let carrel::app::Mode::Search { input, .. } = &app.mode else {
+            panic!("not searching: {:?}", app.mode);
+        };
+        assert_eq!(input, "he");
+        type_keys(&mut app, &[press(KeyCode::Esc, none)]);
+
+        type_keys(&mut app, &[press(KeyCode::F(1), none)]);
+        type_keys(&mut app, &text("ab"));
+        type_keys(&mut app, &[ctrl_h]);
+        assert_eq!(app.help.as_ref().map(|h| h.filter.as_str()), Some("a"));
+        type_keys(&mut app, &[press(KeyCode::F(1), none)]);
+        assert!(app.help.is_none());
+
+        type_keys(&mut app, &text("otw"));
+        type_keys(&mut app, &[ctrl_h]);
+        assert_eq!(app.outline.as_ref().map(|o| o.filter.as_str()), Some("t"));
+    }
+
     /// **The defect**: the box said how much more there was and only the
     /// wheel could show it — every key closed the box. While the box says
     /// there is more, the page's own scroll keys scroll the box by the
