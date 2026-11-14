@@ -582,6 +582,41 @@ impl Place {
         }
     }
 
+    /// Whether this place's block, its text gone from `doc`, was EDITED
+    /// where it stood: the block its source place lands on in `doc` has the
+    /// same block before it and after it as the kept one did. A reader on a
+    /// paragraph an agent rewrote is still on that paragraph; one whose
+    /// paragraph was deleted, or whose file was cut short, is not. False
+    /// for a place that kept no neighbours.
+    #[must_use]
+    pub fn edited_in_place(self, doc: &carrel_core::Document) -> bool {
+        let Self::Src {
+            block:
+                Some(Kept {
+                    prev: Some(prev),
+                    next: Some(next),
+                    ..
+                }),
+            ..
+        } = self
+        else {
+            return false;
+        };
+        if doc.block_count() == 0 {
+            return false;
+        }
+        let b = doc.block_at_doc(self.resolve(doc)).get();
+        let before = b
+            .checked_sub(1)
+            .map_or(FIRST, |i| block_hash(doc, carrel_core::BlockIdx(i as u32)));
+        let after = if b + 1 < doc.block_count() {
+            block_hash(doc, carrel_core::BlockIdx(b as u32 + 1))
+        } else {
+            FIRST
+        };
+        before == prev && after == next
+    }
+
     fn encode(self) -> String {
         match self {
             Self::Legacy(d) => d.to_string(),

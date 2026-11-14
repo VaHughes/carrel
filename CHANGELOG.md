@@ -11,7 +11,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   there and then stood still.
 
 - **Undoing an edit brings a reader who never moved back to their paragraph**, even
-  through an edit, a deletion and the undo of both.
+  through an edit, a deletion and the undo of both; a paragraph rewritten where it stands
+  stays the reader's even if its old text turns up elsewhere.
 - **A selection can be longer than a screen**: hold a drag on the status row (or above
   the text) and the document scrolls under it, faster the further out the pointer is,
   until you let go.

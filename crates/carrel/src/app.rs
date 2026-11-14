@@ -2279,7 +2279,10 @@ impl App {
         if let (Mode::Search { saved, .. }, Some(place)) = (&mut self.mode, search_place) {
             *saved = place.resolve(&self.doc).0;
         }
-        let place_found = kept_found(place, &self.doc);
+        // A paragraph edited where it stood is still the reader's: holding
+        // its old text let that text, reappearing anywhere later, pull a
+        // reader who never moved away from the edit.
+        let place_found = kept_found(place, &self.doc) || place.edited_in_place(&self.doc);
         let held_marks = hold.and_then(|h| h.carriers);
         let marks_found = match &held_marks {
             Some(carriers) if self.carry_marks(carriers) => true,

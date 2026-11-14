@@ -499,12 +499,6 @@ planned:
   `view::tests::every_card_row_restores_to_itself`).
 - Valid UTF-8 holding a NUL opens as text (files and pipes alike); only invalid UTF-8 is
   checked for NULs.
-- A reload hold tries its held places before the fresh one, so when the paragraph being
-  read is edited (X becomes X′) and X's old text later reappears elsewhere, a reader who
-  never moved follows X instead of staying on X′ (cold review, 2026-11-14; predates that
-  day). "Fresh first" breaks undo-a-delete and "nearest first" breaks a partial write; a
-  rule needs to know why a held place went missing — its block edited, or the file cut
-  short.
 - Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a
   64 MB file of one-line headings still costs gigabytes.
 - Math with more than 64 commands in a row separated by at most one atom

@@ -126,3 +126,21 @@ fn undoing_every_edit_returns_a_reader_who_never_moved_to_the_original() {
     }
     assert_eq!(block_of(&app), "alpha para");
 }
+
+/// The paragraph being read is edited where it stands, and its old text
+/// later reappears elsewhere: the reader who never moved stays on the edit.
+#[test]
+fn an_edited_paragraph_stays_the_readers_when_its_old_text_reappears_elsewhere() {
+    let mut v0 = String::from("# Title\n\nalpha para\n\n");
+    for i in 0..30 {
+        let _ = std::fmt::Write::write_fmt(&mut v0, format_args!("filler {i}\n\n"));
+    }
+    let v1 = v0.replace("alpha para", "alpha edited para");
+    let v2 = format!("{v1}alpha para\n");
+    let mut app = App::new("t.md".into(), Document::parse(&v0), 40, 12);
+    at(&mut app, "alpha");
+    app.reload_from(&v1);
+    assert_eq!(block_of(&app), "alpha edited para");
+    app.reload_from(&v2);
+    assert_eq!(block_of(&app), "alpha edited para");
+}
