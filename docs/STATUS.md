@@ -105,6 +105,12 @@ Last updated: 2026-11-14 (adversarial bug hunt)
     never leaves the reader under a fold; a cut pipe keeps its label through Back, and
     the no-tty fallback says it was cut; a `<!--` in a commit message no longer turns a
     later `--` into a dash (keep_hyphens planned on a parse its own escapes changed).
+  - *Round three* (a cold review of round two): the diff plan's stand-in for `<!--` is
+    a letter, since a space made `*<!--` a list item; `write_atomic` refuses a target
+    that is not a regular file rather than block opening a FIFO; a refused chmod no
+    longer fails the save (vfat — checked with an `fchmod` shim only, no test); a
+    document reopened under the same root shows its images again (pty-checked, with a
+    control); a jitter on a gap row selects nothing.
   - *Process.* CI's clippy is pinned to 1.97 and this machine's default is 1.98: three
     pushes passed locally and failed CI on `duration_suboptimal_units`. Run clippy as
     `cargo +1.97 clippy` (DEVELOPMENT.md).
@@ -507,8 +513,15 @@ planned:
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
 
-Known defects: none recorded. Everything the 2026-11-14 hunt reproduced has a fix and a
-break-checked regression test, apart from the limits listed above; see Recently completed.
+Known defects:
+
+- `git log | carrel`: a message line starting `#<!--` inside a backtick span that runs
+  across lines shows its line escapes (`\#\<\!`) as literal backslashes (found
+  2026-11-14 by a cold review; predates that day). The escaping of message lines does
+  not know which lines a multi-line code span covers.
+
+Everything else the 2026-11-14 hunt reproduced has a fix and a break-checked regression
+test, apart from the limits listed above; see Recently completed.
 
 The Q29/Q33 architecture follow-ups are done (see Recently completed). What a GTK frontend
 would still find: the TUI's `App` is sized in cells and stays in `carrel`, deliberately — a

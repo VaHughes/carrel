@@ -323,8 +323,9 @@ fn keep_hyphens(s: &str) -> std::borrow::Cow<'_, str> {
     // the next line's backtick, a later `` `--x` `` was planned as a code
     // span and left alone, and in the escaped text — comment gone, backtick
     // free — the span it closed left `--x` outside it, a dash. Same length,
-    // so every offset carries over.
-    let plan = s.replace("<!--", " !--");
+    // so every offset carries over; a letter, not a space, or `*<!--` reads
+    // as `* !--`, a list item the escaped text never has.
+    let plan = s.replace("<!--", "x!--");
     let mut protected = Parser::new_ext(&plan, options)
         .into_offset_iter()
         .filter_map(|(event, range)| match event {
@@ -1282,6 +1283,23 @@ Author: B <b@example.com>
         /// indents them, and maybe a file.
         fn commit() -> impl Strategy<Value = (Vec<String>, bool)> {
             (prop::collection::vec(line(), 1..8), any::<bool>())
+        }
+
+        /// The plan's stand-in for `<!--` must not open a block either: a
+        /// space made `*<!--` a list item in the plan alone.
+        #[test]
+        fn the_plan_never_opens_a_block_the_message_does_not_have() {
+            for mid in ["x<!--", "*<!--", "-<!--", "+<!--", "1.<!--"] {
+                let src = format!(
+                    "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A (a at example.com)\n\n    a `b\n    {mid}\n    `<!--`\n\n"
+                );
+                let doc = Document::parse(&to_markdown(&src));
+                assert!(
+                    !doc.text.contains(['\u{2013}', '\u{2014}']),
+                    "{mid}: {:?}",
+                    doc.text
+                );
+            }
         }
 
         /// Shrunk by the property below (2026-11-14): `<!--` swallowed the

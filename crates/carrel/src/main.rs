@@ -1233,7 +1233,15 @@ impl Images {
     /// (Re)start decoding when the open document changed.
     fn sync(&mut self, app: &mut App) {
         let key = images::sync_key(app);
-        if app.is_home() || (self.initialized && key == self.synced) {
+        if app.is_home() {
+            // The document is closed; the next one opened — the same file
+            // again included — is planned afresh. Its open cleared the
+            // dimensions, and a reopened file under the same root used to
+            // match the old key and show no images at all.
+            self.initialized = false;
+            return;
+        }
+        if self.initialized && key == self.synced {
             return;
         }
         self.initialized = true;

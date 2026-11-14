@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A document reopened from the file list shows its images again**, a theme change can
+  no longer hang on a config path that is a FIFO, and saves work on filesystems that
+  refuse a chmod (vfat).
+
 - **A `<!--` in a commit message no longer turns a later `--` into a dash** when a
   backtick sits between them (`git log | carrel`).
 

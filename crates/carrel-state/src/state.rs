@@ -107,6 +107,14 @@ fn write_with(path: &Path, text: &[u8], new_mode: Option<u32>) -> std::io::Resul
     };
     // The mode to give the temp file: the target's, when there is one.
     let mode = match std::fs::metadata(path) {
+        // Only a regular file is rewritten: the probe below would block on
+        // a FIFO with no reader, freezing the reader on a theme change.
+        Ok(m) if !m.is_file() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
         Ok(m) => {
             // Opening for writing without truncating changes nothing, and
             // asks the kernel the real question — root, ACLs and all —
@@ -128,7 +136,10 @@ fn write_with(path: &Path, text: &[u8], new_mode: Option<u32>) -> std::io::Resul
         // umask applies to the latter and would turn a 0640 back into 0600
         // or worse; and before the data, so the bytes are never readable
         // under a looser mode than the file will have.
-        set_mode(&f, mode)?;
+        // Best effort: a filesystem without Unix modes (vfat, some network
+        // mounts) refuses the chmod, and refusing the SAVE for it lost every
+        // new positions and bookmarks file there.
+        let _ = set_mode(&f, mode);
         f.write_all(text)?;
         f.sync_all()
     };
@@ -1870,5 +1881,38 @@ mod tests {
             .filter(|n| n.starts_with('.') && n != ".")
             .collect();
         assert!(stray.is_empty(), "{stray:?}");
+    }
+
+    /// A FIFO where the config should be: the writability probe opened it
+    /// for writing and blocked with no reader, freezing a theme change.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_target_is_refused_without_blocking() {
+        use std::os::unix::fs::FileTypeExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("config");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let f = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(write_atomic(&f, "theme = dusk\n").map_err(|e| e.kind()));
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(5));
+        if got.is_err() {
+            let _ = std::fs::File::open(&fifo); // unblock it, so the test exits
+        }
+        assert_eq!(got, Ok(Err(std::io::ErrorKind::InvalidInput)));
+        assert!(
+            std::fs::symlink_metadata(&fifo)
+                .unwrap()
+                .file_type()
+                .is_fifo()
+        );
     }
 }

@@ -5648,7 +5648,10 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             };
             let start = anchor.0.min(cluster.0);
             let end = anchor.1.max(cluster.1);
-            app.selection = Some(start..end);
+            // A drag that has covered nothing yet — a jitter along a gap row,
+            // whose inverted anchor meets itself — selects nothing; an empty
+            // `Some` offered `Copy selection` rows that copied nothing.
+            app.selection = (start < end).then_some(start..end);
             Outcome::Redraw
         }
         Action::SelectRelease => {

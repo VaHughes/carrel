@@ -187,3 +187,30 @@ fn a_press_on_chrome_or_below_the_document_starts_nothing() {
     assert_eq!(a.doc_press_at(col, row + 3), None, "below the document");
     assert_eq!(a.doc_press_at(col, a.text_y() - 1), None, "above the text");
 }
+
+/// A press on a gap row and a one-cell jitter along it cover nothing: no
+/// selection, so no `Copy selection` row that copies nothing.
+#[test]
+fn a_jitter_along_a_gap_row_selects_nothing() {
+    let mut a = App::new(
+        "t.md".into(),
+        carrel_core::Document::parse("# Head\n\nalpha beta gamma\n\nsecond para\n"),
+        40,
+        12,
+    );
+    a.breadcrumb = false;
+    a.on_resize(40, 12);
+    let beta = u32::try_from(a.doc.text.find("beta").unwrap()).unwrap();
+    let (col, row) = (0..a.rows)
+        .flat_map(|r| (0..a.cols).map(move |c| (c, r)))
+        .find(|&(c, r)| a.doc_span_at(c, r).is_some_and(|(s, _)| s == beta))
+        .expect("beta on screen");
+    let gap = row + 1;
+    let press = a.doc_press_at(col, gap).expect("a gap-row press");
+    update(&mut a, Action::SelectAnchor(press));
+    let to = a.doc_drag_at(col + 1, gap).unwrap();
+    update(&mut a, Action::SelectDrag(to));
+    assert!(a.selection.is_none(), "{:?}", a.selection);
+    update(&mut a, Action::SelectRelease);
+    assert!(a.clipboard.is_none());
+}
