@@ -100,12 +100,90 @@ fn a_release_above_the_text_selects_from_the_first_visible_row() {
 }
 
 #[test]
-fn a_press_in_the_margin_starts_a_selection_but_one_on_a_blank_row_does_not() {
+fn a_press_in_the_margin_starts_a_selection_at_that_rows_start() {
     let a = app();
     let alpha = at(&a, "alpha");
-    let (col, row) = cell_of(&a, alpha);
+    let (_, row) = cell_of(&a, alpha);
     assert!(a.doc_span_at(0, row).is_none(), "the margin holds no text");
-    assert_eq!(a.doc_row_start_left_of(0, row), Some((alpha, alpha)));
-    assert_eq!(a.doc_row_start_left_of(col, row + 1), None, "a gap row");
-    assert_eq!(a.doc_row_start_left_of(col + 2, row), None, "on the text");
+    assert_eq!(a.doc_press_at(0, row), Some((alpha, alpha)));
+}
+
+/// Press at a cell with no character under it, drag to the cluster that
+/// starts at `to`, release; what reached the clipboard.
+fn drag_from(a: &mut App, from: (u16, u16), to: u32) -> Option<String> {
+    let press = a
+        .doc_press_at(from.0, from.1)
+        .expect("the press starts a selection");
+    update(a, Action::SelectAnchor(press));
+    let (c, r) = cell_of(a, to);
+    update(a, Action::SelectDrag(a.doc_span_at(c, r).unwrap()));
+    update(a, Action::SelectRelease);
+    a.clipboard.take().map(|c| c.to_string())
+}
+
+/// The gap row between two paragraphs is the boundary between them: a drag
+/// from it takes the text it moves into, in either direction, and none of
+/// the blank between.
+#[test]
+fn a_drag_from_a_gap_row_selects_toward_the_pointer_from_the_boundary() {
+    let mut a = app();
+    let (col, row) = cell_of(&a, at(&a, "beta"));
+    let gap = (col, row + 1);
+    assert!(
+        a.doc_span_at(gap.0, gap.1).is_none(),
+        "the gap row is blank"
+    );
+    let last = at(&a, "para") + 3;
+    assert_eq!(drag_from(&mut a, gap, last).as_deref(), Some("second para"));
+    let beta = at(&a, "beta");
+    assert_eq!(drag_from(&mut a, gap, beta).as_deref(), Some("beta gamma"));
+}
+
+#[test]
+fn a_drag_from_past_the_end_of_a_line_starts_at_that_lines_end() {
+    let mut a = app();
+    let (_, row) = cell_of(&a, at(&a, "alpha"));
+    let right = (a.cols - 2, row);
+    assert!(
+        a.doc_span_at(right.0, right.1).is_none(),
+        "past the text column"
+    );
+    let beta = at(&a, "beta");
+    assert_eq!(
+        drag_from(&mut a, right, beta).as_deref(),
+        Some("beta gamma")
+    );
+    let second = at(&a, "second") + 5;
+    let got = drag_from(&mut a, right, second).unwrap();
+    assert!(got.trim_start().starts_with("second"), "{got:?}");
+    assert!(!got.contains("gamma"), "{got:?}");
+}
+
+/// A click on a blank gap row is not a click on the heading beside it —
+/// above it or below. The gap's anchor names the NEXT block's start, so a
+/// fold check that read it as a press there collapsed the heading under it.
+#[test]
+fn a_click_on_a_gap_row_beside_a_heading_folds_nothing() {
+    let src = "# Head\n\npara one\n\n# Next\n\nbody\n";
+    let mut a = App::new("t.md".into(), Document::parse(src), 40, 12);
+    a.on_resize(40, 12);
+    for word in ["Head", "para"] {
+        let (col, row) = cell_of(&a, at(&a, word));
+        let press = a.doc_press_at(col, row + 1).expect("the gap row anchors");
+        update(&mut a, Action::SelectAnchor(press));
+        update(&mut a, Action::SelectRelease);
+        assert!(a.folded.is_empty(), "nothing folded under {word}");
+    }
+}
+
+/// Chrome never starts a selection: the status row, the scrollbar column,
+/// and the empty rows below the end of the document.
+#[test]
+fn a_press_on_chrome_or_below_the_document_starts_nothing() {
+    let a = app();
+    let (col, row) = cell_of(&a, at(&a, "second"));
+    assert_eq!(a.doc_press_at(col, a.rows - 1), None, "the status row");
+    assert_eq!(a.doc_press_at(a.cols - 1, row), None, "the scrollbar");
+    assert_eq!(a.doc_press_at(col, row + 3), None, "below the document");
+    assert_eq!(a.doc_press_at(col, a.text_y() - 1), None, "above the text");
 }

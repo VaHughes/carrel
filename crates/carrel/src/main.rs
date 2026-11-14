@@ -1645,10 +1645,10 @@ fn doc_span_at(app: &App, col: u16, row: u16) -> Option<(u32, u32)> {
 }
 
 /// Where a left press in the document starts a selection: the cluster
-/// under it, or — left of a row's text, in the margin — that row's start,
-/// so a drag can begin there the way it does in any terminal.
+/// under it, or the nearest place a drag from there should start
+/// ([`App::doc_press_at`]) — the margin, past a line's end, a gap row.
 fn press_span(app: &App, col: u16, row: u16) -> Option<(u32, u32)> {
-    doc_span_at(app, col, row).or_else(|| app.doc_row_start_left_of(col, row))
+    app.doc_press_at(col, row)
 }
 
 /// Copy to the system clipboard via OSC 52. Terminals without it ignore the
@@ -3110,9 +3110,10 @@ fn mouse_action(
             }
             let span = press_span(app, m.column, m.row)?;
             ptr.selecting = true;
+            // `min`: a gap row's anchor is inverted (see `doc_press_at`).
             match ptr.clicks.press(m.column, m.row) {
-                2 => Some(Action::SelectWord(span.0)),
-                3 => Some(Action::SelectBlock(span.0)),
+                2 => Some(Action::SelectWord(span.0.min(span.1))),
+                3 => Some(Action::SelectBlock(span.0.min(span.1))),
                 _ => Some(Action::SelectAnchor(span)),
             }
         }

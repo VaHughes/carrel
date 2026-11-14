@@ -3106,14 +3106,33 @@ impl App {
         caret(if at_start { r.doc.start } else { r.doc.end })
     }
 
-    /// A press left of a text row — the margin, or a list item's marker
-    /// column — as a caret at that row's start, so a drag can begin there the
-    /// way it does in a terminal. Only on a row that holds text: a press on a
-    /// blank row still starts nothing.
+    /// Where a left press that is not on a character starts a selection.
+    ///
+    /// `doc_span_at` first, then the same clamps a release gets, so a drag
+    /// can begin wherever it could end. A press on the blank gap row between
+    /// paragraphs, or right of a short line, used to start nothing — only
+    /// the margin did — and the drag that followed selected nothing.
+    ///
+    /// - Left of a row's text: that row's start, `(start, start)`.
+    /// - Right of it: that row's end, `(end, end)`.
+    /// - On the gap row between two blocks: the INVERTED pair `(start of
+    ///   the next block, end of this one)`. The selection is
+    ///   `min(anchor.0, at.0)..max(anchor.1, at.1)`, so a drag down starts at
+    ///   the next block and a drag up ends at this one — the boundary in the
+    ///   drag's direction, and never the blank between. `SelectRelease`
+    ///   reads an inverted anchor as "not on text": a click on the gap under
+    ///   a heading must not fold it.
+    ///
+    /// `None` on chrome — above or below the text rows, the scrollbar
+    /// column — and below the last block, where there is nothing to start
+    /// from.
     #[must_use]
-    pub fn doc_row_start_left_of(&self, col: u16, row: u16) -> Option<(u32, u32)> {
+    pub fn doc_press_at(&self, col: u16, row: u16) -> Option<(u32, u32)> {
+        if let Some(span) = self.doc_span_at(col, row) {
+            return Some(span);
+        }
         let top = self.text_y();
-        if row < top || row >= top + self.text_h() {
+        if row < top || row >= top + self.text_h() || col >= self.cols.saturating_sub(1) {
             return None;
         }
         let vrow = self.view.scroll_row + u32::from(row - top);
@@ -3125,9 +3144,32 @@ impl App {
         self.layout.rows_for(&self.doc, block, &mut rows);
         let sub = usize::try_from(vrow.saturating_sub(self.layout.row_start(block))).ok()?;
         let r = self.visible_row(rows.get(sub)?);
-        let (block_x, _) = self.block_span_x(block);
-        (!r.doc.is_empty() && col < block_x.saturating_add(r.indent))
-            .then_some((r.doc.start, r.doc.start))
+        if !r.doc.is_empty() {
+            let (block_x, _) = self.block_span_x(block);
+            let left = col < block_x.saturating_add(r.indent);
+            let b = if left { r.doc.start } else { r.doc.end };
+            return Some((b, b));
+        }
+        // Only the gap BELOW a block's content; art and card rules hold no
+        // text to start from.
+        if sub < self.layout.content_height(&self.doc, block) as usize {
+            return None;
+        }
+        // The next block ON SCREEN: a folded one has no rows, so the block
+        // that owns the row after this one's last is the next visible one.
+        let next = self
+            .layout
+            .block_at_row(self.layout.row_start(block) + self.layout.height(block));
+        if next.get() <= block.get() || next.get() >= self.doc.block_count() {
+            return None;
+        }
+        let end = rows[..sub]
+            .iter()
+            .rev()
+            .map(|r| self.visible_row(r))
+            .find(|r| !r.doc.is_empty())
+            .map_or(self.doc.node_for_block(block).doc.end, |r| r.doc.end);
+        Some((self.doc.node_for_block(next).doc.start, end))
     }
 
     /// Effective pan is clamped against the current viewport on every use.
@@ -5580,8 +5622,11 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             // selection formed — on a heading toggles its fold. A fold
             // marker looks clickable; the home list taught us what happens
             // when things look clickable and are not.
+            // An inverted anchor is a press on a gap row (`doc_press_at`):
+            // a click beside text, not on a heading.
             if app.selection.is_none()
-                && let Some((byte, _)) = pressed
+                && let Some((byte, end)) = pressed
+                && byte <= end
                 && fold_at(app, byte)
             {
                 app.click_fold = Some(byte);

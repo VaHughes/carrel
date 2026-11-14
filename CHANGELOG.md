@@ -11,6 +11,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   longer comes back 0644 after carrel rewrites it, directly or through a symlink; a file
   you made read-only is left alone rather than replaced; and new reading-history files
   (positions, bookmarks, folds, notes) are created readable by you only.
+- **A drag can start off the text too.** Pressing on the blank row between paragraphs or
+  past the end of a short line, then dragging, selects from the nearest text in the
+  drag's direction; a click there still folds nothing. A folded heading that wraps shows
+  its `…` after its last row instead of not at all.
 - **Old Mac line endings number lines correctly.** In a file whose lines end in a lone
   carriage return, a search hit said line 1 and quoted the start of the file; `path:line`
   copies and `FILE:N` used the same wrong count.

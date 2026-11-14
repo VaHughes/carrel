@@ -1779,8 +1779,8 @@ fn paint_rows(
         // A folded heading wears its state: a gutter marker and a trailing
         // ellipsis. Decoration only — neither is in the text, so search and
         // selection never see them. A `<details>` summary wears the same.
-        if skip == 0 && y > first_y {
-            paint_fold_ellipsis(frame, app, block, area, first_y);
+        if y > first_y {
+            paint_fold_ellipsis(frame, app, block, area, (first_y, skip, y));
         }
         // Spotlight (`S`): a block that does not hold the viewport's centre
         // row falls into shadow. Applied AFTER the block paints, over every
@@ -1804,22 +1804,26 @@ fn paint_rows(
     }
 }
 
-/// The trailing `…` on a folded heading or `<details>` summary row. Its
-/// margin marker is [`paint_margin_marks`]'s. Decoration only — none of it is
-/// in the text, so search and selection never see any of it.
-fn paint_fold_ellipsis(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect, first_y: u16) {
+/// The trailing `…` on a folded heading or `<details>` summary. Its margin
+/// marker is [`paint_margin_marks`]'s. Decoration only — none of it is in
+/// the text, so search and selection never see any of it.
+///
+/// It goes after the LAST row the text wraps onto. It used to be placed one
+/// cell past the whole text's width on the block's FIRST row, so a heading
+/// that wrapped put it off the right edge, and it was simply not drawn.
+/// `skip` rows of the block are scrolled off above `first_y`; `bottom` is
+/// the row below the last one painted.
+fn paint_fold_ellipsis(
+    frame: &mut Frame,
+    app: &App,
+    block: BlockIdx,
+    area: Rect,
+    (first_y, skip, bottom): (u16, u32, u16),
+) {
     let node = app.doc.node_for_block(block);
-    let buf = frame.buffer_mut();
+    let mut ends = Vec::new();
     if matches!(node.kind, NodeKind::Heading { .. }) && app.folded.contains(&node.id) {
-        let text = &app.doc.text[node.doc.start as usize..node.doc.end as usize];
-        let after = area
-            .x
-            .saturating_add(node.indent)
-            .saturating_add(carrel_core::display_width(text))
-            .saturating_add(1);
-        if after < area.right() {
-            buf.set_stringn(after, first_y, "…", 1, theme::dim());
-        }
+        ends.push(node.doc.end);
     }
     for (i, region) in app.doc.details.iter().enumerate() {
         if !node.doc.contains(&region.summary.start) {
@@ -1828,19 +1832,42 @@ fn paint_fold_ellipsis(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect
         if app.folded_details.contains(&(i as u32)) {
             // The ellipsis trails the summary text itself, which may sit
             // after other stripped text in the same block.
-            let before = &app.doc.text[node.doc.start as usize..region.summary.start as usize];
-            let summary = &app.doc.text[region.summary.start as usize..region.summary.end as usize];
-            let after = area
-                .x
-                .saturating_add(node.indent)
-                .saturating_add(carrel_core::display_width(before))
-                .saturating_add(carrel_core::display_width(summary))
-                .saturating_add(1);
-            if after < area.right() {
-                buf.set_stringn(after, first_y, "…", 1, theme::dim());
-            }
+            ends.push(region.summary.end);
         }
         break; // one summary per block is the shape that exists
+    }
+    if ends.is_empty() {
+        return;
+    }
+    let mut rows = Vec::new();
+    app.layout.rows_for(&app.doc, block, &mut rows);
+    let buf = frame.buffer_mut();
+    for end in ends {
+        let Some((i, r)) = rows
+            .iter()
+            .enumerate()
+            .rfind(|(_, r)| r.doc.start < end && end <= r.doc.end)
+        else {
+            continue;
+        };
+        let Some(y) = u32::try_from(i)
+            .ok()
+            .and_then(|i| i.checked_sub(skip))
+            .and_then(|i| u16::try_from(i).ok())
+            .map(|i| first_y.saturating_add(i))
+            .filter(|&y| y < bottom)
+        else {
+            continue;
+        };
+        let text = &app.doc.text[r.doc.start as usize..end as usize];
+        let after = area
+            .x
+            .saturating_add(r.indent)
+            .saturating_add(carrel_core::display_width(text))
+            .saturating_add(1);
+        if after < area.right() {
+            buf.set_stringn(after, y, "…", 1, theme::dim());
+        }
     }
 }
 
@@ -4723,6 +4750,31 @@ mod tests {
         assert!(all.contains('…'), "and the suffix: {all}");
     }
 
+    /// The `…` trails the heading's LAST row. Placed one cell past the
+    /// whole text's width on its first row, a heading that wrapped put it
+    /// off the right edge and it was never drawn.
+    #[test]
+    fn a_folded_heading_that_wraps_ends_its_last_row_with_the_suffix() {
+        let src = "# A heading long enough to wrap onto a second row here\n\nbody\n\n# Next\n";
+        let mut app = App::new("t.md".into(), Document::parse(src), 40, 10);
+        app.breadcrumb = false;
+        app.folded.insert(app.doc.nodes[0].id);
+        app.on_resize(40, 10);
+        let buf = buffer_of(&app, 40, 10);
+        let rows: Vec<String> = (0..10).map(|y| line(&buf, y)).collect();
+        let last = rows
+            .iter()
+            .find(|r| r.contains("row here"))
+            .unwrap_or_else(|| panic!("the heading wraps: {rows:#?}"));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.contains("A heading") && r.contains("row here")),
+            "the fixture really wraps: {rows:#?}"
+        );
+        assert!(last.contains("row here …"), "{rows:#?}");
+    }
+
     #[test]
     fn the_breadcrumb_band_paints_the_path_and_a_rule() {
         let src = "# Top\n\nintro\n\n## Mid\n\nbody one\n\nbody two\n\nbody three\n\nfour\n\nfive\n\nsix\n";
@@ -6088,6 +6140,42 @@ mod pane_frame_tests {
                 }
             }
         }
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    /// The same for the reader's panes, which are centred: across a run of
+    /// widths their left edge falls on both halves of a CJK character.
+    #[test]
+    fn a_pane_edge_never_sits_inside_a_wide_character() {
+        let src = "文".repeat(400);
+        let mut bad = Vec::new();
+        let mut cut = 0;
+        for open in [Action::HelpToggle, Action::InfoToggle] {
+            for cols in (40..60).chain(100..120) {
+                let mut a = App::new("t.md".into(), carrel_core::Document::parse(&src), cols, 20);
+                update(&mut a, open);
+                let (buf, painted) = paint(&a);
+                for z in painted
+                    .targets
+                    .as_slice()
+                    .iter()
+                    .filter(|t| t.z >= Z_OVERLAY && t.action == Action::Absorb && t.zone.x > 0)
+                    .map(|t| t.zone)
+                {
+                    for y in z.y..z.y + z.h {
+                        let left = buf[(z.x - 1, y)].symbol();
+                        cut += usize::from(left == " ");
+                        if display_width(left) > 1 {
+                            bad.push(format!(
+                                "{open:?} at {cols}: {left:?} at ({}, {y})",
+                                z.x - 1
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(cut > 0, "some edge fell beside the text: {bad:#?}");
         assert!(bad.is_empty(), "{bad:#?}");
     }
 
