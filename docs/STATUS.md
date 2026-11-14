@@ -68,7 +68,7 @@ Last updated: 2026-11-14 (adversarial bug hunt; open items cleared)
   - *Parser:* an empty-label wikilink (`[[x|]]`, a pulldown-cmark 0.13.4 replay bug) is read
     as if escaped (`mask_empty_labels`); a NUL is binary even in valid UTF-8; math symbols
     never count toward the nesting guard.
-  Gates: **1,676 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging,
+  Gates: **1,677 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging,
   `cargo doc -D warnings`, MSRV 1.95; parse 1.6 ms/MB, height pass 5.5 ms/MB.
 
 - Unreleased (2026-11-14) — **an adversarial bug hunt: seven hunters, then cold reviews
@@ -128,9 +128,11 @@ Last updated: 2026-11-14 (adversarial bug hunt; open items cleared)
     ends its last row with `…`; a file read empty twice keeps its bookmarks; a reload
     never leaves the reader under a fold; a cut pipe keeps its label through Back, and
     the no-tty fallback says it was cut; a `<!--` in a commit message no longer turns a
-    later `--` into a dash (keep_hyphens planned on a parse its own escapes changed).
+    later `--` into a dash (keep_hyphens planned on a parse its own escapes changed;
+    keep_hyphens, unspan and unbreak were replaced that afternoon by `diff::settle`).
   - *Round three* (a cold review of round two): the diff plan's stand-in for `<!--` is
-    a letter, since a space made `*<!--` a list item; `write_atomic` refuses a target
+    a letter, since a space made `*<!--` a list item (stand-in since removed with
+    `keep_hyphens`); `write_atomic` refuses a target
     that is not a regular file rather than block opening a FIFO; a refused chmod no
     longer fails the save (vfat — checked with an `fchmod` shim only, no test); a
     document reopened under the same root shows its images again (pty-checked, with a
