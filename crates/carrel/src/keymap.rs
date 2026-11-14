@@ -54,7 +54,7 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         // Enter in the lightbox does it, but Enter on the document opens the
         // lightbox first; printing it beside a menu row would teach a key
         // that, pressed where the row was read, does something else.
-        A::ImageAllow(_) => return None,
+        A::ImageAllow(..) => return None,
         A::SettingsMove(_) => "j k",
         A::SettingsAdjust(_) | A::SettingsPickAt(_) => "\u{21b5}",
         A::MeasureStep(_) => "+ -",

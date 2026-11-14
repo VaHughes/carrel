@@ -19,9 +19,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   the word before the cursor and Ctrl-U the whole input (in a note, the cursor's line up
   to the cursor). In the folder browser Ctrl-W takes one folder of a typed path at a time.
 
-- **An image outside the folder can be shown when you ask**: its alt text is a
-  `click to show` button, a right-click row, and the second Enter in its lightbox. It
-  shows that one file until carrel exits; nothing is remembered.
+- **An image outside the folder can be shown when you ask**: its `click to show` alt
+  text opens its lightbox, which names the file; `[show]` or a second Enter there shows
+  that one file until carrel exits, without redrawing the others. Nothing is remembered.
 - **A table card's dividing line stays put on a resize**: with a divider on top, a resize,
   reload or resume used to come back one row lower, and the last divider a whole card higher.
 - **`git log | carrel` shows no backslash a commit message did not have**, whatever mix

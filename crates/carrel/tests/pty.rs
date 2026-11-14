@@ -2008,3 +2008,42 @@ fn a_second_enter_shows_an_image_from_outside_the_folder() {
     );
     assert!(painted(&cap), "consented: decoded and painted");
 }
+
+/// The alt text is the document's to choose, and a target fires on the
+/// press: a press meant to start a selection on what reads as prose used
+/// to consent before any file name was on screen (cold review, 2026-11-14).
+/// The press opens the lightbox, which names the file; only its answer shows.
+#[test]
+fn a_press_on_prose_like_alt_text_names_the_file_and_opens_nothing() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let lib = d.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::create_dir_all(d.path().join("out")).unwrap();
+    image::RgbImage::from_pixel(64, 64, image::Rgb([201u8, 41, 43]))
+        .save(d.path().join("out/secret.png"))
+        .unwrap();
+    std::fs::write(
+        lib.join("doc.md"),
+        "# Notes\n\n![This paragraph reads like ordinary prose and wraps over several rows, \
+         so a reader who presses on it to start selecting a sentence never sees a file name \
+         before carrel opens a file from outside the folder](../out/secret.png)\n\nend\n",
+    )
+    .unwrap();
+    let press = r"\033[<0;10;5M\033[<0;10;5m";
+    let cap = pty_run_until("doc.md", press, "secret.png", "qq", &lib);
+    assert!(cap.contains("secret.png"), "the press names the file");
+    assert!(!cap.contains("201;41;43"), "and opens nothing");
+    // The control: answering the question shows it.
+    let cap = pty_run_until(
+        "doc.md",
+        press,
+        "secret.png",
+        "\\r'; sleep 2; printf 'qq",
+        &lib,
+    );
+    assert!(cap.contains("201;41;43"), "the answer shows it");
+}

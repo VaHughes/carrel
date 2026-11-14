@@ -416,7 +416,7 @@ fn paint_lightbox(
         let show = app
             .image_outside
             .contains_key(&block)
-            .then_some(("[show] ", Action::ImageAllow(block)));
+            .then_some(("[show] ", Action::ImageAllow(block, app.image_plan)));
         for (label, action) in show.into_iter().chain([
             ("[close] ", Action::Dismiss),
             ("[previous] ", Action::ImageStep(-1)),
@@ -1781,16 +1781,17 @@ fn paint_rows(
             y += 1;
         }
         if matches!(app.doc.node_for_block(block).kind, NodeKind::Image { .. }) && y > first_y {
-            // An image the folder rule refused is a button that shows it,
-            // and says so; any other alt text opens the lightbox.
-            let action = if app.image_outside.contains_key(&block) {
+            // Any image's alt text opens the lightbox. A refused one says it
+            // can be shown — but the press only ASKS: the alt text is the
+            // document's to choose and can read as prose, and a target fires
+            // on the press, so a press meant to start a selection consented
+            // before any file name was on screen (cold review, 2026-11-14).
+            // The lightbox names the path; only its answer consents.
+            if app.image_outside.contains_key(&block) {
                 paint_show_outside(frame, app, block, area, (first_y, skip, y));
-                Action::ImageAllow(block)
-            } else {
-                Action::ImageOpen(Some(block))
-            };
+            }
             painted.targets.push(
-                action,
+                Action::ImageOpen(Some(block)),
                 Zone::new(area.x, first_y, area.width, y - first_y),
                 Z_DOC,
             );
@@ -1892,8 +1893,9 @@ fn paint_fold_ellipsis(
 
 /// The `[outside this folder — click to show]` chip after a refused image's
 /// alt text, on the block's last content row; the short form where the long
-/// one will not fit, nothing where neither will (the block is still the
-/// button, and the status note says so). Decoration only, like the fold
+/// one will not fit, nothing where neither will (the block still opens the
+/// lightbox, and the status note says so). The click it invites opens the
+/// lightbox, which names the path and asks; it never consents itself. Decoration only, like the fold
 /// ellipsis: the alt text is the display text, and nothing is added to it.
 fn paint_show_outside(
     frame: &mut Frame,

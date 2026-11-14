@@ -21,8 +21,9 @@
 //!
 //! An image outside the folder carrel was pointed at is not opened
 //! ([`contain`]) — the same rule, through the same function, that makes a
-//! link out of the folder ask first — until the reader clicks it, which
-//! consents to that one file for the session (`App::image_consent`).
+//! link out of the folder ask first — until the reader, shown its path in the
+//! lightbox, answers; that consents to that one file for the session
+//! (`App::image_consent`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -95,7 +96,7 @@ pub const SHOW_OUTSIDE_SHORT: &str = "[click to show]";
 /// project, `../assets` images stayed refused until the file was touched;
 /// after the picker narrowed the root from the project to `docs`, they
 /// still rendered, which let a stale verdict walk past containment. The
-/// consent count is there for the same reason: without it a click on a
+/// consent count is there for the same reason: without it an answer on a
 /// refused image changed nothing until the document was opened again.
 #[must_use]
 pub fn sync_key(app: &crate::app::App) -> SyncKey {
@@ -121,6 +122,7 @@ pub fn plan(app: &mut crate::app::App) -> Vec<(BlockIdx, PathBuf)> {
     app.image_dims.clear();
     app.image_errors.clear();
     app.image_outside.clear();
+    app.image_plan = app.image_plan.wrapping_add(1);
     if had {
         app.relayout();
     }
@@ -147,6 +149,30 @@ pub fn plan(app: &mut crate::app::App) -> Vec<(BlockIdx, PathBuf)> {
     if refused > 0 && app.note.is_none() {
         app.note = Some(outside_note(refused));
     }
+    reqs
+}
+
+/// Plan only what the reader has just consented to: every refused block
+/// whose canonical path is now in `App::image_consent`, leaving every other
+/// verdict, dimension and decoded picture where it is.
+///
+/// `plan` forgets everything first, so a consent re-planned with it dropped
+/// every decoded image in the document to alt-text height and decoded it
+/// again — a visible collapse and reflow for a click on one picture.
+pub fn plan_consented(app: &mut crate::app::App) -> Vec<Request> {
+    let mut reqs: Vec<Request> = app
+        .image_outside
+        .iter()
+        .filter(|(_, path)| app.image_consent.contains(*path))
+        .map(|(b, p)| (*b, p.clone()))
+        .collect();
+    reqs.sort_by_key(|(block, _)| *block);
+    for (block, _) in &reqs {
+        app.image_outside.remove(block);
+        app.image_errors.remove(block);
+    }
+    // The verdicts changed, so an answer offered under the old ones is stale.
+    app.image_plan = app.image_plan.wrapping_add(1);
     reqs
 }
 
@@ -208,7 +234,7 @@ pub fn local_image_requests(doc: &Document, base: Option<&Path>) -> Vec<(BlockId
 /// decoded with no question asked, while the README promised carrel reads
 /// only the folder you point it at. A link out of the folder waits for a
 /// second Enter; an image is not opened and keeps its alt text, which is a
-/// button the reader can click to show it (`App::image_consent`). `root` is
+/// button opening the lightbox that asks (`App::image_consent`). `root` is
 /// `App::library_root`, so the rule is the links' rule in every case: a
 /// file opened directly is rooted at the folder you stand in or its own, a
 /// pipe at the working directory, the home list at its root.

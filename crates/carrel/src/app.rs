@@ -199,7 +199,7 @@ impl Pane {
             | A::MatchStep(_)
             | A::LinkStep(_)
             | A::ImageStep(_)
-            | A::ImageAllow(_)
+            | A::ImageAllow(..)
             | A::LinkOpen(_)
             | A::Back
             | A::Forward
@@ -712,6 +712,11 @@ pub struct App {
     /// canonical path and is refused as before. Only grows, so its length
     /// is the generation `images::sync_key` replans on.
     pub image_consent: std::collections::HashSet<std::path::PathBuf>,
+    /// Bumped every time `image_outside` is planned afresh. The lightbox's
+    /// `[show]` and Enter carry the value they were offered under, and
+    /// [`Action::ImageAllow`] with any other consents to nothing: a block
+    /// index from a frame painted for another parse names another file.
+    pub image_plan: u32,
     /// `Some` while the outline picker is up. The heading list itself is
     /// DERIVED from `doc` at every use — nothing here can go stale.
     pub outline: Option<Outline>,
@@ -1219,6 +1224,7 @@ impl App {
             image_errors: HashMap::new(),
             image_outside: HashMap::new(),
             image_consent: std::collections::HashSet::new(),
+            image_plan: 0,
             outline: None,
             menu: None,
             hover: None,
@@ -4926,8 +4932,9 @@ fn lightbox_update(app: &mut App, action: Action) -> Outcome {
             Outcome::Redraw
         }
         // `Enter` in the lightbox arrives as `ImageAllow` only over a refused
-        // image (`main.rs::key_action`); a click on `[show]` the same.
-        Action::ImageAllow(block) => allow_image(app, block),
+        // image (`main.rs::key_action`); a click on `[show]` the same. The
+        // ONLY place consent is given: the lightbox is what names the path.
+        Action::ImageAllow(block, plan) => allow_image(app, block, plan),
         Action::Quit => Outcome::Quit,
         _ => Outcome::Idle,
     }
@@ -4936,10 +4943,16 @@ fn lightbox_update(app: &mut App, action: Action) -> Outcome {
 /// The reader chose to see an image the folder rule refused: remember its
 /// canonical path for this session, and let `Images::sync` replan.
 ///
-/// Only a block this parse refused can be allowed, and only to the path the
-/// refusal recorded, so a stale click or a hand-built action cannot widen
-/// consent to anything the reader was not shown.
-fn allow_image(app: &mut App, block: BlockIdx) -> Outcome {
+/// Only the block the lightbox is showing, which names its path, and only
+/// under the plan the question was asked in (`App::image_plan`): a reload
+/// closes the lightbox and replans, so an answer carried over from a frame
+/// painted for the old parse — a block index that now names another file —
+/// is refused, as is a hand-built action with no question on screen. The
+/// path consented to is the canonical one the refusal recorded.
+fn allow_image(app: &mut App, block: BlockIdx, plan: u32) -> Outcome {
+    if app.lightbox != Some(block) || plan != app.image_plan {
+        return Outcome::Idle;
+    }
     let Some(path) = app.image_outside.get(&block).cloned() else {
         return Outcome::Idle;
     };
@@ -5913,7 +5926,6 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         Action::LinkStep(n) => link_step(app, n, h),
 
         Action::ImageOpen(block) => open_image(app, block),
-        Action::ImageAllow(block) => allow_image(app, block),
         Action::LinkFollow => {
             let block = app.layout.block_at_row(app.view.scroll_row);
             if app.selected_link.is_none()

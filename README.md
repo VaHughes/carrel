@@ -49,9 +49,10 @@ path on the machine. Links resolving inside your folder follow as they always ha
 resolving outside names the path and waits for a second Enter, so leaving is something you do
 rather than something a document does to you. Images obey the same rule: one whose path leads
 outside the folder is not opened, and shows its alt text with an *outside this folder — click
-to show* button instead. Clicking it, its right-click row, or Enter in its lightbox (the second
-Enter, as for a link) shows that one file for as long as carrel runs; nothing is written down, so
-the next launch asks again, and no other file is opened by it. A file you name directly is
+to show* button instead. Clicking it (or its right-click row, or Enter) opens its lightbox, which
+names the file and asks; `[show]` or a second Enter there, as for a link, shows that one file for
+as long as carrel runs. Nothing is written down, so the next launch asks again, and no other file
+is opened by it. A file you name directly is
 read within the folder you are standing in when it lies inside it, so `carrel docs/guide.md`
 can show `../assets/diagram.png`, and within its own folder when it does not. Both paths are canonicalised,
 so a symlink out of the tree is caught too. The walk itself never follows symlinks and never reads an ignore file

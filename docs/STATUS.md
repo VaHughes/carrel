@@ -537,11 +537,15 @@ implement. The GTK4 GUI phase is not started and has no date.
 ## Recent decisions
 
 - 2026-11-14: **an image outside the folder is shown when the reader asks, per image,
-  for the session.** Its alt text is a `click to show` button (also a right-click row,
-  and the second Enter in its lightbox); consent is the image's canonical path, kept in
-  memory only (`App::image_consent`), so a restart asks again. It survives a reload and
-  a switch to another document naming the same file: consent is to the file, and
-  nothing a second document can do with it leaves the screen.
+  for the session.** Its alt text is a `click to show` button (also a right-click row)
+  that opens the lightbox, which names the path; only its `[show]` or a second Enter
+  consents — never a press on the block, whose alt text the document chooses. Consent
+  is the image's canonical path, kept in memory only (`App::image_consent`), so a
+  restart asks again, and an answer carries the plan it was asked under
+  (`App::image_plan`), so a stale one consents to nothing. It survives a reload and a
+  switch to another document naming the same file: consent is to the file, and nothing
+  a second document can do with it leaves the screen. Consent decodes that block alone
+  (`images::plan_consented`) from what the budget has left.
 - 2026-11-14: **a file named on the command line is rooted at the working directory
   when it lies inside it**, else at its own folder — so `carrel docs/guide.md` shows
   `../assets/x.png` and follows in-repo links without asking; the README's "the folder

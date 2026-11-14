@@ -206,8 +206,9 @@ pub enum Intent {
     /// position.
     ImageOpen(Option<BlockIdx>),
     ImageStep(i32),
-    /// Show one image the folder rule refused, for this session only.
-    ImageAllow(BlockIdx),
+    /// Show one image the folder rule refused, for this session only; the
+    /// `u32` is the image plan the question was asked under.
+    ImageAllow(BlockIdx, u32),
 
     // --- selection and copying ---
     /// Pointer down on the `(start, end)` doc bytes of the cluster under it.

@@ -536,11 +536,11 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
             "Go to the footnote text",
             Action::FootnoteJumpAt(byte),
         )],
-        // No key beside it: Enter on the document opens the lightbox, and
-        // only Enter THERE shows the image (`Item::plain`'s rule).
+        // Opens the lightbox, which names the file and asks; the row cannot
+        // name it (a label is fixed text), so it must not answer for it.
         Under::OutsideImage(block) => vec![Item::plain(
-            "Show this image (outside this folder)",
-            Action::ImageAllow(block),
+            "Outside this folder: see where…",
+            Action::ImageOpen(Some(block)),
         )],
         Under::Task => vec![Item::new("Next task", Action::TaskStep(1))],
         Under::Text => {
@@ -1003,11 +1003,13 @@ mod tests {
             A::TagOpen(_) => Doc, // a tag on the metadata card
             A::Back => Menu("Back"),
             A::InfoToggle => Menu("Document info"),
-            A::ImageOpen(_) => Menu("Images…"),
+            // `Images…` in the `≡` menu, a click on any image, and the
+            // context menu's row on a refused one.
+            A::ImageOpen(_) => Doc,
             A::ImageStep(_) => Pane,
-            // The refused image's own block is the button; the context menu
-            // and the lightbox's `[show]` offer it too.
-            A::ImageAllow(_) => Doc,
+            // Only the lightbox's `[show]`, under the path it names: a press
+            // on the block or its menu row opens that question, never answers.
+            A::ImageAllow(..) => Pane,
             A::FocusToggle => Menu("Focus on one paragraph"),
             A::AutoToggle => Menu("Auto-read"),
             A::BreadcrumbToggle => Menu("Heading bar"),

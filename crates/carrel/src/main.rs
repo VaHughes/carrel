@@ -1182,6 +1182,9 @@ struct Images {
     /// rather than reading "Loading image…" for ever — which is what a
     /// reader who just clicked "show" on an outside image would see.
     waiting: std::collections::HashSet<BlockIdx>,
+    /// Decoded bytes delivered under the current plan: what a consent's
+    /// own small plan may no longer spend from the document's budget.
+    spent: u64,
 }
 
 impl Images {
@@ -1213,6 +1216,7 @@ impl Images {
             synced: (None, None, 0),
             initialized: false,
             waiting: std::collections::HashSet::new(),
+            spent: 0,
         }
     }
 
@@ -1250,18 +1254,39 @@ impl Images {
         if self.initialized && key == self.synced {
             return;
         }
+        let fs = self.picker.font_size();
+        // Nothing wider than the terminal can ever be painted.
+        let text_px = u32::from(app.cols) * u32::from(fs.width);
+        let caps = images::DecodeCaps::for_terminal(text_px);
+        // Only the consent count moved: plan the consented blocks alone and
+        // keep every picture already decoded, from what is left of the
+        // budget. While the first worker still runs, wait for it — two
+        // workers would each spend from a budget the other cannot see.
+        if self.initialized && key.0 == self.synced.0 && key.1 == self.synced.1 {
+            if self.rx.is_some() {
+                return;
+            }
+            self.synced = key;
+            let reqs = images::plan_consented(app);
+            let caps = images::DecodeCaps {
+                budget_bytes: caps.budget_bytes.saturating_sub(self.spent),
+                ..caps
+            };
+            self.waiting = reqs.iter().map(|(b, _)| *b).collect();
+            if !reqs.is_empty() {
+                self.rx = Some(images::spawn_decoder(reqs, caps));
+            }
+            return;
+        }
         self.initialized = true;
         self.synced = key;
+        self.spent = 0;
         // Drop the worker for the old plan before planning the new one, so
         // nothing it still sends lands on a block the new plan refused.
         self.rx = None;
         self.protocols.clear();
-        let fs = self.picker.font_size();
         app.font_px = (fs.width, fs.height);
         let reqs = images::plan(app);
-        // Nothing wider than the terminal can ever be painted.
-        let text_px = u32::from(app.cols) * u32::from(fs.width);
-        let caps = images::DecodeCaps::for_terminal(text_px);
         self.waiting = reqs.iter().map(|(b, _)| *b).collect();
         self.rx = if reqs.is_empty() {
             None
@@ -1278,6 +1303,7 @@ impl Images {
             match rx.try_recv() {
                 Ok(ImageMsg::Decoded(block, img)) => {
                     self.waiting.remove(&block);
+                    self.spent = self.spent.saturating_add(img.as_bytes().len() as u64);
                     app.image_dims.insert(block, (img.width(), img.height()));
                     self.protocols
                         .insert(block, self.picker.new_resize_protocol(img));
@@ -2850,7 +2876,7 @@ fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action:
             && k.modifiers.is_empty()
             && app.image_outside.contains_key(&block)
         {
-            return Some(carrel::action::Action::ImageAllow(block));
+            return Some(carrel::action::Action::ImageAllow(block, app.image_plan));
         }
         return Keys::map_lightbox(k);
     }
@@ -5968,7 +5994,8 @@ mod lightbox_pipeline_tests {
         assert!(pipeline.initialized);
     }
 
-    /// `lib/x.md` naming `out/y.png`, read with `lib` as the root.
+    /// `lib/x.md` naming `out/y.png` and `lib/in.png`, read with `lib` as
+    /// the root.
     fn outside_fixture() -> (tempfile::TempDir, App) {
         let d = tempfile::tempdir().unwrap();
         let base = d.path().canonicalize().unwrap();
@@ -5977,31 +6004,80 @@ mod lightbox_pipeline_tests {
         image::DynamicImage::new_rgb8(3, 2)
             .save(base.join("out/y.png"))
             .unwrap();
+        image::DynamicImage::new_rgb8(5, 4)
+            .save(base.join("lib/in.png"))
+            .unwrap();
         let x = base.join("lib/x.md");
-        std::fs::write(&x, "![why](../out/y.png)\n").unwrap();
+        std::fs::write(&x, "![why](../out/y.png)\n\n![inn](in.png)\n").unwrap();
         let mut app = App::new_home(base.join("lib"), vec![], 80, 24);
         app.open_path(&x).unwrap();
         (d, app)
     }
 
-    /// The bug this guards: consent changed nothing on screen until the
-    /// document was opened again, because the pipeline's key did not move.
+    /// Drain until `block` has an answer and the worker has ended, or five
+    /// seconds pass.
+    fn settle(pipeline: &mut Images, app: &mut App, block: BlockIdx) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (pipeline.rx.is_some()
+            || !(app.image_dims.contains_key(&block) || app.image_errors.contains_key(&block)))
+            && Instant::now() < deadline
+        {
+            pipeline.drain(app);
+            std::thread::yield_now();
+        }
+    }
+
+    /// The lightbox's answer, as the reader gives it.
+    fn consent(app: &mut App, block: BlockIdx) {
+        use carrel::action::Action;
+        carrel::app::update(app, Action::ImageOpen(Some(block)));
+        let plan = app.image_plan;
+        carrel::app::update(app, Action::ImageAllow(block, plan));
+        assert!(!app.image_consent.is_empty());
+    }
+
+    /// Two bugs this guards: consent changed nothing on screen until the
+    /// document was opened again, because the pipeline's key did not move;
+    /// and then it re-planned the whole document, so every decoded picture
+    /// collapsed to alt text and decoded again (cold review, 2026-11-14).
     #[test]
-    fn consenting_to_an_outside_image_decodes_it_without_a_reopen() {
+    fn consenting_decodes_the_image_and_keeps_the_ones_already_shown() {
         let (_d, mut app) = outside_fixture();
         let mut pipeline = Images::detect();
         pipeline.sync(&mut app);
-        assert!(pipeline.rx.is_none(), "refused: nothing to decode");
         let block = *app.image_outside.keys().next().unwrap();
-        carrel::app::update(&mut app, carrel::action::Action::ImageAllow(block));
+        let inn = BlockIdx(block.0 + 1);
+        settle(&mut pipeline, &mut app, inn);
+        assert_eq!(app.image_dims.get(&inn), Some(&(5, 4)));
+        consent(&mut app, block);
         pipeline.sync(&mut app);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !app.image_dims.contains_key(&block) && Instant::now() < deadline {
-            pipeline.drain(&mut app);
-            std::thread::yield_now();
-        }
+        assert_eq!(app.image_dims.get(&inn), Some(&(5, 4)), "not forgotten");
+        assert!(pipeline.protocols.contains_key(&inn), "not forgotten");
+        settle(&mut pipeline, &mut app, block);
         assert_eq!(app.image_dims.get(&block), Some(&(3, 2)));
         assert!(pipeline.protocols.contains_key(&block));
+    }
+
+    /// The consented image spends from what the document's budget has left.
+    #[test]
+    fn a_consented_image_spends_from_the_documents_budget() {
+        let (_d, mut app) = outside_fixture();
+        let mut pipeline = Images::detect();
+        pipeline.sync(&mut app);
+        let block = *app.image_outside.keys().next().unwrap();
+        settle(&mut pipeline, &mut app, BlockIdx(block.0 + 1));
+        assert!(pipeline.spent > 0, "the inside image was counted");
+        pipeline.spent = images::MAX_DOCUMENT_IMAGE_BYTES;
+        consent(&mut app, block);
+        pipeline.sync(&mut app);
+        settle(&mut pipeline, &mut app, block);
+        assert!(
+            app.image_errors
+                .get(&block)
+                .is_some_and(|e| e.contains("budget")),
+            "{:?}",
+            app.image_errors
+        );
     }
 
     /// A worker that ends without answering for a block leaves it saying
@@ -6038,9 +6114,10 @@ mod lightbox_pipeline_tests {
         let mut keys = Keys::new();
         assert_eq!(
             key_action(&mut keys, &app, enter),
-            Some(Action::ImageAllow(block))
+            Some(Action::ImageAllow(block, app.image_plan))
         );
-        carrel::app::update(&mut app, Action::ImageAllow(block));
+        let plan = app.image_plan;
+        carrel::app::update(&mut app, Action::ImageAllow(block, plan));
         carrel::images::plan(&mut app);
         assert_eq!(key_action(&mut keys, &app, enter), Some(Action::Dismiss));
     }
