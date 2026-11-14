@@ -16,6 +16,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   the word before the cursor and Ctrl-U the whole input (in a note, the cursor's line up
   to the cursor). In the folder browser Ctrl-W takes one folder of a typed path at a time.
 
+- **An image outside the folder can be shown when you ask**: its alt text is a
+  `click to show` button, a right-click row, and the second Enter in its lightbox. It
+  shows that one file until carrel exits; nothing is remembered.
 - **`git log | carrel` shows fewer stray backslashes**: none inside a backtick span that
   runs across a `#` line, and none from a line break where the message's own markdown
   already ends the paragraph.

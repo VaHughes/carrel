@@ -498,7 +498,6 @@ planned:
   needs a byte of its own per rule row.
 - Valid UTF-8 holding a NUL opens as text (files and pipes alike); only invalid UTF-8 is
   checked for NULs.
-- An image outside the folder has no way to be loaded (links ask for a second Enter).
 - Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a
   64 MB file of one-line headings still costs gigabytes.
 - Math with more than 64 commands in a row separated by at most one atom
@@ -536,6 +535,12 @@ implement. The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
 
+- 2026-11-14: **an image outside the folder is shown when the reader asks, per image,
+  for the session.** Its alt text is a `click to show` button (also a right-click row,
+  and the second Enter in its lightbox); consent is the image's canonical path, kept in
+  memory only (`App::image_consent`), so a restart asks again. It survives a reload and
+  a switch to another document naming the same file: consent is to the file, and
+  nothing a second document can do with it leaves the screen.
 - 2026-11-14: **a file named on the command line is rooted at the working directory
   when it lies inside it**, else at its own folder — so `carrel docs/guide.md` shows
   `../assets/x.png` and follows in-repo links without asking; the README's "the folder

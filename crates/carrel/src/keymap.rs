@@ -51,6 +51,10 @@ pub const fn accel(a: Action) -> Option<&'static str> {
         A::SettingsToggle => ",",
         // A button, not a key: nothing to press, so nothing to print.
         A::WelcomeOpen | A::ImageOpen(_) | A::ImageStep(_) => return None,
+        // Enter in the lightbox does it, but Enter on the document opens the
+        // lightbox first; printing it beside a menu row would teach a key
+        // that, pressed where the row was read, does something else.
+        A::ImageAllow(_) => return None,
         A::SettingsMove(_) => "j k",
         A::SettingsAdjust(_) | A::SettingsPickAt(_) => "\u{21b5}",
         A::MeasureStep(_) => "+ -",

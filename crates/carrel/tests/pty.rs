@@ -1970,3 +1970,41 @@ fn home_keeps_the_session_from_file_tutorial_and_pipe_entry_points() {
         );
     }
 }
+
+/// An image outside the folder is refused until the reader asks for it:
+/// Enter on it opens the lightbox, which asks; the second Enter shows it.
+/// The pixels' own colour is the evidence it was decoded and painted.
+#[test]
+fn a_second_enter_shows_an_image_from_outside_the_folder() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let lib = d.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::create_dir_all(d.path().join("out")).unwrap();
+    image::RgbImage::from_pixel(64, 64, image::Rgb([201u8, 41, 43]))
+        .save(d.path().join("out/y.png"))
+        .unwrap();
+    std::fs::write(lib.join("doc.md"), "![why](../out/y.png)\n").unwrap();
+    let painted = |cap: &str| cap.contains("201;41;43");
+
+    // The control: Enter opens the lightbox, which asks; `q` `q` leaves.
+    let cap = pty_run_until("doc.md", "\\r", "Enter or [show]", "qq", &lib);
+    assert!(cap.contains("click to show"), "the block is a button");
+    assert!(cap.contains("Enter or [show]"), "the lightbox asks");
+    assert!(!painted(&cap), "refused: never opened");
+
+    // The second Enter shows it; then a beat for the decode, and leave.
+    // (`then` is spliced into a single-quoted `printf`, so closing the
+    // quote is how a pause goes between keys.)
+    let cap = pty_run_until(
+        "doc.md",
+        "\\r",
+        "Enter or [show]",
+        "\\r'; sleep 2; printf 'qq",
+        &lib,
+    );
+    assert!(painted(&cap), "consented: decoded and painted");
+}

@@ -19,9 +19,10 @@
 //! worker decodes each file once, shrinks it to what a terminal can show, and
 //! spends from one budget for the whole document ([`DecodeCaps`]).
 //!
-//! An image outside the folder carrel was pointed at is never opened at all
+//! An image outside the folder carrel was pointed at is not opened
 //! ([`contain`]) — the same rule, through the same function, that makes a
-//! link out of the folder ask first.
+//! link out of the folder ask first — until the reader clicks it, which
+//! consents to that one file for the session (`App::image_consent`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -79,18 +80,35 @@ impl DecodeCaps {
 /// What a block outside the folder says instead of its picture.
 pub const OUTSIDE_FOLDER: &str = "outside this folder, so it was not opened";
 
+/// The button a refused image's block wears, after its alt text. The whole
+/// block is the button; this says so.
+pub const SHOW_OUTSIDE: &str = "[outside this folder \u{2014} click to show]";
+/// The short form, for a row with no room for the long one.
+pub const SHOW_OUTSIDE_SHORT: &str = "[click to show]";
+
 /// What decides whether the open document's images need planning again:
-/// the file AND the folder it is read within.
+/// the file, the folder it is read within, and how many images outside
+/// that folder the reader has chosen to see.
 ///
 /// Keyed on the file alone, the verdict stuck when the file list moved and
 /// the same document was opened again. After Backspace from `docs` to the
 /// project, `../assets` images stayed refused until the file was touched;
 /// after the picker narrowed the root from the project to `docs`, they
-/// still rendered, which let a stale verdict walk past containment.
+/// still rendered, which let a stale verdict walk past containment. The
+/// consent count is there for the same reason: without it a click on a
+/// refused image changed nothing until the document was opened again.
 #[must_use]
-pub fn sync_key(app: &crate::app::App) -> (Option<PathBuf>, Option<PathBuf>) {
-    (app.file.clone(), app.library_root().map(Path::to_path_buf))
+pub fn sync_key(app: &crate::app::App) -> SyncKey {
+    (
+        app.file.clone(),
+        app.library_root().map(Path::to_path_buf),
+        app.image_consent.len(),
+    )
 }
+
+/// [`sync_key`]'s value. `App::image_consent` only grows, so its length
+/// is a generation.
+pub type SyncKey = (Option<PathBuf>, Option<PathBuf>, usize);
 
 /// Plan the open document's images: forget every earlier verdict, refuse
 /// what lies outside the library, and return what is left to decode.
@@ -102,19 +120,32 @@ pub fn plan(app: &mut crate::app::App) -> Vec<(BlockIdx, PathBuf)> {
     let had = !app.image_dims.is_empty();
     app.image_dims.clear();
     app.image_errors.clear();
+    app.image_outside.clear();
     if had {
         app.relayout();
     }
     let base = app.file.as_deref().and_then(Path::parent);
     let reqs = local_image_requests(&app.doc, base);
     // The links' containment rule, through the links' root: an image
-    // outside the folder is never opened, and keeps its alt text.
-    let (reqs, outside) = contain(reqs, app.library_root());
-    if !outside.is_empty() && app.note.is_none() {
-        app.note = Some(outside_note(outside.len()));
+    // outside the folder is never opened, and keeps its alt text — unless
+    // the reader chose to see that very file (`App::image_consent`).
+    let (mut reqs, outside) = contain(reqs, app.library_root());
+    let mut refused = 0;
+    for (block, canonical) in outside {
+        if app.image_consent.contains(&canonical) {
+            // The canonical path, not the spelling in the document: what
+            // the reader consented to is what the decoder opens.
+            reqs.push((block, canonical));
+        } else {
+            refused += 1;
+            app.image_errors.insert(block, OUTSIDE_FOLDER.to_string());
+            app.image_outside.insert(block, canonical);
+        }
     }
-    for block in outside {
-        app.image_errors.insert(block, OUTSIDE_FOLDER.to_string());
+    // Document order, so the image budget is spent the way it always was.
+    reqs.sort_by_key(|(block, _)| *block);
+    if refused > 0 && app.note.is_none() {
+        app.note = Some(outside_note(refused));
     }
     reqs
 }
@@ -176,23 +207,38 @@ pub fn local_image_requests(doc: &Document, base: Option<&Path>) -> Vec<(BlockId
 /// sibling, so `![x](../../.ssh/id.png)` in a downloaded README was opened and
 /// decoded with no question asked, while the README promised carrel reads
 /// only the folder you point it at. A link out of the folder waits for a
-/// second Enter; an image has no Enter to wait for, so it is simply not
-/// opened and keeps its alt text. `root` is `App::library_root`, so the rule
-/// is the links' rule in every case: a file opened directly is rooted at its
-/// own folder, a pipe at the working directory, the home list at its root.
+/// second Enter; an image is not opened and keeps its alt text, which is a
+/// button the reader can click to show it (`App::image_consent`). `root` is
+/// `App::library_root`, so the rule is the links' rule in every case: a
+/// file opened directly is rooted at the folder you stand in or its own, a
+/// pipe at the working directory, the home list at its root.
+///
+/// A refused block comes back with its CANONICAL path, which is what a
+/// reader's consent names: a symlink and its target are one file, and a
+/// symlink later pointed elsewhere is another.
 #[must_use]
 pub fn contain(
     reqs: Vec<(BlockIdx, PathBuf)>,
     root: Option<&Path>,
-) -> (Vec<(BlockIdx, PathBuf)>, Vec<BlockIdx>) {
+) -> (Vec<Request>, Vec<Request>) {
     let Some(root) = root else {
         return (reqs, Vec::new());
     };
     let (outside, inside): (Vec<_>, Vec<_>) = reqs
         .into_iter()
         .partition(|(_, path)| crate::app::escapes_root(root, path));
-    (inside, outside.into_iter().map(|(b, _)| b).collect())
+    let outside = outside
+        .into_iter()
+        // `escapes_root` is false for a path that will not canonicalize, so
+        // every one here did a moment ago; one that vanished since keeps
+        // its spelling and fails to open like any missing file.
+        .map(|(b, p)| (b, p.canonicalize().unwrap_or(p)))
+        .collect();
+    (inside, outside)
 }
+
+/// An image block and the file it names.
+pub type Request = (BlockIdx, PathBuf);
 
 /// Images in document order, including unavailable images whose alt text is useful.
 #[must_use]
@@ -511,6 +557,7 @@ mod tests {
         let (kept, refused) = contain(reqs, Some(&lib));
         assert_eq!(kept.len(), 1, "{kept:?}");
         assert_eq!(kept[0].1, inside);
+        let refused: Vec<_> = refused.into_iter().map(|(b, _)| b).collect();
         assert_eq!(refused, [BlockIdx(1), BlockIdx(2), BlockIdx(3)]);
         // No root at all (an App built by hand) refuses nothing.
         let (kept, refused) = contain(local_image_requests(&doc, Some(&lib)), None);

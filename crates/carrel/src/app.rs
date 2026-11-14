@@ -199,6 +199,7 @@ impl Pane {
             | A::MatchStep(_)
             | A::LinkStep(_)
             | A::ImageStep(_)
+            | A::ImageAllow(_)
             | A::LinkOpen(_)
             | A::Back
             | A::Forward
@@ -694,6 +695,23 @@ pub struct App {
     /// Full-screen image viewer; opening it never changes the reading anchor.
     pub lightbox: Option<BlockIdx>,
     pub image_errors: HashMap<BlockIdx, String>,
+    /// The image blocks the folder rule refused in this parse, each with the
+    /// CANONICAL path it leads to: what [`Action::ImageAllow`] consents to.
+    /// Written by `images::plan`, forgotten with the parse.
+    pub image_outside: HashMap<BlockIdx, std::path::PathBuf>,
+    /// Images outside the folder the reader chose to see, by canonical path.
+    ///
+    /// In memory only, never written anywhere, so a restart asks again. It
+    /// outlives a reload (the reader chose the FILE, and a reload is the
+    /// same file) and a switch to another document naming the same image:
+    /// consent is "carrel may open this file for me", which does not depend
+    /// on who names it, and nothing a second document can do with it leaves
+    /// the screen — carrel sends nothing anywhere. Asking again on `Ctrl-O`
+    /// back would teach clicking through the question. A different path,
+    /// a symlink swapped to point elsewhere included, is a different
+    /// canonical path and is refused as before. Only grows, so its length
+    /// is the generation `images::sync_key` replans on.
+    pub image_consent: std::collections::HashSet<std::path::PathBuf>,
     /// `Some` while the outline picker is up. The heading list itself is
     /// DERIVED from `doc` at every use — nothing here can go stale.
     pub outline: Option<Outline>,
@@ -1199,6 +1217,8 @@ impl App {
             help: None,
             lightbox: None,
             image_errors: HashMap::new(),
+            image_outside: HashMap::new(),
+            image_consent: std::collections::HashSet::new(),
             outline: None,
             menu: None,
             hover: None,
@@ -2105,6 +2125,8 @@ impl App {
         self.folded_details.clear();
         self.image_dims.clear();
         self.image_errors.clear();
+        // NOT `image_consent`: the reader chose those files, not this parse.
+        self.image_outside.clear();
         self.lightbox = None;
         self.diagram_art.clear();
         self.changed.clear();
@@ -4903,9 +4925,28 @@ fn lightbox_update(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::Redraw
         }
+        // `Enter` in the lightbox arrives as `ImageAllow` only over a refused
+        // image (`main.rs::key_action`); a click on `[show]` the same.
+        Action::ImageAllow(block) => allow_image(app, block),
         Action::Quit => Outcome::Quit,
         _ => Outcome::Idle,
     }
+}
+
+/// The reader chose to see an image the folder rule refused: remember its
+/// canonical path for this session, and let `Images::sync` replan.
+///
+/// Only a block this parse refused can be allowed, and only to the path the
+/// refusal recorded, so a stale click or a hand-built action cannot widen
+/// consent to anything the reader was not shown.
+fn allow_image(app: &mut App, block: BlockIdx) -> Outcome {
+    let Some(path) = app.image_outside.get(&block).cloned() else {
+        return Outcome::Idle;
+    };
+    let name = crate::plain::shown(&path);
+    app.note = Some(format!("showing {name} for this session"));
+    app.image_consent.insert(path);
+    Outcome::Redraw
 }
 
 /// Open images without moving the underlying document or its selection.
@@ -5872,6 +5913,7 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
         Action::LinkStep(n) => link_step(app, n, h),
 
         Action::ImageOpen(block) => open_image(app, block),
+        Action::ImageAllow(block) => allow_image(app, block),
         Action::LinkFollow => {
             let block = app.layout.block_at_row(app.view.scroll_row);
             if app.selected_link.is_none()

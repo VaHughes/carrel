@@ -53,6 +53,10 @@ pub enum Action {
     ImageOpen(Option<carrel_core::BlockIdx>),
     /// Move through images while the full-screen viewer is open.
     ImageStep(i32),
+    /// Show an image the folder rule refused, for this session only: the
+    /// reader clicked its block, picked its menu row, or pressed Enter in
+    /// the lightbox over it. Never produced by anything a document holds.
+    ImageAllow(carrel_core::BlockIdx),
     /// A click on a painted link: select it and follow it in one intent. The
     /// payload indexes `Document::links` — the same currency `LinkId` wraps,
     /// kept primitive here so this file stays free of state-layer types.
@@ -464,6 +468,7 @@ impl From<Intent> for Action {
             Intent::SiblingOpen => Self::SiblingOpen,
             Intent::ImageOpen(v0) => Self::ImageOpen(v0),
             Intent::ImageStep(v0) => Self::ImageStep(v0),
+            Intent::ImageAllow(v0) => Self::ImageAllow(v0),
             Intent::SelectAnchor(v0) => Self::SelectAnchor(v0),
             Intent::SelectDrag(v0) => Self::SelectDrag(v0),
             Intent::SelectRelease => Self::SelectRelease,
@@ -587,6 +592,7 @@ impl Action {
             Self::SiblingOpen => Some(Intent::SiblingOpen),
             Self::ImageOpen(v0) => Some(Intent::ImageOpen(v0)),
             Self::ImageStep(v0) => Some(Intent::ImageStep(v0)),
+            Self::ImageAllow(v0) => Some(Intent::ImageAllow(v0)),
             Self::SelectAnchor(v0) => Some(Intent::SelectAnchor(v0)),
             Self::SelectDrag(v0) => Some(Intent::SelectDrag(v0)),
             Self::SelectRelease => Some(Intent::SelectRelease),
@@ -1062,6 +1068,7 @@ mod intent_tests {
             Intent::PickerCancel => 106,
             Intent::PickerDescend => 107,
             Intent::PickerUp => 108,
+            Intent::ImageAllow(..) => 109,
         }
     }
 
@@ -1180,6 +1187,7 @@ mod intent_tests {
             Intent::PickerCancel,
             Intent::PickerDescend,
             Intent::PickerUp,
+            Intent::ImageAllow(BlockIdx(4)),
         ]
     }
 

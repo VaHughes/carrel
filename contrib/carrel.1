@@ -286,7 +286,9 @@ Select the next or previous link.
 .B Enter
 Follow the selected link. With no link selected and an image at the reading
 position, open its full-screen lightbox. Click an image or choose Images from
-the menu to open it too; [ and ] or arrows change images, Esc or q closes. A markdown file beside this one opens in the reader;
+the menu to open it too; [ and ] or arrows change images, Esc or q closes.
+Over an image outside the folder, which is not opened, the lightbox asks and
+a second Enter (or its [show] button) shows that image. A markdown file beside this one opens in the reader;
 any destination with a scheme \(em a URL, a
 .B mailto:
 address \(em is copied to the clipboard instead, to paste wherever you meant it
@@ -995,6 +997,13 @@ deliberately rather than by accident.
 .SH PRIVACY
 carrel reads only the folder you point it at and sends nothing anywhere.
 Remote images in documents are never fetched; they render as their alt text.
+An image whose path leads outside the folder is not opened either: its alt
+text is a button reading
+.IR "outside this folder \(em click to show" .
+A click on it, its row in the right\-click menu, or a second Enter in its
+lightbox shows that one file until carrel exits. Nothing is written down,
+so the next launch asks again; a symlink is followed to the file it names,
+and that file is the only one shown.
 .SH SEE ALSO
 Project home:
 .UR https://github.com/VaHughes/carrel

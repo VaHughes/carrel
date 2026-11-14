@@ -391,6 +391,8 @@ enum Under {
         rendered: bool,
     },
     Table(carrel_core::BlockIdx),
+    /// An image the folder rule refused, which the reader can choose to see.
+    OutsideImage(carrel_core::BlockIdx),
     /// A `[^name]` reference, which has a definition to jump to.
     Footnote,
     Task,
@@ -424,6 +426,9 @@ fn under(app: &App, byte: u32) -> Under {
             rendered: true,
         },
         NodeKind::Table { .. } => Under::Table(block),
+        NodeKind::Image { .. } if app.image_outside.contains_key(&block) => {
+            Under::OutsideImage(block)
+        }
         _ if on_footnote_ref(app, byte) => Under::Footnote,
         _ if node.prefix.as_ref().and_then(|p| p.task).is_some() => Under::Task,
         _ => Under::Text,
@@ -530,6 +535,12 @@ pub fn context(app: &App, byte: u32) -> Vec<Item> {
         Under::Footnote => vec![Item::plain(
             "Go to the footnote text",
             Action::FootnoteJumpAt(byte),
+        )],
+        // No key beside it: Enter on the document opens the lightbox, and
+        // only Enter THERE shows the image (`Item::plain`'s rule).
+        Under::OutsideImage(block) => vec![Item::plain(
+            "Show this image (outside this folder)",
+            Action::ImageAllow(block),
         )],
         Under::Task => vec![Item::new("Next task", Action::TaskStep(1))],
         Under::Text => {
@@ -994,6 +1005,9 @@ mod tests {
             A::InfoToggle => Menu("Document info"),
             A::ImageOpen(_) => Menu("Images…"),
             A::ImageStep(_) => Pane,
+            // The refused image's own block is the button; the context menu
+            // and the lightbox's `[show]` offer it too.
+            A::ImageAllow(_) => Doc,
             A::FocusToggle => Menu("Focus on one paragraph"),
             A::AutoToggle => Menu("Auto-read"),
             A::BreadcrumbToggle => Menu("Heading bar"),

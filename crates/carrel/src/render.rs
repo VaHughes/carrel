@@ -367,7 +367,12 @@ fn paint_lightbox(
         if let Some(protocol) = images.get_mut(&block) {
             frame.render_stateful_widget(StatefulImage::new(), body, protocol);
         } else {
-            let message = if let Some(error) = app.image_errors.get(&block) {
+            let message = if let Some(path) = app.image_outside.get(&block) {
+                format!(
+                    "{} is outside this folder \u{2014} Enter or [show] to show it for this session",
+                    crate::plain::shown(path)
+                )
+            } else if let Some(error) = app.image_errors.get(&block) {
                 format!("Cannot display image: {error}")
             } else if !crate::images::local_image_requests(
                 &app.doc,
@@ -406,11 +411,17 @@ fn paint_lightbox(
     if area.height > 1 {
         let y = area.height - 1;
         let mut x = 0u16;
-        for (label, action) in [
+        // `[show]` only over an image the folder rule refused, first, since
+        // it is the one thing this screen is asking about.
+        let show = app
+            .image_outside
+            .contains_key(&block)
+            .then_some(("[show] ", Action::ImageAllow(block)));
+        for (label, action) in show.into_iter().chain([
             ("[close] ", Action::Dismiss),
             ("[previous] ", Action::ImageStep(-1)),
             ("[next]", Action::ImageStep(1)),
-        ] {
+        ]) {
             let width = u16::try_from(label.len())
                 .unwrap_or(u16::MAX)
                 .min(area.width.saturating_sub(x));
@@ -1770,8 +1781,16 @@ fn paint_rows(
             y += 1;
         }
         if matches!(app.doc.node_for_block(block).kind, NodeKind::Image { .. }) && y > first_y {
+            // An image the folder rule refused is a button that shows it,
+            // and says so; any other alt text opens the lightbox.
+            let action = if app.image_outside.contains_key(&block) {
+                paint_show_outside(frame, app, block, area, (first_y, skip, y));
+                Action::ImageAllow(block)
+            } else {
+                Action::ImageOpen(Some(block))
+            };
             painted.targets.push(
-                Action::ImageOpen(Some(block)),
+                action,
                 Zone::new(area.x, first_y, area.width, y - first_y),
                 Z_DOC,
             );
@@ -1869,6 +1888,52 @@ fn paint_fold_ellipsis(
             buf.set_stringn(after, y, "…", 1, theme::dim());
         }
     }
+}
+
+/// The `[outside this folder — click to show]` chip after a refused image's
+/// alt text, on the block's last content row; the short form where the long
+/// one will not fit, nothing where neither will (the block is still the
+/// button, and the status note says so). Decoration only, like the fold
+/// ellipsis: the alt text is the display text, and nothing is added to it.
+fn paint_show_outside(
+    frame: &mut Frame,
+    app: &App,
+    block: BlockIdx,
+    area: Rect,
+    (first_y, skip, bottom): (u16, u32, u16),
+) {
+    let mut rows = Vec::new();
+    app.layout.rows_for(&app.doc, block, &mut rows);
+    let last = app.layout.content_height(&app.doc, block).saturating_sub(1);
+    let Some(r) = rows.get(last as usize) else {
+        return;
+    };
+    let Some(y) = last
+        .checked_sub(skip)
+        .and_then(|i| u16::try_from(i).ok())
+        .map(|i| first_y.saturating_add(i))
+        .filter(|&y| y < bottom)
+    else {
+        return;
+    };
+    let text = &app.doc.text[r.doc.start as usize..r.doc.end as usize];
+    let after = area
+        .x
+        .saturating_add(r.indent)
+        .saturating_add(carrel_core::display_width(text.trim_end()))
+        .saturating_add(1);
+    let room = area.right().saturating_sub(after);
+    let Some(label) = [
+        crate::images::SHOW_OUTSIDE,
+        crate::images::SHOW_OUTSIDE_SHORT,
+    ]
+    .into_iter()
+    .find(|l| carrel_core::display_width(l) <= room) else {
+        return;
+    };
+    frame
+        .buffer_mut()
+        .set_stringn(after, y, label, usize::from(room), theme::button());
 }
 
 #[allow(clippy::too_many_lines)]

@@ -206,6 +206,8 @@ pub enum Intent {
     /// position.
     ImageOpen(Option<BlockIdx>),
     ImageStep(i32),
+    /// Show one image the folder rule refused, for this session only.
+    ImageAllow(BlockIdx),
 
     // --- selection and copying ---
     /// Pointer down on the `(start, end)` doc bytes of the cluster under it.

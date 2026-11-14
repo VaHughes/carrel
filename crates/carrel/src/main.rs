@@ -1175,8 +1175,13 @@ struct Images {
     protocols: HashMap<BlockIdx, StatefulProtocol>,
     /// The file and library root the current pipeline was planned for
     /// ([`images::sync_key`]); a change in either restarts it.
-    synced: (Option<PathBuf>, Option<PathBuf>),
+    synced: images::SyncKey,
     initialized: bool,
+    /// Blocks the running worker was asked for and has not answered. If it
+    /// ends with any left (a decoder panic ends the thread), they say so
+    /// rather than reading "Loading image…" for ever — which is what a
+    /// reader who just clicked "show" on an outside image would see.
+    waiting: std::collections::HashSet<BlockIdx>,
 }
 
 impl Images {
@@ -1205,8 +1210,9 @@ impl Images {
             picker,
             rx: None,
             protocols: HashMap::new(),
-            synced: (None, None),
+            synced: (None, None, 0),
             initialized: false,
+            waiting: std::collections::HashSet::new(),
         }
     }
 
@@ -1256,6 +1262,7 @@ impl Images {
         // Nothing wider than the terminal can ever be painted.
         let text_px = u32::from(app.cols) * u32::from(fs.width);
         let caps = images::DecodeCaps::for_terminal(text_px);
+        self.waiting = reqs.iter().map(|(b, _)| *b).collect();
         self.rx = if reqs.is_empty() {
             None
         } else {
@@ -1270,18 +1277,26 @@ impl Images {
         loop {
             match rx.try_recv() {
                 Ok(ImageMsg::Decoded(block, img)) => {
+                    self.waiting.remove(&block);
                     app.image_dims.insert(block, (img.width(), img.height()));
                     self.protocols
                         .insert(block, self.picker.new_resize_protocol(img));
                     changed = true;
                 }
                 Ok(ImageMsg::Failed(block, e)) => {
+                    self.waiting.remove(&block);
                     app.image_errors.insert(block, e.clone());
                     app.note = Some(e);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.rx = None;
+                    for block in self.waiting.drain() {
+                        app.image_errors.insert(
+                            block,
+                            "the decoder stopped before this image arrived".into(),
+                        );
+                    }
                     break;
                 }
             }
@@ -2199,7 +2214,7 @@ fn poll_stream(
         let started = Instant::now();
         let text = app.piped.clone().unwrap_or_default();
         app.reload_from(&text);
-        images.synced = (None, None);
+        images.synced = (None, None, 0);
         images.initialized = false;
         diagrams.for_file = None;
         pace.last = Some((Instant::now(), started.elapsed()));
@@ -2267,7 +2282,7 @@ fn poll_reload(
     match reloader.poll(app.file.as_deref(), app.mtime) {
         Some(Reload::Changed) => match app.reload() {
             Ok(()) => {
-                images.synced = (None, None);
+                images.synced = (None, None, 0);
                 images.initialized = false;
                 diagrams.for_file = None;
             }
@@ -2826,8 +2841,17 @@ impl Resize {
 /// the precedence: innermost overlay first, the home screen next, the reader
 /// last.
 fn key_action(keys: &mut Keys, app: &App, k: KeyEvent) -> Option<carrel::action::Action> {
-    if app.lightbox.is_some() {
+    if let Some(block) = app.lightbox {
         keys.reset();
+        // Over an image the folder rule refused, Enter is the second Enter
+        // a link out of the folder asks for: it shows that one image. Over
+        // any other, Enter closes the lightbox as it always has.
+        if k.code == KeyCode::Enter
+            && k.modifiers.is_empty()
+            && app.image_outside.contains_key(&block)
+        {
+            return Some(carrel::action::Action::ImageAllow(block));
+        }
         return Keys::map_lightbox(k);
     }
     if app.notes.draft.is_some() || app.notes.pane.is_some() {
@@ -5888,6 +5912,83 @@ mod lightbox_pipeline_tests {
             "None filename must not suppress initial decode"
         );
         assert!(pipeline.initialized);
+    }
+
+    /// `lib/x.md` naming `out/y.png`, read with `lib` as the root.
+    fn outside_fixture() -> (tempfile::TempDir, App) {
+        let d = tempfile::tempdir().unwrap();
+        let base = d.path().canonicalize().unwrap();
+        std::fs::create_dir_all(base.join("lib")).unwrap();
+        std::fs::create_dir_all(base.join("out")).unwrap();
+        image::DynamicImage::new_rgb8(3, 2)
+            .save(base.join("out/y.png"))
+            .unwrap();
+        let x = base.join("lib/x.md");
+        std::fs::write(&x, "![why](../out/y.png)\n").unwrap();
+        let mut app = App::new_home(base.join("lib"), vec![], 80, 24);
+        app.open_path(&x).unwrap();
+        (d, app)
+    }
+
+    /// The bug this guards: consent changed nothing on screen until the
+    /// document was opened again, because the pipeline's key did not move.
+    #[test]
+    fn consenting_to_an_outside_image_decodes_it_without_a_reopen() {
+        let (_d, mut app) = outside_fixture();
+        let mut pipeline = Images::detect();
+        pipeline.sync(&mut app);
+        assert!(pipeline.rx.is_none(), "refused: nothing to decode");
+        let block = *app.image_outside.keys().next().unwrap();
+        carrel::app::update(&mut app, carrel::action::Action::ImageAllow(block));
+        pipeline.sync(&mut app);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.image_dims.contains_key(&block) && Instant::now() < deadline {
+            pipeline.drain(&mut app);
+            std::thread::yield_now();
+        }
+        assert_eq!(app.image_dims.get(&block), Some(&(3, 2)));
+        assert!(pipeline.protocols.contains_key(&block));
+    }
+
+    /// A worker that ends without answering for a block leaves it saying
+    /// so, not "Loading image…" for ever.
+    #[test]
+    fn a_decode_that_never_answers_shows_an_error() {
+        let (_d, mut app) = outside_fixture();
+        let mut pipeline = Images::detect();
+        let (tx, rx) = std::sync::mpsc::channel::<ImageMsg>();
+        drop(tx);
+        pipeline.rx = Some(rx);
+        pipeline.waiting.insert(BlockIdx(0));
+        pipeline.drain(&mut app);
+        assert!(
+            app.image_errors
+                .get(&BlockIdx(0))
+                .is_some_and(|e| e.contains("stopped")),
+            "{:?}",
+            app.image_errors
+        );
+        assert!(pipeline.waiting.is_empty());
+    }
+
+    /// Enter in the lightbox is the second Enter only over a refused image;
+    /// over any other it closes, as it always has.
+    #[test]
+    fn enter_in_the_lightbox_shows_a_refused_image_and_closes_any_other() {
+        use carrel::action::Action;
+        let (_d, mut app) = outside_fixture();
+        carrel::images::plan(&mut app);
+        let block = *app.image_outside.keys().next().unwrap();
+        carrel::app::update(&mut app, Action::ImageOpen(Some(block)));
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let mut keys = Keys::new();
+        assert_eq!(
+            key_action(&mut keys, &app, enter),
+            Some(Action::ImageAllow(block))
+        );
+        carrel::app::update(&mut app, Action::ImageAllow(block));
+        carrel::images::plan(&mut app);
+        assert_eq!(key_action(&mut keys, &app, enter), Some(Action::Dismiss));
     }
 }
 
