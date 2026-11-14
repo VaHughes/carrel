@@ -47,8 +47,9 @@ That first sentence is **enforced, not merely intended**. A markdown file is unt
 shared vault, a downloaded README, anything you did not write — and a link in one can name any
 path on the machine. Links resolving inside your folder follow as they always have; one
 resolving outside names the path and waits for a second Enter, so leaving is something you do
-rather than something a document does to you. Both paths are canonicalised, so a symlink out of
-the tree is caught too. The walk itself never follows symlinks and never reads an ignore file
+rather than something a document does to you. Images obey the same rule: one whose path leads
+outside the folder is never opened and shows its alt text instead. Both paths are canonicalised,
+so a symlink out of the tree is caught too. The walk itself never follows symlinks and never reads an ignore file
 above your root.
 
 **This is a decision, not an omission.** Other readers will fetch a URL you hand them, or

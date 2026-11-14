@@ -164,6 +164,7 @@ dependencies = [
  "carrel-state",
  "criterion",
  "image",
+ "libc",
  "merman",
  "merman-ascii",
  "merman-core",

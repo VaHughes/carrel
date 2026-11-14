@@ -22,6 +22,22 @@ use crate::view::ViewState;
 /// What the event loop must do after a transition.
 ///
 /// The `App` never draws and never exits; it only reports what is now true.
+/// Does `target` resolve outside `root`? The one containment rule, shared by
+/// links ([`App::escapes_library`]) and images (`images::contain`), so a
+/// document cannot reach a file through `![](…)` that `[](…)` would have to
+/// ask about first.
+///
+/// Both paths are canonicalized, so a symlink pointing out of the tree is
+/// caught too. A target that cannot be canonicalized does not exist, and
+/// whatever opens it next reports that itself.
+#[must_use]
+pub fn escapes_root(root: &Path, target: &Path) -> bool {
+    let (Ok(root), Ok(target)) = (root.canonicalize(), target.canonicalize()) else {
+        return false;
+    };
+    !target.starts_with(&root)
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Idle,
@@ -1809,13 +1825,9 @@ impl App {
     /// the open that follows reports that itself.
     #[must_use]
     pub fn escapes_library(&self, target: &Path) -> bool {
-        let Some(root) = self.library_root.as_deref() else {
-            return false;
-        };
-        let (Ok(root), Ok(target)) = (root.canonicalize(), target.canonicalize()) else {
-            return false;
-        };
-        !target.starts_with(&root)
+        self.library_root
+            .as_deref()
+            .is_some_and(|root| escapes_root(root, target))
     }
 
     /// The second Enter on the same link: `true` once, then forgotten.

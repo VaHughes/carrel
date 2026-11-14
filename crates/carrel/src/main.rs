@@ -1204,10 +1204,28 @@ impl Images {
         app.font_px = (fs.width, fs.height);
         let base = app.file.as_deref().and_then(std::path::Path::parent);
         let reqs = images::local_image_requests(&app.doc, base);
+        // The links' containment rule, through the links' root: an image
+        // outside the folder is never opened, and keeps its alt text.
+        let (reqs, outside) = images::contain(reqs, app.library_root.as_deref());
+        if !outside.is_empty() && app.note.is_none() {
+            app.note = Some(format!(
+                "{} image{} {}",
+                outside.len(),
+                if outside.len() == 1 { "" } else { "s" },
+                images::OUTSIDE_FOLDER
+            ));
+        }
+        for block in outside {
+            app.image_errors
+                .insert(block, images::OUTSIDE_FOLDER.to_string());
+        }
+        // Nothing wider than the terminal can ever be painted.
+        let text_px = u32::from(app.cols) * u32::from(fs.width);
+        let caps = images::DecodeCaps::for_terminal(text_px);
         self.rx = if reqs.is_empty() {
             None
         } else {
-            Some(images::spawn_decoder(reqs))
+            Some(images::spawn_decoder(reqs, caps))
         };
     }
 

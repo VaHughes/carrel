@@ -38,6 +38,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   instead of everything. Ctrl and Alt chords no longer type their letter into the
   filters, the search prompts or a note. `--plain FILE -5` is refused as the width it
   is, `FILE:0` opens at the top, and `carrel . TODO` says the folder is a folder.
+- **Images stay inside the folder, and inside memory.** An image whose path leads outside
+  the folder carrel was pointed at, by `..`, an absolute path or a symlink, is no longer
+  opened; it shows its alt text, and the image viewer says why. A path that is a pipe
+  rather than a file is refused instead of stalling every image after it. A picture named
+  many times is decoded once, pictures wider than the terminal are shrunk when loaded,
+  and a document's images share one memory budget: twenty references to one large PNG
+  used to exhaust memory and crash with the terminal left broken.
 
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
