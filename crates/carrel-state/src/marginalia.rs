@@ -8,7 +8,7 @@ use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use crate::state::{escape_field, unescape_field, write_atomic};
+use crate::state::{escape_field, unescape_field, write_atomic, write_private};
 
 const CONTEXT: usize = 32;
 const HEADER: &str = "carrel-marginalia-v1";
@@ -197,7 +197,7 @@ pub fn save_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Resul
         path.parent()
             .ok_or_else(|| invalid("missing sidecar directory"))?,
     )?;
-    write_atomic(&path, &output)
+    write_private(&path, &output)
 }
 
 /// Where [`export_in`] writes: `exports/<stem>-notes-<8 hex>.md` under the

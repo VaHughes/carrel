@@ -7,6 +7,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **Ctrl-H erases.** In every filter, search prompt and note, Ctrl-H is Backspace — what
   terminals set up for `^H`, and Ctrl+Backspace in many, actually send. It did nothing.
 
+- **Saving keeps a file's permissions.** A `chmod 600` config or reading-history file no
+  longer comes back 0644 after carrel rewrites it, directly or through a symlink; a file
+  you made read-only is left alone rather than replaced; and new reading-history files
+  (positions, bookmarks, folds, notes) are created readable by you only.
 - **Old Mac line endings number lines correctly.** In a file whose lines end in a lone
   carriage return, a search hit said line 1 and quoted the start of the file; `path:line`
   copies and `FILE:N` used the same wrong count.

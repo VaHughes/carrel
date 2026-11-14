@@ -69,7 +69,28 @@ use std::path::{Path, PathBuf};
 /// theme was cycled, and the repo's copy stopped changing. The target is
 /// resolved first and the temp file goes beside it, so the rename stays
 /// within the target's filesystem and the link keeps pointing where it did.
+///
+/// **The file keeps its mode, and a read-only one is refused.** The temp
+/// file used to be created under the umask, so the rename handed back a
+/// 0644 file where the user had `chmod 600` — and a 0444 one was replaced
+/// too, because `rename` needs only the DIRECTORY to be writable. Now the
+/// temp file takes the target's mode, and a target this process cannot
+/// open for writing is an error with nothing changed: the user made it
+/// read-only, and saying no is what read-only means. A file that does not
+/// exist yet gets the umask's default here, which is what a config file
+/// conventionally has; [`write_private`] is the one for reading history.
 pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
+    write_with(path, text.as_ref(), None)
+}
+
+/// [`write_atomic`], creating a file that does not exist yet as 0600: the
+/// state files are a record of what was read and where, which is nobody
+/// else's business on a shared machine. An existing file keeps its mode.
+pub(crate) fn write_private(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
+    write_with(path, text.as_ref(), Some(0o600))
+}
+
+fn write_with(path: &Path, text: &[u8], new_mode: Option<u32>) -> std::io::Result<()> {
     use std::io::Write as _;
     let resolved;
     let path = match std::fs::symlink_metadata(path) {
@@ -84,7 +105,18 @@ pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Resu
         }
         _ => path,
     };
-    let text = text.as_ref();
+    // The mode to give the temp file: the target's, when there is one.
+    let mode = match std::fs::metadata(path) {
+        Ok(m) => {
+            // Opening for writing without truncating changes nothing, and
+            // asks the kernel the real question — root, ACLs and all —
+            // rather than guessing from the mode bits.
+            std::fs::OpenOptions::new().write(true).open(path)?;
+            mode_of(&m)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => new_mode,
+        Err(e) => return Err(e),
+    };
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     // The pid keeps two carrels from writing the same temp file and renaming
@@ -92,6 +124,11 @@ pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Resu
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let write = |tmp: &Path| -> std::io::Result<()> {
         let mut f = std::fs::File::create(tmp)?;
+        // Set after creating rather than passed to `open`, because the
+        // umask applies to the latter and would turn a 0640 back into 0600
+        // or worse; and before the data, so the bytes are never readable
+        // under a looser mode than the file will have.
+        set_mode(&f, mode)?;
         f.write_all(text)?;
         f.sync_all()
     };
@@ -103,6 +140,36 @@ pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Resu
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
+    Ok(())
+}
+
+/// `None` where there are no Unix permission bits to carry over — which is
+/// why it is an `Option` even though the Unix arm always has one.
+#[cfg_attr(unix, allow(clippy::unnecessary_wraps))]
+fn mode_of(m: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        Some(m.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        None
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(f: &std::fs::File, mode: Option<u32>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    match mode {
+        Some(m) => f.set_permissions(std::fs::Permissions::from_mode(m)),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn set_mode(_: &std::fs::File, _: Option<u32>) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -771,7 +838,7 @@ pub fn save_position_in(
         out.extend_from_slice(line);
         out.push(b'\n');
     }
-    write_atomic(&path, &out)
+    write_private(&path, &out)
 }
 
 /// The bookmarks for `file`, in the order they were saved. Never an error.
@@ -877,7 +944,7 @@ pub fn save_marks_in(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Resul
     if !joined.is_empty() {
         out.extend_from_slice(format!("{k}\t{}\n", joined.join(",")).as_bytes());
     }
-    write_atomic(&path, &out)
+    write_private(&path, &out)
 }
 
 /// The same cap again, for collapsed sections.
@@ -945,7 +1012,7 @@ pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Resul
         }
         out.push(b'\n');
     }
-    write_atomic(&path, &out)
+    write_private(&path, &out)
 }
 
 #[cfg(test)]
@@ -1688,5 +1755,120 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("bookmarks")).unwrap();
         assert_eq!(text, format!("{newer}\n{k}\t9\n"));
         assert_eq!(load_marks_in(dir.path(), &doc), [P(9)]);
+    }
+
+    #[cfg(unix)]
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[cfg(unix)]
+    fn chmod(p: &Path, m: u32) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+    }
+
+    /// The temp file was created under the umask and renamed over the
+    /// original, so a `chmod 600` positions or config file came back 0644
+    /// after one save — directly and through a symlink alike.
+    #[cfg(unix)]
+    #[test]
+    fn a_rewrite_keeps_the_mode_the_file_had() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.md");
+        save_position_in(dir.path(), &a, Some(P(1)), 0, 0).unwrap();
+        let positions = dir.path().join("positions");
+        for m in [0o600, 0o640, 0o604] {
+            chmod(&positions, m);
+            save_position_in(dir.path(), &a, Some(P(2)), 0, 0).unwrap();
+            assert_eq!(mode(&positions), m, "{m:o}");
+        }
+        assert_eq!(load_position_in(dir.path(), &a), Some(P(2)));
+
+        let dots = dir.path().join("dots");
+        std::fs::create_dir(&dots).unwrap();
+        let target = dots.join("config");
+        std::fs::write(&target, "theme = paper\n").unwrap();
+        chmod(&target, 0o600);
+        let link = dir.path().join("config");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_atomic(&link, "theme = dusk\n").unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "theme = dusk\n");
+        assert_eq!(mode(&target), 0o600);
+    }
+
+    /// A state file carrel creates holds reading history, so it starts
+    /// readable by its owner only. A file `write_atomic` creates for anyone
+    /// else — the config — gets what any program's new file gets.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_state_file_is_private_and_a_new_config_follows_the_umask() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.md");
+        save_position_in(dir.path(), &a, Some(P(1)), 0, 0).unwrap();
+        save_marks_in(dir.path(), &a, &[P(1)]).unwrap();
+        save_folds_in(dir.path(), &a, &["h:x".into()]).unwrap();
+        for name in ["positions", "bookmarks", "folds"] {
+            assert_eq!(mode(&dir.path().join(name)), 0o600, "{name}");
+        }
+        let plain = dir.path().join("plain");
+        std::fs::File::create(&plain).unwrap();
+        let config = dir.path().join("config");
+        write_atomic(&config, "x\n").unwrap();
+        assert_eq!(mode(&config), mode(&plain));
+    }
+
+    /// A file the user made read-only is refused, not replaced: `rename`
+    /// needs only the DIRECTORY to be writable, which is why a 0444 config
+    /// used to be rewritten anyway, and came back 0644.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_file_is_refused_and_left_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config");
+        std::fs::write(&file, "theme = paper\n").unwrap();
+        chmod(&file, 0o444);
+        if std::fs::OpenOptions::new().write(true).open(&file).is_ok() {
+            return; // running as root: permissions cannot stop a write
+        }
+        let e = write_atomic(&file, "theme = dusk\n").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "theme = paper\n");
+        assert_eq!(mode(&file), 0o444);
+
+        let link = dir.path().join("linked");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(write_atomic(&link, "theme = dusk\n").is_err());
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "theme = paper\n");
+        assert_eq!(mode(&file), 0o444);
+
+        let a = dir.path().join("a.md");
+        std::fs::write(dir.path().join("positions"), "").unwrap();
+        chmod(&dir.path().join("positions"), 0o444);
+        assert!(save_position_in(dir.path(), &a, Some(P(1)), 0, 0).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("positions")).unwrap(),
+            ""
+        );
+        // Nothing left behind.
+        let stray: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with('.') && n != ".")
+            .collect();
+        assert!(stray.is_empty(), "{stray:?}");
     }
 }
