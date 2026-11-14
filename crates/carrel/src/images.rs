@@ -176,6 +176,121 @@ pub fn plan_consented(app: &mut crate::app::App) -> Vec<Request> {
     reqs
 }
 
+/// Where a refused image leads, said so the reader can judge it: relative
+/// to `root` when that is the shorter spelling (`../outside/red.png`), else
+/// absolute; and, when the document named it some other way — a symlink,
+/// a `./` — both, as `link.png → ../outside/red.png`. Every name is passed
+/// through [`crate::plain::shown`], so a control in a file name is escaped.
+///
+/// The lightbox put up only the absolute path, cut at the right edge: at
+/// 60 columns the reader saw `/tmp/claude-1000/-home-…` and could answer
+/// `[show]` without ever seeing which file (black-box test, 2026-11-14).
+#[must_use]
+pub fn outside_where(named: &str, canonical: &Path, root: Option<&Path>) -> String {
+    let absolute = crate::plain::shown(canonical);
+    let target = root
+        .and_then(|r| r.canonicalize().ok())
+        .map(|r| crate::plain::shown(&relative_to(canonical, &r)))
+        .filter(|rel| rel.len() < absolute.len())
+        .unwrap_or(absolute);
+    let named = crate::plain::shown(Path::new(named));
+    if named == target {
+        target
+    } else {
+        format!("{named} \u{2192} {target}")
+    }
+}
+
+/// `path` spelled from `base`, both absolute: `..` up to their common
+/// ancestor, then down.
+fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    let p: Vec<_> = path.components().collect();
+    let b: Vec<_> = base.components().collect();
+    let common = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut out = PathBuf::new();
+    for _ in common..b.len() {
+        out.push("..");
+    }
+    for c in &p[common..] {
+        out.push(c);
+    }
+    out
+}
+
+/// `text` broken into rows of at most `width` cells, keeping every
+/// character: at spaces where it can, inside a word where it must (a path
+/// has no spaces, and every cell of it matters).
+#[must_use]
+pub fn wrap_cells(text: &str, width: u16) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for word in text.split_inclusive(' ') {
+        let w = carrel_core::display_width(word.trim_end());
+        if !row.is_empty() && carrel_core::display_width(row.trim_end()) + w > width {
+            rows.push(row.trim_end().to_string());
+            row = String::new();
+        }
+        for g in word.graphemes(true) {
+            let gw = carrel_core::display_width(g);
+            if g != " " && carrel_core::display_width(&row) + gw > width {
+                rows.push(row.trim_end().to_string());
+                row = String::new();
+            }
+            row.push_str(g);
+        }
+    }
+    if !row.trim_end().is_empty() {
+        rows.push(row.trim_end().to_string());
+    }
+    rows
+}
+
+/// `text` in `width` cells keeping its END — `…` plus the tail — which is
+/// how carrel shortens a path: the file name and its folder are the part
+/// that says which file.
+#[must_use]
+pub fn keep_end(text: &str, width: u16) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    if carrel_core::display_width(text) <= width {
+        return text.to_string();
+    }
+    let budget = width.saturating_sub(1);
+    let mut tail: Vec<&str> = Vec::new();
+    let mut used = 0u16;
+    for g in text.graphemes(true).rev() {
+        let w = carrel_core::display_width(g);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        tail.push(g);
+    }
+    tail.reverse();
+    if width == 0 {
+        return String::new();
+    }
+    format!("\u{2026}{}", tail.concat())
+}
+
+/// The lightbox's question over a refused image, in at most `rows` rows of
+/// `width` cells, most important first to keep: where it leads (whole if
+/// it fits, else its end), then what it is asking.
+#[must_use]
+pub fn outside_question(where_: &str, width: u16, rows: u16) -> Vec<String> {
+    let ask = "is outside this folder \u{2014} Enter or [show] shows it for this session";
+    let mut full = wrap_cells(where_, width);
+    full.extend(wrap_cells(ask, width));
+    if full.len() <= usize::from(rows) {
+        return full;
+    }
+    let mut short = vec![keep_end(where_, width)];
+    short.extend(wrap_cells(ask, width));
+    short.truncate(usize::from(rows));
+    short
+}
+
 /// "1 image outside this folder…", "2 images outside this folder…": the
 /// note once said "2 images … so it was not opened".
 #[must_use]
@@ -692,6 +807,46 @@ mod tests {
         a.home_stash.as_mut().unwrap().root = proj;
         assert_eq!(plan(&mut a).len(), 3);
         assert_eq!(refused(&a), 0);
+    }
+
+    #[test]
+    fn the_question_names_where_an_image_leads_by_its_shortest_spelling() {
+        let d = tempfile::tempdir().unwrap();
+        let base = d.path().canonicalize().unwrap();
+        std::fs::create_dir_all(base.join("docs")).unwrap();
+        let target = base.join("outside/red.png");
+        let root = base.join("docs");
+        assert_eq!(
+            outside_where("link.png", &target, Some(&root)),
+            "link.png \u{2192} ../outside/red.png"
+        );
+        assert_eq!(
+            outside_where("../outside/red.png", &target, Some(&root)),
+            "../outside/red.png"
+        );
+        // Far away, the absolute path is the shorter one.
+        let far = Path::new("/x.png");
+        assert_eq!(outside_where("/x.png", far, Some(&root)), "/x.png");
+        // A control in a name is escaped, never painted.
+        assert!(!outside_where("a\x1b.png", &target, Some(&root)).contains('\x1b'));
+    }
+
+    #[test]
+    fn a_long_path_keeps_its_end_and_wraps_whole_when_it_can() {
+        let p = "/tmp/claude-1000/very/long/scratchpad/outside/red.png";
+        assert_eq!(keep_end(p, 12), "\u{2026}ide/red.png");
+        assert_eq!(carrel_core::display_width(&keep_end(p, 12)), 12);
+        let rows = wrap_cells(p, 20);
+        assert_eq!(rows.concat(), p, "nothing lost");
+        assert!(rows.iter().all(|r| carrel_core::display_width(r) <= 20));
+        // Room for all of it: whole. Room for little: the end, then the ask.
+        let q = outside_question(p, 20, 9);
+        assert!(q.concat().contains("red.png") && q.concat().replace(' ', "").contains("[show]"));
+        let q = outside_question(p, 20, 2);
+        assert_eq!(q.len(), 2);
+        assert!(q[0].ends_with("red.png"), "{q:?}");
+        let q = outside_question(p, 20, 1);
+        assert_eq!(q, vec![keep_end(p, 20)]);
     }
 
     #[test]

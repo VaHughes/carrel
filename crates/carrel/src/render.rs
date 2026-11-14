@@ -359,39 +359,52 @@ fn paint_lightbox(
         return;
     };
     let title = format!("Image {}/{}  {}", index + 1, blocks.len(), url);
-    frame
-        .buffer_mut()
-        .set_stringn(0, 0, title, usize::from(area.width), theme::status());
-    let body = Rect::new(0, 1, area.width, area.height.saturating_sub(3));
+    let outside = app.image_outside.get(&block);
+    let button_rows = lightbox_buttons(
+        outside.map(|_| Action::ImageAllow(block, app.image_plan)),
+        area.width,
+    );
+    // Over a refused image, the question outranks everything else on this
+    // screen: at least one row of it, then the row holding `[show]`, then
+    // the title; the protocol line says nothing about a file not opened.
+    let kind_rows = u16::from(outside.is_none() && area.height > 2);
+    // Asking, the question wants two rows (where it leads, what it asks)
+    // before the title or the rows after `[show]`'s get any.
+    let want_body = if outside.is_some() { 2 } else { 1 };
+    let buttons_take = u16::try_from(button_rows.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(want_body + kind_rows).max(1))
+        .min(area.height.saturating_sub(1 + kind_rows));
+    let title_rows = u16::from(area.height > buttons_take + kind_rows + want_body);
+    if title_rows > 0 {
+        frame
+            .buffer_mut()
+            .set_stringn(0, 0, title, usize::from(area.width), theme::status());
+    }
+    let body = Rect::new(
+        0,
+        title_rows,
+        area.width,
+        area.height
+            .saturating_sub(title_rows + buttons_take + kind_rows),
+    );
     if body.height > 0 {
         if let Some(protocol) = images.get_mut(&block) {
             frame.render_stateful_widget(StatefulImage::new(), body, protocol);
         } else {
-            let message = if let Some(path) = app.image_outside.get(&block) {
-                format!(
-                    "{} is outside this folder \u{2014} Enter or [show] to show it for this session",
-                    crate::plain::shown(path)
-                )
-            } else if let Some(error) = app.image_errors.get(&block) {
-                format!("Cannot display image: {error}")
-            } else if !crate::images::local_image_requests(
-                &app.doc,
-                app.file.as_deref().and_then(std::path::Path::parent),
-            )
-            .iter()
-            .any(|(b, _)| *b == block)
-            {
-                "Image unavailable: remote images are never fetched; relative paths need a document file.".into()
-            } else {
-                "Loading image…".into()
-            };
-            frame
-                .buffer_mut()
-                .set_stringn(0, 1, message, usize::from(area.width), theme::dim());
-            if body.height > 1 {
+            let mut lines = lightbox_lines(app, block, url, body);
+            let said = lines.len();
+            lines.truncate(usize::from(body.height));
+            for (i, line) in lines.iter().enumerate() {
+                let y = body.y + u16::try_from(i).unwrap_or(u16::MAX);
+                frame
+                    .buffer_mut()
+                    .set_stringn(0, y, line, usize::from(area.width), theme::dim());
+            }
+            if said < usize::from(body.height) {
                 frame.buffer_mut().set_stringn(
                     0,
-                    2,
+                    body.y + u16::try_from(said).unwrap_or(u16::MAX),
                     &app.doc.text[node.doc.start as usize..node.doc.end as usize],
                     usize::from(area.width),
                     theme::body(),
@@ -399,42 +412,82 @@ fn paint_lightbox(
             }
         }
     }
-    if area.height > 2 {
+    if kind_rows > 0 {
         frame.buffer_mut().set_stringn(
             0,
-            area.height - 2,
+            area.height - buttons_take - 1,
             app.image_kind.unwrap_or("image display unavailable"),
             usize::from(area.width),
             theme::dim(),
         );
     }
-    if area.height > 1 {
-        let y = area.height - 1;
-        let mut x = 0u16;
-        // `[show]` only over an image the folder rule refused, first, since
-        // it is the one thing this screen is asking about.
-        let show = app
-            .image_outside
-            .contains_key(&block)
-            .then_some(("[show] ", Action::ImageAllow(block, app.image_plan)));
-        for (label, action) in show.into_iter().chain([
-            ("[close] ", Action::Dismiss),
-            ("[previous] ", Action::ImageStep(-1)),
-            ("[next]", Action::ImageStep(1)),
-        ]) {
+    let first = area.height - buttons_take;
+    for (row, y) in button_rows.iter().zip(first..area.height) {
+        for &(x, label, action) in row {
             let width = u16::try_from(label.len())
                 .unwrap_or(u16::MAX)
                 .min(area.width.saturating_sub(x));
             if width == 0 {
-                break;
+                continue;
             }
             frame
                 .buffer_mut()
                 .set_stringn(x, y, label, usize::from(width), theme::status());
             targets.push(action, Zone::new(x, y, width, 1), Z_OVERLAY + 1);
-            x += width;
         }
     }
+}
+
+/// What the lightbox says where no picture is, in rows of `body`'s width:
+/// the question over a refused image, else why there is no picture.
+fn lightbox_lines(app: &App, block: BlockIdx, url: &str, body: Rect) -> Vec<String> {
+    if let Some(path) = app.image_outside.get(&block) {
+        let where_ = crate::images::outside_where(url, path, app.library_root());
+        return crate::images::outside_question(&where_, body.width, body.height);
+    }
+    let message = if let Some(error) = app.image_errors.get(&block) {
+        format!("Cannot display image: {error}")
+    } else if !crate::images::local_image_requests(
+        &app.doc,
+        app.file.as_deref().and_then(std::path::Path::parent),
+    )
+    .iter()
+    .any(|(b, _)| *b == block)
+    {
+        "Image unavailable: remote images are never fetched; relative paths need a document file."
+            .into()
+    } else {
+        "Loading image…".into()
+    };
+    // Wrapped, not cut: an error names its path first, and the edge took
+    // the file name off the end of it.
+    crate::images::wrap_cells(&message, body.width)
+}
+
+/// The lightbox's buttons, wrapped onto as many rows as `width` needs, each
+/// as `(x, label, action)`: one row cut at the edge lost `[next]` at 30
+/// columns. `[show]`, when the image is refused, comes first, since it is
+/// what the screen is asking about.
+fn lightbox_buttons(show: Option<Action>, width: u16) -> Vec<Vec<(u16, &'static str, Action)>> {
+    let buttons = show.map(|a| ("[show]", a)).into_iter().chain([
+        ("[close]", Action::Dismiss),
+        ("[previous]", Action::ImageStep(-1)),
+        ("[next]", Action::ImageStep(1)),
+    ]);
+    let mut rows: Vec<Vec<(u16, &'static str, Action)>> = vec![Vec::new()];
+    let mut x = 0u16;
+    for (label, action) in buttons {
+        let w = u16::try_from(label.len()).unwrap_or(u16::MAX);
+        if x > 0 && x.saturating_add(w) > width {
+            rows.push(Vec::new());
+            x = 0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push((x, label, action));
+        }
+        x = x.saturating_add(w).saturating_add(1);
+    }
+    rows
 }
 
 /// Light whatever this frame painted under the pointer.

@@ -537,8 +537,10 @@ implement. The GTK4 GUI phase is not started and has no date.
 
 - 2026-11-14: **an image outside the folder is shown when the reader asks, per image,
   for the session.** Its alt text is a `click to show` button (also a right-click row)
-  that opens the lightbox, which names the path; only its `[show]` or a second Enter
-  consents — never a press on the block, whose alt text the document chooses. Consent
+  that opens the lightbox, which names the path at every width it draws at (wrapped,
+  or cut from the left so the file name stays; relative to the root when shorter;
+  `link.png → target` for a symlink); only its `[show]` or a second Enter consents —
+  never a press on the block, whose alt text the document chooses. Consent
   is the image's canonical path, kept in memory only (`App::image_consent`), so a
   restart asks again, and an answer carries the plan it was asked under
   (`App::image_plan`), so a stale one consents to nothing. It survives a reload and a

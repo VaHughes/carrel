@@ -30,7 +30,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   line break. In the folder browser Ctrl-W takes one folder of a typed path at a time.
 
 - **An image outside the folder can be shown when you ask**: its `click to show` alt
-  text opens its lightbox, which names the file; `[show]` or a second Enter there shows
+  text opens its lightbox, which names the file at any width (as `link.png → ../outside/red.png`
+  where a symlink leads elsewhere, by its end where it is long); `[show]` or a second Enter there shows
   that one file until carrel exits, without redrawing the others. Nothing is remembered.
 - **A table card's dividing line stays put on a resize**: with a divider on top, a resize,
   reload or resume used to come back one row lower, and the last divider a whole card higher.

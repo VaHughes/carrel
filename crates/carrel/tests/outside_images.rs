@@ -234,7 +234,8 @@ fn a_press_on_a_refused_block_asks_and_never_consents() {
     assert!(a.image_consent.is_empty(), "a press consents to nothing");
     assert_eq!(a.lightbox, Some(z));
     let (text, _) = frame(&a);
-    assert!(text.contains("z.png is outside this folder"), "{text}");
+    assert!(text.contains("../out/z.png"), "{text}");
+    assert!(text.contains("is outside this folder"), "{text}");
 }
 
 #[test]
@@ -272,7 +273,7 @@ fn the_lightbox_over_a_refused_image_asks_and_its_show_button_answers() {
     let y = block_naming(&a, "y.png");
     update(&mut a, Action::ImageOpen(Some(y)));
     let (text, painted) = frame(&a);
-    assert!(text.contains("Enter or [show] to show it"), "{text}");
+    assert!(text.contains("Enter or [show] shows it"), "{text}");
     let (x, row) = cell_of(&text, "[show] [close]");
     let hit = painted.targets.hit(x, row).unwrap();
     assert_eq!(hit.action, Action::ImageAllow(y, a.image_plan));
@@ -282,4 +283,113 @@ fn the_lightbox_over_a_refused_image_asks_and_its_show_button_answers() {
     let (text, _) = frame(&a);
     assert!(text.contains("Loading image"), "{text}");
     assert!(!text.contains("[show]"), "{text}");
+}
+
+/// A deep `docs` folder whose `link.png` is a symlink to `../outside/red.png`,
+/// so the absolute path is far longer than any of the widths tested.
+fn deep_symlink() -> (tempfile::TempDir, App) {
+    let d = tempfile::tempdir().unwrap();
+    let base = d
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("a-rather-long-folder-name/another-long-folder-name/work");
+    std::fs::create_dir_all(base.join("docs")).unwrap();
+    std::fs::create_dir_all(base.join("outside")).unwrap();
+    png(&base.join("outside/red.png"));
+    std::os::unix::fs::symlink(base.join("outside/red.png"), base.join("docs/link.png")).unwrap();
+    let x = base.join("docs/img.md");
+    std::fs::write(&x, "![symlink](link.png)\n").unwrap();
+    let mut a = App::new_home(base.join("docs"), vec![], 100, 40);
+    a.open_path(&x).unwrap();
+    images::plan(&mut a);
+    let b = refused(&a)[0];
+    update(&mut a, Action::ImageOpen(Some(b)));
+    (d, a)
+}
+
+/// Is an `ImageAllow` button painted anywhere on screen?
+fn show_button(text: &str, painted: &carrel::render::Painted) -> bool {
+    text.lines().enumerate().any(|(y, l)| {
+        l.match_indices("[show]").any(|(i, _)| {
+            let x = u16::try_from(l[..i].chars().count()).unwrap();
+            painted
+                .targets
+                .hit(x, u16::try_from(y).unwrap())
+                .is_some_and(|h| matches!(h.action, Action::ImageAllow(..)))
+        })
+    })
+}
+
+/// The lightbox cut the absolute path at the right edge, so at 60 columns
+/// the reader saw `/tmp/claude-1000/-home-…` and could answer `[show]`
+/// without ever seeing which file; at 30 the buttons were cut too
+/// (black-box test, 2026-11-14). At every width the file the symlink leads
+/// to, the question and a clickable `[show]` are on screen.
+#[test]
+fn the_lightbox_names_the_file_and_offers_show_at_every_width() {
+    let (_d, mut a) = deep_symlink();
+    // Down to 12x5, the smallest the lightbox draws at (`App::pane_fits`);
+    // below it the "needs room" card is up, and it answers no `[show]`.
+    for (cols, rows) in [(100, 40), (60, 40), (30, 40), (30, 6), (20, 5), (12, 5)] {
+        a.on_resize(cols, rows);
+        let (text, painted) = frame(&a);
+        let flat: String = text.lines().map(str::trim_end).collect();
+        assert!(
+            flat.contains("red.png"),
+            "{cols}x{rows}: no file name\n{text}"
+        );
+        if cols >= 20 {
+            assert!(
+                flat.contains("outside/red.png"),
+                "{cols}x{rows}: no folder\n{text}"
+            );
+        }
+        let spaced = text
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join(" ");
+        // At the smallest size, at least what it is; with room, the ask.
+        assert!(spaced.contains("is outside"), "{cols}x{rows}\n{text}");
+        if rows >= 6 {
+            assert!(spaced.contains("Enter or [show]"), "{cols}x{rows}\n{text}");
+        }
+        assert!(
+            show_button(&text, &painted),
+            "{cols}x{rows}: no [show] button\n{text}"
+        );
+    }
+    // Wide enough, it says the symlink and where it leads in one line.
+    a.on_resize(100, 40);
+    let (text, _) = frame(&a);
+    assert!(
+        text.contains("link.png \u{2192} ../outside/red.png"),
+        "{text}"
+    );
+    // Every button is whole at 30 columns: the row wraps instead of cutting.
+    a.on_resize(30, 40);
+    let (text, _) = frame(&a);
+    for b in ["[show]", "[close]", "[previous]", "[next]"] {
+        assert!(text.contains(b), "{b} cut\n{text}");
+    }
+}
+
+/// An error that names its path wraps, so the file name at the end of it
+/// is on screen (the FIFO line was cut at the edge the same way).
+#[test]
+fn a_long_error_in_the_lightbox_wraps_to_its_end() {
+    let (_d, mut a) = deep_symlink();
+    let b = a.lightbox.unwrap();
+    a.image_outside.clear();
+    a.image_errors.insert(
+        b,
+        "/a/very/long/path/that/goes/on/and/on/fifo.png: not a regular file, so it was not read"
+            .into(),
+    );
+    a.on_resize(30, 20);
+    let (text, _) = frame(&a);
+    let flat: String = text.lines().map(str::trim_end).collect();
+    assert!(flat.contains("fifo.png"), "{text}");
+    assert!(flat.contains("it was not read"), "{text}");
 }
