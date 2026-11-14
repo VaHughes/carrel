@@ -1741,8 +1741,16 @@ struct Builder<'a> {
     /// not yet opened; that block takes the label as its prefix.
     footnote: Option<String>,
     indent: u16,
-    /// Display column since the last newline in `text`, for tab expansion.
+    /// Display column since the last newline in `text`, for tab expansion —
+    /// up to `col_pending`, which has been pushed but not yet measured.
     col: u16,
+    /// Bytes of `text` pushed since `col` was last brought up to date: no
+    /// newline and no tab in them. Measured only when a tab arrives
+    /// (`settle_col`), because only a tab needs the column. Measuring every
+    /// push eagerly walked every grapheme of every non-ASCII paragraph
+    /// through the width tables — about 70% of the parse of a 52 MB document
+    /// of CJK and emoji prose, all of it thrown away when no tab followed.
+    col_pending: Range<usize>,
     /// Enclosing lists, innermost last. `Some(n)` is an ordered list whose next
     /// item is numbered `n`; `None` is a bullet list.
     lists: Vec<Option<u64>>,
@@ -1782,6 +1790,7 @@ impl<'a> Builder<'a> {
             footnote: None,
             indent: 0,
             col: 0,
+            col_pending: 0..0,
             lists: Vec::new(),
             item_indent: Vec::new(),
             quote_depth: 0,
@@ -2194,11 +2203,12 @@ impl<'a> Builder<'a> {
         // Synthetic pushes are structure, not content: the block separator and
         // the table cell separator, which marks where one cell ends and paint
         // renders as a space. Expanding those would destroy the marker.
-        let s: &str = &if kind == ProvKind::Synthetic {
-            advance_col(s, &mut self.col);
-            Cow::Borrowed(s)
-        } else {
+        let has_tab = kind != ProvKind::Synthetic && s.contains('\t');
+        let s: &str = &if has_tab {
+            self.settle_col();
             expand_tabs(s, &mut self.col)
+        } else {
+            Cow::Borrowed(s)
         };
 
         if !self.in_image
@@ -2212,6 +2222,9 @@ impl<'a> Builder<'a> {
         let start = self.text.len() as u32;
         self.text.push_str(s);
         let end = self.text.len() as u32;
+        if !has_tab {
+            self.defer_col(start as usize..end as usize);
+        }
 
         // Verbatim only when the text IS the source slice, byte for byte —
         // that is what lets `to_doc`/`to_src` map by offset. Equal LENGTH is
@@ -2248,6 +2261,33 @@ impl<'a> Builder<'a> {
                 link: self.current_link,
             });
         }
+    }
+
+    /// Account for `text[r]`, just pushed with no tab expanded, in the
+    /// column — lazily: see `col_pending`.
+    fn defer_col(&mut self, r: Range<usize>) {
+        if let Some(nl) = self.text[r.clone()].rfind('\n') {
+            self.col = 0;
+            self.col_pending = r.start + nl + 1..r.end;
+        } else if self.col_pending.end == r.start || self.col_pending.is_empty() {
+            if self.col_pending.is_empty() {
+                self.col_pending = r;
+            } else {
+                self.col_pending.end = r.end;
+            }
+        } else {
+            // Not adjacent: a table flushed between the two pushes, and its
+            // text never counted towards the column. Measure what is owed
+            // before starting a new run.
+            self.settle_col();
+            self.col_pending = r;
+        }
+    }
+
+    /// Bring `col` up to date before a tab is expanded against it.
+    fn settle_col(&mut self) {
+        let r = std::mem::replace(&mut self.col_pending, 0..0);
+        advance_col(&self.text[r], &mut self.col);
     }
 
     /// Record the `#`s in a pushed run that the author did not type bare.
@@ -3911,6 +3951,29 @@ mod tests {
         // three spaces, not one. Tab stop is 4.
         let d = Document::parse("a\tb\n");
         assert_eq!(d.block_text(BlockIdx(0)), "a   b");
+    }
+
+    /// The column a tab expands from is measured lazily now — only when a
+    /// tab arrives — so it must still count every run pushed before it on
+    /// the line: wide characters, styled runs as separate pushes, text after
+    /// a soft break, and text after a table the column never saw.
+    #[test]
+    fn a_tab_expands_from_the_column_every_earlier_push_reached() {
+        // 漢字 is 4 columns, then a space and `em` (its own push): 7, so the
+        // tab goes to 8 — one space.
+        let d = Document::parse("漢字 *em*\tb\n");
+        assert_eq!(d.block_text(BlockIdx(0)), "漢字 em b");
+        // A soft break is a space, so the line runs on: 14 columns, then
+        // `xy`, and the tab goes to 20.
+        let d = Document::parse("first 👍 line\nxy\tz\n");
+        assert_eq!(d.block_text(BlockIdx(0)), "first 👍 line xy    z");
+        // After a hard break the line restarts: `xy` is 2, the tab adds 2.
+        let d = Document::parse("first 👍 line\\\nxy\tz\n");
+        assert_eq!(d.block_text(BlockIdx(0)), "first 👍 line\nxy  z");
+        // A paragraph after a table: its own text from column 0.
+        let d = Document::parse("| a |\n|---|\n| 漢 |\n\nq\tr\n");
+        let last = BlockIdx(d.block_count() as u32 - 1);
+        assert_eq!(d.block_text(last), "q   r");
     }
 
     /// Content that arrives DIRECTLY under a tight list item after the item

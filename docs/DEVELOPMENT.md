@@ -206,7 +206,13 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   Tests inject scratch state directories. Piped notes stay in memory and export via
   the terminal clipboard; notes never write the document itself.
 - Cache: `$XDG_CACHE_HOME/carrel` — the home-screen index (paths and mtimes only).
-- `READING_WPM` (200) is deliberately not configurable; `RESCAN_EVERY` is 2 s.
+- `READING_WPM` (200) is deliberately not configurable. The home list rescans no sooner
+  than `RESCAN_EVERY` (2 s) after a walk ends, and otherwise waits `RESCAN_DUTY` (50) times
+  what the last walk cost (the walker's clock plus the main thread's folding), capped at
+  `RESCAN_MAX` (5 min) — `main.rs::rescan_pause`. A small tree keeps 2 s freshness; a
+  100k-file tree idles near 2% of a core instead of 13%.
+- A pipe is read to `stream::LIMITS` (64 MB or 2,000,000 lines) and re-parsed no sooner
+  than `REPARSE_PAUSE` (3) times its last parse after it — `main.rs::reparse_due`.
 
 ## Releasing
 

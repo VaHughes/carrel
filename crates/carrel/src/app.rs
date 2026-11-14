@@ -1109,9 +1109,11 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
-        let (w, bleed, _) =
-            Self::text_size(cols, rows, true, has_headings, config::DEFAULT_MEASURE, 0);
-        let layout = Layout::with_measure(&doc, bleed.max(1), w.max(1), HashMap::new(), false);
+        // A placeholder: `lay_out_new_document` below builds the real one
+        // once the fields it reads are set. This used to be a full height
+        // pass over `doc` that was thrown away a few lines later — on a
+        // 52 MB document, a second of the open spent on nothing.
+        let layout = Layout::with_measure(&Document::parse(""), 1, 1, HashMap::new(), false);
         let mut app = Self {
             screen: Screen::Reader,
             doc,
@@ -1210,6 +1212,29 @@ impl App {
         app.words = word_count(&app.doc.text);
         app.lay_out_new_document();
         app
+    }
+
+    /// Put a freshly parsed document on screen under the settings already in
+    /// place, laying it out ONCE.
+    ///
+    /// For an entry point that has to apply the config before the document
+    /// can be laid out correctly: `App::new(.., doc, ..)` followed by the
+    /// config and an `on_resize` laid a 52 MB document out twice, a second
+    /// or more each, before the first frame. Construct with an empty
+    /// document, configure, then hand the real one over here.
+    pub fn show_document(&mut self, doc: Document) {
+        self.doc = doc;
+        self.table_offsets.clear();
+        self.forget_derived_state();
+        self.has_headings = self
+            .doc
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
+        self.rebuild_math_art();
+        self.words = word_count(&self.doc.text);
+        self.view = ViewState::new();
+        self.lay_out_new_document();
     }
 
     /// Start on the home screen. `cached` is painted immediately; the caller
@@ -2533,7 +2558,10 @@ impl App {
         /// unknown, not dead.
         const MAX: usize = 2000;
         self.dead_links.clear();
-        if self.is_live_pipe() {
+        // No links, nothing to judge — and the slug and title sets below
+        // cost a walk over every heading. `yes '# x' | carrel` has millions
+        // and not one link, and building them took seconds per reparse.
+        if self.is_live_pipe() || self.doc.links.is_empty() {
             return;
         }
         // Asked once, not once per link: a table of contents is hundreds of
@@ -2966,9 +2994,9 @@ impl App {
             return None;
         }
         let mut rows = Vec::new();
-        self.layout.rows_for(&self.doc, block, &mut rows);
-        let sub = usize::try_from(vrow.saturating_sub(self.layout.row_start(block))).ok()?;
-        let r = self.visible_row(rows.get(sub)?);
+        let sub = vrow.saturating_sub(self.layout.row_start(block));
+        let base = self.layout.rows_window(&self.doc, block, sub, 1, &mut rows);
+        let r = self.visible_row(rows.get(usize::try_from(sub - base).ok()?)?);
         if r.doc.is_empty() || col - block_x < r.indent {
             return None;
         }

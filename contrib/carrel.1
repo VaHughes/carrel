@@ -68,6 +68,8 @@ immediately and your position and search matches hold while content lands.
 .B carrel \-
 forces stdin mode; with stdout also piped the document renders as plain
 text instead, so pipelines pass through.
+The reader stops reading a pipe at 64 MB or 2,000,000 lines, whichever
+comes first, and says so; what arrived stays readable.
 .SH OPENING AT A PLACE
 .IB FILE : LINE
 opens

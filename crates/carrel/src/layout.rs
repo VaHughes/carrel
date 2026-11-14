@@ -12,13 +12,31 @@
 //! interaction with `wrap_chunk`. If benchmark item 2 (resize latency at p95)
 //! ever says otherwise, §2.3's LRU is the escape hatch, and
 //! `chunk_count`/`wrap_chunk` already permit keying on `(block, chunk)`.
+//!
+//! # But a huge block is windowed
+//!
+//! "Re-wrapping the visible blocks" is only cheap while a block is small. A
+//! paragraph past [`carrel_core::CHUNK_BYTES`] remembers, per chunk, where
+//! the chunk starts and how many rows came before it (`Chunked`, filled by
+//! the height pass that had to wrap it anyway), and paint, hit-testing and
+//! the anchor's row wrap only the chunks they touch
+//! ([`Layout::rows_window`]). Wrapping the whole block on every frame made a
+//! 50 MB single paragraph cost seconds a frame, and its open 14-18 s.
 
 use std::collections::HashMap;
 
 use carrel_core::{
     Affinity, BlockIdx, Division, Document, Hyphenation, Node, NodeKind, Row, RowKind,
-    cluster_width, display_width, wrap_divided, wrap_range,
+    chunk_offsets, cluster_width, display_width, wrap_chunk_in, wrap_divided, wrap_range,
 };
+
+/// A block of more than one layout chunk: where each chunk starts (bytes into
+/// the block's text) and how many rows the chunks before it wrapped to.
+#[derive(Debug)]
+struct Chunked {
+    starts: Box<[u32]>,
+    rows_before: Box<[u32]>,
+}
 
 /// One blank row between blocks. Markdown renders with paragraph spacing
 /// everywhere else it is read; packed-tight rows were a readability bug.
@@ -65,6 +83,9 @@ pub struct Layout {
     /// the other two for linear output ([`Self::linear`]). Held for the
     /// reason `hyphenation` is.
     division: Division,
+    /// The wrapped blocks too big to re-wrap whole on every frame. See the
+    /// module docs.
+    chunked: HashMap<BlockIdx, Chunked>,
 }
 
 impl Layout {
@@ -181,6 +202,7 @@ impl Layout {
         division: Division,
     ) -> Self {
         let mut block_row_start = Vec::with_capacity(doc.block_count() + 1);
+        let mut chunked = HashMap::new();
         let mut acc = 0u32;
         block_row_start.push(0);
         for i in 0..doc.block_count() {
@@ -204,15 +226,51 @@ impl Layout {
                     card_rows(doc, b, width, |_| {})
                 } else {
                     let shift = nest_shift(node.indent, bw);
-                    wrap_divided(
-                        doc,
-                        b,
-                        bw + shift,
-                        &cluster_width,
-                        hyphenation,
-                        division,
-                        |_| {},
-                    )
+                    let starts = if doc.block_text(b).len() > carrel_core::CHUNK_BYTES as usize {
+                        chunk_offsets(doc, b)
+                    } else {
+                        Vec::new()
+                    };
+                    if starts.len() > 1 {
+                        // Chunk by chunk, exactly as `wrap_divided` would,
+                        // keeping the running count at each boundary.
+                        let mut rows_before = Vec::with_capacity(starts.len());
+                        let mut first = true;
+                        let mut total = 0u32;
+                        for chunk in 0..starts.len() {
+                            rows_before.push(total);
+                            total = total.saturating_add(wrap_chunk_in(
+                                doc,
+                                b,
+                                &starts,
+                                chunk,
+                                bw + shift,
+                                &cluster_width,
+                                hyphenation,
+                                division,
+                                &mut first,
+                                |_| {},
+                            ));
+                        }
+                        chunked.insert(
+                            b,
+                            Chunked {
+                                starts: starts.into_boxed_slice(),
+                                rows_before: rows_before.into_boxed_slice(),
+                            },
+                        );
+                        total
+                    } else {
+                        wrap_divided(
+                            doc,
+                            b,
+                            bw + shift,
+                            &cluster_width,
+                            hyphenation,
+                            division,
+                            |_| {},
+                        )
+                    }
                 }
             };
             acc = acc
@@ -228,6 +286,7 @@ impl Layout {
             wrap_tables,
             hyphenation,
             division,
+            chunked,
         }
     }
 
@@ -348,16 +407,76 @@ impl Layout {
                 );
             }
         }
-        // The spacing row. Anchored (empty) at the block's START so the
-        // reanchor fallback and this row agree on where the reader "is".
+        push_gap(doc, b, out);
+    }
+
+    /// Some of block `b`'s rows: at least `want` from row `from` on (fewer
+    /// only where the block ends), into `out`. Returns the block row index of
+    /// `out[0]`, so `out[i]` is the block's row `base + i`.
+    ///
+    /// A small block is [`Self::rows_for`], whole, with base 0. A chunked one
+    /// wraps only the chunks the window touches: see the module docs.
+    pub fn rows_window(
+        &self,
+        doc: &Document,
+        b: BlockIdx,
+        from: u32,
+        want: u32,
+        out: &mut Vec<Row>,
+    ) -> u32 {
+        let Some(c) = self.chunked.get(&b) else {
+            self.rows_for(doc, b, out);
+            return 0;
+        };
+        let k = c
+            .rows_before
+            .partition_point(|&r| r <= from)
+            .saturating_sub(1);
+        let base = c.rows_before[k];
+        let need = (from - base).saturating_add(want);
+        self.wrap_chunks(doc, b, c, k, |out| out.len() as u32 >= need, out);
+        base
+    }
+
+    /// Wrap the chunks of `b` from chunk `k` on into `out` until `enough`
+    /// says so, adding the spacing rows when the block's end is reached.
+    fn wrap_chunks(
+        &self,
+        doc: &Document,
+        b: BlockIdx,
+        c: &Chunked,
+        k: usize,
+        enough: impl Fn(&Vec<Row>) -> bool,
+        out: &mut Vec<Row>,
+    ) {
+        out.clear();
         let node = doc.node_for_block(b);
-        for _ in 0..gap_after(doc, b) {
-            out.push(Row {
-                block: b,
-                doc: node.doc.start..node.doc.start,
-                indent: node.indent,
-                kind: RowKind::Decoration,
-            });
+        let bw = self.block_width(&node.kind);
+        let shift = nest_shift(node.indent, bw);
+        // A chunk boundary is not a block boundary: only chunk 0 has the
+        // block's first row.
+        let mut first = k == 0;
+        let mut chunk = k;
+        while chunk < c.starts.len() && !enough(out) {
+            wrap_chunk_in(
+                doc,
+                b,
+                &c.starts,
+                chunk,
+                bw + shift,
+                &cluster_width,
+                self.hyphenation,
+                self.division,
+                &mut first,
+                |mut r| {
+                    r.indent = r.indent.saturating_sub(shift);
+                    out.push(r);
+                },
+            );
+            chunk += 1;
+        }
+        if chunk == c.starts.len() {
+            push_gap(doc, b, out);
         }
     }
 
@@ -365,7 +484,20 @@ impl Layout {
     #[must_use]
     pub fn visual_row_of(&self, doc: &Document, b: BlockIdx, anchor: u32, aff: Affinity) -> u32 {
         let mut rows = Vec::new();
-        self.rows_for(doc, b, &mut rows);
+        // A chunked block: the chunk holding the anchor, then the first row
+        // of the one after it, which is everywhere the search below can
+        // land — every earlier row ends at or before the chunk's start.
+        let base = if let Some(c) = self.chunked.get(&b) {
+            let rel = anchor.saturating_sub(doc.node_for_block(b).doc.start);
+            let k = c.starts.partition_point(|&s| s <= rel).saturating_sub(1);
+            let next = (k + 1).min(c.starts.len() - 1);
+            let own = c.rows_before[next] - c.rows_before[k];
+            self.wrap_chunks(doc, b, c, k, |out| out.len() as u32 > own, &mut rows);
+            c.rows_before[k]
+        } else {
+            self.rows_for(doc, b, &mut rows);
+            0
+        };
         // An empty block's every row is `start..start`, so the search below
         // finds none and falls back to the LAST row — its gap, one row below
         // the block itself. The block's own row is the only one it has.
@@ -397,8 +529,9 @@ impl Layout {
             .unwrap_or(rows.len() - 1);
         // END biases LEFT: an anchor exactly on a wrap point belongs to the
         // previous row. See `carrel_core::Affinity`.
+        let idx = base as usize + idx;
         let idx = match aff {
-            Affinity::Left if idx > 0 && anchor <= rows[idx].doc.start => idx - 1,
+            Affinity::Left if idx > 0 && anchor <= rows[idx - base as usize].doc.start => idx - 1,
             _ => idx,
         };
         idx as u32
@@ -421,6 +554,20 @@ impl Layout {
 
 /// The gap after a block: one row between blocks, the bottom margin after
 /// the last.
+/// The spacing rows under block `b`. Anchored (empty) at the block's START so
+/// the reanchor fallback and these rows agree on where the reader "is".
+fn push_gap(doc: &Document, b: BlockIdx, out: &mut Vec<Row>) {
+    let node = doc.node_for_block(b);
+    for _ in 0..gap_after(doc, b) {
+        out.push(Row {
+            block: b,
+            doc: node.doc.start..node.doc.start,
+            indent: node.indent,
+            kind: RowKind::Decoration,
+        });
+    }
+}
+
 fn gap_after(doc: &Document, b: BlockIdx) -> u32 {
     if b.get() + 1 < doc.block_count() {
         BLOCK_GAP
@@ -890,6 +1037,117 @@ mod tests {
 
     fn hidden_of(ids: &[usize]) -> std::collections::HashSet<BlockIdx> {
         ids.iter().map(|&i| BlockIdx(i as u32)).collect()
+    }
+
+    /// One paragraph several chunks long, with words that hyphenate, so
+    /// windows start mid-paragraph and rows are divided.
+    fn huge_paragraph() -> Document {
+        let words = [
+            "alpha",
+            "beta",
+            "extraordinarily",
+            "gamma",
+            "漢字",
+            "delta",
+            "👍",
+        ];
+        let mut src = String::new();
+        let mut i = 0usize;
+        while src.len() < 2 * carrel_core::CHUNK_BYTES as usize + 777 {
+            src.push_str(words[i % words.len()]);
+            src.push(' ');
+            i = i.wrapping_mul(31).wrapping_add(7) % 1009;
+        }
+        src.push_str("\n\nafter\n");
+        Document::parse(&src)
+    }
+
+    fn huge_layouts(doc: &Document) -> Vec<Layout> {
+        let hidden = std::collections::HashSet::new();
+        [
+            (17u16, carrel_core::hyphenation_for(doc)),
+            (60, Hyphenation::Off),
+        ]
+        .into_iter()
+        .map(|(w, h)| Layout::with_hidden(doc, w, w, HashMap::new(), false, &hidden, h))
+        .collect()
+    }
+
+    /// A window over a chunked paragraph is exactly that slice of the whole
+    /// block's rows — chunk boundaries, first-row state and the gap row
+    /// included — and the height pass agrees with both.
+    #[test]
+    fn a_window_over_a_huge_paragraph_is_the_slice_of_its_rows() {
+        let doc = huge_paragraph();
+        let b = BlockIdx(0);
+        assert!(carrel_core::chunk_count(&doc, b) > 2);
+        for l in huge_layouts(&doc) {
+            assert!(l.chunked.contains_key(&b), "the paragraph is windowed");
+            let mut all = Vec::new();
+            l.rows_for(&doc, b, &mut all);
+            assert_eq!(all.len() as u32, l.height(b));
+            let mut window = Vec::new();
+            let n = all.len() as u32;
+            // Each chunk's first row and its neighbours — where a window
+            // starts — then a sample, and the block's end.
+            let cuts: Vec<u32> = l.chunked[&b].rows_before.to_vec();
+            let near = cuts.iter().flat_map(|&c| [c.saturating_sub(1), c, c + 1]);
+            for from in near.chain((0..n).step_by(1009)).chain([n - 3, n - 1]) {
+                let base = l.rows_window(&doc, b, from, 30, &mut window);
+                assert!(base <= from);
+                let got = &window[(from - base) as usize..];
+                let want = &all[from as usize..(from as usize + 30).min(all.len())];
+                assert!(got.len() >= want.len(), "window short at {from}");
+                // `Row` has no `PartialEq`; its `Debug` names every field.
+                assert_eq!(
+                    format!("{:?}", &got[..want.len()]),
+                    format!("{want:?}"),
+                    "row {from}"
+                );
+            }
+        }
+    }
+
+    /// The row an anchor lands on is the one the whole block's rows say,
+    /// for every row start, either affinity, and bytes inside rows.
+    #[test]
+    fn the_row_of_an_anchor_in_a_huge_paragraph_matches_the_whole_block() {
+        let doc = huge_paragraph();
+        let b = BlockIdx(0);
+        for l in huge_layouts(&doc) {
+            let mut all = Vec::new();
+            l.rows_for(&doc, b, &mut all);
+            // The definition, over the whole block: the first row ending
+            // after the anchor, a row earlier for END affinity on a wrap.
+            let whole = |anchor: u32, aff: Affinity| {
+                let idx = all
+                    .iter()
+                    .position(|r| anchor < r.doc.end)
+                    .unwrap_or(all.len() - 1);
+                match aff {
+                    Affinity::Left if idx > 0 && anchor <= all[idx].doc.start => idx as u32 - 1,
+                    _ => idx as u32,
+                }
+            };
+            // Every row near a chunk boundary, where a window starts, and a
+            // sample of the rest.
+            let start = doc.node_for_block(b).doc.start;
+            let near_cut = |r: &&Row| {
+                let rel = r.doc.start - start;
+                l.chunked[&b].starts.iter().any(|&s| s.abs_diff(rel) < 40)
+            };
+            for r in all.iter().step_by(1009).chain(all.iter().filter(near_cut)) {
+                for anchor in [r.doc.start, r.doc.start + 1, r.doc.end.saturating_sub(1)] {
+                    for aff in [Affinity::Left, Affinity::Right] {
+                        assert_eq!(
+                            l.visual_row_of(&doc, b, anchor, aff),
+                            whole(anchor, aff),
+                            "anchor {anchor} {aff:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

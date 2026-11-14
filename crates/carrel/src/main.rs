@@ -511,7 +511,13 @@ fn run_stdin_or_fallback() -> ExitCode {
     } else {
         // The reader thread owns stdin now; collect through its channel
         // — it reads to EOF regardless, so this is the whole document.
-        let src: String = rx.iter().collect();
+        let src: String = rx
+            .iter()
+            .filter_map(|chunk| match chunk {
+                carrel::stream::Chunk::Text(text) => Some(text),
+                carrel::stream::Chunk::Stopped(_) => None,
+            })
+            .collect();
         let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
         emit(&carrel::plain::render(&doc, 80))
     }
@@ -1328,14 +1334,37 @@ enum Reload {
     Vanished,
 }
 
-/// How long after a walk finishes before the home screen quietly walks the
-/// tree again, so a file created while it is up appears without a restart.
+/// The shortest wait after a walk finishes before the home screen quietly
+/// walks the tree again, so a file created while it is up appears without a
+/// restart. Two seconds reads as "immediately" to a person.
 ///
 /// Measured from the END of the previous walk, not the start: a slow root — a
 /// cold cache, a network mount — then backs itself off instead of queueing
-/// walks nose to tail. Two seconds reads as "immediately" to a person, and the
-/// walk itself is 6 ms warm over 110k files (see `scan.rs`).
+/// walks nose to tail. And it is only the floor: see [`rescan_pause`].
 const RESCAN_EVERY: Duration = Duration::from_secs(2);
+
+/// How many times its own cost a rescan waits before the next: walking at
+/// most one part in fifty-one of the time, about 2% of a core.
+const RESCAN_DUTY: u32 = 50;
+
+/// The longest a rescan ever waits, however slow the last walk was — a
+/// network mount still notices a new file within minutes.
+const RESCAN_MAX: Duration = Duration::from_secs(300);
+
+/// The pause before the next quiet rescan, given what the last walk cost:
+/// the walk itself plus the main thread's work folding its report into the
+/// list.
+///
+/// A fixed two seconds was right for a small tree and wrong for a large one.
+/// Over 100,000 markdown files a walk is a `stat` per file plus a
+/// reconciliation of every entry, and the idle home screen sat at 13-14% of
+/// a core doing nothing but that. So the pause scales with the cost —
+/// [`RESCAN_DUTY`] times it — and a tree that walks in milliseconds keeps
+/// its two-second freshness while that one waits tens of seconds.
+fn rescan_pause(cost: Duration) -> Duration {
+    cost.saturating_mul(RESCAN_DUTY)
+        .clamp(RESCAN_EVERY, RESCAN_MAX)
+}
 
 /// The home screen's background walk, and what the event loop remembers about
 /// it. Loop bookkeeping, so it lives here rather than in `Home` — same reason
@@ -1349,6 +1378,9 @@ struct Scan {
     changed: bool,
     /// When the next quiet rescan falls due.
     next: Instant,
+    /// Main-thread time spent on this walk's reports so far: half of what a
+    /// rescan costs on a large tree, and invisible to the walker's clock.
+    folding: Duration,
 }
 
 impl Scan {
@@ -1358,6 +1390,7 @@ impl Scan {
             quiet: false,
             changed: false,
             next: Instant::now() + RESCAN_EVERY,
+            folding: Duration::ZERO,
         }
     }
 
@@ -1371,6 +1404,7 @@ impl Scan {
         self.rx = Some(scan::spawn(root));
         self.quiet = true;
         self.changed = false;
+        self.folding = Duration::ZERO;
     }
 
     /// Idle, and due for another look at the tree.
@@ -1385,13 +1419,14 @@ impl Scan {
         self.rx.is_some() && !self.quiet
     }
 
-    /// The walk ended. Time the next rescan from HERE, not from its start, so
-    /// a slow root — a cold cache, a network mount — backs itself off instead
-    /// of queueing walks nose to tail.
-    fn ended(&mut self) {
+    /// The walk ended, having taken `walk` on its own thread. Time the next
+    /// rescan from HERE, not from its start, so a slow root — a cold cache, a
+    /// network mount — backs itself off instead of queueing walks nose to
+    /// tail; and by what this one cost ([`rescan_pause`]).
+    fn ended(&mut self, walk: Duration) {
         self.rx = None;
         self.quiet = false;
-        self.next = Instant::now() + RESCAN_EVERY;
+        self.next = Instant::now() + rescan_pause(walk + self.folding);
     }
 }
 
@@ -1729,7 +1764,9 @@ fn run(
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let mut app = App::new(name, doc, size.width, size.height);
+    // Built empty and given the document only once the config is in: see
+    // `App::show_document` for what laying it out first cost.
+    let mut app = App::new(name, Document::parse(""), size.width, size.height);
     app.mtime = loaded;
     // What images will actually look like here, for the info card.
     app.image_kind = Some(images.kind());
@@ -1738,6 +1775,8 @@ fn run(
     app.file = Some(path.to_path_buf());
     app.note = theme_note;
     app.state_dir = carrel::state::state_dir();
+    apply_config(&mut app);
+    app.show_document(doc);
     carrel::annotation_state::load(&mut app);
     // The one-time footer invitation. No state directory at all means we
     // cannot tell, and a line that might never go away is worse than one
@@ -1753,8 +1792,6 @@ fn run(
     // The file and its folder are known now, which is what resolving a
     // `[[note]]` and finding a dead link both needed.
     app.index_links();
-    apply_config(&mut app);
-    app.on_resize(app.cols, app.rows);
     // A direct open builds the App by hand rather than via open_path, so the
     // saved reading position needs restoring explicitly. Its note outranks
     // the theme note — the theme is only news when it failed to load.
@@ -1789,7 +1826,7 @@ fn run_loop(
     mut terminal: ratatui::DefaultTerminal,
     mut app: App,
     mut images: Images,
-    mut stream: Option<&Receiver<String>>,
+    mut stream: Option<&Receiver<carrel::stream::Chunk>>,
 ) -> std::io::Result<Option<HomeRequest>> {
     let mut keys = Keys::new();
 
@@ -1808,6 +1845,7 @@ fn run_loop(
     // The tags page, asked for from inside a document: see `TagScan`.
     let mut tag_scan = TagScan::new();
     let mut siblings = Siblings::new();
+    let mut pace = StreamPace::default();
 
     loop {
         drive_backlinks(&mut app, &mut backlinks, &mut backlinks_for);
@@ -1882,7 +1920,7 @@ fn run_loop(
         }
 
         poll_reload(&mut reloader, &mut app, &mut images, &mut diagrams);
-        poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
+        poll_stream(&mut stream, &mut app, &mut images, &mut diagrams, &mut pace);
         desktop.poll();
 
         // Auto-read's own clock, and NOT nested in the resize branch below:
@@ -1912,21 +1950,50 @@ fn run_loop(
     }))
 }
 
+/// How much longer than a re-parse took to wait before the next one, while a
+/// pipe is still arriving: parsing then holds at most a quarter of the time,
+/// and keys and paint get the rest.
+///
+/// Every re-parse is of the WHOLE text, so re-parsing on every wake made a
+/// growing pipe quadratic: each batch cost more than the last, until a key
+/// waited behind seconds of parses queued nose to tail (`yes 'plain words'
+/// | carrel` took 4.5 s to act on `Q`). A small document parses in
+/// microseconds, so it still updates on every wake.
+const REPARSE_PAUSE: u32 = 3;
+
+/// When the growing pipe was last re-parsed and what that cost.
+#[derive(Debug, Default)]
+struct StreamPace {
+    last: Option<(Instant, Duration)>,
+    /// Text arrived that the screen does not show yet.
+    dirty: bool,
+}
+
+/// Whether a pipe whose last re-parse cost `cost` and ended `since` ago is
+/// due for another.
+fn reparse_due(since: Duration, cost: Duration) -> bool {
+    since >= cost.saturating_mul(REPARSE_PAUSE)
+}
+
 /// Drain the stdin channel: one re-parse per wake no matter how many chunks
-/// arrived, and only while the piped document is the one on screen — after
-/// following a link out, the text keeps accumulating in `app.piped` and the
-/// `Ctrl-O` return re-parses it. Disconnect is EOF and flips the label.
+/// arrived — and no more often than [`reparse_due`] allows — and only while
+/// the piped document is the one on screen. After following a link out, the
+/// text keeps accumulating in `app.piped` and the `Ctrl-O` return re-parses
+/// it. Disconnect is EOF and flips the label; so does a [`carrel::stream::Stop`].
 fn poll_stream(
-    stream: &mut Option<&Receiver<String>>,
+    stream: &mut Option<&Receiver<carrel::stream::Chunk>>,
     app: &mut App,
     images: &mut Images,
     diagrams: &mut Diagrams,
+    pace: &mut StreamPace,
 ) {
+    use carrel::stream::Chunk;
     use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
     let Some(rx) = *stream else { return };
     let mut buf = app.piped.take().unwrap_or_default();
     let mut grew = false;
     let mut done = false;
+    let mut stopped = None;
     let before = buf.len();
     let burst_deadline = Instant::now() + Duration::from_millis(16);
     // Even a producer that never pauses must give keys and paint a turn.
@@ -1946,7 +2013,12 @@ fn poll_stream(
             result => result,
         };
         match next {
-            Ok(chunk) => {
+            Ok(Chunk::Stopped(stop)) => {
+                stopped = Some(stop);
+                done = true;
+                break;
+            }
+            Ok(Chunk::Text(chunk)) => {
                 if buf.len().saturating_add(chunk.len()) >= u32::MAX as usize {
                     app.set_note("stdin exceeds 4 GiB; showing what fits".into());
                     done = true;
@@ -1972,19 +2044,40 @@ fn poll_stream(
     // lands behind a file, the tags page or search results waits in
     // `piped`, and coming back parses all of it.
     app.piped = Some(buf);
-    if grew && app.showing_pipe() {
+    pace.dirty |= grew;
+    if !app.showing_pipe() {
+        // Coming back re-parses all of it; nothing is owed until then.
+        pace.dirty = false;
+    }
+    let due = done
+        || pace
+            .last
+            .is_none_or(|(at, cost)| reparse_due(at.elapsed(), cost));
+    if pace.dirty && due {
+        let started = Instant::now();
         let text = app.piped.clone().unwrap_or_default();
         app.reload_from(&text);
         images.for_file = None;
         images.initialized = false;
         diagrams.for_file = None;
+        pace.last = Some((Instant::now(), started.elapsed()));
+        pace.dirty = false;
     }
     if done {
         app.streaming = false;
         // EOF belongs to the pipe, not a watched file opened from it.
         if app.showing_pipe() {
             app.following = false;
-            app.path = "(stdin)".into();
+            app.path = match stopped {
+                Some(stop) => format!("(stdin — first {})", stop.amount()),
+                None => "(stdin)".into(),
+            };
+        }
+        if let Some(stop) = stopped {
+            app.set_note(format!(
+                "stopped reading at {} — the rest of the pipe was not read",
+                stop.amount()
+            ));
         }
         *stream = None;
     }
@@ -1993,7 +2086,7 @@ fn poll_stream(
 /// The piped-document reader: the TUI opens immediately and content streams
 /// in. Keys arrive through `/dev/tty` — crossterm's own fallback when stdin
 /// is not a terminal — so this fails cleanly where no tty exists.
-fn run_stdin(rx: &Receiver<String>) -> std::io::Result<Option<HomeRequest>> {
+fn run_stdin(rx: &Receiver<carrel::stream::Chunk>) -> std::io::Result<Option<HomeRequest>> {
     let theme_note = startup_theme();
     let images = Images::detect();
     let terminal = init_terminal()?;
@@ -3129,11 +3222,15 @@ fn cycle_theme_now(app: &mut App) {
 /// finds nothing must not rewrite a 110k-line file every couple of seconds.
 fn drain_scan(app: &mut App, scan: &mut Scan) {
     let Some(rx) = scan.rx.as_ref() else { return };
+    let started = Instant::now();
     let mut batch: Vec<scan::Entry> = Vec::new();
     loop {
         match rx.try_recv() {
             Ok(scan::Msg::Found(e)) => batch.push(e),
-            Ok(scan::Msg::Done { unreadable }) => {
+            Ok(scan::Msg::Done {
+                unreadable,
+                elapsed,
+            }) => {
                 if let Some(h) = app.home_mut() {
                     scan.changed |= h.push_many(std::mem::take(&mut batch));
                     scan.changed |= h.finish_scan(unreadable);
@@ -3141,7 +3238,8 @@ fn drain_scan(app: &mut App, scan: &mut Scan) {
                         scan::save_cache(&h.root, &h.entries);
                     }
                 }
-                scan.ended();
+                scan.folding += started.elapsed();
+                scan.ended(elapsed);
                 return;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -3155,7 +3253,10 @@ fn drain_scan(app: &mut App, scan: &mut Scan) {
                         h.abort_scan();
                     }
                 }
-                scan.ended();
+                // The walker's own clock died with it; what the main thread
+                // spent is what is known.
+                scan.folding += started.elapsed();
+                scan.ended(Duration::ZERO);
                 return;
             }
         }
@@ -3165,6 +3266,7 @@ fn drain_scan(app: &mut App, scan: &mut Scan) {
     {
         scan.changed |= h.push_many(batch);
     }
+    scan.folding += started.elapsed();
 }
 
 /// Pointer events while the home screen is up: the wheel moves the list.
@@ -3512,6 +3614,36 @@ fn report(path: &Path, src: &str, pattern: &str) -> (String, bool) {
 mod tests {
     use super::*;
 
+    /// A small tree keeps its two-second freshness; a big one waits in
+    /// proportion to what a walk costs it, and nothing waits forever.
+    #[test]
+    fn a_rescan_waits_in_proportion_to_what_the_last_one_cost() {
+        let ms = Duration::from_millis;
+        // 110k files warm: the 6 ms walk `scan.rs` measured.
+        assert_eq!(rescan_pause(ms(6)), RESCAN_EVERY);
+        assert_eq!(rescan_pause(Duration::ZERO), RESCAN_EVERY);
+        // 100k files with a stat each and the reconciliation: the
+        // 13%-of-a-core case, now about 2%.
+        assert_eq!(rescan_pause(ms(300)), Duration::from_secs(15));
+        assert_eq!(rescan_pause(Duration::from_secs(60)), RESCAN_MAX);
+    }
+
+    /// Re-parsing a growing pipe on every wake was quadratic; a parse now
+    /// buys a pause three times its own length.
+    #[test]
+    fn a_growing_pipe_reparses_only_after_a_pause_its_parse_paid_for() {
+        let ms = Duration::from_millis;
+        assert!(
+            reparse_due(ms(1), Duration::from_micros(200)),
+            "a small pipe flows"
+        );
+        assert!(
+            !reparse_due(ms(500), ms(800)),
+            "a big one gives keys a turn"
+        );
+        assert!(reparse_due(ms(2400), ms(800)));
+    }
+
     #[test]
     fn a_large_queued_pipe_batch_leaves_time_for_input_without_losing_text() {
         for (count, chunk_size) in [(256, 64 * 1024), (2048, 1)] {
@@ -3520,7 +3652,7 @@ mod tests {
             for i in 0..count {
                 let chunk = format!("chunk {i} {}\n", "x".repeat(chunk_size));
                 expected.push_str(&chunk);
-                tx.send(chunk).unwrap();
+                tx.send(carrel::stream::Chunk::Text(chunk)).unwrap();
             }
             drop(tx);
             // Read another file while the background stream accumulates. The
@@ -3532,7 +3664,8 @@ mod tests {
             let mut stream = Some(&rx);
             let mut images = Images::detect();
             let mut diagrams = Diagrams::new();
-            poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
+            let mut pace = StreamPace::default();
+            poll_stream(&mut stream, &mut app, &mut images, &mut diagrams, &mut pace);
             let received = app.piped.as_ref().unwrap().len();
             assert!(
                 received > 0 && received < expected.len(),
@@ -3540,7 +3673,7 @@ mod tests {
             );
             assert!(stream.is_some());
             for _ in 0..100 {
-                poll_stream(&mut stream, &mut app, &mut images, &mut diagrams);
+                poll_stream(&mut stream, &mut app, &mut images, &mut diagrams, &mut pace);
                 if stream.is_none() {
                     break;
                 }
@@ -3550,9 +3683,38 @@ mod tests {
         }
     }
 
+    /// A pipe stopped at its limit stays readable and says where it stopped,
+    /// in the note and in the name the status bar shows.
+    #[test]
+    fn a_pipe_stopped_at_its_limit_says_so_and_keeps_what_it_read() {
+        use carrel::stream::{Chunk, Stop};
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Chunk::Text("# kept\n".into())).unwrap();
+        tx.send(Chunk::Stopped(Stop::Lines(1))).unwrap();
+        let mut app = App::new("(stdin)".into(), Document::parse(""), 80, 24);
+        app.streaming = true;
+        app.piped = Some(String::new());
+        let mut stream = Some(&rx);
+        poll_stream(
+            &mut stream,
+            &mut app,
+            &mut Images::detect(),
+            &mut Diagrams::new(),
+            &mut StreamPace::default(),
+        );
+        assert!(stream.is_none(), "nothing more is read");
+        assert!(!app.streaming);
+        assert_eq!(app.doc.text, "kept\n");
+        assert_eq!(app.path, "(stdin — first 1 lines)");
+        assert_eq!(
+            app.note.as_deref(),
+            Some("stopped reading at 1 lines — the rest of the pipe was not read")
+        );
+    }
+
     #[test]
     fn a_background_pipe_finishing_does_not_stop_following_a_file() {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel::<carrel::stream::Chunk>();
         drop(tx);
         let mut app = App::new("file.md".into(), Document::parse("file"), 80, 24);
         app.file = Some("file.md".into());
@@ -3565,6 +3727,7 @@ mod tests {
             &mut app,
             &mut Images::detect(),
             &mut Diagrams::new(),
+            &mut StreamPace::default(),
         );
         assert!(stream.is_none());
         assert!(!app.streaming);

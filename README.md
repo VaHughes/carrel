@@ -155,7 +155,8 @@ when nothing matched, so `if carrel doc.md pattern; then` behaves like grep. Pip
 weight, slant, strike and OSC 8 links (never a colour) for embedding in another tool's
 output, and `carrel --tasks FILE` prints the document's task list as checkbox lines. While a producer is
 still writing, the reader is already open — and your position and search matches hold as
-content arrives. Collapsed sections and bookmarks stay in place too. Press `F` to keep up with
+content arrives. Collapsed sections and bookmarks stay in place too. An endless pipe stops
+being read at 64 MB or 2,000,000 lines, and the status bar says so. Press `F` to keep up with
 the end while it grows, and `y` to copy the code block you are looking at
 (`]` and `[` step between them).
 

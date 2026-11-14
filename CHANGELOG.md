@@ -69,6 +69,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   character. Math nested thousands deep (`{{{…x…}}}`) took seconds to parse, and a long
   chain like `\sqrt\sqrt\sqrt…x` crashed the reader, while opening a document or
   searching from the home screen; such math is now shown as its LaTeX source at once.
+- **Big documents and endless pipes stay responsive.** A 52 MB document opens about five
+  times faster (one layout pass instead of three, and a parse that no longer measures text
+  it never needs to). A single huge paragraph is wrapped a screen at a time, not whole on
+  every frame. A pipe stops being read at 64 MB or 2,000,000 lines, says so, and keeps what
+  arrived readable — `yes '# x' | carrel` used to exhaust memory and crash. An idle file
+  list over a very large tree rescans less often instead of using a steady 13% of a core.
+
 - **Fixes from an adversarial review (2026-11-14).** A footnote box that fits now shows
   its own `enter go to it` and `esc close` chips; with a link picked, the footer used to
   offer `enter follow` while Enter opened the footnote. Enter over a box no longer leaves

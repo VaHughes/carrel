@@ -87,9 +87,9 @@ impl ViewState {
 pub fn row_anchor(doc: &Document, l: &Layout, row: u32) -> Option<u32> {
     let b = l.block_at_row(row);
     let mut rows = Vec::new();
-    l.rows_for(doc, b, &mut rows);
-    let sub = (row.checked_sub(l.row_start(b))?) as usize;
-    let r = rows.get(sub)?;
+    let sub = row.checked_sub(l.row_start(b))?;
+    let base = l.rows_window(doc, b, sub, 1, &mut rows);
+    let r = rows.get((sub - base) as usize)?;
     // The blank row under a block is named by the separator byte after
     // it — in no block's text, and handed by `block_at_doc` to the next
     // block, whose row it is just above ([`row_of`]). It used to take the
@@ -98,7 +98,7 @@ pub fn row_anchor(doc: &Document, l: &Layout, row: u32) -> Option<u32> {
     // reload, a resize — at that paragraph's first row, a screen too
     // early. An empty block's start is its separator already, and the
     // bottom margin has no block after it: those keep the start.
-    if let Some(gap) = gap_byte(doc, l, b, sub) {
+    if let Some(gap) = gap_byte(doc, l, b, sub as usize) {
         return Some(gap);
     }
     // §3.5 edge case: a decoration row has an empty doc range, but its

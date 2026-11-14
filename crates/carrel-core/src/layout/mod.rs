@@ -249,6 +249,56 @@ pub fn chunk_count(doc: &Document, block: BlockIdx) -> u32 {
     chunk_starts(doc.block_text(block)).len() as u32
 }
 
+/// Where each layout chunk of a block starts, as byte offsets into its text
+/// ([`Document::block_text`]). Always starts with `0`.
+///
+/// **Width-independent**, like [`chunk_count`]. Computing it is a full UAX #14
+/// pass over the block, so a caller that windows over a huge paragraph
+/// computes it once and hands it to [`wrap_chunk_in`] for every chunk.
+#[must_use]
+pub fn chunk_offsets(doc: &Document, block: BlockIdx) -> Vec<u32> {
+    chunk_starts(doc.block_text(block))
+}
+
+/// Lay out chunk `chunk` of a block, given its [`chunk_offsets`], exactly as
+/// [`wrap_divided`] lays that chunk out. Returns the row count.
+///
+/// [`wrap_divided`] is this, called for every chunk in turn; so the rows of
+/// chunk *k* are the rows `wrap_divided` emits after the rows of chunks
+/// `0..k`, which is what lets a frontend materialise only the chunks a
+/// viewport shows. `first` must be `true` only for chunk 0.
+#[allow(clippy::too_many_arguments)]
+pub fn wrap_chunk_in<F: FnMut(Row)>(
+    doc: &Document,
+    block: BlockIdx,
+    starts: &[u32],
+    chunk: usize,
+    width: u16,
+    w: &WidthFn,
+    hyphenation: Hyphenation,
+    division: Division,
+    first: &mut bool,
+    mut sink: F,
+) -> u32 {
+    let node = doc.node_for_block(block);
+    let text = doc.block_text(block);
+    let Some(&start) = starts.get(chunk) else {
+        return 0;
+    };
+    let end = starts.get(chunk + 1).map_or(text.len(), |&e| e as usize);
+    let at = Slice {
+        doc_base: node.doc.start + start,
+        block,
+        width,
+        indent: node.indent,
+        code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
+        meta: meta_value_col(&node.kind),
+        soft: soft_breaks(doc, block, hyphenation),
+        division,
+    };
+    wrap_slice(&text[start as usize..end], &at, w, first, &mut sink)
+}
+
 /// Lay out one chunk of a block at `width`. Returns the row count.
 ///
 /// Lets a caller bound work on a pathologically large paragraph. `first` says
@@ -388,7 +438,6 @@ pub fn wrap_divided<F: FnMut(Row)>(
     division: Division,
     mut sink: F,
 ) -> u32 {
-    let node = doc.node_for_block(block);
     let text = doc.block_text(block);
     let mut first = true;
     let mut rows = 0u32;
@@ -400,22 +449,16 @@ pub fn wrap_divided<F: FnMut(Row)>(
     // 2 MB 337 ms, 4 MB 1240 ms, 8 MB 6361 ms — and this is the resize path,
     // walked twice per relayout (the height pass and the row pass).
     let starts = chunk_starts(text);
-    for (i, start) in starts.iter().enumerate() {
-        let end = starts.get(i + 1).map_or(text.len(), |&e| e as usize);
-        let at = Slice {
-            doc_base: node.doc.start + start,
+    for chunk in 0..starts.len() {
+        rows = rows.saturating_add(wrap_chunk_in(
+            doc,
             block,
+            &starts,
+            chunk,
             width,
-            indent: node.indent,
-            code: matches!(node.kind, crate::document::NodeKind::CodeBlock { .. }),
-            meta: meta_value_col(&node.kind),
-            soft: soft_breaks(doc, block, hyphenation),
-            division,
-        };
-        rows = rows.saturating_add(wrap_slice(
-            &text[*start as usize..end],
-            &at,
             w,
+            hyphenation,
+            division,
             &mut first,
             &mut sink,
         ));

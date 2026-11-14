@@ -34,6 +34,10 @@ pub enum Msg {
     /// Always sent when the walk ends, so the caller can drop the indicator.
     Done {
         unreadable: usize,
+        /// How long the walk took, measured where it ran — a caller polling
+        /// the channel only sees when it next looked. What a periodic
+        /// rescan paces itself by.
+        elapsed: std::time::Duration,
     },
 }
 
@@ -112,6 +116,7 @@ pub fn spawn(root: &Path) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
     let root = root.to_path_buf();
     std::thread::spawn(move || {
+        let started = std::time::Instant::now();
         let mut unreadable = 0usize;
         for res in builder(&root).build() {
             match res {
@@ -126,7 +131,10 @@ pub fn spawn(root: &Path) -> Receiver<Msg> {
                 Err(_) => unreadable += 1,
             }
         }
-        let _ = tx.send(Msg::Done { unreadable });
+        let _ = tx.send(Msg::Done {
+            unreadable,
+            elapsed: started.elapsed(),
+        });
     });
     rx
 }

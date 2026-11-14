@@ -1746,13 +1746,23 @@ fn paint_rows(
             continue;
         }
 
-        app.layout.rows_for(&app.doc, block, &mut rows);
+        // Only the rows this frame can show: a huge paragraph is wrapped a
+        // chunk at a time, never whole (see `Layout::rows_window`).
+        let want = u32::from(area.bottom().saturating_sub(y));
+        let base = app
+            .layout
+            .rows_window(&app.doc, block, skip, want, &mut rows);
         let first_y = y;
         // The block's last CONTENT row: `rows` ends in the spacing row(s).
         let last = usize::try_from(app.layout.content_height(&app.doc, block))
             .unwrap_or(usize::MAX)
             .saturating_sub(1);
-        for (i, row) in rows.iter().enumerate().skip(skip as usize) {
+        for (i, row) in rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| (i + base as usize, row))
+            .skip((skip - base) as usize)
+        {
             if y >= area.bottom() {
                 break;
             }

@@ -59,7 +59,7 @@ fn the_live_walk_reconciles_with_the_cache() {
     for msg in scan::spawn(d.path()) {
         match msg {
             scan::Msg::Found(e) => app.home_mut().unwrap().push(e),
-            crate::scan::Msg::Done { unreadable } => {
+            crate::scan::Msg::Done { unreadable, .. } => {
                 app.home_mut().unwrap().finish_scan(unreadable)
             }
         };
