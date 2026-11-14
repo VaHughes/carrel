@@ -765,7 +765,9 @@ ends a word too, so
 .B ~/notes/drafts/
 becomes
 .BR ~/notes/ ,
-one folder at a time.
+one folder at a time. In a note it never crosses a line break: it stops at
+the start of the line, and at the start of a line it erases only the line
+break, joining the line to the one above.
 .TP
 .B Ctrl\-U
 Erase the whole input; in a note, everything before the cursor on its line.

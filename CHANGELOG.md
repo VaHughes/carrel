@@ -6,6 +6,7 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 - **A selection survives a live reload and a streaming pipe**: dragging over `agent | carrel`
   while it runs, or over a file being saved, copies on release instead of losing the drag.
+- **Home and End in a note go to the ends of the cursor's line**, not of the whole note.
 
 - **A file holding a NUL byte is refused as binary even when it is valid UTF-8** (ASCII
   saved as UTF-16 opened as spaced-out noise), and **long runs of math symbols**
@@ -25,7 +26,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   until you let go.
 - **Ctrl-W and Ctrl-U edit text.** In every filter, search prompt and note, Ctrl-W erases
   the word before the cursor and Ctrl-U the whole input (in a note, the cursor's line up
-  to the cursor). In the folder browser Ctrl-W takes one folder of a typed path at a time.
+  to the cursor). In a note Ctrl-W stays on its line: at a line's start it takes only the
+  line break. In the folder browser Ctrl-W takes one folder of a typed path at a time.
 
 - **An image outside the folder can be shown when you ask**: its `click to show` alt
   text opens its lightbox, which names the file; `[show]` or a second Enter there shows

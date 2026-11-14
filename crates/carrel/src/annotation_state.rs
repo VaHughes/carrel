@@ -169,6 +169,12 @@ fn begin_edit(app: &mut App) {
 }
 
 fn edit(draft: &mut Draft, key: NoteKey) {
+    // The cursor's line, `line_start..line_end`: Ctrl-W, Ctrl-U, Home and
+    // End all keep to it, so none of them reaches into another line.
+    let line_start = draft.text[..draft.cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = draft.text[draft.cursor..]
+        .find('\n')
+        .map_or(draft.text.len(), |i| draft.cursor + i);
     let left = draft.text[..draft.cursor]
         .grapheme_indices(true)
         .next_back()
@@ -190,25 +196,36 @@ fn edit(draft: &mut Draft, key: NoteKey) {
             draft.text.drain(left..draft.cursor);
             draft.cursor = left;
         }
+        // Never across a line break in one press. Readline's rule read the
+        // break as whitespace, so Ctrl-W at a line's start took the break
+        // AND the last word above it — over blank lines, all of them and
+        // then the word (black-box tester, 2026-11-14). At a line's start
+        // it takes the break alone, joining the line to the one above;
+        // mid-line it stops at the line's start.
         NoteKey::DeleteWord => {
-            let start = crate::app::rubout_start(&draft.text[..draft.cursor], false);
+            let start = if draft.cursor == line_start {
+                left
+            } else {
+                line_start + crate::app::rubout_start(&draft.text[line_start..draft.cursor], false)
+            };
             draft.text.drain(start..draft.cursor);
             draft.cursor = start;
         }
         // The cursor's own line only: a draft is several lines, and Ctrl-U
         // emptying all of them from the middle of one would lose a note.
         NoteKey::DeleteToLineStart => {
-            let start = draft.text[..draft.cursor].rfind('\n').map_or(0, |i| i + 1);
-            draft.text.drain(start..draft.cursor);
-            draft.cursor = start;
+            draft.text.drain(line_start..draft.cursor);
+            draft.cursor = line_start;
         }
         NoteKey::Delete => {
             draft.text.drain(draft.cursor..right);
         }
         NoteKey::Left => draft.cursor = left,
         NoteKey::Right => draft.cursor = right,
-        NoteKey::Home => draft.cursor = 0,
-        NoteKey::End => draft.cursor = draft.text.len(),
+        // The line's ends, as Ctrl-U is the line's: they were the whole
+        // note's, so Home on line three went back to line one.
+        NoteKey::Home => draft.cursor = line_start,
+        NoteKey::End => draft.cursor = line_end,
         _ => {}
     }
     // Inserting before a combining suffix can join two old graphemes.

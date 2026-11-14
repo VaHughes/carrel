@@ -4705,16 +4705,119 @@ mod tests {
         assert_eq!(draft(&app), ("one two\nur".into(), 8), "this line only");
         drive(&mut keys, &mut app, &[ctrl_u]);
         assert_eq!(draft(&app), ("one two\nur".into(), 8), "at a line start");
-        // Readline's rule: the line break is whitespace, so at a line's
-        // start Ctrl-W joins it to the line above and takes that word.
+        // At a line's start Ctrl-W takes the line break and nothing more:
+        // the line joins the one above, and that line keeps its last word.
         drive(&mut keys, &mut app, &[ctrl_w]);
-        assert_eq!(draft(&app), ("one ur".into(), 4));
+        assert_eq!(draft(&app), ("one twour".into(), 7));
         // Mid-text, with a cluster just before the cursor: it goes whole.
         drive(&mut keys, &mut app, &[press(KeyCode::End, none)]);
         drive(&mut keys, &mut app, &typed(" 👍🏽x"));
         drive(&mut keys, &mut app, &[left]);
         drive(&mut keys, &mut app, &[ctrl_w]);
-        assert_eq!(draft(&app), ("one ur x".into(), 7));
+        assert_eq!(draft(&app), ("one twour x".into(), 10));
+    }
+
+    /// **The defect** (black-box tester, 2026-11-14): Ctrl-W in a note read
+    /// a line break as whitespace, readline's way, so one press at the
+    /// start of a line took the break AND the last word of the line above
+    /// — and on blank lines took them all, then the word. Ctrl-U already
+    /// stayed on its line; Ctrl-W now never crosses a break in one press.
+    #[test]
+    fn in_a_note_ctrl_w_never_crosses_a_line_break_in_one_press() {
+        let ctrl = KeyModifiers::CONTROL;
+        let ctrl_w = press(KeyCode::Char('w'), ctrl);
+        let ctrl_u = press(KeyCode::Char('u'), ctrl);
+        let ctrl_j = press(KeyCode::Char('j'), ctrl);
+        let note = |ks: &[&[KeyEvent]]| {
+            let doc = carrel_core::Document::parse("# Heading\n\nhello world\n");
+            let mut app = App::new("t.md".into(), doc, 80, 24);
+            let mut keys = Keys::new();
+            drive(&mut keys, &mut app, &typed("a"));
+            for k in ks {
+                drive(&mut keys, &mut app, k);
+            }
+            app.notes.draft.as_ref().unwrap().text.clone()
+        };
+        let ab = typed("alpha beta");
+        // The tester's first script: Ctrl-U empties line 2, Ctrl-W joins.
+        assert_eq!(
+            note(&[
+                &ab,
+                &[ctrl_j],
+                &typed("gamma"),
+                &[ctrl_u, ctrl_w],
+                &typed("X")
+            ]),
+            "alpha betaX"
+        );
+        // The second: spaces on a line go back to its start and no further,
+        // then each press takes one break.
+        let spaces = typed("   ");
+        assert_eq!(
+            note(&[&ab, &[ctrl_j, ctrl_j], &spaces, &[ctrl_w], &typed("Y")]),
+            "alpha beta\n\nY"
+        );
+        assert_eq!(
+            note(&[
+                &ab,
+                &[ctrl_j, ctrl_j],
+                &spaces,
+                &[ctrl_w, ctrl_w],
+                &typed("Y")
+            ]),
+            "alpha beta\nY"
+        );
+        assert_eq!(
+            note(&[
+                &ab,
+                &[ctrl_j, ctrl_j],
+                &spaces,
+                &[ctrl_w, ctrl_w, ctrl_w],
+                &typed("Y")
+            ]),
+            "alpha betaY"
+        );
+        // A word mid-line stops at the line start, never past it.
+        assert_eq!(
+            note(&[&ab, &[ctrl_j], &typed("gamma"), &[ctrl_w], &typed("Z")]),
+            "alpha beta\nZ"
+        );
+        // At the very start of the note there is nothing to take.
+        assert_eq!(note(&[&[ctrl_w], &typed("Q")]), "Q");
+    }
+
+    /// Home and End move within the cursor's line, as Ctrl-U erases within
+    /// it; they went to the start and end of the whole note.
+    #[test]
+    fn in_a_note_home_and_end_stay_on_the_cursors_line() {
+        let none = KeyModifiers::NONE;
+        let doc = carrel_core::Document::parse("# Heading\n\nhello world\n");
+        let mut app = App::new("t.md".into(), doc, 80, 24);
+        let mut keys = Keys::new();
+        drive(&mut keys, &mut app, &typed("a"));
+        drive(&mut keys, &mut app, &typed("one"));
+        drive(
+            &mut keys,
+            &mut app,
+            &[press(KeyCode::Char('j'), KeyModifiers::CONTROL)],
+        );
+        drive(&mut keys, &mut app, &typed("two"));
+        drive(
+            &mut keys,
+            &mut app,
+            &[press(KeyCode::Char('j'), KeyModifiers::CONTROL)],
+        );
+        drive(&mut keys, &mut app, &typed("three"));
+        let left = press(KeyCode::Left, none);
+        // Onto the middle line, mid-word.
+        drive(&mut keys, &mut app, &[left; 7]);
+        drive(&mut keys, &mut app, &[press(KeyCode::Home, none)]);
+        drive(&mut keys, &mut app, &typed("<"));
+        drive(&mut keys, &mut app, &[press(KeyCode::End, none)]);
+        drive(&mut keys, &mut app, &typed(">"));
+        let d = app.notes.draft.as_ref().unwrap();
+        assert_eq!(d.text, "one\n<two>\nthree");
+        assert_eq!(d.cursor, "one\n<two>".len());
     }
 
     /// **The defect**: the box said how much more there was and only the

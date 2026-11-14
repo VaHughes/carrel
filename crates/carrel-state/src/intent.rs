@@ -77,9 +77,10 @@ pub enum NoteKey {
     Char(char),
     Newline,
     Backspace,
-    /// Erase the word before the cursor, readline's `unix-word-rubout`: a
-    /// line break counts as whitespace, so at a line's start it joins the
-    /// line to the one above and takes that line's last word.
+    /// Erase the word before the cursor, readline's `unix-word-rubout`, but
+    /// never across a line break in one press: mid-line it stops at the
+    /// line's start, and at a line's start it erases the break alone,
+    /// joining the line to the one above.
     DeleteWord,
     /// Erase from the cursor back to the start of its line (Ctrl-U). At the
     /// start of a line there is nothing before it, so it does nothing.
@@ -87,7 +88,9 @@ pub enum NoteKey {
     Delete,
     Left,
     Right,
+    /// The start of the cursor's line, not of the note.
     Home,
+    /// The end of the cursor's line, not of the note.
     End,
     Save,
     Cancel,

@@ -420,7 +420,9 @@ Key facts:
   runs once per paste. Backspace removes one grapheme in every text input; Ctrl-W
   (`SearchKey::DeleteWord`, `NoteKey::DeleteWord`) removes readline's word over whole
   graphemes, with `/` a boundary too in the folder picker, and Ctrl-U (`SearchKey::Clear`,
-  `NoteKey::DeleteToLineStart`) the input, or a note's line up to the cursor. All three
+  `NoteKey::DeleteToLineStart`) the input, or a note's line up to the cursor. In a note
+  Ctrl-W, Ctrl-U, Home and End keep to the cursor's line; Ctrl-W at a line's start erases
+  the break alone. All three
   go through `app::erase_input`, so each input's after-erase work (re-search, refilter,
   grep restart) runs once for any of them; neither chord climbs an empty picker.
 - **Commit-message hyphens follow the Markdown parser's inline boundaries.** The diff
