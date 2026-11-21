@@ -79,7 +79,7 @@ fi
 
 while IFS= read -r f; do
   [ -z "$f" ] && continue
-  if printf '%s\n' "$present" | grep -qxF "$f"; then
+  if printf '%s\n' "$present" | grep -xF "$f" >/dev/null; then
     ok "$f"
   else
     note "$f — the recipe installs it, the archive will not contain it"
@@ -101,7 +101,7 @@ else
   while read -r src _ _; do
     f=${src%.1.gz}
     [ "$f" != "$src" ] && f=$f.1
-    if printf '%s\n' "$present" | grep -qxF "$f"; then
+    if printf '%s\n' "$present" | grep -xF "$f" >/dev/null; then
       ok "$f"
     else
       note "$f — the .deb packs it, the archive will not contain it"
@@ -316,7 +316,7 @@ ws_license=$(awk '/^\[workspace\.package\]/{f=1; next} /^\[/{f=0}
                   f && /^license = /{sub(/^license = "/, ""); sub(/"[[:space:]]*$/, ""); print; exit}' Cargo.toml)
 
 if [ -s "$notices" ]; then ok "$notices at the repository root"; else note "$notices is missing from the repository root"; fi
-if sed -n '/^include = \[/,/\]/p' "$DIST" | grep -qF "\"$notices\""; then
+if sed -n '/^include = \[/,/\]/p' "$DIST" | grep -F "\"$notices\"" >/dev/null; then
   ok "$DIST includes $notices (flattened to the archive root)"
 else
   note "$DIST does not include $notices — no release archive, carrel-bin or .deb would carry it"
@@ -346,7 +346,7 @@ else
 fi
 has_line contrib/packaging/carrel-package.nix \
   "install -Dm644 $notices \$out/share/doc/carrel/$notices" "install $notices to share/doc"
-if printf '%s\n' "$deb_assets" | grep -qxF "$notices usr/share/doc/carrel/$notices 644"; then
+if printf '%s\n' "$deb_assets" | grep -xF "$notices usr/share/doc/carrel/$notices 644" >/dev/null; then
   ok ".deb assets: $notices to /usr/share/doc/carrel"
 else
   note ".deb assets do not install $notices to /usr/share/doc/carrel"
@@ -371,7 +371,7 @@ else
   nix_lic=$(sed -n '/license = with lib.licenses; \[/,/\];/p' contrib/packaging/carrel-package.nix)
   nix_missing=
   for want in mit asl20 bsd3 fsfap knuth; do
-    printf '%s\n' "$nix_lic" | grep -qxE "[[:space:]]*$want" || nix_missing="$nix_missing $want"
+    printf '%s\n' "$nix_lic" | grep -xE "[[:space:]]*$want" >/dev/null || nix_missing="$nix_missing $want"
   done
   if [ -z "$nix_missing" ]; then ok "carrel-package.nix meta.license covers the expression"
   else note "carrel-package.nix meta.license lacks:$nix_missing"; fi
@@ -405,9 +405,9 @@ else
 fi
 
 # The expansion the flattening gets wrong.
-if printf '%s\n' "$si_ver" | grep -q .; then
-  if awk '/^\tsource = /' "$srcinfo" | grep -qF "v$si_ver.tar.gz" \
-     && awk '/^\tsource = /' "$srcinfo" | grep -qF "carrel-$si_ver.tar.gz"; then
+if printf '%s\n' "$si_ver" | grep . >/dev/null; then
+  if awk '/^\tsource = /' "$srcinfo" | grep -F "v$si_ver.tar.gz" >/dev/null \
+     && awk '/^\tsource = /' "$srcinfo" | grep -F "carrel-$si_ver.tar.gz" >/dev/null; then
     ok "source line names v$si_ver"
   else
     note ".SRCINFO source line does not name v$si_ver — regenerate with makepkg --printsrcinfo"

@@ -797,11 +797,14 @@ fn table_line_ends(doc: &Document, node: &Node, cell_starts: &[u32], ncols: usiz
     }
     (0..nrows)
         .map(|r| {
-            if r + 1 < nrows {
+            let end = if r + 1 < nrows {
                 cell_starts[(r + 1) * ncols].saturating_sub(1)
             } else {
                 end
-            }
+            };
+            // Never before the line's own start: a last row of empty cells
+            // begins where the block's trimmed text ends, or past it.
+            end.max(cell_starts[r * ncols])
         })
         .collect()
 }

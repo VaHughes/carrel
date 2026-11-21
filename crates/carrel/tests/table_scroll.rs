@@ -213,3 +213,34 @@ fn shift_arrows_pan_with_counts_and_plain_arrows_keep_navigation() {
         Some(Action::LinkFollow)
     );
 }
+
+/// A table whose last row holds nothing but empty cells: its line starts
+/// where the block's trimmed text ends, and the row came out with its end
+/// before its start — a panic in the column view's painter.
+#[test]
+fn a_table_ending_in_an_empty_row_paints_in_both_views() {
+    for src in [
+        "| Only |\n|---|\n|  |\n",
+        "| Only |\n|---|\n|  |\n\npara\n",
+        "| Only |\n|---|\n|  |\n|  |\n",
+        "| Only |\n|---|\n| x |\n|  |\n# Head\n",
+        "| a | b |\n|---|---|\n|  |  |\n",
+        "|  |\n|---|\n|  |\n",
+    ] {
+        for columns in [false, true] {
+            for width in [80u16, 6, 1] {
+                let mut app = App::new("t.md".into(), Document::parse(src), width, 24);
+                if columns {
+                    update(&mut app, Action::TableToggle);
+                }
+                let mut rows = Vec::new();
+                app.layout.rows_for(&app.doc, BlockIdx(0), &mut rows);
+                for row in &rows {
+                    assert!(row.doc.start <= row.doc.end, "{src:?} {columns}: {row:?}");
+                }
+                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|f| render::draw(f, &app)).unwrap();
+            }
+        }
+    }
+}

@@ -96,3 +96,45 @@ fn a_drag_to_a_paragraph_end_does_not_depend_on_the_next_paragraph() {
         Some("alpha one")
     );
 }
+
+/// A heading click remembers its byte so a second press can turn the click
+/// into a double click. A re-parse between the two presses left that byte
+/// pointing into other text: the second press toggled whatever heading
+/// stood there now and selected a word nobody clicked.
+#[test]
+fn a_double_click_split_by_a_reload_acts_where_it_was_pressed() {
+    let src = "# One\n\nalpha beta\n\n# Two\n\ngamma\n";
+    let mut a = App::new("t.md".into(), Document::parse(src), 60, 20);
+    let b = byte(&a, "Two");
+    update(&mut a, Action::SelectAnchor((b, b + 1)));
+    update(&mut a, Action::SelectRelease);
+    assert_eq!(a.folded.len(), 1, "the click collapses Two");
+    a.reload_from("# One\n\nalpha\n\n# Other\n\nwords here\n\n# Two\n\ngamma\n");
+    let folded = a.folded.len();
+    let w = byte(&a, "words");
+    update(&mut a, Action::SelectWord(w));
+    let sel = a
+        .selection
+        .clone()
+        .map(|r| a.doc.text[r.start as usize..r.end as usize].to_string());
+    assert_eq!(sel.as_deref(), Some("words"));
+    assert_eq!(a.folded.len(), folded, "no fold toggled at the old byte");
+}
+
+/// The control: with no reload between the presses, the double click
+/// selects the heading word and undoes the click's fold.
+#[test]
+fn a_double_click_on_a_heading_selects_its_word_and_unfolds() {
+    let src = "# One\n\nalpha beta\n\n# Two\n\ngamma\n";
+    let mut a = App::new("t.md".into(), Document::parse(src), 60, 20);
+    let b = byte(&a, "Two");
+    update(&mut a, Action::SelectAnchor((b, b + 1)));
+    update(&mut a, Action::SelectRelease);
+    update(&mut a, Action::SelectWord(b));
+    let sel = a
+        .selection
+        .clone()
+        .map(|r| a.doc.text[r.start as usize..r.end as usize].to_string());
+    assert_eq!(sel.as_deref(), Some("Two"));
+    assert!(a.folded.is_empty());
+}

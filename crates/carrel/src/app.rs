@@ -2209,6 +2209,9 @@ impl App {
         self.sel_anchor = None;
         self.selected_link = None;
         self.code_focus = None;
+        // A heading click's byte, kept for the second press of a double
+        // click: it names the old parse's text.
+        self.click_fold = None;
         self.folded.clear();
         self.folded_details.clear();
         self.image_dims.clear();
@@ -4962,6 +4965,8 @@ fn blocked_action(app: &mut App, action: Action) -> Option<Outcome> {
                 Action::Dismiss
                     | Action::CloseFile
                     | Action::Back
+                    // What the notes list's own Esc, `q` and `V` send.
+                    | Action::NotesToggle
                     | Action::NoteInput(crate::action::NoteKey::Cancel)
                     | Action::OutlineKey(SearchKey::Cancel)
                     | Action::HelpKey(SearchKey::Cancel)

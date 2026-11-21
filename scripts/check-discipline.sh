@@ -32,7 +32,7 @@ ui_tree() { # DIR CRATE
   local tree hits
   tree=$(cargo tree -p "$2" -e normal,build --prefix none --format '{p}' --offline 2>/dev/null \
          || cargo tree -p "$2" -e normal,build --prefix none --format '{p}' --locked 2>&1)
-  if ! printf '%s\n' "$tree" | grep -q "^$2 "; then
+  if ! printf '%s\n' "$tree" | grep "^$2 " >/dev/null; then
     note "could not list $2's dependencies (cargo tree):"; printf '%s\n' "$tree" | tail -3
   elif hits=$(printf '%s\n' "$tree" | grep -v "^$2 " | grep -E '^(ratatui|ratatui-core|ratatui-image|crossterm|termion|termwiz|gtk4|gtk|webkit6|iced|egui|winit|carrel|carrel-state) '); then
     note "$2 depends, directly or not, on a UI crate or a frontend"; echo "$hits" | sort -u
@@ -182,7 +182,7 @@ fi
 # `// discipline: terminal key`, and nothing else is exempt.
 marked() { # FILE:LINE:… -> succeed when the line above carries the marker
   local f=${1%%:*} rest=${1#*:}; local n=${rest%%:*}
-  [ "$n" -gt 1 ] && sed -n "$((n - 1))p" "$f" | grep -qE '^\s*// discipline: terminal key$'
+  [ "$n" -gt 1 ] && sed -n "$((n - 1))p" "$f" | grep -E '^\s*// discipline: terminal key$' >/dev/null
 }
 hits=$(sscan '\(\s*u16\s*,\s*u16\s*\)|\bRect\b|\b(col|cols|row|rows|x|y|width|height|w|h)\s*:\s*(Option<)?u16\b' \
        | while IFS= read -r h; do marked "$h" || printf '%s\n' "$h"; done)

@@ -5464,6 +5464,70 @@ mod tests {
     /// no text field) the one the key opens in its place. Then Esc must
     /// close it — the info card ignored Esc, and `q` with the card up quit
     /// the whole program.
+    /// A pane with no room for its choices still closes on Esc. The notes
+    /// list's own keys send `NotesToggle`, which the blocked-pane filter
+    /// did not know for a closer: at four rows nothing but `Q` got out.
+    #[test]
+    fn a_pane_with_no_room_still_closes_on_esc() {
+        use carrel::action::{Action, Direction};
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        let src = "# One\n\nSee [two](two.md).\n\n![alt](pic.png)\n\n## Two\n\nMore.\n";
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("one.md");
+        std::fs::write(&file, src).unwrap();
+        let openers = [
+            Action::HelpToggle,
+            Action::SettingsToggle,
+            Action::OutlineToggle,
+            Action::MarkListToggle,
+            Action::BacklinksToggle,
+            Action::ForwardToggle,
+            Action::InfoToggle,
+            Action::NotesToggle,
+            Action::ImageOpen(None),
+            Action::SearchOpen(Direction::Forward),
+            Action::MenuOpen {
+                at: (3, 3),
+                byte: None,
+            },
+        ];
+        for open in openers {
+            for (cols, rows) in [(80, 4), (10, 24), (4, 2), (80, 24)] {
+                for key in [KeyCode::Esc, KeyCode::Char('q')] {
+                    let mut a = App::new(
+                        file.display().to_string(),
+                        carrel_core::Document::parse(src),
+                        80,
+                        24,
+                    );
+                    a.file = Some(file.clone());
+                    update(&mut a, Action::MarkToggle);
+                    update(&mut a, open);
+                    assert!(a.pane().is_some(), "{open:?} opens a pane");
+                    a.on_resize(cols, rows);
+                    // `q` is text in the panes that type; Esc is the test there.
+                    let types = matches!(a.pane(), Some(Pane::Help | Pane::Outline | Pane::Search));
+                    if types && key != KeyCode::Esc {
+                        continue;
+                    }
+                    let mut keys = Keys::new();
+                    for _ in 0..2 {
+                        if a.pane().is_none() {
+                            break;
+                        }
+                        if let Some(act) =
+                            key_action(&mut keys, &a, KeyEvent::new(key, KeyModifiers::NONE))
+                        {
+                            assert_ne!(update(&mut a, act), Outcome::Quit, "{open:?} {key:?}");
+                        }
+                    }
+                    assert_eq!(a.pane(), None, "{open:?} at {cols}x{rows}: {key:?} twice");
+                }
+            }
+        }
+    }
+
     #[test]
     fn with_a_pane_up_a_key_never_stacks_another_and_esc_closes_it() {
         use carrel::action::{Action, Direction};

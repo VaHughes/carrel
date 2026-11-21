@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A one-column table whose last row is empty no longer crashes the columns view (`t`).**
+- **The notes list closes on Esc, `q` or `V` in a window too small to show it**; before,
+  only `Q` got out. A double click interrupted by a live reload acts where it was pressed.
 - **What links here (`L`) answers in a document opened from the file list**, where it
   said `Looking…` for good, and for a file named bare (`carrel notes.md`), where it said
   nothing linked to a document its sibling linked to. It now looks through the whole
