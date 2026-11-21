@@ -4,7 +4,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
-- **A one-column table whose last row is empty no longer crashes the columns view (`t`).**
+- **A one-column table whose last row is empty no longer crashes carrel**: `--plain`,
+  `--render`, a pipe and the columns view (`t`) all stopped on it.
 - **The notes list closes on Esc, `q` or `V` in a window too small to show it**; before,
   only `Q` got out. A double click interrupted by a live reload acts where it was pressed.
 - **What links here (`L`) answers in a document opened from the file list**, where it

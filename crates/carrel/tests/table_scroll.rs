@@ -227,6 +227,14 @@ fn a_table_ending_in_an_empty_row_paints_in_both_views() {
         "| a | b |\n|---|---|\n|  |  |\n",
         "|  |\n|---|\n|  |\n",
     ] {
+        // Printed output lays tables out in columns with no key pressed:
+        // `carrel --plain`, `--render` and a bare pipe all crashed here.
+        for width in [80u16, 6, 1] {
+            let doc = Document::parse(src);
+            let _ = carrel::plain::render(&doc, width);
+            let _ = carrel::ansi::render_with(&doc, width, true);
+            let _ = carrel::ansi::render_with(&doc, width, false);
+        }
         for columns in [false, true] {
             for width in [80u16, 6, 1] {
                 let mut app = App::new("t.md".into(), Document::parse(src), width, 24);
