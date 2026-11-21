@@ -490,7 +490,9 @@ Key facts:
   bytes (comment lines aside), `&` fan-out and `{ }` depth off the text; items and nesting
   off the parse (`merman`'s own resource policy, set explicitly); a flowchart's nodes,
   nodes × edges and squared degrees (`FlowCost` — its layout time follows the tallest rank,
-  which the model cannot give, so these bound it from above); the sequence grid by
+  which the model cannot give, so these bound it from above); a class or ER diagram's
+  nodes² × edges (`MAX_RELATION_WORK` — a different layout, costly on tangled relations and
+  not bounded by the item count: 300 classes with 1,600 relations were 4–6.5 s); the sequence grid by
   `sequence_cells` (its renderer budgets nothing); then the art's cells. **Each limit is a
   bound on cost, set from the measurements in the module doc with headroom over ordinary
   diagrams; none bounds width or height**, and `ordinary_diagrams_are_drawn_whatever_their_width`

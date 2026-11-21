@@ -30,8 +30,9 @@
 //! | [`MAX_NESTING`] | 64 | the parse of nested `{ }`, then nested blocks |
 //! | [`MAX_FAN_OUT`] | 2,000 | what `a & b --> c & d` multiplies out to |
 //! | [`MAX_ITEMS`] | 2,000 | entities + relationships, every family |
-//! | [`MAX_FLOW_NODES`] | 500 | a flowchart's widest possible rank |
-//! | [`MAX_FLOW_WORK`] | 250,000 | a flowchart's nodes × edges |
+//! | [`MAX_FLOW_NODES`] | 400 | a flowchart's widest possible rank |
+//! | [`MAX_FLOW_WORK`] | 160,000 | a flowchart's nodes × edges |
+//! | [`MAX_RELATION_WORK`] | 30,000,000 | a class or ER diagram's nodes² × edges |
 //! | [`MAX_FLOW_HUBS`] | 40,000 | the sum of its nodes' squared degrees |
 //! | [`MAX_SEQUENCE_CELLS`] | 2,000,000 | a sequence diagram's grid, estimated |
 //! | [`MAX_ART_CELLS`] | 1,000,000 | the art that comes back, and a grid |
@@ -46,26 +47,31 @@
 //!
 //! Ordinary diagrams — 53 of them, the largest a 300-node, 320-edge
 //! flowchart of 620 items and a 300-message sequence diagram: every one
-//! under 10 ms and 20 MB. All are drawn, with the largest at 60% of the
-//! node limit, 40% of the work limit and 5% of the hub limit; the widest
+//! under 10 ms and 20 MB. All are drawn, with the largest at 75% of the
+//! node limit, 60% of the work limit and 5% of the hub limit; the widest
 //! art is 1,255 columns.
 //!
-//! The worst shapes found that pass every limit (times vary by a third
-//! from run to run):
+//! The worst shapes found that pass every limit — nothing that passes
+//! costs more than about a second:
 //!
 //! | shape | time | peak RSS |
 //! |---|---|---|
-//! | left-to-right flowchart, 24 hubs of 20 children in one rank (480 nodes) | 1.3–1.8 s | 90 MB |
-//! | left-to-right flowchart, 250 nodes wired crosswise to 250 more | 0.3–0.6 s | 27 MB |
-//! | left-to-right flowchart, one node with 199 children | 0.2–0.4 s | 25 MB |
-//! | top-down flowchart, 480 nodes in one rank | 0.09 s | 70 MB |
-//! | flowchart at the art limit, 1,005 rows × 995 columns | 0.02 s | 48 MB |
-//! | sequence diagram, 120 participants created one by one | 0.03 s | 50 MB |
-//! | class, state, gantt, mind map, timeline, journey, git graph at 2,000 items | under 0.2 s | under 20 MB |
+//! | class or ER diagram, 200 nodes, 750 relations at random | 1.0–1.1 s | 12 MB |
+//! | class or ER diagram, 125 nodes, 1,850 relations between two halves | 0.9–1.0 s | 15 MB |
+//! | left-to-right flowchart, 19 hubs of 20 children in one rank (380 nodes) | 0.8 s | 56 MB |
+//! | left-to-right flowchart, one node with 199 children | 0.25 s | 25 MB |
+//! | left-to-right flowchart, 200 nodes wired crosswise to 200 more | 0.2 s | 21 MB |
+//! | top-down flowchart, 380 nodes in one rank | 0.04 s | 48 MB |
+//! | flowchart at the art limit, 1,005 rows × 995 columns | 0.01 s | 48 MB |
+//! | sequence diagram, 120 participants created one by one | 0.02 s | 50 MB |
+//! | state diagram at 2,000 items, any shape | 0.1 s | 41 MB |
+//! | gantt, mind map, timeline, journey, kanban, git graph at 2,000 items | under 0.05 s | under 20 MB |
 //! | any family, the parse of 64 KiB | under 0.2 s | under 25 MB |
 //!
 //! and what the limits refuse: one node with 499 children (2.7 s, 108 MB,
-//! by the hub limit; 1,500 children, over a minute); 14 KB of two
+//! by the hub limit; 1,500 children, over a minute); 300 classes or
+//! entities with 1,600 relations at random (4 to 6.5 s, by the relation
+//! work limit); 14 KB of two
 //! 1,000-name `&` lists (a million edges, 1.5 s and 1.8 GB of parse, by the
 //! fan-out limit); class namespaces nested 1,700 deep (1.3 s of parse, by
 //! the nesting limit); the 3,000-participant sequence diagram (by the grid
@@ -132,10 +138,12 @@ pub const MAX_FAN_OUT: usize = MAX_ITEMS;
 
 /// Entities plus relationships, as `merman` counts them for every family:
 /// nodes and edges, participants and messages, tasks, commits (a state
-/// transition counts four, a chart's data point five). Every family but the
-/// flowchart and the sequence diagram is drawn in under 0.2 s and 30 MB at
-/// this many; those two have limits of their own below. The largest
-/// ordinary diagram measured has 620.
+/// transition counts four, a chart's data point five). The families with
+/// no limit of their own below — state, gantt, mind map, timeline, journey,
+/// kanban, packet, git graph — are drawn in 0.1 s and 41 MB at this many,
+/// whatever their shape. It does NOT bound the graph-shaped ones, whose
+/// cost is in how their items are wired: see [`MAX_FLOW_WORK`] and
+/// [`MAX_RELATION_WORK`]. The largest ordinary diagram measured has 620.
 pub const MAX_ITEMS: usize = 2_000;
 
 /// Text the parsed model may hold. The model repeats a label several times
@@ -151,18 +159,19 @@ pub const MAX_NESTING: usize = 64;
 
 /// A flowchart's nodes. Its layout puts every node of a rank side by side,
 /// and what that costs is the widest rank — which is at most all of them:
-/// top-down, 200 KB of working memory a node (480 in one rank, 70 MB);
+/// top-down, 130 KB of working memory a node (380 in one rank, 48 MB);
 /// left-to-right, time (see [`MAX_FLOW_WORK`]). The largest ordinary
-/// flowchart measured has 300.
-pub const MAX_FLOW_NODES: usize = 500;
+/// flowchart measured has 300; at 500 the worst shape found took 1.3 to
+/// 1.8 s, which is why it is not 500.
+pub const MAX_FLOW_NODES: usize = 400;
 
 /// A flowchart's nodes × edges. Left to right, routing an edge costs time
 /// in proportion to the height of the drawing, which is ten rows a node of
 /// its tallest rank: measured, up to 0.9 µs an edge a row, so 9 µs for
 /// each node × edge when every node shares a rank. At this limit that is
-/// 2.2 s by the formula and 1.3 to 1.8 s in the worst shape found. The
-/// largest ordinary flowchart measured is 96,000.
-pub const MAX_FLOW_WORK: usize = 250_000;
+/// 1.4 s by the formula and 0.8 s in the worst shape found. The largest
+/// ordinary flowchart measured is 96,000.
+pub const MAX_FLOW_WORK: usize = 160_000;
 
 /// The sum, over a flowchart's nodes, of the square of each one's edges.
 /// One node with hundreds of children is the cheapest way to build a tall
@@ -171,6 +180,25 @@ pub const MAX_FLOW_WORK: usize = 250_000;
 /// 2,400, an 8 × 8 `&` product to 1,024. At this limit one hub has 199
 /// children (0.2 s).
 pub const MAX_FLOW_HUBS: usize = 40_000;
+
+/// A class or ER diagram's nodes² × edges ([`relation_work`]). These two
+/// are laid out by a layout of their own, whose time on a tangled graph
+/// grows with the square of the classes and with the relations: measured,
+/// 17 to 50 ns for each node² × edge when the relations fall at random,
+/// and next to nothing for a tree or a hub. At this limit that is at most
+/// 1.1 s (200 classes, 750 relations); 300 classes with 1,600 relations,
+/// which every other limit passes, took 4 to 6.5 s. An ordinary large
+/// diagram — 100 classes, 150 relations — is a twentieth of it. A state
+/// diagram needs no such bound: at [`MAX_ITEMS`] it draws in 0.2 s whatever
+/// its shape.
+pub const MAX_RELATION_WORK: usize = 30_000_000;
+
+/// What a class or ER diagram is measured by against
+/// [`MAX_RELATION_WORK`].
+#[must_use]
+pub const fn relation_work(nodes: usize, edges: usize) -> usize {
+    nodes.saturating_mul(nodes).saturating_mul(edges)
+}
 
 /// The grid a sequence diagram may allocate, by [`sequence_cells`]'s
 /// estimate. Its renderer budgets nothing, so this is the limit that stands
@@ -322,6 +350,16 @@ impl Renderer {
             RenderSemanticModel::Flowchart(flow) => {
                 let cost = FlowCost::of(flow);
                 if !cost.fits() {
+                    return Err(Some(Refused::TooLarge));
+                }
+            }
+            RenderSemanticModel::Class(class) => {
+                if relation_work(class.classes.len(), class.relations.len()) > MAX_RELATION_WORK {
+                    return Err(Some(Refused::TooLarge));
+                }
+            }
+            RenderSemanticModel::Er(er) => {
+                if relation_work(er.entities.len(), er.relationships.len()) > MAX_RELATION_WORK {
                     return Err(Some(Refused::TooLarge));
                 }
             }
@@ -619,6 +657,20 @@ mod tests {
         (c.items, c.nesting_depth)
     }
 
+    /// A class or ER diagram's nodes² × edges, as the limit counts it.
+    fn relation_work(src: &str) -> Option<usize> {
+        match parsed(src).model() {
+            RenderSemanticModel::Class(c) => {
+                Some(super::relation_work(c.classes.len(), c.relations.len()))
+            }
+            RenderSemanticModel::Er(e) => Some(super::relation_work(
+                e.entities.len(),
+                e.relationships.len(),
+            )),
+            _ => None,
+        }
+    }
+
     fn flow_cost(src: &str) -> FlowCost {
         let parsed = parsed(src);
         let RenderSemanticModel::Flowchart(flow) = parsed.model() else {
@@ -848,8 +900,8 @@ mod tests {
         for (name, src) in ordinary() {
             assert_eq!(verdict(&src), Ok(()), "{name}");
         }
-        // And there is room above them: half again as many nodes.
-        assert_eq!(verdict(&service_map("TD", 450, 500)), Ok(()));
+        // And there is room above them: a quarter again as many nodes.
+        assert_eq!(verdict(&service_map("TD", 380, 410)), Ok(()));
         // Width is not a limit. This one is nearly a thousand columns.
         let wide = Renderer::new()
             .render(&service_map("TD", 300, 320))
@@ -1076,19 +1128,19 @@ mod tests {
         assert!(drawn(&lonely(MAX_FLOW_NODES)));
         assert!(too_large(&lonely(MAX_FLOW_NODES + 1)));
 
-        // Work: 500 nodes in two ranks, 500 edges; then one edge more.
+        // Work: 400 nodes in two ranks, 400 edges; then one edge more.
         let ranks = |extra: &str| {
             format!(
                 "graph TD\n{}{extra}",
-                each(250, |i| format!(
+                each(200, |i| format!(
                     " a{i}-->b{}\n a{i}-->b{}\n",
-                    (i * 7) % 250,
-                    (i * 13 + 5) % 250
+                    (i * 7) % 200,
+                    (i * 13 + 5) % 200
                 ))
             )
         };
         let at = flow_cost(&ranks(""));
-        assert_eq!((at.nodes, at.work), (500, MAX_FLOW_WORK));
+        assert_eq!((at.nodes, at.work), (400, MAX_FLOW_WORK));
         assert!(at.hubs < MAX_FLOW_HUBS / 10, "{at:?}");
         assert!(drawn(&ranks("")));
         assert!(flow_cost(&ranks(" a0-->a1\n")).work > MAX_FLOW_WORK);
@@ -1106,6 +1158,57 @@ mod tests {
         // took 2.7 s, 1,500 more than a minute.
         assert!(too_large(&fan("LR", 499)));
         assert!(too_large(&fan("LR", 1500)));
+    }
+
+    /// Class and ER diagrams are laid out as graphs too, by a different
+    /// layout with a different cost: 300 classes with 1,600 relations were
+    /// 1,900 items, inside every limit, and 4 to 6.5 s of one core — more
+    /// than the whole document's budget. Their bound is nodes² × edges.
+    ///
+    /// At the limit with a cheap shape (everything related to one class);
+    /// the costly one, relations at random, is only ever refused here.
+    #[test]
+    fn a_class_or_er_diagram_at_its_work_limit_is_drawn_and_one_relation_more_is_not() {
+        let class = |n: usize, e: usize| {
+            format!(
+                "classDiagram\n{}",
+                each(e, |i| format!(" C0 --> C{} : uses\n", 1 + i % (n - 1)))
+            )
+        };
+        let er = |n: usize, e: usize| {
+            format!(
+                "erDiagram\n{}",
+                each(e, |i| format!(" E0 ||--o{{ E{} : has\n", 1 + i % (n - 1)))
+            )
+        };
+        // 200² × 750 is the limit exactly.
+        assert_eq!(200 * 200 * 750, MAX_RELATION_WORK);
+        for diagram in [class, er] {
+            assert_eq!(relation_work(&diagram(200, 750)), Some(MAX_RELATION_WORK));
+            assert!(drawn(&diagram(200, 750)));
+            assert!(relation_work(&diagram(200, 751)) > Some(MAX_RELATION_WORK));
+            assert!(too_large(&diagram(200, 751)));
+        }
+        // The reported shapes: 300 classes or entities, 1,600 relations at
+        // random. And an ordinary large one, a hundred classes with 150
+        // relations among them, is a twentieth of the limit.
+        let mut rng = Lcg(7);
+        let mut pairs = |n: usize, e: usize, line: &dyn Fn(usize, usize) -> String| {
+            each(e, |_| line(rng.below(n), rng.below(n)))
+        };
+        let class_line = |a: usize, b: usize| format!(" C{a} --> C{b} : uses\n");
+        let er_line = |a: usize, b: usize| format!(" E{a} ||--o{{ E{b} : has\n");
+        assert!(too_large(&format!(
+            "classDiagram\n{}",
+            pairs(300, 1600, &class_line)
+        )));
+        assert!(too_large(&format!(
+            "erDiagram\n{}",
+            pairs(300, 1600, &er_line)
+        )));
+        let ordinary = format!("classDiagram\n{}", pairs(100, 150, &class_line));
+        assert!(relation_work(&ordinary) < Some(MAX_RELATION_WORK / 20));
+        assert!(drawn(&ordinary));
     }
 
     #[test]
