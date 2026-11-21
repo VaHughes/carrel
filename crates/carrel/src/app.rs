@@ -4237,6 +4237,8 @@ pub struct Backlinks {
     pub selected: usize,
     /// The query finished — the difference between "none yet" and "none".
     pub done: bool,
+    /// The folder searched, which the rows' paths are shown relative to.
+    pub root: Option<PathBuf>,
 }
 
 /// One row of the forward-links pane: a destination this document points

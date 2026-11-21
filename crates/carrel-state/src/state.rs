@@ -457,11 +457,32 @@ pub fn open_regular(path: &Path) -> std::io::Result<(std::fs::File, u64)> {
 /// As [`open_regular`], and whatever reading returns.
 pub fn read_regular(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
-    let (mut file, len) = open_regular(path)?;
-    let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
-    file.read_to_end(&mut bytes)?;
+    let (file, len) = open_regular(path)?;
+    // The length is a claim, not a size to allocate: a sparse file says
+    // 100 TB and holds nothing, and reserving that aborted carrel before
+    // its first frame. Nothing carrel keeps comes near the limit, so a
+    // file past it is not one of carrel's and is refused unread.
+    if len > MAX_STATE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "too large to be a carrel file, so it was not read",
+        ));
+    }
+    let mut bytes = Vec::new();
+    // A file may grow between the stat and the read; the limit holds.
+    file.take(MAX_STATE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "too large to be a carrel file, so it was not read",
+        ));
+    }
     Ok(bytes)
 }
+
+/// The most [`read_regular`] reads: far above any config, positions file,
+/// notes sidecar or index cache (110,000 indexed files are about 10 MB).
+pub const MAX_STATE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The directory an XDG variable names, or `fallback` under `$HOME`.
 ///
@@ -2274,6 +2295,33 @@ mod tests {
             kind(&dir.path().join("absent")),
             Err(std::io::ErrorKind::NotFound)
         );
+    }
+
+    /// A file's length is a claim: a sparse `config` of 100 TB holds
+    /// nothing, and reserving its length aborted carrel before its first
+    /// frame. Such a file is refused unread, and a save leaves it alone.
+    #[test]
+    fn a_file_claiming_an_absurd_length_is_refused_not_allocated() {
+        let dir = tempfile::tempdir().unwrap();
+        let huge = dir.path().join("positions");
+        let f = std::fs::File::create(&huge).unwrap();
+        if f.set_len(1 << 44).is_err() {
+            eprintln!("SKIP: this filesystem has no sparse files that large");
+            return;
+        }
+        assert_eq!(
+            read_regular(&huge).map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::InvalidData)
+        );
+        // Just past the limit, where an allocation would have succeeded.
+        f.set_len(MAX_STATE_BYTES + 1).unwrap();
+        assert!(read_regular(&huge).is_err());
+        f.set_len(MAX_STATE_BYTES).unwrap();
+        assert_eq!(read_regular(&huge).unwrap().len() as u64, MAX_STATE_BYTES);
+        // And the save that would rewrite it stops rather than replace it.
+        f.set_len(1 << 44).unwrap();
+        assert!(save_position_in(dir.path(), Path::new("/tmp/a.md"), None, 0, 0).is_err());
+        assert_eq!(std::fs::metadata(&huge).unwrap().len(), 1 << 44);
     }
 
     /// The XDG specification: a relative base directory is invalid and is

@@ -1053,8 +1053,15 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         .iter()
         .enumerate()
         .map(|(i, row)| {
+            // Relative to the folder searched: the whole path of a file
+            // two folders away wrapped over two rows of the pane.
+            let shown = bl
+                .root
+                .as_deref()
+                .and_then(|root| row.path.strip_prefix(root).ok())
+                .unwrap_or(&row.path);
             (
-                format!("{}\n{}", row.path.display(), row.line),
+                format!("{}\n{}", shown.display(), row.line),
                 Action::BacklinksOpenAt(i as u32),
             )
         })

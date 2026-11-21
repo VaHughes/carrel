@@ -107,6 +107,23 @@ pub fn walk_blocking(root: &Path) -> (Vec<Entry>, usize) {
     (out, unreadable)
 }
 
+/// Walk synchronously, handing each markdown file to `each` as it is
+/// found, until `each` returns `false`. Returns whether the walk finished.
+///
+/// For a worker thread — **never call this from the paint path.**
+pub fn walk_while(root: &Path, mut each: impl FnMut(Entry) -> bool) -> bool {
+    for res in builder(root).build() {
+        if let Ok(e) = res
+            && e.file_type().is_some_and(|t| t.is_file())
+            && is_markdown(e.path())
+            && !each(entry_of(e.path()))
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Start a background walk. Returns immediately.
 ///
 /// The receiver yields entries as they are found and always ends with

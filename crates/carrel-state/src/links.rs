@@ -202,17 +202,54 @@ fn context_line(src: &str, stem: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Find documents under `root` linking to `target`, on a background thread
-/// that also does the walk: a caller on an event loop must not walk a tree
-/// between two frames.
+/// A running [`spawn_under`] query. Dropping it stops the worker at its
+/// next file, hit or no hit: a walk of a large tree that finds nothing
+/// sends nothing, so a closed channel alone would never be noticed.
+#[derive(Debug)]
+pub struct Query {
+    pub rx: Receiver<Msg>,
+    _alive: std::sync::Arc<()>,
+}
+
+/// Find documents linking to `target`, on a background thread that also
+/// does the walk and searches each file as the walk reaches it: first
+/// under `near` — the document's own folder, where an answer is likeliest
+/// and soonest — then under the rest of `root`.
+///
+/// Walking the whole of `root` before searching any of it said `Looking…`
+/// for twenty seconds from a home directory, and could not be stopped.
 #[must_use]
-pub fn spawn_under(root: PathBuf, target: PathBuf, generation: u64) -> Receiver<Msg> {
+pub fn spawn_under(near: PathBuf, root: PathBuf, target: PathBuf, generation: u64) -> Query {
     let (tx, rx) = mpsc::channel();
+    let alive = std::sync::Arc::new(());
+    let watch = std::sync::Arc::downgrade(&alive);
     std::thread::spawn(move || {
-        let (entries, _) = crate::scan::walk_blocking(&root);
-        search(entries, &target, generation, &tx);
+        let stem = stem_of(&target);
+        let mut sent = 0usize;
+        let mut visit = |e: Entry, skip: Option<&Path>| -> bool {
+            if watch.strong_count() == 0 || sent >= MAX_HITS {
+                return false;
+            }
+            if skip.is_some_and(|near| e.path.starts_with(near)) {
+                return true;
+            }
+            if let Some(hit) = backlink(&e.path, &target, &stem) {
+                if tx.send(Msg::Found(hit, generation)).is_err() {
+                    return false;
+                }
+                sent += 1;
+            }
+            true
+        };
+        if !stem.is_empty() {
+            let whole = crate::scan::walk_while(&near, |e| visit(e, None));
+            if whole && !same_file(&near, &root) {
+                crate::scan::walk_while(&root, |e| visit(e, Some(&near)));
+            }
+        }
+        let _ = tx.send(Msg::Done(generation));
     });
-    rx
+    Query { rx, _alive: alive }
 }
 
 /// Find documents linking to `target`, on a background thread.
@@ -222,51 +259,46 @@ pub fn spawn_under(root: PathBuf, target: PathBuf, generation: u64) -> Receiver<
 #[must_use]
 pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || search(entries, &target, generation, &tx));
+    std::thread::spawn(move || {
+        let stem = stem_of(&target);
+        let mut sent = 0usize;
+        for e in entries {
+            if stem.is_empty() || sent >= MAX_HITS {
+                break;
+            }
+            if let Some(hit) = backlink(&e.path, &target, &stem) {
+                if tx.send(Msg::Found(hit, generation)).is_err() {
+                    return; // the query was abandoned
+                }
+                sent += 1;
+            }
+        }
+        let _ = tx.send(Msg::Done(generation));
+    });
     rx
 }
 
-fn search(entries: Vec<Entry>, target: &Path, generation: u64, tx: &mpsc::Sender<Msg>) {
-    {
-        let stem = stem_of(target);
-        if stem.is_empty() {
-            let _ = tx.send(Msg::Done(generation));
-            return;
-        }
-        let mut sent = 0usize;
-        for e in entries {
-            if sent >= MAX_HITS {
-                break;
-            }
-            // A document is not its own backlink.
-            if same_file(&e.path, target) {
-                continue;
-            }
-            if std::fs::metadata(&e.path).is_ok_and(|m| m.len() > MAX_BYTES) {
-                continue;
-            }
-            let Ok(src) = std::fs::read_to_string(&e.path) else {
-                continue;
-            };
-            // Stage 1: the cheap rejection.
-            if !src.contains(&stem) {
-                continue;
-            }
-            // Stage 2: be sure.
-            if !links_to(&src, &e.path, target, &[]) {
-                continue;
-            }
-            let hit = Backlink {
-                line: context_line(&src, &stem),
-                path: e.path.clone(),
-            };
-            if tx.send(Msg::Found(hit, generation)).is_err() {
-                return; // the query was abandoned
-            }
-            sent += 1;
-        }
-        let _ = tx.send(Msg::Done(generation));
+/// `path` as a backlink to `target`, if it is one.
+fn backlink(path: &Path, target: &Path, stem: &str) -> Option<Backlink> {
+    // A document is not its own backlink.
+    if same_file(path, target) {
+        return None;
     }
+    // Regular files only, and by the handle: a FIFO named `notes.md`
+    // would hold the worker for good.
+    let (file, len) = crate::state::open_regular(path).ok()?;
+    if len > MAX_BYTES {
+        return None;
+    }
+    let src = std::io::read_to_string(std::io::Read::take(file, MAX_BYTES)).ok()?;
+    // Stage 1: the cheap rejection. Stage 2: be sure.
+    if !src.contains(stem) || !links_to(&src, path, target, &[]) {
+        return None;
+    }
+    Some(Backlink {
+        line: context_line(&src, stem),
+        path: path.to_path_buf(),
+    })
 }
 
 #[cfg(test)]
@@ -399,5 +431,67 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].path.ends_with("one.md"));
         assert!(found[0].line.contains("hub"));
+    }
+
+    fn found(q: &Query) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        loop {
+            match q.rx.recv_timeout(std::time::Duration::from_secs(20)) {
+                Ok(Msg::Found(b, _)) => out.push(b.path),
+                Ok(Msg::Done(_)) => return out,
+                Err(e) => panic!("the query never finished: {e}"),
+            }
+        }
+    }
+
+    /// The document's own folder is searched first and the rest of the
+    /// root after it, each file once however the two folders overlap.
+    #[test]
+    fn a_query_under_a_root_answers_from_the_near_folder_first_and_once() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let target = write(&root, "docs/guide.md", "# Guide\n");
+        let sibling = write(&root, "docs/other.md", "see [g](guide.md)\n");
+        let above = write(&root, "README.md", "read [the guide](docs/guide.md)\n");
+        write(&root, "docs/deep/unrelated.md", "guide, but no link\n");
+        let q = spawn_under(root.join("docs"), root.clone(), target.clone(), 0);
+        assert_eq!(found(&q), vec![sibling.clone(), above]);
+        // The root is the near folder: nothing is walked twice.
+        let q = spawn_under(root.join("docs"), root.join("docs"), target, 0);
+        assert_eq!(found(&q), vec![sibling]);
+    }
+
+    /// A FIFO named like a document is passed over, not opened: reading it
+    /// would hold the worker until something wrote to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_like_a_document_does_not_hold_the_query() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let target = write(&root, "guide.md", "# Guide\n");
+        let sibling = write(&root, "other.md", "see [g](guide.md)\n");
+        let fifo = root.join("pipe.md");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("SKIP: mkfifo not available");
+            return;
+        }
+        let q = spawn_under(root.clone(), root, target, 0);
+        assert_eq!(found(&q), vec![sibling]);
+    }
+
+    /// A walk stops at the file its caller says stop at.
+    #[test]
+    fn a_walk_stops_when_told() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            write(d.path(), &format!("n{i}.md"), "x\n");
+        }
+        let mut seen = 0;
+        let whole = crate::scan::walk_while(d.path(), |_| {
+            seen += 1;
+            seen < 3
+        });
+        assert!(!whole && seen == 3, "{whole} {seen}");
     }
 }

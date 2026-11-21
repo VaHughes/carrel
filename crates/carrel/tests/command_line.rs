@@ -214,31 +214,41 @@ fn nothing_after_a_double_dash_is_an_option_without_a_terminal() {
     assert_eq!(r.code, Some(0), "{}", r.stderr);
 }
 
-/// Every single-dash argument was dropped when stdin was a pipe, so a typo
-/// there exited 0. Only what a pager is really handed is ignored.
+/// Whatever a tool hands its pager is ignored on a pipe: a pager that
+/// refuses a flag shows nothing of what was piped to it. Only single-dash
+/// flags; a `--long` option is carrel's own and a typo in one is an error.
 #[test]
-fn only_a_pagers_own_flags_are_ignored_on_a_pipe() {
+fn a_pagers_flags_are_ignored_on_a_pipe_and_a_long_option_is_not() {
     let d = tempfile::tempdir().unwrap();
     for flags in [
         &["-R"][..],
         &["-FRX"][..],
         &["-F", "-R", "-X"][..],
         &["-FRSXMK"][..],
+        &["-N"][..],
+        &["-x4"][..],
+        &["-+F"][..],
+        &["-z"][..],
     ] {
         let args: Vec<&OsStr> = flags.iter().map(|f| os(f)).collect();
         let r = run(d.path(), &args, b"# piped\n\ntext\n");
         assert_eq!(r.code, Some(0), "{flags:?}: {}", r.stderr);
         assert!(r.stdout.contains("piped"), "{flags:?}: {}", r.stdout);
     }
-    for flag in ["-z", "-x", "-Rz", "-plain", "-v"] {
+    for flag in ["--plian", "--zzz"] {
         let r = run(d.path(), &[os(flag)], b"# piped\n\ntext\n");
         assert_eq!(r.code, Some(1), "{flag} was accepted: {}", r.stdout);
-        assert!(
-            r.stderr.contains(&format!("unknown option {flag}")),
-            "{flag}: {}",
-            r.stderr
-        );
+        assert!(r.stderr.contains("unknown option"), "{flag}: {}", r.stderr);
     }
+    // Carrel's own two short options are not a pager's.
+    let r = run(d.path(), &[os("-V")], b"# piped\n");
+    assert!(r.stdout.starts_with("carrel "), "{}", r.stdout);
+    let r = run(d.path(), &[os("-h")], b"# piped\n");
+    assert!(r.stdout.contains("USAGE:"), "{}", r.stdout);
+    // A negative number is a width typed wrong, never a pager's flag.
+    std::fs::write(d.path().join("t.md"), "# t\n").unwrap();
+    let r = run(d.path(), &[os("--plain"), os("t.md"), os("-5")], b"");
+    assert_eq!(r.code, Some(1), "{}", r.stdout);
 }
 
 /// The modes that print a pipe and exit read all of it, whatever its size,

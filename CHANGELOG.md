@@ -4,6 +4,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A config or state file of an absurd size is refused, not read**: a sparse `config`
+  claiming 100 TB used to stop carrel before its first frame.
 - **A one-column table whose last row is empty no longer crashes carrel**: `--plain`,
   `--render`, a pipe and the columns view (`t`) all stopped on it.
 - **The notes list closes on Esc, `q` or `V` in a window too small to show it**; before,
@@ -11,7 +13,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **What links here (`L`) answers in a document opened from the file list**, where it
   said `Looking…` for good, and for a file named bare (`carrel notes.md`), where it said
   nothing linked to a document its sibling linked to. It now looks through the whole
-  folder you are reading in, not only the document's own.
+  folder you are reading in, the document's own folder first, shows each answer as it
+  is found, and stops looking when the pane closes.
 - **A selection dragged to the end of a paragraph survives a live reload** that changed
   the paragraph after it.
 - **A menu that fits above the status row stays above it** wherever it is opened; an empty
@@ -24,9 +27,6 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   `carrel -- -weird.md pattern </dev/null` looked for a file called `pattern`,
   `carrel --plain -- -dash.md` did not open it, and a file called `--no-mouse` or `--diff`
   could not be opened at all.
-- **On a pipe, only a pager's own flags are ignored** (`-R`, `-FRX`: any run of
-  `FRSXMKsinrEeq`). Every single-dash argument used to be dropped there, so
-  `echo x | carrel -z` exited 0; it is an unknown option now, as it is at a terminal.
 - **An error never echoes an argument raw.** An unknown option, a bad width or pattern is
   shown the way a file name is, with an ESC as `\x1b`: `carrel $'--x\e[2J'` cleared the
   screen.

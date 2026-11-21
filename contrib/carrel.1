@@ -809,11 +809,12 @@ option. When stdin is a pipe, the flags a tool hands its pager meaning
 .BR less (1)
 \(em
 .BR \-R ,
-.B \-FRX
-and the like, any run of the letters
-.B FRSXMKsinrEeq
-\(em are ignored; any other unknown option is an error there as it is
-interactively.
+.BR \-FRX ,
+.B \-x4
+and the like, any argument with a single dash \(em are ignored, since a
+pager that refuses a flag shows nothing; an unknown
+.B \-\-long
+option is an error there as it is interactively.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR

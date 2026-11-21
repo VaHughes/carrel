@@ -81,7 +81,7 @@ USAGE:
 
     NO_COLOR is honoured: colours off, weight and emphasis kept.
     Options come first; --diff and --no-diff are the exception and may
-    appear anywhere. `--` ends the options, for a file whose name starts
+    appear anywhere before a `--`. `--` ends the options, for a file whose name starts
     with a dash. On a pipe, the flags a tool hands `less` (-R, -FRX) are
     ignored.
     Exit 1 on an unreadable file, an unknown or misplaced option, a [W]
@@ -201,22 +201,21 @@ fn take_mouse_flag(args: &mut Vec<OsString>) -> bool {
     off
 }
 
-/// The `less` flags the tools that page are known to pass it: git's own
-/// default is `FRX`, systemd's `FRSXMK`, man's `-s`, and the rest are what
-/// people put in `core.pager` and `$PAGER` beside them.
-const PAGER_FLAGS: &[u8] = b"FRSXMKsinrEeq";
-
 /// A flag meant for `less`, arriving from something that thinks it is
-/// talking to one: a dash and a run of [`PAGER_FLAGS`], like `-R` or
-/// `-FRX`. Exactly those — every single-dash argument used to be dropped
-/// when stdin was a pipe, so `echo x | carrel -z` exited 0 where the same
-/// typo at a terminal is an unknown option.
+/// talking to one: a single dash and anything after it, like `-R`, `-FRX`,
+/// `-x4` or `-+F`. Every letter is a `less` option, so no list can tell a
+/// pager's flag from a typo — and a pager that refuses one prints nothing
+/// of what was piped to it, which is worse than ignoring a typo. `--long`
+/// options are carrel's own and are never taken for one, and neither are
+/// its two short ones, `-h` and `-V`.
 ///
 /// Read as bytes: an argument need not be UTF-8.
 fn is_pager_flag(a: &OsStr) -> bool {
-    a.as_encoded_bytes()
-        .strip_prefix(b"-")
-        .is_some_and(|f| !f.is_empty() && f.iter().all(|b| PAGER_FLAGS.contains(b)))
+    a != "-h"
+        && a != "-V"
+        && a.as_encoded_bytes()
+            .strip_prefix(b"-")
+            .is_some_and(|f| !f.is_empty() && !f.starts_with(b"-") && !is_negative_number(a))
 }
 
 /// `-5`: not a flag anyone passes a pager, but a `[W]` typed wrong. It was
@@ -639,7 +638,7 @@ fn stopped_on_stderr(stop: carrel::stream::Stop) -> String {
 /// list the pane said `Looking…` for good.
 #[derive(Default)]
 struct BacklinkScan {
-    rx: Option<Receiver<carrel::links::Msg>>,
+    query: Option<carrel::links::Query>,
     started_for: Option<PathBuf>,
 }
 
@@ -649,22 +648,36 @@ impl BacklinkScan {
 
         // Closed: drop the receiver.
         let Some(_) = app.backlinks.as_ref() else {
-            self.rx = None;
+            self.query = None;
             self.started_for = None;
             return;
         };
         let Some(file) = app.file.clone() else { return };
 
         if self.started_for.as_deref() != Some(file.as_path()) {
-            let root = backlinks_root(&file, app.library_root());
-            self.rx = Some(carrel::links::spawn_under(root, file.clone(), 0));
+            // Both resolved, so a file found under one is recognized under
+            // the other however each was spelled.
+            let real = |p: PathBuf| p.canonicalize().unwrap_or(p);
+            let near = real(own_folder(&file));
+            let root = real(backlinks_root(&file, app.library_root()));
+            if let Some(pane) = app.backlinks.as_mut() {
+                // Another document's rows, when Back or a link moved on
+                // with the pane open.
+                pane.rows.clear();
+                pane.selected = 0;
+                pane.done = false;
+                pane.root = Some(root.clone());
+            }
+            self.query = Some(carrel::links::spawn_under(near, root, file.clone(), 0));
             self.started_for = Some(file);
             return;
         }
 
-        let Some(chan) = self.rx.as_ref() else { return };
+        let Some(query) = self.query.as_ref() else {
+            return;
+        };
         loop {
-            match chan.try_recv() {
+            match query.rx.try_recv() {
                 Ok(carrel::links::Msg::Found(b, _)) => {
                     if let Some(pane) = app.backlinks.as_mut() {
                         pane.rows.push(b);
@@ -674,7 +687,7 @@ impl BacklinkScan {
                     if let Some(pane) = app.backlinks.as_mut() {
                         pane.done = true;
                     }
-                    self.rx = None;
+                    self.query = None;
                     break;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -684,7 +697,7 @@ impl BacklinkScan {
 
     /// Whether an answer is still on its way, so a loop wakes to show it.
     fn busy(&self) -> bool {
-        self.rx.is_some()
+        self.query.is_some()
     }
 }
 
@@ -701,6 +714,11 @@ fn backlinks_root(file: &Path, library: Option<&Path>) -> PathBuf {
     {
         return root.to_path_buf();
     }
+    own_folder(file)
+}
+
+/// The folder `file` is in, `.` for a bare name.
+fn own_folder(file: &Path) -> PathBuf {
     match file.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
