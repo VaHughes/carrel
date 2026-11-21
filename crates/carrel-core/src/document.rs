@@ -3896,15 +3896,16 @@ mod tests {
     /// A document of headings at random levels, some inside quotes and
     /// lists, with or without text between them.
     fn sectioned_source(shape: &[(u8, u8)]) -> String {
+        use std::fmt::Write as _;
         let mut src = String::new();
         for (i, &(level, kind)) in shape.iter().enumerate() {
             let hashes = "#".repeat(usize::from(level));
             match kind {
-                0 => src.push_str(&format!("{hashes} h{i}\n\n")),
-                1 => src.push_str(&format!("{hashes} h{i}\n\nbody {i}\n\n")),
-                2 => src.push_str(&format!("> {hashes} q{i}\n\n")),
-                3 => src.push_str(&format!("- item\n\n  {hashes} l{i}\n\n")),
-                _ => src.push_str(&format!("plain {i}\n\n")),
+                0 => writeln!(src, "{hashes} h{i}\n").unwrap(),
+                1 => writeln!(src, "{hashes} h{i}\n\nbody {i}\n").unwrap(),
+                2 => writeln!(src, "> {hashes} q{i}\n").unwrap(),
+                3 => writeln!(src, "- item\n\n  {hashes} l{i}\n").unwrap(),
+                _ => writeln!(src, "plain {i}\n").unwrap(),
             }
         }
         src

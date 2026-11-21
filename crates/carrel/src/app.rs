@@ -763,6 +763,11 @@ pub struct App {
     pub info: bool,
     /// Scroll within the information card, never within the document.
     pub info_scroll: usize,
+    /// The info card's count of distinct local destinations, taken when the
+    /// card opens and again when the document reloads under it. Counting
+    /// resolves every link against the disk, which a paint must never do —
+    /// and the card is painted every frame it is up.
+    pub info_links: Option<usize>,
     /// Spotlight (`S`): dim every block but the one nearest the centre of
     /// the view. Presentation only — the painter reads it, nothing else.
     pub focus: bool,
@@ -1256,6 +1261,7 @@ impl App {
             theme_cycle: false,
             info: false,
             info_scroll: 0,
+            info_links: None,
             focus: false,
             auto_read: false,
             mtime: None,
@@ -2255,6 +2261,7 @@ impl App {
         self.auto_read = false;
         self.info = false;
         self.info_scroll = 0;
+        self.info_links = None;
         self.forward = None;
         self.backlinks = None;
         self.mark_list = None;
@@ -2414,14 +2421,6 @@ impl App {
             .nodes
             .iter()
             .any(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }));
-        if self.forward.is_some() {
-            // The rows indexed the old parse; re-derive rather than lie.
-            let rows = forward_rows(self);
-            if let Some(f) = self.forward.as_mut() {
-                f.rows = rows;
-                f.selected = f.selected.min(f.rows.len().saturating_sub(1));
-            }
-        }
         // Resolve before laying out: unchanged paragraphs follow edits
         // above them; removed text falls back to a valid source position.
         let held_places = hold.as_ref().map(|h| h.places.clone()).unwrap_or_default();
@@ -2481,6 +2480,19 @@ impl App {
         }
         self.resolve_wikilinks();
         self.find_dead_links();
+        // After the wikilinks, not before: they are kept by link id, and
+        // the ids are this parse's now.
+        if self.forward.is_some() {
+            // The rows indexed the old parse; re-derive rather than lie.
+            let rows = forward_rows(self);
+            if let Some(f) = self.forward.as_mut() {
+                f.rows = rows;
+                f.selected = f.selected.min(f.rows.len().saturating_sub(1));
+            }
+        }
+        if self.info {
+            self.info_links = Some(local_link_count(self));
+        }
         if self.following {
             self.view
                 .scroll_to(&self.doc, &self.layout, u32::MAX, self.text_h());
@@ -2766,8 +2778,9 @@ impl App {
     }
 
     /// Resolve every `[[wikilink]]` target once per document. One directory
-    /// listing plus an in-memory index scan per unique target — cheap, and it
-    /// gives the painter a synchronous answer for `file://` hyperlinks.
+    /// listing and one fold of the index for all of them
+    /// ([`crate::wiki::Resolver`]) — cheap, and it gives the painter a
+    /// synchronous answer for `file://` hyperlinks.
     fn resolve_wikilinks(&mut self) {
         self.wiki.clear();
         let dir = self.doc_dir();
@@ -2776,6 +2789,7 @@ impl App {
             .home_stash
             .as_deref()
             .map_or(&[][..], |h| h.entries.as_slice());
+        let mut pass = crate::wiki::Resolver::new(dir, index);
         for i in 0..self.doc.links.len() {
             let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
             if !self.doc.is_wikilink(id) {
@@ -2786,7 +2800,7 @@ impl App {
             if bare.is_empty() {
                 continue; // [[#Heading]] — in-document, nothing to resolve
             }
-            if let Some(p) = crate::wiki::resolve(bare, dir, index) {
+            if let Some(p) = pass.resolve(bare) {
                 self.wiki.insert(id, p);
             }
         }
@@ -2899,8 +2913,9 @@ impl App {
     }
 
     /// The document-info card's rows: `(label, value)`, derived fresh every
-    /// call from the parse and the counters already kept. Nothing here is
-    /// stored, so nothing here can go stale.
+    /// call from the parse and the counters already kept — all but the
+    /// local link count, which asks the disk and so is taken when the card
+    /// opens ([`Self::info_links`]).
     #[must_use]
     pub fn info_rows(&self) -> Vec<(&'static str, String)> {
         let mut headings = 0usize;
@@ -2921,10 +2936,7 @@ impl App {
         let external = self.doc.links.iter().filter(|l| l.contains("://")).count();
         // Distinct local destinations — the forward pane's own rule, so the
         // two can never disagree about what a link is.
-        let internal = crate::app::forward_rows(self)
-            .iter()
-            .filter(|r| r.target.is_some())
-            .count();
+        let internal = self.info_links.unwrap_or_else(|| local_link_count(self));
         let mut rows = vec![
             (
                 "document",
@@ -4253,7 +4265,7 @@ pub struct Backlinks {
 /// through the same resolver the reader uses, relative links against the
 /// document's own directory — and `None` for anything external, which a
 /// reader that never fetches will show but not open.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwardRow {
     pub dest: String,
     /// The link's visible text, when it has one and differs from the dest.
@@ -4945,6 +4957,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
             Action::InfoToggle => {
                 app.info = !app.info;
                 app.info_scroll = 0;
+                app.info_links = app.info.then(|| local_link_count(app));
                 return Outcome::Redraw;
             }
             Action::FocusToggle => {
@@ -6923,6 +6936,16 @@ fn merge_open_spans(mut spans: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     out
 }
 
+/// How many distinct local destinations the document links to — the
+/// forward pane's own rule, so the two can never disagree about what a
+/// link is.
+fn local_link_count(app: &App) -> usize {
+    forward_rows(app)
+        .iter()
+        .filter(|r| r.target.is_some())
+        .count()
+}
+
 /// Every distinct destination the open document points at, in reading order.
 ///
 /// Resolution is exactly the reader's own rule — wikilinks through
@@ -6930,44 +6953,59 @@ fn merge_open_spans(mut spans: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
 /// fragments stripped — so a row that says it opens really opens. Bare
 /// `#fragment` links are internal navigation, not destinations, and are
 /// skipped; duplicates collapse onto their first occurrence.
+///
+/// One pass over the links and one over the inlines: a page of twenty
+/// thousand distinct links used to compare each against every row before
+/// it and walk the document for each label, half a second a call.
 fn forward_rows(app: &App) -> Vec<ForwardRow> {
     let dir = app.doc_dir();
     let index = app
         .home_stash
         .as_deref()
         .map_or(&[][..], |h| h.entries.as_slice());
+    // For a wikilink this document's own pass could not place: the folder
+    // is listed once for all of them, not once each.
+    let mut pass = crate::wiki::Resolver::new(&dir, index);
+    // Each link's first visible run, found in one walk.
+    let mut first_run: Vec<Option<std::ops::Range<u32>>> = vec![None; app.doc.links.len()];
+    for inl in app.doc.nodes.iter().flat_map(|n| n.inlines.iter()) {
+        if let Some(slot) = inl.link.and_then(|id| first_run.get_mut(id.0 as usize))
+            && slot.is_none()
+        {
+            *slot = Some(inl.doc.clone());
+        }
+    }
+    // A destination written twice resolves to the same place twice, so the
+    // second is a duplicate before the disk is asked anything.
+    let mut asked: std::collections::HashSet<(bool, &str)> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(&str, Option<PathBuf>)> =
+        std::collections::HashSet::new();
     let mut rows: Vec<ForwardRow> = Vec::new();
     for (i, link) in app.doc.links.iter().enumerate() {
         let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
         if link.starts_with('#') {
             continue;
         }
-        let target = if app.doc.is_wikilink(id) {
-            app.wiki
-                .get(&id)
-                .cloned()
-                .or_else(|| crate::wiki::resolve(link, &dir, index))
+        let wikilink = app.doc.is_wikilink(id);
+        if !asked.insert((wikilink, link)) {
+            continue;
+        }
+        let target = if wikilink {
+            app.wiki.get(&id).cloned().or_else(|| pass.resolve(link))
         } else if link.contains("://") {
             None
         } else {
             let bare = link.split(['#', '?']).next().unwrap_or(link);
             (!bare.is_empty()).then(|| crate::links::resolve_local(&dir, bare))
         };
-        if rows
-            .iter()
-            .any(|r| r.dest.as_str() == link.as_ref() && r.target == target)
-        {
+        if !seen.insert((link, target.clone())) {
             continue;
         }
         // The link's first visible run is its label, when that differs from
         // the destination itself.
-        let label = app
-            .doc
-            .nodes
-            .iter()
-            .flat_map(|n| n.inlines.iter())
-            .find(|inl| inl.link == Some(id))
-            .map(|inl| app.doc.text[inl.doc.start as usize..inl.doc.end as usize].to_string())
+        let label = first_run[i]
+            .as_ref()
+            .map(|run| app.doc.text[run.start as usize..run.end as usize].to_string())
             .filter(|t| !t.is_empty() && t.as_str() != &**link);
         rows.push(ForwardRow {
             dest: link.to_string(),
@@ -9378,6 +9416,274 @@ mod tests {
         assert_eq!(
             a.note.as_deref(),
             Some("reloaded — 1 change · c goes to it")
+        );
+    }
+
+    /// `forward_rows` as it was first written: each link compared against
+    /// every row before it, its label found by a walk of the document, a
+    /// missing wikilink resolved with a listing of its own. The oracle.
+    fn forward_rows_one_link_at_a_time(app: &App) -> Vec<ForwardRow> {
+        let dir = app.doc_dir();
+        let index = app
+            .home_stash
+            .as_deref()
+            .map_or(&[][..], |h| h.entries.as_slice());
+        let mut rows: Vec<ForwardRow> = Vec::new();
+        for (i, link) in app.doc.links.iter().enumerate() {
+            let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
+            if link.starts_with('#') {
+                continue;
+            }
+            let target = if app.doc.is_wikilink(id) {
+                app.wiki
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| crate::wiki::resolve(link, &dir, index))
+            } else if link.contains("://") {
+                None
+            } else {
+                let bare = link.split(['#', '?']).next().unwrap_or(link);
+                (!bare.is_empty()).then(|| crate::links::resolve_local(&dir, bare))
+            };
+            if rows
+                .iter()
+                .any(|r| r.dest.as_str() == link.as_ref() && r.target == target)
+            {
+                continue;
+            }
+            // The link's first visible run is its label, when that differs from
+            // the destination itself.
+            let label = app
+                .doc
+                .nodes
+                .iter()
+                .flat_map(|n| n.inlines.iter())
+                .find(|inl| inl.link == Some(id))
+                .map(|inl| app.doc.text[inl.doc.start as usize..inl.doc.end as usize].to_string())
+                .filter(|t| !t.is_empty() && t.as_str() != &**link);
+            rows.push(ForwardRow {
+                dest: link.to_string(),
+                label,
+                target,
+            });
+        }
+        rows
+    }
+
+    /// The ways a document writes a link, to things that exist beside it
+    /// and things that do not.
+    const LINK_FORMS: &[&str] = &[
+        "[one](one.md)",
+        "[again](one.md)",
+        "[one](one.md#part)",
+        "[](one.md)",
+        "[one.md](one.md)",
+        "[two](sub/two.md)",
+        "[gone](gone.md)",
+        "[up](../up.md)",
+        "[spaced](has%20space.md)",
+        "[site](https://example.com/a)",
+        "[site](https://example.com/b)",
+        "[top](#top)",
+        "[[one]]",
+        "[[One]]",
+        "[[one|the first]]",
+        "[[one#part]]",
+        "[[missing]]",
+        "[[missing|named]]",
+        "[[#top]]",
+        "[[far]]",
+        "[ref][r1]",
+        "[other ref][r2]",
+        "<https://example.com/auto>",
+        "![pic](pic.png)",
+        "**[bold *nested*](one.md)**",
+        // The same destination written both ways resolves by two rules.
+        "[plain](one)",
+        "[plain](missing)",
+        "[[https://example.com/a]]",
+    ];
+
+    /// A document of the picked links, in a scratch folder that holds some
+    /// of what they name, opened as a file there.
+    fn linked_app(picks: &[usize], with_index: bool) -> (tempfile::TempDir, App) {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("one.md"), "x").unwrap();
+        std::fs::write(d.path().join("has space.md"), "x").unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub").join("two.md"), "x").unwrap();
+        let mut src = String::from("# Top\n\n");
+        for (i, &pick) in picks.iter().enumerate() {
+            let sep = if i % 3 == 0 { "\n\n" } else { " and " };
+            write!(src, "{}{sep}", LINK_FORMS[pick]).unwrap();
+        }
+        src.push_str("\n\n[r1]: one.md\n[r2]: https://example.com/ref\n");
+        let mut a = App::new("doc.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(d.path().join("doc.md"));
+        if with_index {
+            let far = crate::scan::Entry {
+                path: d.path().join("deep").join("Far.md"),
+                mtime: std::time::SystemTime::UNIX_EPOCH,
+            };
+            a.home_stash = Some(Box::new(Home::new(d.path().to_path_buf(), vec![far])));
+        }
+        a.index_links();
+        (d, a)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(200))]
+
+        /// The forward pane's rows are the same found in one pass or link
+        /// by link — same rows, same order, same labels, same targets.
+        #[test]
+        fn the_forward_rows_are_the_same_found_in_one_pass_or_link_by_link(
+            picks in proptest::collection::vec(0..LINK_FORMS.len(), 0..40),
+            with_index in proptest::prelude::any::<bool>(),
+        ) {
+            let (_d, a) = linked_app(&picks, with_index);
+            proptest::prop_assert_eq!(forward_rows(&a), forward_rows_one_link_at_a_time(&a));
+        }
+    }
+
+    /// **The info card asks the disk when it opens, not when it paints.**
+    ///
+    /// Its local-link count resolves every link, and the card is painted
+    /// every frame it is up: in a folder of thousands of notes a page of
+    /// missing wikilinks froze the reader for as long as the card was open.
+    /// A file that appears while the card is up is counted the next time it
+    /// opens — which is how this can tell that painting did not look.
+    #[test]
+    fn the_info_card_counts_local_links_when_it_opens_not_per_frame() {
+        let links = |a: &App| {
+            a.info_rows()
+                .into_iter()
+                .find(|(label, _)| *label == "links")
+                .map(|(_, value)| value)
+                .unwrap()
+        };
+        // `one.md`, `sub/two.md` and `[[one]]`; `[[missing]]` is not there.
+        let (d, mut a) = linked_app(&[0, 5, 12, 16], false);
+        update(&mut a, Action::InfoToggle);
+        assert_eq!(links(&a), "3 local · 0 external");
+        std::fs::write(d.path().join("missing.md"), "x").unwrap();
+        assert_eq!(links(&a), "3 local · 0 external", "a paint asked the disk");
+        update(&mut a, Action::InfoToggle);
+        update(&mut a, Action::InfoToggle);
+        assert_eq!(
+            links(&a),
+            "4 local · 0 external",
+            "reopened, it looks again"
+        );
+    }
+
+    /// A reload under the open card counts the new document's links.
+    #[test]
+    fn the_info_card_recounts_its_links_when_the_document_reloads() {
+        let (_d, mut a) = linked_app(&[0], false);
+        update(&mut a, Action::InfoToggle);
+        a.reload_from("[one](one.md) and [two](sub/two.md)\n");
+        let rows = a.info_rows();
+        let links = rows.iter().find(|(label, _)| *label == "links").unwrap();
+        assert_eq!(links.1, "2 local · 0 external");
+    }
+
+    /// **The forward pane survives a reload that renumbers the links.**
+    ///
+    /// Resolved wikilinks are kept by link id. The pane re-derived its rows
+    /// before the new parse's wikilinks were resolved, so a link added above
+    /// the others handed each row the target of the one before it.
+    #[test]
+    fn the_forward_pane_follows_a_reload_that_adds_a_link_above() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("one.md"), "x").unwrap();
+        std::fs::write(d.path().join("two.md"), "x").unwrap();
+        let mut a = App::new(
+            "doc.md".into(),
+            Document::parse("[[one]] [[two]]\n"),
+            60,
+            20,
+        );
+        a.file = Some(d.path().join("doc.md"));
+        a.index_links();
+        update(&mut a, Action::ForwardToggle);
+        a.reload_from("[[gone]] [[One]] [[two]]\n");
+        let rows: Vec<(String, Option<PathBuf>)> = a
+            .forward
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| (r.dest.clone(), r.target.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("gone".to_string(), None),
+                ("One".to_string(), Some(d.path().join("one.md"))),
+                ("two".to_string(), Some(d.path().join("two.md"))),
+            ]
+        );
+    }
+
+    /// **Twenty thousand distinct links open the card and the pane at once.**
+    ///
+    /// Both compared every link with every row before it and walked the
+    /// document for each label, and the card did it twice a frame: minutes
+    /// here unoptimized, where this now takes about half a second.
+    #[test]
+    fn a_page_of_distinct_links_does_not_square_them() {
+        let mut src = String::new();
+        for i in 0..20_000 {
+            writeln!(src, "[l{i}](dir/file{i}.md) and [[page{i}]] text").unwrap();
+        }
+        let d = tempfile::tempdir().unwrap();
+        let mut a = App::new("doc.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(d.path().join("doc.md"));
+        a.index_links();
+        let t = std::time::Instant::now();
+        update(&mut a, Action::InfoToggle);
+        for _ in 0..10 {
+            let _ = a.info_lines();
+        }
+        update(&mut a, Action::InfoToggle);
+        update(&mut a, Action::ForwardToggle);
+        let took = t.elapsed();
+        assert_eq!(a.forward.as_ref().unwrap().rows.len(), 40_000);
+        assert!(
+            took < std::time::Duration::from_secs(10),
+            "the card, ten frames of it and the pane took {took:?}"
+        );
+    }
+
+    /// **An index note in a big folder opens without listing it per link.**
+    ///
+    /// Six thousand wikilinks that are not exact names — wrong case, or
+    /// missing — in a folder of six thousand notes. A listing per link, and
+    /// again per link for the card and for the pane, took over a minute
+    /// here unoptimized; one listing per pass takes a twentieth of a second.
+    #[test]
+    fn an_index_note_in_a_big_folder_lists_it_once() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..6000 {
+            std::fs::write(d.path().join(format!("note{i}.md")), "").unwrap();
+        }
+        let mut src = String::new();
+        for i in 0..3000 {
+            writeln!(src, "- [[Note{i}]] and [[gone{i}]]").unwrap();
+        }
+        let mut a = App::new("moc.md".into(), Document::parse(&src), 60, 20);
+        a.file = Some(d.path().join("moc.md"));
+        let t = std::time::Instant::now();
+        a.index_links();
+        update(&mut a, Action::InfoToggle);
+        update(&mut a, Action::InfoToggle);
+        update(&mut a, Action::ForwardToggle);
+        let took = t.elapsed();
+        assert_eq!(a.wiki.len(), 3000, "every wrong-case name was found");
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "resolving the links, the card and the pane took {took:?}"
         );
     }
 

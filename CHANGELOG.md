@@ -6,6 +6,18 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 - **A config or state file of an absurd size is refused, not read**: a sparse `config`
   claiming 100 TB used to stop carrel before its first frame.
+- **A note with thousands of `[[wikilinks]]` opens at once in a folder of thousands of
+  notes.** The folder was listed once per link that was not an exact file name — five
+  seconds to open an index note of 2,000 links beside 8,000 notes — and again for every
+  missing one each time the info card (`I`), the links pane (`l`) or what links here
+  (`L`) asked.
+- **The info card (`I`) and the links pane (`l`) stay quick on a page of tens of
+  thousands of links.** The card counted the links again on every frame it was up, and
+  both took time with the square of them: 20,000 distinct links froze the reader for half
+  a second a frame. The card's local-link count is now taken when it opens and when the
+  document reloads.
+- **The links pane keeps the right targets through a live reload** that adds or removes
+  a `[[wikilink]]` above the others; it showed each row the file of a neighbor.
 - **Collapsing every section (`zM`) of a document with tens of thousands of headings is
   instant**, and so is every resize and reload while they are collapsed. A long
   `git log | carrel` — a heading per commit — froze for seconds on each.

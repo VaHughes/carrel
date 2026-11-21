@@ -170,10 +170,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
 pub fn links_to(src: &str, from: &Path, target: &Path, index: &[Entry]) -> bool {
     let doc = carrel_core::Document::parse(src);
     let dir = from.parent().unwrap_or(Path::new("."));
+    let mut wiki = crate::wiki::Resolver::new(dir, index);
     for (i, link) in doc.links.iter().enumerate() {
         let id = carrel_core::LinkId(u32::try_from(i).unwrap_or(u32::MAX));
         let resolved = if doc.is_wikilink(id) {
-            crate::wiki::resolve(link, dir, index)
+            wiki.resolve(link)
         } else {
             // A relative link, the reader's own rule: relative to the file
             // that carries it. Anything with a scheme is not a local link.
