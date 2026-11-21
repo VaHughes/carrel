@@ -412,8 +412,17 @@ Key facts:
 - **Notes go to the screen that paints them** — `App::set_note` routes between `App::note`
   and `Home::note`.
 - **OSC 8 is a post-draw pass** (ratatui/crossterm have no hyperlink support); it reads the
-  finished frame so overlays and theme colors are respected. URLs are stripped of control
-  characters at collection.
+  finished frame so overlays and theme colors are respected. `settle_links` reads the span's
+  **text and style back off the cells** (one span per run of one style), so the pass prints
+  only what ratatui's cells hold and has no character filter of its own to drift. A
+  destination goes through `ansi::osc8_target` (shared with `--render`): `clip::line`, then
+  percent-encoding to bytes 33-126; a wikilink's path through `ansi::osc8_file_uri`.
+- **A cluster measures what the cells hold** (`carrel_core::cluster_width`): zero for a control
+  character (tab and line break excepted), the soft hyphen, and any cluster of no width (a
+  lone zero-width space or joiner, a bidi control, a BOM, a stray combining mark), all of
+  which `Buffer::set_stringn` drops; and one extra cell per halfwidth voiced mark
+  (U+FF9E/FF9F), which it widens. A minimum of one cell put every later column on the row
+  one off from its paint. Guard: `tests/measure.rs::a_cluster_the_frame_does_not_show_takes_no_column`.
 - **Never call `ratatui_image::Picker::from_query_stdio`** — its query thread steals stdin.
   Font size comes from `TIOCGWINSZ`, protocol from the environment. Pixels never enter the core.
 - **The lightbox is modal.** `App::lightbox` names an image block without moving

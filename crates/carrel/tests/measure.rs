@@ -1466,6 +1466,168 @@ fn a_wide_table_never_paints_over_the_margin_outline() {
     }
 }
 
+/// What the cells of one OSC 8 span hold, read the way a terminal shows
+/// them: a wide glyph owns the cell after it.
+fn cells_of(buf: &Buffer, link: &carrel::render::OscLink) -> String {
+    let mut out = String::new();
+    let mut x = link.x;
+    while x < link.x + link.w {
+        let sym = buf[(x, link.y)].symbol();
+        out.push_str(sym);
+        x += carrel_core::display_width(sym).max(1);
+    }
+    out
+}
+
+/// The OSC 8 pass writes to the terminal directly, beside ratatui, so it must
+/// write exactly what the cells hold and nothing the cells refused. It once
+/// copied the link text out of the document with a filter of its own, and
+/// the bidi overrides and zero-width characters the cells drop went out
+/// inside the hyperlink: a link whose text a bidi terminal reorders, on a
+/// screen where every other row is protected.
+///
+/// Verified to fail with `settle_links` no longer reading the text back.
+#[test]
+fn an_osc8_span_holds_exactly_what_its_cells_hold() {
+    let hostile =
+        "a\u{202E}b\u{200B}c\u{2066}d\u{2069}e\u{61C}f\u{200F}g\u{FEFF}h\u{2060}i\u{200E}j";
+    let src = format!(
+        "see [{hostile} 日本語 e\u{301} \u{2764}\u{FE0F} end](https://example.com/x) after\n\n\
+         | a | b |\n|---|---|\n\
+         | [one {hostile}](https://example.com/1) | [two](https://example.com/2) |\n"
+    );
+    for cols in [200, 60, 24] {
+        let app = app_at(cols, 30, &src);
+        let (buf, painted) = menu_frame(&app, cols, 30);
+        assert!(painted.links.len() >= 3, "{cols}: {:?}", painted.links);
+        for link in &painted.links {
+            assert_eq!(
+                link.text,
+                cells_of(&buf, link),
+                "{cols}: the pass would print something the frame does not show"
+            );
+            assert_eq!(
+                carrel_core::display_width(&link.text),
+                link.w,
+                "{cols}: the text must fill the cells it is printed over: {link:?}"
+            );
+            assert!(
+                !link.text.chars().any(|c| matches!(
+                    c,
+                    '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{200E}'
+                        | '\u{200F}'
+                        | '\u{61C}'
+                        | '\u{200B}'
+                        | '\u{2060}'
+                        | '\u{FEFF}'
+                )),
+                "{cols}: {:?}",
+                link.text
+            );
+        }
+    }
+}
+
+/// A span is repainted in ONE style, so it must cover cells of one style.
+/// A search match inside a link's text lit two of its cells, and the pass
+/// then repainted the whole link in its first cell's colours: the match
+/// vanished from exactly the links it was in.
+///
+/// Verified to fail with `settle_links` no longer dividing a span where the
+/// style changes.
+#[test]
+fn every_osc8_span_is_one_style_from_end_to_end() {
+    use carrel::action::{Action, Direction};
+
+    let mut app = app_at(
+        90,
+        24,
+        "see [the docs here](https://example.com) and more\n",
+    );
+    carrel::app::update(&mut app, Action::SearchOpen(Direction::Forward));
+    carrel::app::paste_input(&mut app, "docs");
+    let (buf, painted) = menu_frame(&app, 90, 24);
+    assert_eq!(
+        painted
+            .links
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>(),
+        ["the ", "docs", " here"],
+        "the link is still wrapped whole, in as many spans as it has styles"
+    );
+    for link in &painted.links {
+        assert_eq!(link.url, "https://example.com");
+        for x in link.x..link.x + link.w {
+            assert_eq!(
+                buf[(x, link.y)].style(),
+                link.style,
+                "{:?}: the pass would repaint column {x} differently",
+                link.text
+            );
+        }
+    }
+}
+
+/// A cluster the frame does not show takes no column in the layout either.
+///
+/// The cells drop every control character and every cluster of no width — a
+/// zero-width space, a bidi override, a byte-order mark, a combining mark
+/// with nothing to combine with — and a halfwidth voiced mark takes a cell of
+/// its own. The layout counted each of the first kind as one cell and the
+/// second as none, so everything after one on its row was hit-tested, and
+/// underlined, and lit as a search match, a column away from where it was
+/// painted. The soft hyphen had this and was fixed alone.
+///
+/// Verified to fail with `cluster_width`'s minimum of one cell restored.
+#[test]
+fn a_cluster_the_frame_does_not_show_takes_no_column() {
+    let odd = [
+        "\u{202E}",
+        "\u{200B}",
+        "\u{2066}",
+        "\u{61C}",
+        "\u{200F}",
+        "\u{FEFF}",
+        "\u{2060}",
+        "\u{200D}",
+        "\u{200C}",
+        "\u{E0041}",
+        "\u{1b}",
+        "\u{9b}",
+        "\u{7f}",
+        "\u{8}",
+        "\u{301}",
+        "\u{AD}",
+        "\u{FFF9}",
+        "\u{34F}",
+        "\u{115F}",
+        "\u{3164}",
+        "\u{180E}",
+        "\u{FF76}\u{FF9E}",
+        "\u{FF9F}",
+        "\u{2764}\u{FE0F}",
+        "日",
+    ];
+    for c in odd {
+        for pre in ["ab", "ab ", "", "日 "] {
+            let src = format!("{pre}{c}cd {c}[LINK](https://example.com) z");
+            let app = app_at(80, 10, &src);
+            let (buf, painted) = menu_frame(&app, 80, 10);
+            let Some(link) = painted.links.first() else {
+                panic!("{c:?} after {pre:?}: no link in {:?}", app.doc.text);
+            };
+            assert_eq!(
+                (buf[(link.x, link.y)].symbol(), link.w),
+                ("L", 4),
+                "{c:?} after {pre:?}: the link is not where the layout says it is"
+            );
+        }
+    }
+}
+
 // --- a block's layout width IS its painted width ---
 
 /// Every block kind, each long enough to bind at any width this suite tries.

@@ -74,20 +74,68 @@ impl Attrs {
 const RESET: &str = "\u{1b}[0m";
 const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
 
-/// The OSC 8 opener for `url`, with control characters stripped out of the
-/// destination.
+/// A link destination in the only form an OSC 8 sequence may carry: bytes
+/// 33–126, everything else percent-encoded. Both hyperlink writers — this
+/// module's and the reader's post-draw pass — come through here, so neither
+/// can hold a policy the other lacks.
 ///
-/// Stripping happens HERE rather than at the call site so that no caller can
-/// forget it — `render.rs`'s OSC pass has its own copy of this policy, and
-/// this collection point had gone without one. It matters because
-/// `CommonMark` entity-decodes link destinations: `[c](&#27;]8;;http://evil)`
-/// reaches `doc.links` holding a raw ESC, which hands the document's author
-/// the rest of the escape sequence, and `&#7;` terminates the OSC early on
-/// xterm-family terminals. Reference definitions (`[r]: <&#27;x>`) decode the
-/// same way.
+/// Two steps, in this order:
+///
+/// 1. [`carrel_state::clip::line`], the rule for what `copy link` puts on the
+///    clipboard, so the destination a terminal opens is the one a copy
+///    carries. It drops every control character — `CommonMark` entity-decodes
+///    destinations, so `[c](&#27;]8;;http://evil)` reaches `doc.links`
+///    holding a raw ESC, and `&#7;` ends the sequence early on xterm-family
+///    terminals — and the bidi overrides and isolates, which belong in no
+///    address and exist in one only to mislead whoever reads it.
+/// 2. Percent-encoding of what is left outside printable ASCII, as UTF-8
+///    bytes. The specification allows nothing else in the field, and it is
+///    what a browser would send for the same address, so `https://例え.jp/ü`
+///    still opens the page it names. A space is encoded too: it is legal in
+///    the field and ends the address in more than one terminal.
+///
+/// `;` and `:` pass: the parameter field is closed by the second `;` this
+/// module writes itself, before the destination starts, so nothing in the
+/// destination can add a parameter.
+#[must_use]
+pub fn osc8_target(url: &str) -> String {
+    use std::fmt::Write as _;
+    let clean = carrel_state::clip::line(url);
+    let mut out = String::with_capacity(clean.len());
+    for b in clean.bytes() {
+        if b.is_ascii_graphic() {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+/// A local path as a `file://` URI for an OSC 8 sequence.
+///
+/// A path is not an address: `#`, `?` and `%` in a file name are the name,
+/// and written bare they would be read as a fragment, a query and an escape.
+/// Everything outside the unreserved set and `/` is encoded, byte for byte,
+/// so a name that is not UTF-8 survives too.
+#[must_use]
+pub fn osc8_file_uri(path: &std::path::Path) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("file://");
+    for &b in path.as_os_str().as_encoded_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+/// The OSC 8 opener for `url`, cleaned by [`osc8_target`] HERE rather than
+/// at the call site so that no caller can forget it.
 fn osc8_open(url: &str) -> String {
-    let url: String = url.chars().filter(|c| !c.is_control()).collect();
-    format!("\u{1b}]8;;{url}\u{1b}\\")
+    format!("\u{1b}]8;;{}\u{1b}\\", osc8_target(url))
 }
 
 /// Render the whole document at `width`, attributes on, colours off.
@@ -346,6 +394,74 @@ mod tests {
             }
             assert!(out.contains("RED"), "the text itself survives: {out:?}");
         }
+    }
+
+    /// Whatever a destination holds, the sequence carries printable ASCII
+    /// and nothing else — and it is `copy link`'s cleaning that decides what
+    /// is dropped, so the two cannot come to disagree about an address.
+    #[test]
+    fn a_hyperlink_destination_is_printable_ascii_whatever_the_document_wrote() {
+        let every_odd: String = (0u32..=0x9f)
+            .chain([0xAD, 0x61C, 0x200B, 0x200E, 0x200F, 0x2028, 0x2060, 0xFEFF])
+            .chain(0x202A..=0x202E)
+            .chain(0x2066..=0x2069)
+            .chain([0xE0001, 0xE0041, 0x65E5])
+            .filter_map(char::from_u32)
+            .collect();
+        for url in [
+            every_odd.as_str(),
+            "https://例え.jp/ü?q=a b#frag",
+            "http://ex.com/\u{202E}gro.elgoog//:sptth",
+            "x\u{1b}]8;id=evil;http://evil\u{7}",
+        ] {
+            let got = osc8_target(url);
+            assert!(
+                got.bytes().all(|b| b.is_ascii_graphic()),
+                "{url:?}: {got:?}"
+            );
+            // Decoded, it is the address the clipboard would get.
+            let mut bytes = Vec::new();
+            let mut rest = got.as_bytes();
+            while let Some((&b, tail)) = rest.split_first() {
+                // A literal `%` in the address is followed by whatever the
+                // author wrote; only this function's own escapes are of
+                // non-graphic bytes, so decode exactly those.
+                let hex = tail.get(..2).and_then(|h| std::str::from_utf8(h).ok());
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(v) if b == b'%' && !v.is_ascii_graphic() => {
+                        bytes.push(v);
+                        rest = &tail[2..];
+                    }
+                    _ => {
+                        bytes.push(b);
+                        rest = tail;
+                    }
+                }
+            }
+            assert_eq!(
+                String::from_utf8(bytes).unwrap(),
+                carrel_state::clip::line(url),
+                "{url:?}"
+            );
+        }
+        assert_eq!(
+            osc8_target("https://例え.jp/ü?q=a b;c:d#f"),
+            "https://%E4%BE%8B%E3%81%88.jp/%C3%BC?q=a%20b;c:d#f"
+        );
+    }
+
+    /// A file name is a name: `#`, `?`, `%` and a space are part of it.
+    #[test]
+    fn a_file_uri_encodes_what_an_address_would_read_as_syntax() {
+        use std::path::Path;
+        assert_eq!(
+            osc8_file_uri(Path::new("/w/my notes/50% off #1?.md")),
+            "file:///w/my%20notes/50%25%20off%20%231%3F.md"
+        );
+        assert_eq!(
+            osc8_file_uri(Path::new("/w/日\u{202E}\u{1b}.md")),
+            "file:///w/%E6%97%A5%E2%80%AE%1B.md"
+        );
     }
 
     #[test]

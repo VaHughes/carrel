@@ -3784,12 +3784,18 @@ fn synchronized<T>(paint: impl FnOnce() -> std::io::Result<T>) -> std::io::Resul
 }
 
 fn emit_osc8(links: &[OscLink]) -> std::io::Result<()> {
-    use ratatui::crossterm::{cursor, queue, style};
-
     if links.is_empty() {
         return Ok(());
     }
-    let mut out = std::io::stdout();
+    write_osc8(&mut std::io::stdout(), links)
+}
+
+/// The bytes of the hyperlink pass. Everything it prints was settled by the
+/// paint: the text is what the cells hold and the destination is printable
+/// ASCII (`render::OscLink`), so nothing here is copied from the document.
+fn write_osc8(out: &mut impl std::io::Write, links: &[OscLink]) -> std::io::Result<()> {
+    use ratatui::crossterm::{cursor, queue, style};
+
     for l in links {
         queue!(
             out,
@@ -3983,6 +3989,56 @@ mod tests {
         // 13%-of-a-core case, now about 2%.
         assert_eq!(rescan_pause(ms(300)), Duration::from_secs(15));
         assert_eq!(rescan_pause(Duration::from_mins(1)), RESCAN_MAX);
+    }
+
+    /// The hyperlink pass is the one place document text reaches the
+    /// terminal beside ratatui, so its bytes are checked as bytes: the text
+    /// is what the frame shows, the destination is printable ASCII, and the
+    /// only escapes are the pass's own.
+    ///
+    /// It filtered `char::is_control` and nothing else, so a bidi override
+    /// in link text went out inside the hyperlink — reordering it in a
+    /// terminal that does bidi — and one in the destination went out raw.
+    #[test]
+    fn the_hyperlink_pass_writes_what_the_frame_shows_and_an_ascii_destination() {
+        let src = "see [link a\u{202E}b\u{200B}c\u{2066}d\u{2069}e\u{61C}f\u{200F}g\u{E0041}h\u{FEFF}p 日本]\
+                   (<http://ex.com/\u{202E}gro.elgoog//:sptth&#27;]8;;x&#7;/ü é;id=1:2>) after\n";
+        let mut app = App::new("t.md".into(), Document::parse(src), 100, 20);
+        app.on_resize(100, 20);
+        let mut painted = Painted::default();
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        t.draw(|f| render::draw_full(f, &app, &mut painted, &mut HashMap::new()))
+            .unwrap();
+        let mut bytes = Vec::new();
+        write_osc8(&mut bytes, &painted.links).unwrap();
+        let out = String::from_utf8(bytes).unwrap();
+
+        let (head, rest) = out.split_once("\x1b]8;;").expect("an opener");
+        assert!(head.starts_with("\x1b["), "a cursor move first: {head:?}");
+        let (url, rest) = rest.split_once("\x1b\\").expect("the opener ends");
+        assert_eq!(
+            url, "http://ex.com/gro.elgoog//:sptth]8;;x/%C3%BC%20%C3%A9;id=1:2",
+            "controls and bidi overrides gone, the rest of the address intact"
+        );
+        let (shown, tail) = rest.split_once("\x1b[0m\x1b]8;;\x1b\\").expect("a closer");
+        assert_eq!(tail, "", "one link, one span");
+        // What is left of the span once its SGR prefix is taken off is text.
+        let text = shown.rsplit_once('m').map_or(shown, |(_, t)| t);
+        assert_eq!(text, "link abcdefg\u{E0041}hp 日本");
+        let link = &painted.links[0];
+        let buf = t.backend().buffer();
+        let mut cells = String::new();
+        let mut x = link.x;
+        while x < link.x + link.w {
+            let sym = buf[(x, link.y)].symbol();
+            cells.push_str(sym);
+            x += carrel_core::display_width(sym).max(1);
+        }
+        assert_eq!(text, cells, "the pass prints the frame's own cells");
+        assert!(
+            !text.chars().any(char::is_control),
+            "no control character in the text: {text:?}"
+        );
     }
 
     /// Re-parsing a growing pipe on every wake was quadratic; a parse now

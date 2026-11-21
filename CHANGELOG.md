@@ -101,6 +101,16 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   or `1.` is that text, not an empty list item; and a URL typed on into `[[…]]` keeps its
   `--`. In any document, a bare URL with an entity in it keeps its hyphens even when the
   paragraph has a dash typed elsewhere.
+- **A link's text and address reach the terminal exactly as the screen shows them.** The
+  hyperlink wrapper around a link carried bidi overrides and zero-width characters that
+  the rest of the screen drops, so a terminal that reorders text could show a link
+  reversed; its address now goes out as plain ASCII with everything else percent-encoded
+  (so `https://例え.jp/ü` still opens), and a note whose file name has a space, `#` or `?`
+  in it opens from a wikilink. A search match or a selection inside a link stays lit.
+- **Invisible characters no longer shift what follows them.** After a zero-width space, a
+  bidi mark, a stray combining mark or a control character on a line, clicks, selections,
+  search highlights and link underlines landed one column to the right of the text for
+  each one; halfwidth katakana with a voiced mark shifted them left.
 - **A Ctrl or Alt chord carrel does not bind does nothing.** It used to act as its bare
   letter outside text inputs: Ctrl-D on the file list opened the folder browser, Ctrl-T
   in the reader switched the table view, Alt-Q closed the document. The chords carrel

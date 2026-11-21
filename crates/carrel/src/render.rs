@@ -75,7 +75,18 @@ use crate::app::{App, Mode, Pane, Screen};
 pub struct OscLink {
     pub x: u16,
     pub y: u16,
+    /// How many cells the span covers on its row.
+    pub w: u16,
+    /// What those cells hold, read back off the buffer by `settle_links`.
+    ///
+    /// Never copied from the document: this pass writes to the terminal
+    /// beside ratatui, and ratatui's cells refuse things a copy would carry
+    /// — the bidi overrides and isolates, the zero-width characters, every
+    /// control. A second filter here would be a second list to keep in step
+    /// with the first; the cells cannot disagree with themselves.
     pub text: String,
+    /// The destination, already in the form the sequence may carry
+    /// ([`crate::ansi::osc8_target`]).
     pub url: String,
     /// The style the cell was actually painted with, read back off the
     /// buffer by `settle_links` once every painter has had its say.
@@ -543,18 +554,64 @@ fn paint_hover(frame: &mut Frame, app: &App, targets: &Targets) {
 ///    the hover modifiers, added after `paint_row` ran, never survived.
 ///    Reading the cell back is exact by construction: it is literally what
 ///    is on screen.
+/// 3. **What they say.** The pass copied the link text out of the document
+///    through a filter of its own, which let through what the cells refuse:
+///    bidi overrides and isolates, zero-width characters. So the one place
+///    document text reaches the terminal beside ratatui was the one place a
+///    link could be shown reordered. The cells' symbols are the text now,
+///    and there is no filter left to fall out of step.
 fn settle_links(frame: &mut Frame, painted: &mut Painted) {
     let Painted { links, targets } = painted;
-    links.retain(|l| {
-        let w = carrel_core::display_width(&l.text);
-        !(l.x..l.x.saturating_add(w)).any(|x| targets.covered_at(x, l.y, Z_OVERLAY))
-    });
+    links
+        .retain(|l| !(l.x..l.x.saturating_add(l.w)).any(|x| targets.covered_at(x, l.y, Z_OVERLAY)));
     let buf = frame.buffer_mut();
-    for l in links.iter_mut() {
-        if let Some(cell) = buf.cell((l.x, l.y)) {
-            l.style = cell.style();
-        }
+    let collected = std::mem::take(links);
+    for l in collected {
+        read_back(buf, l, links);
     }
+}
+
+/// Turn one collected span into what its cells hold: one [`OscLink`] per
+/// run of cells painted alike, since the pass repaints a span in a single
+/// style. A search match or a selection inside a link's text is a second
+/// style in the middle of it, and one style for the whole span erased it.
+///
+/// Read as a terminal shows the row: a wide glyph owns the cell after it,
+/// which the buffer keeps blank.
+fn read_back(buf: &Buffer, link: OscLink, out: &mut Vec<OscLink>) {
+    let end = link.x.saturating_add(link.w);
+    let mut at = link.x;
+    let mut run: Option<OscLink> = None;
+    while at < end {
+        let Some(cell) = buf.cell((at, link.y)) else {
+            break;
+        };
+        let sym = cell.symbol();
+        // A glyph that would run past the span is left to ratatui's own
+        // paint; printing it here would write over the cell beyond.
+        let cells = carrel_core::display_width(sym).max(1);
+        if cells > end - at {
+            break;
+        }
+        let style = cell.style();
+        if run.as_ref().is_none_or(|r| r.style != style) {
+            out.extend(run.take());
+            run = Some(OscLink {
+                x: at,
+                y: link.y,
+                w: 0,
+                text: String::new(),
+                url: link.url.clone(),
+                style,
+            });
+        }
+        if let Some(r) = &mut run {
+            r.text.push_str(sym);
+            r.w += cells;
+        }
+        at += cells;
+    }
+    out.extend(run);
 }
 
 fn paint_tiny_modal(frame: &mut Frame, app: &App, targets: &mut Targets) -> bool {
@@ -2268,36 +2325,30 @@ fn paint_row(
                 // gets a file:// URI when the open-time resolution found the
                 // note, and nothing at all when it didn't — a terminal cannot
                 // click a name.
-                let raw = if app.doc.is_wikilink(id) {
+                let url = if app.doc.is_wikilink(id) {
                     match app.wiki.get(&id) {
-                        Some(p) => format!("file://{}", p.display()),
+                        Some(p) => crate::ansi::osc8_file_uri(p),
                         None => continue,
                     }
                 } else {
-                    app.doc.links[id.0 as usize].to_string()
+                    // Nothing a hostile destination holds can reach the
+                    // terminal as anything but printable ASCII.
+                    crate::ansi::osc8_target(&app.doc.links[id.0 as usize])
                 };
-                // Strip control characters so a hostile URL cannot smuggle
-                // escape sequences into the terminal through the OSC wrapper,
-                // and skip absurd URLs outright — the OSC pass re-emits every
+                // Skip absurd URLs outright — the OSC pass re-emits every
                 // frame, and terminals cap near 2 KiB anyway.
-                let url: String = raw.chars().filter(|c| !c.is_control()).collect();
-                if url.len() > 2048 {
+                if url.is_empty() || url.len() > 2048 {
                     continue;
                 }
-                // The TEXT is sanitised too, not just the URL: the OSC pass
-                // prints it raw to stdout, outside ratatui's control-character
-                // filtering, so a hostile document could otherwise smuggle
-                // escapes through the link text itself.
-                let text: String = app.doc.text[clamped.start as usize..clamped.end as usize]
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .collect();
                 links.push(OscLink {
                     x: x0,
                     y,
-                    text,
+                    w,
+                    // Both read back by `settle_links`, after hover and the
+                    // overlays: the text is whatever the cells end up
+                    // holding, never a second copy of the document's.
+                    text: String::new(),
                     url,
-                    // Stamped by `settle_links` after hover and the overlays.
                     style: Style::default(),
                 });
             }

@@ -83,22 +83,47 @@ pub const CHUNK_BYTES: u32 = 64 * 1024;
 /// printable ASCII in anything but one cell.
 pub type WidthFn = dyn Fn(&str) -> u16 + Send + Sync;
 
-/// The default measurement: UAX #29 clusters, UAX #11 widths, minimum one cell.
+/// The default measurement: UAX #29 clusters, UAX #11 widths — and **zero
+/// for a cluster that is drawn as nothing**.
 ///
-/// `.max(1)` matches Helix's `grapheme_width` and keeps an ill-formed cluster
-/// occupying a cell rather than vanishing.
+/// A cluster measures what a frontend's cells will hold, or every position
+/// after it on the row is hit-tested, underlined and highlighted a column
+/// from where it is painted. Three kinds are drawn as nothing, and a
+/// terminal cell buffer refuses all three:
 ///
-/// The one exception is the soft hyphen (U+00AD), which is zero cells: it
-/// is invisible where the text does not break at it, and the frontend draws
-/// the hyphen where it does. Counted as a cell, every character after one on
-/// a row was hit-tested a column right of where it is painted, because the
-/// terminal frontend paints it as nothing.
+/// - the soft hyphen (U+00AD), invisible where the text does not break at
+///   it; the frontend draws the hyphen where it does;
+/// - a control character (C0, DEL, C1), which a frontend must never pass on.
+///   A tab and a line break keep their one cell: the tab is the synthetic
+///   cell boundary of a table row and paints as a space, and a line break
+///   ends a row before it is ever measured as part of one;
+/// - a cluster of no width at all: a zero-width space or joiner standing
+///   alone, a bidi mark, override or isolate, a byte-order mark, a
+///   combining mark with nothing to combine with.
+///
+/// These once measured one cell (`.max(1)`, Helix's `grapheme_width`), which
+/// is right for an editor that shows a placeholder and wrong for a reader
+/// whose cells drop them.
+///
+/// The halfwidth katakana voiced marks (U+FF9E, U+FF9F) go the other way:
+/// UAX #11 calls them zero-width, terminals give each a cell, and so does
+/// the cell buffer.
 #[must_use]
 pub fn cluster_width(g: &str) -> u16 {
-    if g == "\u{AD}" {
+    if let &[b] = g.as_bytes() {
+        return u16::from(!b.is_ascii_control() || b == b'\t' || b == b'\n');
+    }
+    if g == "\r\n" {
+        return 1;
+    }
+    if g == "\u{AD}" || g.chars().any(char::is_control) {
         return 0;
     }
-    u16::try_from(UnicodeWidthStr::width(g)).unwrap_or(1).max(1)
+    let voiced = g
+        .chars()
+        .filter(|c| matches!(c, '\u{FF9E}' | '\u{FF9F}'))
+        .count();
+    u16::try_from(UnicodeWidthStr::width(g).saturating_add(voiced)).unwrap_or(1)
 }
 
 /// Display width of a string, measured cluster by cluster.
