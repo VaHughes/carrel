@@ -32,12 +32,6 @@ ratatui.workspace       = true
 ratatui-image.workspace = true
 signal-hook.workspace = true
 
-# `O_NONBLOCK` for opening an image path, so a FIFO swapped in after the
-# check cannot block the decoder in open(2). Already in the tree through
-# crossterm and signal-hook; this only names it.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 # Dev-only. The resize invariant holds over `scroll x width x height`, a space
 # no hand-written example set covers.
 [dev-dependencies]

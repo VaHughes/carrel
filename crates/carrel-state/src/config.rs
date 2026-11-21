@@ -111,7 +111,7 @@ pub struct Config {
 #[must_use]
 pub fn load_all_in(dir: &Path) -> Config {
     parse_all(&readable_lines(
-        &std::fs::read(dir.join("config")).unwrap_or_default(),
+        &crate::state::read_regular(&dir.join("config")).unwrap_or_default(),
     ))
 }
 
@@ -141,7 +141,7 @@ fn readable_lines(bytes: &[u8]) -> String {
 /// this run; it is only not remembered (the rule `marginalia::save_in`
 /// already follows).
 fn existing_text(path: &Path) -> std::io::Result<String> {
-    match std::fs::read(path) {
+    match crate::state::read_regular(path) {
         Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -238,12 +238,7 @@ fn flag(v: &str, default: bool) -> bool {
 /// `$XDG_CONFIG_HOME/carrel`, else `~/.config/carrel`.
 #[must_use]
 pub fn config_dir() -> Option<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(x).join("carrel"));
-    }
-    std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(|h| PathBuf::from(h).join(".config").join("carrel"))
+    Some(crate::state::base_dir("XDG_CONFIG_HOME", &[".config"])?.join("carrel"))
 }
 
 #[must_use]

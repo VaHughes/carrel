@@ -142,12 +142,7 @@ pub fn spawn(root: &Path) -> Receiver<Msg> {
 /// `$XDG_CACHE_HOME/carrel`, else `~/.cache/carrel`.
 #[must_use]
 pub fn cache_dir() -> Option<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(x).join("carrel"));
-    }
-    std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(|h| PathBuf::from(h).join(".cache").join("carrel"))
+    Some(crate::state::base_dir("XDG_CACHE_HOME", &[".cache"])?.join("carrel"))
 }
 
 /// The most `index-*` files kept. Same shape and the same reasoning as
@@ -245,7 +240,12 @@ pub fn save_cache(root: &Path, entries: &[Entry]) {
 /// cache is a hint, never truth** — the live walk is what decides what exists.
 #[must_use]
 pub fn load_cache_in(dir: &Path, root: &Path) -> Vec<Entry> {
-    let Ok(text) = std::fs::read_to_string(dir.join(cache_name(root))) else {
+    // Through `read_regular`: a FIFO where the cache should be must not
+    // hold the first frame.
+    let Some(text) = crate::state::read_regular(&dir.join(cache_name(root)))
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+    else {
         return Vec::new();
     };
     text.lines()

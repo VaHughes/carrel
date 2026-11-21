@@ -30,6 +30,13 @@ categories = ["text-processing"]
 carrel-core = { path = "../carrel-core", version = "=2026.10.21" }
 ignore.workspace = true
 
+# `O_NONBLOCK`, whose value differs by platform: `state::open_regular` opens
+# a config, state or image file without blocking on a FIFO left in its
+# place. Already in the tree through crossterm and signal-hook; this only
+# names it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true

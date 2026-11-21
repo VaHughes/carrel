@@ -396,24 +396,10 @@ pub fn image_blocks(doc: &Document) -> Vec<BlockIdx> {
 /// FIFO with no writer blocks forever: `![pipe](p.png)` stalled the worker,
 /// every image after it never arrived, and each live reload stranded one
 /// more thread in open(2) — thirteen after twelve reloads. The same trap
-/// `app::check_document_size` closes for documents. The open is
-/// non-blocking and the check is on the OPENED handle, so a regular file
-/// swapped for a FIFO between a stat and the open cannot block either; a
-/// regular file ignores `O_NONBLOCK`.
+/// `app::check_document_size` closes for documents, closed by the one
+/// helper config and state files are read through.
 fn open_regular(path: &Path) -> Result<(std::fs::File, u64), String> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(libc::O_NONBLOCK);
-    }
-    let file = opts.open(path).map_err(|e| e.to_string())?;
-    let meta = file.metadata().map_err(|e| e.to_string())?;
-    if !meta.is_file() {
-        return Err("not a regular file, so it was not read".into());
-    }
-    Ok((file, meta.len()))
+    carrel_state::state::open_regular(path).map_err(|e| e.to_string())
 }
 
 /// Decode one file within the caps. Blocking — worker-thread only.

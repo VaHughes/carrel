@@ -164,7 +164,6 @@ dependencies = [
  "carrel-state",
  "criterion",
  "image",
- "libc",
  "merman",
  "merman-ascii",
  "merman-core",
@@ -197,6 +196,7 @@ version = "2026.10.21"
 dependencies = [
  "carrel-core",
  "ignore",
+ "libc",
  "proptest",
  "tempfile",
 ]

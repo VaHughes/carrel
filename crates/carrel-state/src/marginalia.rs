@@ -149,11 +149,22 @@ fn decode(text: &str, key: &str) -> io::Result<Vec<Annotation>> {
         .collect()
 }
 
+/// `read_to_string`, refusing anything that is not a regular file rather
+/// than blocking on it: a FIFO where a sidecar should be hung the open.
+fn read_sidecar(path: &Path) -> io::Result<String> {
+    String::from_utf8(crate::state::read_regular(path)?).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        )
+    })
+}
+
 /// Load this document's sidecar and reanchor against its current display text.
 /// A missing sidecar is empty; all other read and format errors propagate.
 pub fn load_in(dir: &Path, file: &Path, text: &str) -> io::Result<Vec<Annotation>> {
     let (path, key) = identity(dir, file)?;
-    let saved = match std::fs::read_to_string(path) {
+    let saved = match read_sidecar(&path) {
         Ok(saved) => saved,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
@@ -169,7 +180,7 @@ pub fn load_in(dir: &Path, file: &Path, text: &str) -> io::Result<Vec<Annotation
 /// Existing malformed data is never overwritten by this writer.
 pub fn save_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Result<()> {
     let (path, key) = identity(dir, file)?;
-    match std::fs::read_to_string(&path) {
+    match read_sidecar(&path) {
         Ok(existing) => {
             decode(&existing, &key)?;
         }

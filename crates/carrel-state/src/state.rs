@@ -319,6 +319,80 @@ fn unescape_path(s: &str) -> PathBuf {
     }
 }
 
+/// Open `path` for reading, only if it is a regular file, and without ever
+/// blocking; the second value is its length.
+///
+/// open(2) on a FIFO with no writer blocks forever, and it reports length
+/// zero, so no size check stops it: a FIFO at the config path, or where
+/// `positions` should be, froze startup on a blank screen that no key could
+/// leave. Everything carrel reads that it did not choose to read as a
+/// document — config, state, the index cache, an image — comes through
+/// here. The open is non-blocking and the check is on the OPENED handle, so
+/// a regular file swapped for a FIFO between a stat and the open cannot
+/// block either; a regular file ignores `O_NONBLOCK`.
+///
+/// # Errors
+///
+/// Whatever opening it returns, and `InvalidInput` for anything that is not
+/// a regular file.
+pub fn open_regular(path: &Path) -> std::io::Result<(std::fs::File, u64)> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = opts.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file, so it was not read",
+        ));
+    }
+    Ok((file, meta.len()))
+}
+
+/// `std::fs::read`, through [`open_regular`].
+///
+/// # Errors
+///
+/// As [`open_regular`], and whatever reading returns.
+pub fn read_regular(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let (mut file, len) = open_regular(path)?;
+    let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// The directory an XDG variable names, or `fallback` under `$HOME`.
+///
+/// The one place each base directory is resolved. A value that is empty OR
+/// RELATIVE is ignored, as the XDG Base Directory specification requires:
+/// `XDG_STATE_HOME=state` used to be honored, so carrel read and wrote its
+/// config, positions and cache inside whatever folder it was started in —
+/// which is the folder being read, and somebody else's to fill. A relative
+/// `HOME` is ignored for the same reason.
+#[must_use]
+pub fn base_dir(var: &str, fallback: &[&str]) -> Option<PathBuf> {
+    base_dir_from(std::env::var_os(var), std::env::var_os("HOME"), fallback)
+}
+
+fn base_dir_from(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    fallback: &[&str],
+) -> Option<PathBuf> {
+    let absolute = |v: Option<std::ffi::OsString>| v.map(PathBuf::from).filter(|p| p.is_absolute());
+    absolute(xdg).or_else(|| {
+        let mut dir = absolute(home)?;
+        dir.extend(fallback);
+        Some(dir)
+    })
+}
+
 /// A state file's bytes; a file that is not there yet is empty.
 ///
 /// **Any other failure is an error, and a save stops at it.** Every save
@@ -327,7 +401,7 @@ fn unescape_path(s: &str) -> PathBuf {
 /// being saved. `marginalia::save_in` refuses for the same reason. The
 /// callers drop the error, so the refusal is quiet.
 fn read_state(path: &Path) -> std::io::Result<Vec<u8>> {
-    match std::fs::read(path) {
+    match read_regular(path) {
         Ok(b) => Ok(b),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e),
@@ -705,12 +779,7 @@ fn found(doc: &carrel_core::Document, k: Kept) -> Option<i64> {
 /// `$XDG_STATE_HOME/carrel`, else `~/.local/state/carrel`.
 #[must_use]
 pub fn state_dir() -> Option<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(x).join("carrel"));
-    }
-    std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(|h| PathBuf::from(h).join(".local").join("state").join("carrel"))
+    Some(base_dir("XDG_STATE_HOME", &[".local", "state"])?.join("carrel"))
 }
 
 /// Has this reader ever remembered a reading position?
@@ -781,7 +850,7 @@ fn parse_line(line: &str) -> Option<Entry> {
 /// are the caller's to drop — this layer does not touch the disk to check.
 #[must_use]
 pub fn recent_in(dir: &Path) -> Vec<Entry> {
-    let Ok(bytes) = std::fs::read(dir.join("positions")) else {
+    let Ok(bytes) = read_regular(&dir.join("positions")) else {
         return Vec::new();
     };
     let mut v: Vec<Entry> = parse(&bytes).collect();
@@ -808,7 +877,7 @@ fn now() -> u64 {
 /// is `None` — never an error.
 #[must_use]
 pub fn load_position_in(dir: &Path, file: &Path) -> Option<Place> {
-    let bytes = std::fs::read(dir.join("positions")).ok()?;
+    let bytes = read_regular(&dir.join("positions")).ok()?;
     let k = key(file);
     parse(&bytes).find(|e| e.path == k).map(|e| e.place)
 }
@@ -896,7 +965,7 @@ pub fn save_position_in(
 /// same document reached two ways" means.
 #[must_use]
 pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<Place> {
-    let Ok(bytes) = std::fs::read(dir.join("bookmarks")) else {
+    let Ok(bytes) = read_regular(&dir.join("bookmarks")) else {
         return Vec::new();
     };
     // Compared escaped, so one `escape_path` answers the whole file rather
@@ -1004,7 +1073,7 @@ const FOLD_CAP: usize = 500;
 /// per line, the path first, then one escaped key per TAB-separated field.
 #[must_use]
 pub fn load_folds_in(dir: &Path, file: &Path) -> Vec<String> {
-    let Ok(bytes) = std::fs::read(dir.join("folds")) else {
+    let Ok(bytes) = read_regular(&dir.join("folds")) else {
         return Vec::new();
     };
     let k = escape_path(&key(file));
@@ -1920,6 +1989,182 @@ mod tests {
 
     /// A FIFO where the config should be: the writability probe opened it
     /// for writing and blocked with no reader, freezing a theme change.
+    /// Run `f` on a thread and give it five seconds. `None` is a hang; the
+    /// FIFO is then opened for writing so the stuck thread can finish.
+    #[cfg(unix)]
+    fn bounded<T: Send + 'static>(
+        fifo: &Path,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(5)).ok();
+        if got.is_none() {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(fifo);
+        }
+        got
+    }
+
+    #[cfg(unix)]
+    fn mkfifo(path: &Path) {
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    /// A FIFO where a state file should be froze startup: every read here
+    /// was `std::fs::read`, which blocks in open(2) until a writer comes.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_where_a_state_file_should_be_is_not_read_and_does_not_block() {
+        use std::os::unix::fs::FileTypeExt as _;
+        let doc = Path::new("/tmp/x.md");
+        for name in ["positions", "bookmarks", "folds"] {
+            let dir = tempfile::tempdir().unwrap();
+            let fifo = dir.path().join(name);
+            mkfifo(&fifo);
+            let d = dir.path().to_path_buf();
+            let read = bounded(&fifo, move || {
+                (
+                    recent_in(&d).len(),
+                    load_position_in(&d, doc).is_some(),
+                    load_marks_in(&d, doc).len(),
+                    load_folds_in(&d, doc).len(),
+                )
+            });
+            assert_eq!(read, Some((0, false, 0, 0)), "{name}: reading blocked");
+            // And a save neither blocks nor replaces what it could not read.
+            let d = dir.path().to_path_buf();
+            let saved = bounded(&fifo, move || {
+                let _ = save_position_in(&d, doc, Some(P(7)), 500, 100);
+                let _ = save_marks_in(&d, doc, &[P(3)]);
+                let _ = save_folds_in(&d, doc, &["a".to_string()]);
+            });
+            assert_eq!(saved, Some(()), "{name}: saving blocked");
+            assert!(
+                std::fs::symlink_metadata(&fifo)
+                    .unwrap()
+                    .file_type()
+                    .is_fifo()
+            );
+        }
+    }
+
+    /// The same trap in the three stores that are not in this file: the
+    /// config, the index cache, and a document's notes.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_where_config_cache_or_notes_should_be_does_not_block() {
+        // Swap the one file a writer left under `dir` for a FIFO.
+        fn fifo_in_place_of_the_file_under(dir: &Path) -> PathBuf {
+            let mut stack = vec![dir.to_path_buf()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(&d).unwrap().flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else {
+                        std::fs::remove_file(&p).unwrap();
+                        mkfifo(&p);
+                        return p;
+                    }
+                }
+            }
+            panic!("the writer wrote nothing under {}", dir.display());
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        crate::config::save_theme_in(dir.path(), "nord").unwrap();
+        let fifo = fifo_in_place_of_the_file_under(dir.path());
+        let d = dir.path().to_path_buf();
+        let got = bounded(&fifo, move || {
+            let theme = crate::config::load_all_in(&d).theme;
+            (theme, crate::config::save_theme_in(&d, "dusk").is_err())
+        });
+        assert_eq!(got, Some((None, true)), "config");
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = Path::new("/some/root");
+        let entry = crate::scan::Entry {
+            path: PathBuf::from("/some/root/a.md"),
+            mtime: std::time::SystemTime::UNIX_EPOCH,
+        };
+        crate::scan::save_cache_in(dir.path(), root, &[entry]);
+        assert_eq!(crate::scan::load_cache_in(dir.path(), root).len(), 1);
+        let fifo = fifo_in_place_of_the_file_under(dir.path());
+        let d = dir.path().to_path_buf();
+        let got = bounded(&fifo, move || crate::scan::load_cache_in(&d, root).len());
+        assert_eq!(got, Some(0), "index cache");
+
+        let dir = tempfile::tempdir().unwrap();
+        let doc = Path::new("/some/root/a.md");
+        crate::marginalia::save_in(dir.path(), doc, &[]).unwrap();
+        let fifo = fifo_in_place_of_the_file_under(dir.path());
+        let d = dir.path().to_path_buf();
+        let got = bounded(&fifo, move || {
+            (
+                crate::marginalia::load_in(&d, doc, "text").is_err(),
+                crate::marginalia::save_in(&d, doc, &[]).is_err(),
+            )
+        });
+        assert_eq!(got, Some((true, true)), "notes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_regular_file_is_opened_for_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plain");
+        std::fs::write(&file, "text").unwrap();
+        assert_eq!(read_regular(&file).unwrap(), b"text");
+        assert_eq!(open_regular(&file).unwrap().1, 4);
+        let kind = |p: &Path| read_regular(p).map_err(|e| e.kind());
+        assert_eq!(kind(dir.path()), Err(std::io::ErrorKind::InvalidInput));
+        assert_eq!(
+            kind(Path::new("/dev/zero")),
+            Err(std::io::ErrorKind::InvalidInput)
+        );
+        assert_eq!(
+            kind(&dir.path().join("absent")),
+            Err(std::io::ErrorKind::NotFound)
+        );
+    }
+
+    /// The XDG specification: a relative base directory is invalid and is
+    /// ignored. Honored, it put carrel's state in the folder being read.
+    #[test]
+    fn a_relative_or_empty_base_directory_is_ignored() {
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        let fallback = &[".local", "state"];
+        let home = PathBuf::from("/home/u/.local/state");
+        assert_eq!(
+            base_dir_from(os("/x/state"), os("/home/u"), fallback),
+            Some(PathBuf::from("/x/state"))
+        );
+        for bad in ["state", "./state", "../state", ""] {
+            assert_eq!(
+                base_dir_from(os(bad), os("/home/u"), fallback),
+                Some(home.clone()),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(base_dir_from(None, os("/home/u"), fallback), Some(home));
+        // Nowhere absolute to fall back to: nothing is remembered.
+        for bad_home in [None, os(""), os("u"), os(".")] {
+            assert_eq!(base_dir_from(os("state"), bad_home, fallback), None);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_fifo_target_is_refused_without_blocking() {

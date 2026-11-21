@@ -45,15 +45,7 @@ pub struct Colors {
 /// resolution order [`crate::state`] uses for carrel's own state.
 #[must_use]
 pub fn state_dir() -> Option<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(x).join("omarchy"));
-    }
-    std::env::var_os("HOME").filter(|v| !v.is_empty()).map(|h| {
-        PathBuf::from(h)
-            .join(".local")
-            .join("state")
-            .join("omarchy")
-    })
+    Some(carrel_state::state::base_dir("XDG_STATE_HOME", &[".local", "state"])?.join("omarchy"))
 }
 
 /// The active theme's palette file. `current` is a symlink Omarchy swaps, so
@@ -74,7 +66,10 @@ pub fn path() -> Option<PathBuf> {
 /// be synthesised from anything else.
 #[must_use]
 pub fn load() -> Option<Colors> {
-    parse(&std::fs::read_to_string(path()?).ok()?)
+    // Polled once a second while the desktop palette is worn, so it must
+    // never block: `read_regular` refuses a FIFO left where the file was.
+    let bytes = carrel_state::state::read_regular(&path()?).ok()?;
+    parse(std::str::from_utf8(&bytes).ok()?)
 }
 
 /// `#rrggbb`, `rrggbb`, or either in quotes, to `0xRRGGBB`.
