@@ -497,3 +497,58 @@ fn a_reader_showing_older_text_leaves_the_others_bookmarks_as_written() {
         ["Brand", "First", "Second", "Third", "Fourth"]
     );
 }
+
+/// A file with nowhere to keep its bookmarks — no home directory to hold
+/// state — is a save that failed. It said `bookmark 1 of 1` as if kept. A
+/// piped document, which keeps its bookmarks in memory by design, does not
+/// complain.
+#[test]
+fn a_bookmark_with_no_folder_to_keep_it_in_says_so() {
+    let src = "# One\n\ntext\n";
+    let mut a = App::new("t.md".into(), carrel_core::Document::parse(src), 60, 20);
+    a.file = Some("t.md".into());
+    update(&mut a, Action::MarkToggle);
+    let note = a.note.clone().unwrap_or_default();
+    assert!(note.contains("not saved"), "{note}");
+    assert_eq!(a.marks.len(), 1, "it is still set for the session");
+
+    let mut piped = App::new("(stdin)".into(), carrel_core::Document::parse(src), 60, 20);
+    update(&mut piped, Action::MarkToggle);
+    let note = piped.note.clone().unwrap_or_default();
+    assert!(!note.contains("not saved"), "{note}");
+}
+
+/// A setting changed while the config cannot be written says so, and the
+/// settings pane stops reading `saved in …`.
+#[cfg(unix)]
+#[test]
+fn a_setting_that_could_not_be_written_says_so() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if std::fs::write(cfg.join("probe"), "x").is_ok() {
+        eprintln!("SKIP: this user writes to a read-only folder");
+        return;
+    }
+    let mut a = App::new("t.md".into(), carrel_core::Document::parse("# T\n"), 60, 20);
+    a.config_dir = Some(cfg.clone());
+    for act in [
+        Action::HintsToggle,
+        Action::BreadcrumbToggle,
+        Action::MeasureStep(1),
+    ] {
+        a.note = None;
+        update(&mut a, act);
+        let note = a.note.clone().unwrap_or_default();
+        assert!(note.contains("not saved"), "{act:?}: {note}");
+        assert!(a.setting_unsaved, "{act:?}");
+    }
+    // The control: a folder that takes the write says nothing of the kind.
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o700)).unwrap();
+    a.note = None;
+    update(&mut a, Action::HintsToggle);
+    assert!(!a.note.clone().unwrap_or_default().contains("not saved"));
+    assert!(!a.setting_unsaved);
+}

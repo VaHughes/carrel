@@ -787,7 +787,11 @@ fn paint_settings(frame: &mut Frame, app: &App, targets: &mut Targets) {
         buf.set_stringn(
             x,
             y + h - 2,
-            format!("  saved in {shown}"),
+            if app.setting_unsaved {
+                format!("  not saved: cannot write {shown}")
+            } else {
+                format!("  saved in {shown}")
+            },
             w as usize,
             theme::dim(),
         );

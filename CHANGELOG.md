@@ -4,6 +4,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A dead link is struck through in a file named bare** (`carrel notes.md`): there a link
+  to a missing file looked like a live one, while the same document opened from the file
+  list showed it struck.
+- **A setting or bookmark that could not be saved says so.** With a config that cannot be
+  written, `H`, `B`, the text width and the file list's order said nothing and the
+  settings pane still read `saved in …`; with no home directory to keep state under, `m`
+  said `bookmark 1 of 1` and it was gone at the next start.
 - **Back and Forward never come to rest past the last screenful**: returning to the end of
   a document from one with a heading bar left the view a row or two too low.
 - **`--plain` and `--render` leave out the Hangul blanks the screen leaves out.** A Hangul

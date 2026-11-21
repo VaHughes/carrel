@@ -2208,3 +2208,54 @@ fn a_config_or_positions_file_that_is_not_read_is_said_once_at_startup() {
     let cap = pty_run("a.md", "q", dir.path());
     assert!(!cap.contains("could not read"), "{cap:?}");
 }
+
+/// The parameters of every SGR sequence in the run of them directly before
+/// `word` in a capture: ratatui writes a cell's modifiers and its colors as
+/// separate sequences.
+fn sgr_before(cap: &str, word: &str) -> Vec<String> {
+    let at = cap
+        .find(word)
+        .unwrap_or_else(|| panic!("{word} is on screen"));
+    let mut head = &cap[..at];
+    let mut out = Vec::new();
+    while let Some(body) = head.strip_suffix('m')
+        && let Some(start) = body.rfind("\x1b[")
+        && body[start + 2..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b';')
+    {
+        out.extend(body[start + 2..].split(';').map(str::to_string));
+        head = &body[..start];
+    }
+    out
+}
+
+/// A link to a file that is not there is struck through — also in a
+/// document named bare on the command line, whose folder is the empty path:
+/// that resolved to nothing, every target looked "outside the folder", and
+/// none was judged. The same file opened from the list was judged.
+#[test]
+fn a_dead_link_is_struck_in_a_file_named_bare() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("here.md"), "# Here\n").unwrap();
+    std::fs::write(
+        dir.path().join("d.md"),
+        "A [gonelink](gone.md) and a [livelink](here.md).\n",
+    )
+    .unwrap();
+    let cap = pty_run_until("d.md", "", "livelink", "q", dir.path());
+    assert!(
+        sgr_before(&cap, "gonelink").iter().any(|p| p == "9"),
+        "the dead link is struck: {:?}",
+        sgr_before(&cap, "gonelink")
+    );
+    assert!(
+        !sgr_before(&cap, "livelink").iter().any(|p| p == "9"),
+        "the live one is not: {:?}",
+        sgr_before(&cap, "livelink")
+    );
+}

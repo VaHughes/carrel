@@ -795,6 +795,8 @@ pub struct App {
     /// a double-click, the fold is put back and the word under the FIRST
     /// press is selected. A double-click on a heading word used to collapse
     /// the section as well, because its first half is a completed click.
+    /// The last setting changed could not be written to the config.
+    pub setting_unsaved: bool,
     pub click_fold: Option<u32>,
     /// One-shot clipboard outbox: the state machine fills it, the event loop
     /// drains it into an OSC 52 escape. The state layer never does I/O.
@@ -1018,6 +1020,27 @@ impl App {
     #[must_use]
     pub const fn pane_rows_of(rows: u16, hints: bool) -> u16 {
         rows.saturating_sub(if Self::show_hints(rows, hints) { 2 } else { 1 })
+    }
+
+    /// What a setting's save came to, said where the reader is looking: a
+    /// preference changed with a config that cannot be written applies for
+    /// the session and used to say nothing, while the settings pane went on
+    /// reading `saved in …`. `None` is no config folder to write to (tests).
+    pub fn keep_setting(&mut self, save: impl FnOnce(&Path, &Self) -> std::io::Result<()>) {
+        let saved = self.config_dir.as_deref().map(|dir| save(dir, self));
+        self.setting_kept(saved);
+    }
+
+    /// [`Self::keep_setting`]'s other half, for a save made elsewhere.
+    pub fn setting_kept(&mut self, saved: Option<std::io::Result<()>>) {
+        match saved {
+            Some(Err(e)) => {
+                self.setting_unsaved = true;
+                self.set_note(format!("not saved, so only until you quit: {e}"));
+            }
+            Some(Ok(())) => self.setting_unsaved = false,
+            None => {}
+        }
     }
 
     /// The rows the open menu may cover: those above the status row and the
@@ -1274,6 +1297,7 @@ impl App {
             mtime: None,
             selection: None,
             sel_anchor: None,
+            setting_unsaved: false,
             click_fold: None,
             clipboard: None,
             home_stash: None,
@@ -1422,8 +1446,18 @@ impl App {
     /// An error leaves `marks` as the reader made them and `marks_loaded`
     /// as it was, so the next save tries the same changes again.
     fn save_marks(&mut self) -> std::io::Result<()> {
-        let (Some(dir), Some(file)) = (self.state_dir.clone(), self.file.clone()) else {
+        // A document with no file (a pipe, a generated page) keeps its
+        // bookmarks in memory by design. A FILE with nowhere to save them —
+        // no home directory to keep state under — is a save that failed,
+        // and said `bookmark 1 of 1` as if it had not.
+        let Some(file) = self.file.clone() else {
             return Ok(());
+        };
+        let Some(dir) = self.state_dir.clone() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "there is no folder to keep them in",
+            ));
         };
         let base = self.blocks_of(&self.marks_loaded);
         let mut merged = Vec::new();
@@ -2958,7 +2992,12 @@ impl App {
             .iter()
             .map(|b| self.doc.block_text(*b).trim().to_ascii_lowercase())
             .collect();
-        let dir = self.doc_dir();
+        // A file named bare (`carrel notes.md`) has the empty path for a
+        // folder, which resolves to nothing: every target then looked
+        // outside the folder and none was judged.
+        let dir = Some(self.doc_dir())
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("."));
         let dir = dir
             .canonicalize()
             .or_else(|_| std::path::absolute(&dir))
@@ -4440,9 +4479,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
             // No key, like the margin outline: it is a preference set once,
             // and the pane is where preferences are.
             app.hyphenate = !app.hyphenate;
-            if let Some(dir) = app.config_dir.as_deref() {
-                let _ = crate::config::save_hyphenate_in(dir, app.hyphenate);
-            }
+            app.keep_setting(|dir, a| crate::config::save_hyphenate_in(dir, a.hyphenate));
             app.relayout(); // rows break in different places
         }
         Setting::Hints => return update(app, Action::HintsToggle),
@@ -4451,9 +4488,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
             // There has never been a key for this one: it was config-only,
             // so the pane is its first way in from inside carrel.
             app.outline_margin = !app.outline_margin;
-            if let Some(dir) = app.config_dir.as_deref() {
-                let _ = crate::config::save_outline_margin_in(dir, app.outline_margin);
-            }
+            app.keep_setting(|dir, a| crate::config::save_outline_margin_in(dir, a.outline_margin));
             app.relayout(); // the gutter's columns come from / return to the text
         }
         Setting::Preview => {
@@ -4462,9 +4497,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
             if let Some(h) = app.home_anywhere_mut() {
                 h.show_preview = preview;
             }
-            if let Some(dir) = app.config_dir.as_deref() {
-                let _ = crate::config::save_preview_in(dir, app.preview);
-            }
+            app.keep_setting(|dir, a| crate::config::save_preview_in(dir, a.preview));
         }
         Setting::Titles => {
             app.titles = !app.titles;
@@ -4472,9 +4505,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
             if let Some(h) = app.home_anywhere_mut() {
                 h.show_titles = titles;
             }
-            if let Some(dir) = app.config_dir.as_deref() {
-                let _ = crate::config::save_titles_in(dir, app.titles);
-            }
+            app.keep_setting(|dir, a| crate::config::save_titles_in(dir, a.titles));
         }
     }
     Outcome::Redraw
@@ -4549,9 +4580,7 @@ fn step_measure(app: &mut App, d: i32) {
     } else {
         format!("text width: {} columns", app.max_width)
     });
-    if let Some(dir) = app.config_dir.as_deref() {
-        let _ = crate::config::save_max_width_in(dir, app.max_width);
-    }
+    app.keep_setting(|dir, a| crate::config::save_max_width_in(dir, a.max_width));
     app.relayout();
 }
 
@@ -5063,9 +5092,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     // require first backing out of whatever you were doing.
     if let Action::HintsToggle = action {
         app.hints = !app.hints;
-        if let Some(dir) = app.config_dir.as_deref() {
-            let _ = crate::config::save_hints_in(dir, app.hints);
-        }
+        app.keep_setting(|dir, a| crate::config::save_hints_in(dir, a.hints));
         app.relayout(); // the reader's text height changes with the row
         return Outcome::Redraw;
     }
@@ -5078,9 +5105,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
     }
     if let Action::BreadcrumbToggle = action {
         app.breadcrumb = !app.breadcrumb;
-        if let Some(dir) = app.config_dir.as_deref() {
-            let _ = crate::config::save_breadcrumb_in(dir, app.breadcrumb);
-        }
+        app.keep_setting(|dir, a| crate::config::save_breadcrumb_in(dir, a.breadcrumb));
         app.relayout(); // the band's rows come from / return to the text
         return Outcome::Redraw;
     }
@@ -5810,9 +5835,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             h.cycle_sort();
             h.note = Some(format!("sorted {}", h.sort.label()));
             let sort = h.sort;
-            if let Some(dir) = app.config_dir.as_deref() {
-                let _ = crate::config::save_sort_in(dir, sort.name());
-            }
+            app.keep_setting(|dir, _| crate::config::save_sort_in(dir, sort.name()));
             Outcome::Redraw
         }
         Action::HomeSearchMode => {

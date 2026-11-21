@@ -3557,6 +3557,11 @@ fn apply_config(app: &mut App) {
     // taken in the file's place. A note already waiting (an unknown theme
     // name) is about a config that WAS read, so the two never compete.
     let quiet = app.note.is_none() && app.home().is_none_or(|h| h.note.is_none());
+    // The settings pane says where settings are saved; not into this one.
+    app.setting_unsaved = app
+        .config_dir
+        .as_deref()
+        .is_some_and(|d| carrel::state::unreadable(&d.join("config")).is_some());
     if let Some(note) = unread_note(app.config_dir.as_deref(), app.state_dir.as_deref())
         && quiet
     {
@@ -3615,6 +3620,7 @@ fn cycle_theme_now(app: &mut App) {
     // The choice applies either way; a failed write just doesn't survive the
     // session, and the note says so rather than reading as if it were kept.
     let saved = config::save_theme(name).is_ok();
+    app.setting_unsaved = !saved;
     app.set_note(theme_note(name, saved));
 }
 
