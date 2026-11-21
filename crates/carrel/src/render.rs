@@ -2402,8 +2402,7 @@ fn paint_row(
 
     // 3b. Links on this row: collect spans for the OSC 8 pass, and repaint
     //     the one `Tab` selected. The selected link keeps its highlight
-    //     instead of an OSC wrapper — you don't need to click what Enter
-    //     already follows.
+    //     as well as its OSC wrapper.
     {
         let row_text = &app.doc.text[row.doc.start as usize..row.doc.end as usize];
         for inline in node.inlines.iter().filter(|i| i.link.is_some()) {
@@ -2426,11 +2425,15 @@ fn paint_row(
             if let Some(id) = inline.link {
                 targets.push(Action::LinkOpen(id.0), Zone::new(x0, y, w, 1), Z_DOC);
             }
+            // The link `Tab` is on wears its highlight, and is a hyperlink
+            // like the rest: the pass repaints a span in the style its
+            // cells have (`settle_links`), so the highlight survives it.
             if inline.link == app.selected_link {
                 frame
                     .buffer_mut()
                     .set_style(Rect::new(x0, y, w, 1), theme::link_selected());
-            } else if let Some(id) = inline.link.filter(|id| !app.dead_links.contains(id)) {
+            }
+            if let Some(id) = inline.link.filter(|id| !app.dead_links.contains(id)) {
                 // (A dead link gets no hyperlink wrapper: handing the
                 // terminal a `file://` that is not there is the same dead
                 // end, moved somewhere carrel cannot explain it.)
@@ -6278,7 +6281,7 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_link_is_highlighted_not_collected() {
+    fn the_selected_link_is_highlighted_and_still_a_hyperlink() {
         let mut app = App::new(
             "t.md".into(),
             Document::parse("see [docs](https://example.com/d) here"),
@@ -6289,10 +6292,14 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(40, 6)).unwrap();
         let mut links = Vec::new();
         t.draw(|f| draw_with_links(f, &app, &mut links)).unwrap();
-        assert!(
-            links.is_empty(),
-            "selected link keeps its highlight instead"
-        );
+        // It was left out of the hyperlink pass while that pass repainted
+        // every span in one fixed colour and would have wiped the
+        // highlight. The pass repaints what the cell holds now, so the link
+        // `Tab` is on is as much a link to the terminal as any other.
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].url, "https://example.com/d");
+        assert_eq!(links[0].text, "docs");
+        assert_eq!(links[0].style.bg, theme::link_selected().bg);
         let buf = t.backend().buffer().clone();
         assert_eq!(
             tcell(&buf, 4, 0).style().bg,

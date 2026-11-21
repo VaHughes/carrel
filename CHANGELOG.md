@@ -168,6 +168,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A document with a very long `tags:` list scrolls as fast as any other.** Every frame
   re-read the whole frontmatter once for each of its rows on screen; 80,000 tags took
   seconds to draw and seconds more for each line scrolled.
+- **A double click takes the whole word through an accent typed as its own character**
+  (`café` as e + U+0301 was selected as `cafe`, or as the letters after the accent).
+- **The links pane and the info card count the same links.** The card counted every
+  `://` address, repeats included, and no `mailto:`; it now reads `4 local · 3 external`
+  off the pane's own rows, with `· 1 unresolved` for a `[[wikilink]]` no note was found
+  for. A `mailto:` or `tel:` link is listed as an address to copy, not as a file.
+- **The link `Tab` is on is a terminal hyperlink too**, as every other link is.
 - **Text hidden in tag characters is shown to nobody and copied nowhere.** Unicode's tag
   characters spell ASCII that no terminal draws, and a sentence of them could ride inside
   any word: onto the screen's byte stream, into a copy, into `--plain` and `--render`

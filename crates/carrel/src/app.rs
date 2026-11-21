@@ -777,7 +777,7 @@ pub struct App {
     /// card opens and again when the document reloads under it. Counting
     /// resolves every link against the disk, which a paint must never do —
     /// and the card is painted every frame it is up.
-    pub info_links: Option<usize>,
+    pub info_links: Option<LinkCounts>,
     /// Spotlight (`S`): dim every block but the one nearest the centre of
     /// the view. Presentation only — the painter reads it, nothing else.
     pub focus: bool,
@@ -2928,7 +2928,7 @@ impl App {
     /// Count the info card's local links for the document now showing, if
     /// the card is up. After the wikilinks are resolved, never before.
     fn count_info_links(&mut self) {
-        self.info_links = self.info.then(|| local_link_count(self));
+        self.info_links = self.info.then(|| LinkCounts::of(self));
     }
 
     /// Resolve every `[[wikilink]]` target once per document. One directory
@@ -3092,10 +3092,9 @@ impl App {
                 _ => {}
             }
         }
-        let external = self.doc.links.iter().filter(|l| l.contains("://")).count();
-        // Distinct local destinations — the forward pane's own rule, so the
-        // two can never disagree about what a link is.
-        let internal = self.info_links.unwrap_or_else(|| local_link_count(self));
+        // The links pane's own rows, counted — so the two can never
+        // disagree about what a link is, or how many there are.
+        let links = self.info_links.unwrap_or_else(|| LinkCounts::of(self));
         let mut rows = vec![
             (
                 "document",
@@ -3122,7 +3121,7 @@ impl App {
                 },
             ),
             ("math blocks", math.to_string()),
-            ("links", format!("{internal} local · {external} external")),
+            ("links", links.to_string()),
             (
                 "footnotes",
                 format!(
@@ -5130,7 +5129,7 @@ pub fn update(app: &mut App, action: Action) -> Outcome {
             Action::InfoToggle => {
                 app.info = !app.info;
                 app.info_scroll = 0;
-                app.info_links = app.info.then(|| local_link_count(app));
+                app.info_links = app.info.then(|| LinkCounts::of(app));
                 return Outcome::Redraw;
             }
             Action::FocusToggle => {
@@ -7108,14 +7107,44 @@ fn merge_open_spans(mut spans: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     out
 }
 
-/// How many distinct local destinations the document links to — the
-/// forward pane's own rule, so the two can never disagree about what a
-/// link is.
-fn local_link_count(app: &App) -> usize {
-    forward_rows(app)
-        .iter()
-        .filter(|r| r.target.is_some())
-        .count()
+/// The links pane's rows ([`forward_rows`]), counted by kind, for the info
+/// card. One row, one link: the card once counted for itself — every
+/// `://` destination, repeats and all, and nothing for a `mailto:` — and
+/// said 24 where the pane listed 23.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinkCounts {
+    /// Destinations beside the document: a relative path, a placed note.
+    pub local: usize,
+    /// Destinations with a scheme, which carrel copies and never opens.
+    pub external: usize,
+    /// `[[wikilinks]]` no note was found for.
+    pub unresolved: usize,
+}
+
+impl LinkCounts {
+    fn of(app: &App) -> Self {
+        let mut counts = Self::default();
+        for row in forward_rows(app) {
+            if row.target.is_some() {
+                counts.local += 1;
+            } else if has_scheme(&row.dest) {
+                counts.external += 1;
+            } else {
+                counts.unresolved += 1;
+            }
+        }
+        counts
+    }
+}
+
+impl std::fmt::Display for LinkCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} local · {} external", self.local, self.external)?;
+        if self.unresolved > 0 {
+            write!(f, " · {} unresolved", self.unresolved)?;
+        }
+        Ok(())
+    }
 }
 
 /// Every distinct destination the open document points at, in reading order.
@@ -7164,7 +7193,9 @@ fn forward_rows(app: &App) -> Vec<ForwardRow> {
         }
         let target = if wikilink {
             app.wiki.get(&id).cloned().or_else(|| pass.resolve(link))
-        } else if link.contains("://") {
+        } else if has_scheme(link) {
+            // `mailto:` and `tel:` have a scheme and no `://`; reading
+            // them as file names beside the document listed them as local.
             None
         } else {
             let bare = link.split(['#', '?']).next().unwrap_or(link);
@@ -7734,10 +7765,15 @@ fn copy_quote(app: &mut App) -> Outcome {
     Outcome::Redraw
 }
 
-/// The alphanumeric/`_`/`-` run around `byte`, or `None` on a non-word cell.
-/// A soft hyphen (U+00AD) is part of the word it divides: it is invisible
-/// unless a row ends at it, and the word reads whole.
+/// The word around `byte`, or `None` on a cell that is not part of one: the
+/// run of letters, digits, `_` and `-`, counted in CLUSTERS — a letter and
+/// the combining marks on it are one thing to the reader, so an accent
+/// typed as its own character belongs to its letter and the word goes on
+/// through it. A soft hyphen (U+00AD) is part of the word it divides: it is
+/// invisible unless a row ends at it, and the word reads whole.
 fn word_range_at(text: &str, byte: u32) -> Option<std::ops::Range<u32>> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let mut at = byte as usize;
     if at >= text.len() {
         return None;
@@ -7745,15 +7781,42 @@ fn word_range_at(text: &str, byte: u32) -> Option<std::ops::Range<u32>> {
     while !text.is_char_boundary(at) {
         at -= 1;
     }
-    let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '\u{AD}');
-    if !text[at..].chars().next().is_some_and(is_word) {
-        return None;
+    // No word crosses white space, so only the stretch between the nearest
+    // two is segmented — not the document.
+    let from = text[..at]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let to = at
+        + text[at..]
+            .find(char::is_whitespace)
+            .unwrap_or(text.len() - at);
+    let is_word = |cluster: &str| {
+        cluster
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '\u{AD}'))
+    };
+    let range = |s: usize, e: usize| {
+        Some(u32::try_from(s).unwrap_or(0)..u32::try_from(e).unwrap_or(u32::MAX))
+    };
+    let mut start = None;
+    for (i, cluster) in text.get(from..to)?.grapheme_indices(true) {
+        let s = from + i;
+        if is_word(cluster) {
+            start.get_or_insert(s);
+        } else if at < s {
+            // The run holding `at` ended here.
+            return range(start?, s);
+        } else {
+            start = None;
+            if at < s + cluster.len() {
+                return None;
+            }
+        }
     }
-    let end = at + text[at..].find(|c| !is_word(c)).unwrap_or(text.len() - at);
-    let start = text[..at].rfind(|c| !is_word(c)).map_or(0, |i| {
-        i + text[i..].chars().next().map_or(1, char::len_utf8)
-    });
-    Some(u32::try_from(start).unwrap_or(0)..u32::try_from(end).unwrap_or(u32::MAX))
+    range(start?, to)
 }
 
 /// Follow a `[[wikilink]]`: the file was resolved at open time, the fragment
@@ -9339,6 +9402,44 @@ mod tests {
         assert_eq!(a.clipboard.as_deref(), Some("beta"));
     }
 
+    /// A word is made of what the reader sees as letters, and an accent
+    /// typed as its own character belongs to the letter under it. The word
+    /// was walked a `char` at a time, a combining mark is not alphanumeric,
+    /// and so `café` spelled e + U+0301 was two words with the accent in
+    /// neither: a double click copied `cafe` or `s`.
+    #[test]
+    fn double_click_takes_the_whole_word_through_a_combining_mark() {
+        let src = "un cafe\u{301}s, de\u{301}\u{302}lta et co\u{AD}ope\u{301}rer-la \u{1F469}\u{200D}\u{1F4BB} fin\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 80, 10);
+        let text = a.doc.text.clone();
+        for word in [
+            "cafe\u{301}s",
+            "de\u{301}\u{302}lta",
+            "co\u{AD}ope\u{301}rer-la",
+        ] {
+            let start = text.find(word).unwrap();
+            // Every byte of the word, the marks' own included, is the word.
+            for at in start..start + word.len() {
+                update(&mut a, Action::SelectWord(u32::try_from(at).unwrap()));
+                let got = a
+                    .selection
+                    .clone()
+                    .map(|r| &text[r.start as usize..r.end as usize]);
+                assert_eq!(got, Some(word), "clicked byte {} of {word:?}", at - start);
+            }
+        }
+        // Punctuation and an emoji are still not words.
+        for not in [",", "\u{1F469}"] {
+            let at = u32::try_from(text.find(not).unwrap()).unwrap();
+            update(&mut a, Action::SelectWord(at));
+            assert_eq!(a.selection, None, "{not:?}");
+        }
+        // And a mark with no letter under it is not one either.
+        let lone = App::new("t.md".into(), Document::parse("a \u{301} b\n"), 80, 10);
+        let at = u32::try_from(lone.doc.text.find('\u{301}').unwrap()).unwrap();
+        assert_eq!(word_range_at(&lone.doc.text, at), None);
+    }
+
     #[test]
     fn triple_click_selects_the_whole_block() {
         let code = "intro\n\n```rust\nfn main() {\n    body();\n}\n```\n";
@@ -9611,7 +9712,7 @@ mod tests {
                     .get(&id)
                     .cloned()
                     .or_else(|| crate::wiki::resolve(link, &dir, index))
-            } else if link.contains("://") {
+            } else if has_scheme(link) {
                 None
             } else {
                 let bare = link.split(['#', '?']).next().unwrap_or(link);
@@ -9737,9 +9838,13 @@ mod tests {
         // `one.md`, `sub/two.md` and `[[one]]`; `[[missing]]` is not there.
         let (d, mut a) = linked_app(&[0, 5, 12, 16], false);
         update(&mut a, Action::InfoToggle);
-        assert_eq!(links(&a), "3 local · 0 external");
+        assert_eq!(links(&a), "3 local · 0 external · 1 unresolved");
         std::fs::write(d.path().join("missing.md"), "x").unwrap();
-        assert_eq!(links(&a), "3 local · 0 external", "a paint asked the disk");
+        assert_eq!(
+            links(&a),
+            "3 local · 0 external · 1 unresolved",
+            "a paint asked the disk"
+        );
         update(&mut a, Action::InfoToggle);
         update(&mut a, Action::InfoToggle);
         assert_eq!(
@@ -9747,6 +9852,38 @@ mod tests {
             "4 local · 0 external",
             "reopened, it looks again"
         );
+    }
+
+    /// The links pane and the info card count the same things: one row,
+    /// one link. The card counted every `://` destination, repeats and
+    /// all, and nothing for a `mailto:` or a wikilink with no note, so the
+    /// two disagreed — 23 rows against "9 local · 15 external" — about one
+    /// document.
+    #[test]
+    fn the_info_card_and_the_links_pane_count_the_same_links() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("one.md"), "x").unwrap();
+        let src = "[a](https://e.com/x) [again](https://e.com/x) <https://e.com/y> \
+                   [m](mailto:a@e.com) [one](one.md) [one too](one.md#top) [gone](gone.md) \
+                   [[one]] [[nowhere]] [here](#here)\n";
+        let mut a = App::new("t.md".into(), Document::parse(src), 80, 24);
+        a.file = Some(d.path().join("t.md"));
+        a.resolve_wikilinks();
+        update(&mut a, Action::ForwardToggle);
+        let rows = a.forward.as_ref().unwrap().rows.len();
+        update(&mut a, Action::ForwardToggle);
+        update(&mut a, Action::InfoToggle);
+        let links = a
+            .info_rows()
+            .into_iter()
+            .find(|(label, _)| *label == "links")
+            .map(|(_, value)| value)
+            .unwrap();
+        // https x (once), https y, mailto; one.md, one.md#top, gone.md and
+        // [[one]] can be opened or at least looked for beside the document;
+        // [[nowhere]] names no file at all.
+        assert_eq!(links, "4 local · 3 external · 1 unresolved");
+        assert_eq!(rows, 8, "and the pane lists exactly those");
     }
 
     /// A reload under the open card counts the new document's links.
