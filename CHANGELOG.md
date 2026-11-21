@@ -83,6 +83,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **Bookmarks of a file opened while it was empty come back with its text.** Opened in
   the moment an agent had truncated it, a document showed no bookmarks even after it was
   rewritten, and the next `m` saved the list without them.
+- **A config or positions file carrel will not read is said so at startup.** One that is
+  far too large, not a regular file or not readable was skipped without a word: carrel
+  opened on its defaults and a theme change read as if it had been kept. The status row
+  now says the file was not read and is left alone, and `T` says the theme is not saved.
 - **A bookmark that could not be saved says so.** With a state directory carrel cannot
   write to, `m` reported `bookmark 1 of 1` and the bookmark was gone at the next start.
   The status row now adds that it was not saved and why; it stays set until you quit.

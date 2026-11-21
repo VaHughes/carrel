@@ -463,21 +463,38 @@ pub fn read_regular(path: &Path) -> std::io::Result<Vec<u8>> {
     // its first frame. Nothing carrel keeps comes near the limit, so a
     // file past it is not one of carrel's and is refused unread.
     if len > MAX_STATE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "too large to be a carrel file, so it was not read",
-        ));
+        return Err(too_large());
     }
     let mut bytes = Vec::new();
     // A file may grow between the stat and the read; the limit holds.
     file.take(MAX_STATE_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_STATE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "too large to be a carrel file, so it was not read",
-        ));
+        return Err(too_large());
     }
     Ok(bytes)
+}
+
+/// Why [`read_regular`] would refuse `path`, asked without reading it;
+/// `None` for a file it would read and for one that is not there.
+///
+/// For saying so. Every reader here treats a file it cannot read as an
+/// absent one, which is right for starting up and wrong for the person
+/// whose settings silently became the defaults.
+#[must_use]
+pub fn unreadable(path: &Path) -> Option<std::io::Error> {
+    match open_regular(path) {
+        Ok((_, len)) if len > MAX_STATE_BYTES => Some(too_large()),
+        Ok(_) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(e),
+    }
+}
+
+fn too_large() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "too large to be a carrel file, so it was not read",
+    )
 }
 
 /// The most [`read_regular`] reads: far above any config, positions file,
@@ -2726,5 +2743,35 @@ mod tests {
         line("s9+0,future!form");
         save_marks_in(dir.path(), doc, &[P(3)]).unwrap();
         assert_eq!(text(), "/tmp/other.md\t7\n/tmp/x.md\t3,future!form\n");
+    }
+
+    /// What `unreadable` is for: a file carrel will start without, asked
+    /// about without reading it. A missing file is not a problem.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_carrel_will_not_read_is_reported_and_a_missing_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(unreadable(&dir.path().join("absent")).is_none());
+        let fine = dir.path().join("config");
+        std::fs::write(&fine, "theme = nord\n").unwrap();
+        assert!(unreadable(&fine).is_none());
+        let huge = dir.path().join("huge");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(MAX_STATE_BYTES + 1)
+            .unwrap();
+        let why = unreadable(&huge).unwrap().to_string();
+        assert!(why.contains("too large"), "{why}");
+        // The same answer the read gives, so the two cannot disagree.
+        assert_eq!(why, read_regular(&huge).unwrap_err().to_string());
+        assert!(unreadable(dir.path()).is_some(), "a directory");
+        let fifo = dir.path().join("fifo");
+        mkfifo(&fifo);
+        let f = fifo.clone();
+        assert_eq!(bounded(&fifo, move || unreadable(&f).is_some()), Some(true));
+        // And a setting is not saved over a config that was not read.
+        std::fs::rename(&huge, &fine).unwrap();
+        assert!(crate::config::save_theme_in(dir.path(), "dusk").is_err());
+        assert_eq!(std::fs::metadata(&fine).unwrap().len(), MAX_STATE_BYTES + 1);
     }
 }

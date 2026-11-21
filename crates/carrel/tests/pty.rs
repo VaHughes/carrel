@@ -2167,3 +2167,44 @@ fn two_readers_on_one_document_keep_each_others_bookmarks_and_notes() {
         "{notes:?}"
     );
 }
+
+/// A config or positions file carrel will not read (here: far too large to
+/// be one) used to be skipped without a word: the reader opened on the
+/// defaults, and a theme change read as if it had been kept.
+#[test]
+fn a_config_or_positions_file_that_is_not_read_is_said_once_at_startup() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let huge = |path: &Path| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::File::create(path)
+            .unwrap()
+            .set_len(300 * 1024 * 1024)
+            .unwrap();
+    };
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# Title\n\nBody text.\n").unwrap();
+    huge(&dir.path().join("cfg/carrel/config"));
+    let cap = pty_run_until("a.md", "", "config", "T'; sleep 1; printf 'q", dir.path());
+    assert!(
+        cap.contains("could not read the config"),
+        "the reader is told at startup: {cap:?}"
+    );
+    assert!(cap.contains("not saved"), "and `T` says so too: {cap:?}");
+    // The file list says it as well, and for the positions file.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# Title\n\nBody text.\n").unwrap();
+    huge(&dir.path().join("state/carrel/positions"));
+    let cap = pty_run_until(".", "", "positions", "q", dir.path());
+    assert!(
+        cap.contains("could not read the saved reading positions"),
+        "{cap:?}"
+    );
+    // The control: nothing is said when both read.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# Title\n\nBody text.\n").unwrap();
+    let cap = pty_run("a.md", "q", dir.path());
+    assert!(!cap.contains("could not read"), "{cap:?}");
+}

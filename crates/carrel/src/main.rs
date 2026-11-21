@@ -3547,6 +3547,33 @@ fn apply_config(app: &mut App) {
     // Every entry point has chosen its palette by now ([`startup_theme`]
     // runs first), so this is the name the first frame is painted in.
     app.theme_name = carrel::theme::current_name();
+    // Said once, here, because here is where the defaults above were
+    // taken in the file's place. A note already waiting (an unknown theme
+    // name) is about a config that WAS read, so the two never compete.
+    let quiet = app.note.is_none() && app.home().is_none_or(|h| h.note.is_none());
+    if let Some(note) = unread_note(app.config_dir.as_deref(), app.state_dir.as_deref())
+        && quiet
+    {
+        app.set_note(note);
+    }
+}
+
+/// What to tell a reader whose config or reading positions carrel started
+/// without: a file that is there and was not read (too large to be one of
+/// carrel's, not a regular file, no permission) is left exactly as it is,
+/// and nothing is saved over it — which, unsaid, looks like carrel
+/// forgetting every setting and every place.
+fn unread_note(config_dir: Option<&Path>, state_dir: Option<&Path>) -> Option<String> {
+    let why = |dir: Option<&Path>, name: &str| carrel::state::unreadable(&dir?.join(name));
+    if let Some(e) = why(config_dir, "config") {
+        return Some(format!(
+            "could not read the config, so it is left alone and settings are not saved: {e}"
+        ));
+    }
+    let e = why(state_dir, "positions")?;
+    Some(format!(
+        "could not read the saved reading positions, so they are left alone and none is saved: {e}"
+    ))
 }
 
 /// Apply the saved theme. An unknown name falls back to `terminal` with a
