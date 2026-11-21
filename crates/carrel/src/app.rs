@@ -665,6 +665,12 @@ pub struct App {
     /// one on screen as a button every frame and finding them is a scan of
     /// the whole text.
     pub footnote_marks: Vec<(u32, u32)>,
+    /// Every tag written on a metadata card: its doc bytes and its name, in
+    /// order. Found when the document arrives, for the footnote marks'
+    /// reason and a worse one: finding them reads the whole card, and the
+    /// painter asked again for each of the card's rows on every frame, so a
+    /// long `tags:` list took seconds a frame to scroll.
+    pub card_tags: Vec<(std::ops::Range<u32>, String)>,
     /// Links that lead nowhere; see `Self::find_dead_links`. Painted
     /// struck through.
     pub dead_links: std::collections::HashSet<LinkId>,
@@ -1237,6 +1243,7 @@ impl App {
             sibling: None,
             peek: None,
             footnote_marks: Vec::new(),
+            card_tags: Vec::new(),
             dead_links: std::collections::HashSet::new(),
             step_cursor: None,
             task_counts: (0, 0),
@@ -3809,6 +3816,7 @@ impl App {
             .filter(|(name, _)| defined.contains(name))
             .map(|(name, at)| (at, u32::try_from(name.len() + 3).unwrap_or(u32::MAX)))
             .collect();
+        self.card_tags = card_tags(&self.doc);
         let tasks = self.doc.tasks();
         self.task_counts = (
             u32::try_from(tasks.iter().filter(|t| t.done).count()).unwrap_or(u32::MAX),
@@ -4779,16 +4787,32 @@ fn tag_at(app: &App, byte: u32) -> Option<String> {
     if let Some(tag) = app.doc.tag_at(byte) {
         return Some(tag.to_string());
     }
-    let block = app.doc.block_at_doc(DocByte(byte));
-    let node = app.doc.node_for_block(block);
-    let NodeKind::Metadata { format, .. } = node.kind else {
-        return None;
-    };
-    let at = (byte.checked_sub(node.doc.start)?) as usize;
-    crate::tags::spans(app.doc.block_text(block), format)
-        .into_iter()
-        .find(|(r, _)| r.contains(&at))
-        .map(|(_, tag)| tag)
+    let i = app.card_tags.partition_point(|(r, _)| r.end <= byte);
+    app.card_tags
+        .get(i)
+        .filter(|(r, _)| r.contains(&byte))
+        .map(|(_, tag)| tag.clone())
+}
+
+/// Where each tag on a metadata card is written, as doc bytes, in order —
+/// [`App::card_tags`]. One pass over the blocks and one reading of each
+/// card, at the document's arrival.
+fn card_tags(doc: &Document) -> Vec<(std::ops::Range<u32>, String)> {
+    let mut out = Vec::new();
+    for b in 0..doc.block_count() {
+        let block = BlockIdx(u32::try_from(b).unwrap_or(u32::MAX));
+        let node = doc.node_for_block(block);
+        let NodeKind::Metadata { format, .. } = node.kind else {
+            continue;
+        };
+        let at = |i: usize| node.doc.start + u32::try_from(i).unwrap_or(u32::MAX);
+        out.extend(
+            crate::tags::spans(doc.block_text(block), format)
+                .into_iter()
+                .map(|(r, tag)| (at(r.start)..at(r.end), tag)),
+        );
+    }
+    out
 }
 
 /// The scan finished: open what it found, or say why there is nothing to.

@@ -763,3 +763,82 @@ fn a_tag_written_with_a_doubled_slash_finds_its_section() {
         "found, not \"no listed document is tagged\""
     );
 }
+
+/// The card's tag buttons are found when the document arrives, not while it
+/// is painted. Finding them reads the whole frontmatter, and the painter did
+/// it again for every row of the card on every frame: a `tags:` list of
+/// 80,000 took seconds to draw once and as long again for each row scrolled.
+///
+/// So the painter must use what the document's arrival left it. Replace
+/// that with one made-up button and the frame shows that button and no
+/// other. Verified to fail with `paint_card_row` calling `tags::spans`.
+#[test]
+fn the_card_paints_the_tag_buttons_found_when_the_document_arrived() {
+    let src = "---\ntitle: T\ntags: [rust, web dev]\n---\n\nbody\n";
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("card.md"), src).unwrap();
+    let mut app = App::new("card.md".into(), Document::parse(src), 70, 40);
+    app.file = Some(d.path().join("card.md"));
+    app.library_root = Some(d.path().to_path_buf());
+    app.on_resize(70, 40);
+    let at = |app: &App, word: &str| {
+        let i = u32::try_from(app.doc.text.find(word).unwrap()).unwrap();
+        i..i + u32::try_from(word.len()).unwrap()
+    };
+    assert_eq!(
+        app.card_tags,
+        [
+            (at(&app, "rust"), "rust".to_string()),
+            (at(&app, "web dev"), "web dev".to_string())
+        ]
+    );
+    assert_eq!(tag_buttons(&app), ["rust", "web dev"]);
+
+    let title = at(&app, "title");
+    app.card_tags = vec![(title.clone(), "made up".to_string())];
+    assert_eq!(tag_buttons(&app), ["title"]);
+    update(&mut app, Action::TagOpen(title.start));
+    assert_eq!(app.tags_focus.as_deref(), Some("made up"));
+
+    // And a reload finds them again.
+    app.reload_from("---\ntags: [go]\n---\n\nbody\n");
+    assert_eq!(tag_buttons(&app), ["go"]);
+}
+
+/// A frame of a card costs the same whatever its key is called. Timed
+/// against the same list under a key that is not `tags`, so the bound holds
+/// in any build on any machine: the two differed by a factor of hundreds.
+#[test]
+fn a_frame_of_a_long_tags_list_costs_what_any_long_list_costs() {
+    let list = (0..20_000)
+        .map(|i| format!("t{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let frames = |key: &str| {
+        let src = format!("---\n{key}: [{list}]\n---\n\nbody\n");
+        let mut app = App::new("long.md".into(), Document::parse(&src), 100, 40);
+        app.on_resize(100, 40);
+        let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..8 {
+            let mut painted = carrel::render::Painted::default();
+            term.draw(|f| {
+                carrel::render::draw_full(
+                    f,
+                    &app,
+                    &mut painted,
+                    &mut std::collections::HashMap::new(),
+                );
+            })
+            .unwrap();
+            update(&mut app, Action::Scroll(carrel::action::Span::Page, 1));
+        }
+        started.elapsed()
+    };
+    let plain = frames("xtags");
+    let tags = frames("tags");
+    assert!(
+        tags < plain * 5 + Duration::from_millis(250),
+        "eight frames of `tags:` took {tags:?}; of `xtags:`, {plain:?}"
+    );
+}

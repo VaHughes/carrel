@@ -567,7 +567,7 @@ fn settle_links(frame: &mut Frame, painted: &mut Painted) {
     let buf = frame.buffer_mut();
     let collected = std::mem::take(links);
     for l in collected {
-        read_back(buf, l, links);
+        read_back(buf, &l, links);
     }
 }
 
@@ -578,7 +578,7 @@ fn settle_links(frame: &mut Frame, painted: &mut Painted) {
 ///
 /// Read as a terminal shows the row: a wide glyph owns the cell after it,
 /// which the buffer keeps blank.
-fn read_back(buf: &Buffer, link: OscLink, out: &mut Vec<OscLink>) {
+fn read_back(buf: &Buffer, link: &OscLink, out: &mut Vec<OscLink>) {
     let end = link.x.saturating_add(link.w);
     let mut at = link.x;
     let mut run: Option<OscLink> = None;
@@ -2627,11 +2627,21 @@ fn paint_card_row(
     }
 
     // Each tag is a button: the tags page, open at that tag. A tag a narrow
-    // row divides is a button on both of its rows.
-    for (range, _) in crate::tags::spans(body, format) {
-        if let Some(rect) = cells(range.clone()) {
+    // row divides is a button on both of its rows. Found when the document
+    // arrived (`App::card_tags`), so this is a bisection to the row's own:
+    // finding them reads the whole card, and that is not a row's work.
+    let from = app
+        .card_tags
+        .partition_point(|(r, _)| r.end <= row.doc.start);
+    for (range, _) in app.card_tags[from..]
+        .iter()
+        .take_while(|(r, _)| r.start < row.doc.end)
+    {
+        let on_card = (range.start as usize).saturating_sub(start)
+            ..(range.end as usize).saturating_sub(start);
+        if let Some(rect) = cells(on_card) {
             targets.push(
-                Action::TagOpen(node.doc.start + u32::try_from(range.start).unwrap_or(0)),
+                Action::TagOpen(range.start),
                 Zone::new(rect.x, rect.y, rect.width, 1),
                 Z_DOC,
             );

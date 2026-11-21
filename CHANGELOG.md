@@ -107,6 +107,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   reversed; its address now goes out as plain ASCII with everything else percent-encoded
   (so `https://例え.jp/ü` still opens), and a note whose file name has a space, `#` or `?`
   in it opens from a wikilink. A search match or a selection inside a link stays lit.
+- **A document with a very long `tags:` list scrolls as fast as any other.** Every frame
+  re-read the whole frontmatter once for each of its rows on screen; 80,000 tags took
+  seconds to draw and seconds more for each line scrolled.
 - **Invisible characters no longer shift what follows them.** After a zero-width space, a
   bidi mark, a stray combining mark or a control character on a line, clicks, selections,
   search highlights and link underlines landed one column to the right of the text for
