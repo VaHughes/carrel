@@ -30,7 +30,7 @@ fn kept_on_purpose(c: char) -> bool {
 #[test]
 fn every_scalar_measures_the_cells_it_is_given() {
     let mut differ = Vec::new();
-    for c in (0..=0x10FFFFu32).filter_map(char::from_u32) {
+    for c in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
         if kept_on_purpose(c) {
             continue;
         }

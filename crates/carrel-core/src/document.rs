@@ -2985,13 +2985,10 @@ impl<'a> Builder<'a> {
                         // Smart punctuation arrives as a text event of its
                         // own, over the ASCII it was typed as: the one
                         // place that is known byte for byte.
-                        let run = match &mut joined {
-                            Some(run) => run,
-                            None => {
-                                self.note_smart(0, &first, &src);
-                                joined.insert(first.to_string())
-                            }
-                        };
+                        if joined.is_none() {
+                            self.note_smart(0, &first, &src);
+                        }
+                        let run = joined.get_or_insert_with(|| first.to_string());
                         self.note_smart(run.len(), next, nsrc);
                         run.push_str(next);
                         end = nsrc.end;
