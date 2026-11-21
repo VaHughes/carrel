@@ -45,7 +45,15 @@ use crate::layout::Layout;
 /// one raw draws it — the filler across two columns — and a line of them
 /// ran far past the width it was wrapped to. Left out as a cluster, never
 /// as a character: a syllable written in jamo keeps every one of them.
+///
+/// And what [`carrel_core::hidden`] names — tag characters, interlinear
+/// annotation controls — goes as it goes from the screen and the clipboard:
+/// a page piped into another tool must not carry a sentence no reader saw.
+/// The bidi controls are NOT dropped here, though the screen drops them:
+/// printed text may be right-to-left prose on its way to a file, and its
+/// marks are part of it.
 pub(crate) fn push_text(out: &mut String, text: &str) {
+    let text = &*carrel_core::hidden::strip(text);
     let shown = |c: char| (!c.is_control() || c == '\n') && c != '\u{AD}';
     if !text.contains(is_hangul_blank) {
         out.extend(text.chars().filter(|&c| shown(c)));
@@ -114,9 +122,15 @@ pub fn shown_name(name: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// What [`shown_name`] rewrites: control characters, the bidi embedding,
-/// override and isolate controls, and the backslash its escapes start with.
+/// override and isolate controls, the characters that hide text
+/// ([`carrel_core::hidden`] — in a name even a flag's are shown, since two
+/// names differing only in them are two files), and the backslash its
+/// escapes start with.
 fn needs_escape(c: char) -> bool {
-    c == '\\' || c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    c == '\\'
+        || c.is_control()
+        || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+        || carrel_core::hidden::is_hidden(c)
 }
 
 fn push_escaped(out: &mut String, text: &str) {
@@ -397,6 +411,34 @@ mod name_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Printed text agrees with the screen about hidden characters: a page
+    /// piped to another tool must not carry a sentence no reader saw. A
+    /// NAME shows them, escaped, as it shows every other thing it hides.
+    #[test]
+    fn hidden_text_is_not_printed_and_a_name_holding_it_says_so() {
+        let tags = |s: &str| -> String {
+            s.chars()
+                .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+                .collect()
+        };
+        let england = format!("\u{1F3F4}{}\u{E007F}", tags("gbeng"));
+        let body = format!("pay{} now \u{FFF9}x\u{FFFB} {england}", tags(" nobody"));
+        assert_eq!(clean_text(&body), format!("pay now x {england}"));
+        let doc = Document::parse(&format!("# T{}\n\n{body}\n", tags("h")));
+        let out = render(&doc, 60);
+        assert!(
+            !out.chars()
+                .any(|c| carrel_core::hidden::is_hidden(c) && !england.contains(c)),
+            "{out:?}"
+        );
+        assert!(out.contains(&england), "the flag is printed whole: {out:?}");
+
+        assert_eq!(
+            shown_name("a\u{E0041}b\u{FFF9}.md"),
+            "a\\u{e0041}b\\u{fff9}.md"
+        );
+    }
 
     #[test]
     fn plain_output_carries_structure_and_never_an_escape_byte() {

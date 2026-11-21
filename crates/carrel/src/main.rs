@@ -4186,7 +4186,7 @@ mod tests {
         assert_eq!(tail, "", "one link, one span");
         // What is left of the span once its SGR prefix is taken off is text.
         let text = shown.rsplit_once('m').map_or(shown, |(_, t)| t);
-        assert_eq!(text, "link abcdefg\u{E0041}hp 日本");
+        assert_eq!(text, "link abcdefghp 日本", "the tag character is gone too");
         let link = &painted.links[0];
         let buf = t.backend().buffer();
         let mut cells = String::new();

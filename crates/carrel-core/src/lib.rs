@@ -36,6 +36,7 @@
 
 pub mod diff;
 pub mod document;
+pub mod hidden;
 pub mod highlight;
 pub mod hyphen;
 pub mod layout;

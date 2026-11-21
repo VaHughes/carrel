@@ -422,6 +422,13 @@ Key facts:
   only what ratatui's cells hold and has no character filter of its own to drift. A
   destination goes through `ansi::osc8_target` (shared with `--render`): `clip::line`, then
   percent-encoding to bytes 33-126; a wikilink's path through `ansi::osc8_file_uri`.
+- **Hidden text has one rule, `carrel_core::hidden::strip`**, asked by every exit: the
+  screen (`render::scrub_cells`, a pass over the finished buffer before `settle_links`, so no
+  painter can forget it), the clipboard (`clip`), and printed output (`plain::push_text`).
+  It removes tag characters (U+E0000–E007F) and the interlinear annotation controls
+  (U+FFF9–FFFB) and keeps a well-formed emoji tag sequence (a subdivision flag). Bidi
+  controls are a different matter and stay as they were: gone from the screen (ratatui drops
+  zero-width clusters) and the clipboard, kept in printed body text, escaped in names.
 - **A cluster measures what the cells hold** (`carrel_core::cluster_width`): zero for a control
   character (tab and line break excepted), the soft hyphen, and any cluster of no width (a
   lone zero-width space or joiner, a bidi control, a BOM, a stray combining mark), all of

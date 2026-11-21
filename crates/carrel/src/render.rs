@@ -155,12 +155,59 @@ pub fn declare_wide_cells(frame: &mut Frame) {
     }
 }
 
+/// Take out of every cell the characters that hide text
+/// ([`carrel_core::hidden`]): tag characters and interlinear annotation
+/// controls, a flag's own aside.
+///
+/// A tag character joins the cluster before it, so ratatui keeps it in that
+/// cluster's cell and writes it to the terminal: a sentence spelled in them
+/// rode along inside any word, on screen for software and for no reader.
+/// Done here, on the finished buffer, because every painter writes cells
+/// and nothing else does — the document's rows, a pane quoting a heading,
+/// a file name in the list — so there is no painter to forget. An
+/// annotation control is a cluster of its own with a cell of its own; that
+/// cell is left blank, so nothing after it moves.
+///
+/// Before `settle_links`, which reads the cells back for the hyperlink
+/// pass.
+fn scrub_cells(frame: &mut Frame) {
+    let area = frame.area();
+    let buf = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let Some(cell) = buf.cell_mut((x, y)) else {
+                continue;
+            };
+            // Every hidden character is three or four bytes, led by EF or F3.
+            let sym = cell.symbol();
+            if sym.len() < 3 || !sym.bytes().any(|b| b == 0xEF || b == 0xF3) {
+                continue;
+            }
+            if let std::borrow::Cow::Owned(clean) = carrel_core::hidden::strip(sym) {
+                cell.set_symbol(if clean.is_empty() { " " } else { &clean });
+            }
+        }
+    }
+}
+
 /// Draw with everything: link collection and ready-image protocols.
 ///
 /// The protocol map is the ONLY place `ratatui-image` state reaches painting;
 /// `app` carries plain dimensions and nothing else.
 #[allow(clippy::implicit_hasher)] // an internal map, never a generic API
 pub fn draw_full(
+    frame: &mut Frame,
+    app: &App,
+    painted: &mut Painted,
+    images: &mut HashMap<carrel_core::BlockIdx, StatefulProtocol>,
+) {
+    draw_frame(frame, app, painted, images);
+    // The screens `draw_frame` returns from early paint cells too. Where it
+    // ran to the end the cells are clean already and this finds nothing.
+    scrub_cells(frame);
+}
+
+fn draw_frame(
     frame: &mut Frame,
     app: &App,
     painted: &mut Painted,
@@ -207,6 +254,7 @@ pub fn draw_full(
         paint_menu(frame, app, &mut painted.targets);
         blank_wide_cells_under_overlays(frame, &painted.targets);
         paint_hover(frame, app, &painted.targets);
+        scrub_cells(frame);
         settle_links(frame, painted);
         return;
     }
@@ -275,6 +323,7 @@ pub fn draw_full(
     paint_menu(frame, app, &mut painted.targets);
     blank_wide_cells_under_overlays(frame, &painted.targets);
     paint_hover(frame, app, &painted.targets);
+    scrub_cells(frame);
     settle_links(frame, painted);
 }
 

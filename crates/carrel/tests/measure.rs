@@ -1571,6 +1571,55 @@ fn every_osc8_span_is_one_style_from_end_to_end() {
     }
 }
 
+/// Text spelled in tag characters is on nobody's screen: not in a cell,
+/// not in a hyperlink span, not in a pane that quotes the document. The
+/// cells kept a tag character as part of the cluster before it, so a
+/// sentence of them rode along inside any word. A flag built of them is one
+/// visible glyph and stays one cell's worth.
+///
+/// Verified to fail with the scrub in `draw_full` removed.
+#[test]
+fn hidden_text_reaches_no_cell_and_no_hyperlink_and_a_flag_stays_whole() {
+    let tags = |s: &str| -> String {
+        s.chars()
+            .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+            .collect()
+    };
+    let england = format!("\u{1F3F4}{}\u{E007F}", tags("gbeng"));
+    let src = format!(
+        "# Head{h}\n\nword{p} a\u{FFF9}b\u{FFFA}c\u{FFFB}d {england} \
+         [li{l}nk](https://example.com/x) [LINK](https://example.com/y) end\n",
+        h = tags("heading"),
+        p = tags(" hidden prose"),
+        l = tags("in a link"),
+    );
+    let mut app = app_at(100, 20, &src);
+    for outline in [false, true] {
+        let (buf, painted) = menu_frame(&app, 100, 20);
+        let mut flags = 0;
+        for y in 0..20 {
+            for x in 0..100 {
+                let sym = buf[(x, y)].symbol();
+                if sym == england {
+                    flags += 1;
+                    continue;
+                }
+                assert!(
+                    !sym.chars().any(carrel_core::hidden::is_hidden),
+                    "outline={outline}: cell ({x},{y}) holds {sym:?}"
+                );
+            }
+        }
+        assert_eq!(flags, 1, "outline={outline}: the flag is one whole cluster");
+        let texts: Vec<&str> = painted.links.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["link", "LINK"], "outline={outline}");
+        // And nothing moved: the second link is where the layout says.
+        let link = &painted.links[1];
+        assert_eq!(buf[(link.x, link.y)].symbol(), "L", "outline={outline}");
+        carrel::app::update(&mut app, carrel::action::Action::OutlineToggle);
+    }
+}
+
 /// A cluster the frame does not show takes no column in the layout either.
 ///
 /// The cells drop every control character and every cluster of no width — a

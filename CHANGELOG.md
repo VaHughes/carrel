@@ -168,6 +168,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A document with a very long `tags:` list scrolls as fast as any other.** Every frame
   re-read the whole frontmatter once for each of its rows on screen; 80,000 tags took
   seconds to draw and seconds more for each line scrolled.
+- **Text hidden in tag characters is shown to nobody and copied nowhere.** Unicode's tag
+  characters spell ASCII that no terminal draws, and a sentence of them could ride inside
+  any word: onto the screen's byte stream, into a copy, into `--plain` and `--render`
+  output. They are dropped from all three now, as are the interlinear annotation
+  controls; a file NAME holding one shows it escaped. A subdivision flag (🏴 England,
+  Scotland, Wales…) is built of tag characters and still draws.
 - **Invisible characters no longer shift what follows them.** After a zero-width space, a
   bidi mark, a stray combining mark or a control character on a line, clicks, selections,
   search highlights and link underlines landed one column to the right of the text for
