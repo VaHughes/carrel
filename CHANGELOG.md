@@ -74,7 +74,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A diff keeps every line of a hunk.** A removed `-- comment` (written `--- comment`) or
   an added `++ i;` was taken for a file header and dropped, and lines such as `---i;` were
   left out of the `+N −M` counts. Hunks are now read by the line counts in their `@@`
-  header. A file heading shows its path as named: `my--file...x.sql`, not `my–file…x.sql`.
+  header, and such a line is colored, and its changed words marked, as the removal or
+  addition it is. A file heading shows its path as named: `my--file...x.sql`, not
+  `my–file…x.sql`.
 - **`git log | carrel` shows what the message says.** `<sha>`, `Vec<String>` and
   `/proc/<pid>/stat` are text, not HTML to strip (an autolink `<https://…>` is still a
   link); headers, trailers, indented lines and `#` comments keep `a^b^c`, `...` and their
