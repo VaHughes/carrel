@@ -202,6 +202,19 @@ fn context_line(src: &str, stem: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Find documents under `root` linking to `target`, on a background thread
+/// that also does the walk: a caller on an event loop must not walk a tree
+/// between two frames.
+#[must_use]
+pub fn spawn_under(root: PathBuf, target: PathBuf, generation: u64) -> Receiver<Msg> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (entries, _) = crate::scan::walk_blocking(&root);
+        search(entries, &target, generation, &tx);
+    });
+    rx
+}
+
 /// Find documents linking to `target`, on a background thread.
 ///
 /// Every message carries `generation`; the caller ignores stale ones, exactly
@@ -209,8 +222,13 @@ fn context_line(src: &str, stem: &str) -> String {
 #[must_use]
 pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let stem = stem_of(&target);
+    std::thread::spawn(move || search(entries, &target, generation, &tx));
+    rx
+}
+
+fn search(entries: Vec<Entry>, target: &Path, generation: u64, tx: &mpsc::Sender<Msg>) {
+    {
+        let stem = stem_of(target);
         if stem.is_empty() {
             let _ = tx.send(Msg::Done(generation));
             return;
@@ -221,7 +239,7 @@ pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<
                 break;
             }
             // A document is not its own backlink.
-            if same_file(&e.path, &target) {
+            if same_file(&e.path, target) {
                 continue;
             }
             if std::fs::metadata(&e.path).is_ok_and(|m| m.len() > MAX_BYTES) {
@@ -235,7 +253,7 @@ pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<
                 continue;
             }
             // Stage 2: be sure.
-            if !links_to(&src, &e.path, &target, &[]) {
+            if !links_to(&src, &e.path, target, &[]) {
                 continue;
             }
             let hit = Backlink {
@@ -248,8 +266,7 @@ pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<
             sent += 1;
         }
         let _ = tx.send(Msg::Done(generation));
-    });
-    rx
+    }
 }
 
 #[cfg(test)]

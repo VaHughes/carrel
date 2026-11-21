@@ -1317,6 +1317,8 @@ fn paint_help(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let bar = "─".repeat(w as usize);
     let title = if filter.is_empty() {
         "┌ carrel — help".to_string()
+    } else if display_width(filter) + 12 <= w {
+        format!("┌ help /{filter}")
     } else {
         format!("/{}", crate::layout::tail_text(filter, w.saturating_sub(5)))
     };
@@ -2788,6 +2790,9 @@ fn paint_status(frame: &mut Frame, app: &App, area: Rect, targets: &mut Targets)
             .and_then(carrel_core::Matches::position)
         {
             (format!("{i} of {n}"), format!("{i}/{n}"))
+        } else if matches!(&app.mode, Mode::Search { input, .. } if input.is_empty()) {
+            // An empty prompt has searched for nothing yet.
+            (String::new(), String::new())
         } else {
             (
                 match count {
@@ -3429,7 +3434,8 @@ fn paint_peek_row(
 fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
     let Some(menu) = &app.menu else { return };
     let area = frame.area();
-    let z = menu.zone(area.width, area.height);
+    let room = app.menu_rows().min(area.height);
+    let z = menu.zone(area.width, room);
     if z.w < 4 || z.h < 3 {
         small_panel(frame, targets, "menu", Action::MenuClose);
         return;
@@ -3458,7 +3464,7 @@ fn paint_menu(frame: &mut Frame, app: &App, targets: &mut Targets) {
 
     let accel_dx = menu.accel_dx(z.w);
     let rows = usize::from(z.h - 2);
-    let first = menu.first(area.width, area.height);
+    let first = menu.first(area.width, room);
     for (offset, item) in menu.items.iter().skip(first).take(rows).enumerate() {
         let i = first + offset;
         let y = z.y + 1 + u16::try_from(offset).unwrap_or(u16::MAX);
@@ -4368,12 +4374,21 @@ fn paint_home_status(frame: &mut Frame, app: &App, home: &Home, area: Rect, targ
             home.filtered.len()
         };
         let busy = home.mode == HomeMode::Search && !home.grep_done;
-        let feedback = if busy {
+        // An empty query searches nothing: no count and no `searching…`,
+        // which it said for as long as the prompt stayed empty.
+        let idle = home.mode == HomeMode::Search && home.query.is_empty();
+        let feedback = if idle {
+            String::new()
+        } else if busy {
             format!("{count} searching…")
         } else {
             format!("{count} file{}", if count == 1 { "" } else { "s" })
         };
-        let compact = format!("{count}{}", if busy { "…" } else { "" });
+        let compact = if idle {
+            String::new()
+        } else {
+            format!("{count}{}", if busy { "…" } else { "" })
+        };
         paint_query_status(frame, app, area, targets, &left, &feedback, &compact);
         return;
     }
@@ -5542,6 +5557,24 @@ mod tests {
             .join("\n")
     }
 
+    /// A typed filter keeps the help sheet's corner and name, as the
+    /// outline's does: `/fold ───` in place of `┌ carrel — help ───` left
+    /// the box open at one corner and unnamed.
+    #[test]
+    fn a_filtered_help_sheet_keeps_its_corner_and_name() {
+        let mut app = App::new("t.md".into(), Document::parse("# T\n\nbody"), 100, 30);
+        app.help = Some(crate::app::Help {
+            filter: "fold".into(),
+            ..Default::default()
+        });
+        let text = buffer_text(&buffer_of(&app, 100, 30));
+        assert!(text.contains("┌ help /fold ─"), "{text}");
+        // Too narrow for both: the typed text wins, as in the outline.
+        app.help.as_mut().unwrap().filter = "a".repeat(60);
+        let text = buffer_text(&buffer_of(&app, 30, 30));
+        assert!(text.contains("aaaa") && !text.contains("┌ help"), "{text}");
+    }
+
     /// What is on top is what the keys reach. `update` keeps two panes
     /// from ever being up together, so this state is built by hand — to
     /// pin the painter to `App::pane`, the answer `key_action` routes by.
@@ -5656,6 +5689,9 @@ mod tests {
             12,
         );
         crate::app::update(&mut app, Action::SearchOpen(Direction::Forward));
+        // Nothing typed is nothing searched: not `no matches`.
+        let status = line(&buffer_of(&app, 60, 12), 10);
+        assert!(!status.contains("match"), "{status:?}");
         for ch in "needle".chars() {
             crate::app::update(&mut app, Action::SearchKey(SearchKey::Char(ch)));
         }

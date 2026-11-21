@@ -549,59 +549,80 @@ fn stopped_on_stderr(stop: carrel::stream::Stop) -> String {
     )
 }
 
-/// The continue-reading rows: remembered documents that still exist and
-/// that the reader is genuinely part-way through.
+/// The "what links here" query (`L`): started when the pane opens, fed as
+/// hits arrive, dropped when it closes — which is what stops an abandoned
+/// search on its next send.
 ///
-/// A document at 0% is one that was opened and not read; at 100% it is
-/// finished. Neither is something to continue, and offering them would make
-/// the list noise rather than an answer.
-/// Start, feed, or stop the backlinks query as the pane opens and closes.
-///
-/// The scan the home screen builds is not available here — a document opened
-/// directly never had one — so the walk is rooted at the document's own
-/// directory, which is also the only place a relative link could point.
-fn drive_backlinks(
-    app: &mut App,
-    rx: &mut Option<Receiver<carrel::links::Msg>>,
-    started_for: &mut Option<PathBuf>,
-) {
-    use std::sync::mpsc::TryRecvError;
+/// A struct both event loops tick, like [`Clocks`]: the reader's own loop
+/// ran this and the file list's did not, so in a document opened from the
+/// list the pane said `Looking…` for good.
+#[derive(Default)]
+struct BacklinkScan {
+    rx: Option<Receiver<carrel::links::Msg>>,
+    started_for: Option<PathBuf>,
+}
 
-    // Closed: drop the receiver, which stops the thread on its next send.
-    let Some(_) = app.backlinks.as_ref() else {
-        *rx = None;
-        *started_for = None;
-        return;
-    };
-    let Some(file) = app.file.clone() else { return };
+impl BacklinkScan {
+    fn tick(&mut self, app: &mut App) {
+        use std::sync::mpsc::TryRecvError;
 
-    if started_for.as_deref() != Some(file.as_path()) {
-        let root = file
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        let (entries, _) = scan::walk_blocking(&root);
-        *rx = Some(carrel::links::spawn(entries, file.clone(), 0));
-        *started_for = Some(file);
-        return;
+        // Closed: drop the receiver.
+        let Some(_) = app.backlinks.as_ref() else {
+            self.rx = None;
+            self.started_for = None;
+            return;
+        };
+        let Some(file) = app.file.clone() else { return };
+
+        if self.started_for.as_deref() != Some(file.as_path()) {
+            let root = backlinks_root(&file, app.library_root());
+            self.rx = Some(carrel::links::spawn_under(root, file.clone(), 0));
+            self.started_for = Some(file);
+            return;
+        }
+
+        let Some(chan) = self.rx.as_ref() else { return };
+        loop {
+            match chan.try_recv() {
+                Ok(carrel::links::Msg::Found(b, _)) => {
+                    if let Some(pane) = app.backlinks.as_mut() {
+                        pane.rows.push(b);
+                    }
+                }
+                Ok(carrel::links::Msg::Done(_)) | Err(TryRecvError::Disconnected) => {
+                    if let Some(pane) = app.backlinks.as_mut() {
+                        pane.done = true;
+                    }
+                    self.rx = None;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+            }
+        }
     }
 
-    let Some(chan) = rx.as_ref() else { return };
-    loop {
-        match chan.try_recv() {
-            Ok(carrel::links::Msg::Found(b, _)) => {
-                if let Some(pane) = app.backlinks.as_mut() {
-                    pane.rows.push(b);
-                }
-            }
-            Ok(carrel::links::Msg::Done(_)) | Err(TryRecvError::Disconnected) => {
-                if let Some(pane) = app.backlinks.as_mut() {
-                    pane.done = true;
-                }
-                *rx = None;
-                break;
-            }
-            Err(TryRecvError::Empty) => break,
-        }
+    /// Whether an answer is still on its way, so a loop wakes to show it.
+    fn busy(&self) -> bool {
+        self.rx.is_some()
+    }
+}
+
+/// Where to look for documents linking to `file`: the folder this session
+/// reads within when the file is inside it — a README two folders up links
+/// here as surely as a sibling does — and otherwise the file's own folder.
+///
+/// `Path::new("doc.md").parent()` is `Some("")`, not `None`: walking that
+/// found nothing, and `carrel doc.md` said nothing linked to a document its
+/// sibling linked to.
+fn backlinks_root(file: &Path, library: Option<&Path>) -> PathBuf {
+    if let Some(root) = library
+        && !carrel::app::escapes_root(root, file)
+    {
+        return root.to_path_buf();
+    }
+    match file.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
     }
 }
 
@@ -2041,10 +2062,7 @@ fn run_loop(
     let mut reloader = Reloader::new();
     let mut desktop = Desktop::new();
     let mut diagrams = Diagrams::new();
-    // The backlinks query: started when the pane opens, dropped when it
-    // closes — which is what stops an abandoned walk on its next send.
-    let mut backlinks: Option<Receiver<carrel::links::Msg>> = None;
-    let mut backlinks_for: Option<PathBuf> = None;
+    let mut backlinks = BacklinkScan::default();
     let mut clocks = Clocks::default();
     // The tags page, asked for from inside a document: see `TagScan`.
     let mut tag_scan = TagScan::new();
@@ -2052,7 +2070,7 @@ fn run_loop(
     let mut pace = StreamPace::default();
 
     loop {
-        drive_backlinks(&mut app, &mut backlinks, &mut backlinks_for);
+        backlinks.tick(&mut app);
         tag_scan.tick(&mut app);
         siblings.tick(&mut app);
         images.sync(&mut app);
@@ -2680,7 +2698,7 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
     // The tags document: see `TagScan`.
     let mut tag_scan = TagScan::new();
     let mut preview = PreviewLoad { rx: None };
-    let mut siblings = Siblings::new();
+    let (mut siblings, mut backlinks) = (Siblings::new(), BacklinkScan::default());
     // Coming back from a document, the list's reading columns are a
     // document out of date.
     let mut was_home = true;
@@ -2715,12 +2733,13 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
         was_home = app.is_home();
         preview.tick(&mut app);
         siblings.tick(&mut app);
+        backlinks.tick(&mut app);
 
         maybe_rescan(&mut app, &mut scan, &scan_root, &grep);
 
         // While a scan or search is live, wake often enough to stream.
         let busy = scan.busy() || grep.busy() || tag_scan.busy() || preview.busy();
-        let idle = if busy { 16 } else { 100 };
+        let idle = if busy || backlinks.busy() { 16 } else { 100 };
         let timeout = resize
             .deadline
             .map_or(Duration::from_millis(idle), |d| {
@@ -2772,16 +2791,20 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
             ptr.forget_geometry();
         }
 
-        // The picker changed root: restart the walk against the new one.
-        if let Some(h) = app.home()
-            && h.root != scan_root
-        {
-            scan_root.clone_from(&h.root);
-            scan.restart(&scan_root);
-            load_reading(&mut app);
-        }
+        follow_root(&mut app, &mut scan, &mut scan_root);
     }
     Ok(())
+}
+
+/// The picker changed root: restart the walk against the new one.
+fn follow_root(app: &mut App, scan: &mut Scan, scan_root: &mut PathBuf) {
+    if let Some(h) = app.home()
+        && h.root != *scan_root
+    {
+        scan_root.clone_from(&h.root);
+        scan.restart(scan_root);
+        load_reading(app);
+    }
 }
 
 /// Shared resize debounce and input barrier for both event loops.

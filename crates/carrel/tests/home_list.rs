@@ -603,3 +603,24 @@ fn turning_the_preview_off_while_reading_reaches_the_list_behind() {
     assert!(app.is_home());
     assert!(!app.home().unwrap().show_preview);
 }
+
+/// An empty content query searches nothing, and the status row must not
+/// say `0 searching…` for as long as the prompt stays empty.
+#[test]
+fn an_empty_search_prompt_does_not_claim_to_be_searching() {
+    let d = tempfile::tempdir().unwrap();
+    let (cols, rows) = (80u16, 16u16);
+    let mut app = listed(d.path(), cols, rows);
+    update(&mut app, Action::HomeSearchMode);
+    let status = |app: &App| {
+        let (buf, _) = frame(app, cols, rows);
+        rows_of(&buf, cols, rows).join("\n")
+    };
+    assert!(status(&app).contains("search:"));
+    assert!(!status(&app).contains("searching"), "{}", status(&app));
+    // The control: a typed query is being searched until its grep is done.
+    update(&mut app, Action::HomeKey(SearchKey::Char('x')));
+    assert!(status(&app).contains("searching"), "{}", status(&app));
+    update(&mut app, Action::HomeKey(SearchKey::Backspace));
+    assert!(!status(&app).contains("searching"), "{}", status(&app));
+}

@@ -2047,3 +2047,47 @@ fn a_press_on_prose_like_alt_text_names_the_file_and_opens_nothing() {
     );
     assert!(cap.contains("201;41;43"), "the answer shows it");
 }
+
+fn backlink_pair(dir: &Path) {
+    std::fs::write(dir.join("target.md"), "# Target\n\nbody\n").unwrap();
+    std::fs::write(
+        dir.join("other.md"),
+        "# Other\n\nsee [zebracrossing](target.md) here\n",
+    )
+    .unwrap();
+}
+
+/// `L` from a document named bare on the command line. `Path::parent` of
+/// `target.md` is `Some("")`, the walk was rooted at the empty path, and the
+/// pane said "Nothing links to this document" beside a sibling that did.
+#[test]
+fn what_links_here_finds_a_sibling_of_a_file_named_bare() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    backlink_pair(dir.path());
+    let cap = pty_run_until("target.md", "L", "found", r"\003", dir.path());
+    assert!(
+        cap.contains("zebracrossing"),
+        "the sibling's linking line must be listed"
+    );
+}
+
+/// `L` in a document opened from the file list. Only the reader's own loop
+/// ran the query, so there the pane said `Looking…` for good.
+#[test]
+fn what_links_here_answers_in_a_document_opened_from_the_file_list() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    backlink_pair(dir.path());
+    let cap = pty_run_until(".", r"itarget\rL", "found", r"\003", dir.path());
+    assert!(
+        cap.contains("zebracrossing"),
+        "the sibling's linking line must be listed"
+    );
+}

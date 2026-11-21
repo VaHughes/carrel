@@ -1000,6 +1000,19 @@ impl App {
         rows.saturating_sub(if Self::show_hints(rows, hints) { 2 } else { 1 })
     }
 
+    /// The rows the open menu may cover: those above the status row and the
+    /// hint row when the whole menu fits there, else the whole frame — a
+    /// menu that has to scroll more is worse than a covered row. Paint, the
+    /// scroll window and the resize path all ask this.
+    #[must_use]
+    pub fn menu_rows(&self) -> u16 {
+        let above = Self::pane_rows_of(self.rows, self.hints);
+        match &self.menu {
+            Some(m) if m.items.len() + 2 <= usize::from(above) => above,
+            _ => self.rows,
+        }
+    }
+
     /// The rows the open pane may cover: [`Self::pane_rows_of`] — unless
     /// the pane cannot show its choices there, when it takes the whole
     /// frame as it always did (a short window: help at three rows, a
@@ -1468,6 +1481,10 @@ impl App {
             .get(..far.min(self.doc.text.len()))?
             .to_owned();
         let at = |b: u32| crate::state::Place::kept(&self.doc, DocByte(b));
+        // An end is exclusive: at a paragraph's end it is the separator,
+        // which belongs to the NEXT block, and a drag was dropped when a
+        // paragraph it never touched changed. Keep the last byte it holds.
+        let last = |start: u32, end: u32| at(if end > start { end - 1 } else { end });
         let (s0, s1) = sel
             .as_ref()
             .map_or((anchor.0, anchor.1), |s| (s.start, s.end));
@@ -1475,7 +1492,8 @@ impl App {
             prefix,
             anchor,
             selection: sel,
-            places: [at(anchor.0), at(anchor.1), at(s0), at(s1)],
+            places: [at(anchor.0), last(anchor.0, anchor.1), at(s0), last(s0, s1)],
+            ends: [u32::from(anchor.1 > anchor.0), u32::from(s1 > s0)],
         })
     }
 
@@ -1493,6 +1511,7 @@ impl App {
             return;
         }
         let [a0, a1, s0, s1] = d.places.map(|p| p.resolve(&self.doc).0);
+        let (a1, s1) = (a1 + d.ends[0], s1 + d.ends[1]);
         self.sel_anchor = Some((a0, a1));
         self.selection = d.selection.map(|_| s0.min(s1)..s0.max(s1));
     }
@@ -3429,8 +3448,9 @@ impl App {
         self.cols = cols;
         self.rows = rows;
         self.relayout();
+        let menu_rows = self.menu_rows();
         if let Some(menu) = &mut self.menu {
-            menu.top = menu.first(cols, rows);
+            menu.top = menu.first(cols, menu_rows);
         }
         if let Some(byte) = visible_match {
             self.reveal_table_byte(byte);
@@ -3842,12 +3862,15 @@ fn kept_found(p: crate::state::Place, doc: &Document) -> bool {
 
 /// A selection in progress, carried across a re-parse: the old text up to
 /// its far end (to tell an append from an edit) and a kept place for each
-/// of its bytes.
+/// of its ends.
 struct DragCarrier {
     prefix: String,
     anchor: (u32, u32),
     selection: Option<std::ops::Range<u32>>,
     places: [crate::state::Place; 4],
+    /// What to add back to the two end places, each kept at the last byte
+    /// its range holds: 1, or 0 for an empty range.
+    ends: [u32; 2],
 }
 
 /// How many unfound places a reload hold keeps: the reader's own and the
@@ -5159,9 +5182,10 @@ fn help_update(app: &mut App, action: Action) -> Outcome {
 fn menu_update(app: &mut App, action: Action) -> Outcome {
     match action {
         Action::MenuMove(n) => {
+            let rows = app.menu_rows();
             if let Some(m) = app.menu.as_mut() {
                 m.step(n);
-                m.top = m.first(app.cols, app.rows);
+                m.top = m.first(app.cols, rows);
             }
             Outcome::Redraw
         }
@@ -5169,10 +5193,11 @@ fn menu_update(app: &mut App, action: Action) -> Outcome {
         // must report `Idle` — otherwise moving the mouse across a menu
         // repaints the whole screen once per cell.
         Action::MenuHover(i) => {
+            let rows = app.menu_rows();
             let Some(m) = app.menu.as_mut() else {
                 return Outcome::Idle;
             };
-            m.top = m.first(app.cols, app.rows);
+            m.top = m.first(app.cols, rows);
             let before = m.selected;
             m.hover(i as usize);
             if m.selected == before {
@@ -7977,6 +8002,34 @@ mod tests {
                 byte: None,
             },
         );
+    }
+
+    /// A menu that fits above the status row and the hint row stays above
+    /// them, wherever it was opened: from the scrollbar half-way down, the
+    /// global menu's last row and border were drawn over both.
+    #[test]
+    fn a_menu_that_fits_above_the_chrome_stays_above_it() {
+        let mut a = App::new("t.md".into(), Document::parse("# Head\n\nbody\n"), 100, 30);
+        for at in [(99, 10), (10, 29), (10, 28), (50, 0)] {
+            update(&mut a, Action::MenuOpen { at, byte: None });
+            let m = a.menu.as_ref().expect("a menu is open");
+            let rows = a.menu_rows();
+            let z = m.zone(a.cols, rows);
+            assert!(usize::from(z.h) == m.items.len() + 2, "whole: {z:?}");
+            assert!(z.y + z.h <= 28, "{at:?}: {z:?} runs into the status row");
+            update(&mut a, Action::MenuClose);
+        }
+        // A window too short to hold it above the chrome gives it the frame,
+        // as before: a menu that scrolls more is worse than a covered row.
+        a.on_resize(100, 12);
+        update(
+            &mut a,
+            Action::MenuOpen {
+                at: (10, 3),
+                byte: None,
+            },
+        );
+        assert_eq!(a.menu_rows(), 12);
     }
 
     fn menu_row(a: &App, label: &str) -> u32 {

@@ -4,6 +4,15 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **What links here (`L`) answers in a document opened from the file list**, where it
+  said `Looking…` for good, and for a file named bare (`carrel notes.md`), where it said
+  nothing linked to a document its sibling linked to. It now looks through the whole
+  folder you are reading in, not only the document's own.
+- **A selection dragged to the end of a paragraph survives a live reload** that changed
+  the paragraph after it.
+- **A menu that fits above the status row stays above it** wherever it is opened; an empty
+  search prompt no longer says `0 searching…` or `no matches`; the help sheet keeps its
+  corner and name while a filter is typed.
 - **A Ctrl or Alt chord carrel does not bind does nothing.** It used to act as its bare
   letter outside text inputs: Ctrl-D on the file list opened the folder browser, Ctrl-T
   in the reader switched the table view, Alt-Q closed the document. The chords carrel
