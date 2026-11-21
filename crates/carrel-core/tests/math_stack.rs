@@ -85,6 +85,68 @@ const BETWEEN: &[&str] = &[
     "\\big(",
     "\\begingroup ",
     "\\endgroup ",
+    "[n+1]",
+    "[\\frac{1}{2}]",
+    "[{n}]",
+    "[\\sqrt[",
+    "\\text{1pt\u{a0}}",
+    "\\text{\\kern 1pt\u{a0}}",
+    "\\kern 1pt\u{a0}",
+    "{1em\u{2003}}",
+    "[1pt\u{a0}]",
+    "\\\\[1pt\u{3000}]",
+    "%\\text{\n",
+    "\\text{%}\n1pt\u{a0}}",
+];
+
+/// Wide spaces and accented letters wherever the lexer reads a number, a
+/// length or a delimiter: a reviewer's probes, each its own formula.
+const PROBES: &[&str] = &[
+    "x\u{a0}=\u{a0}y \\\\ z",
+    "\\begin{aligned} a\u{a0}&= b \\\\ c &= d \\end{aligned}",
+    "\\begin{align} a\u{a0}&= b \\end{align}",
+    "\\text{5\u{a0}kg} \\\\ x",
+    "\\text{a\u{3000}b}\\hspace{1em}c",
+    "\\text{skip\u{a0}it}",
+    "\\operatorname{kernel}\u{a0}x",
+    "a\u{a0}b \\cr c",
+    "\\begin{cases} x\u{a0}& y \\\\ z & w \\end{cases}",
+    "\\begin{pmatrix} a\u{a0}& b \\\\ c & d \\end{pmatrix}",
+    "\\text{caf\u{e9}} \\\\ a b",
+    "\u{3b1}\\\\\u{3b2}",
+    "\\text{\u{65e5}\u{672c} \u{8a9e}}\\\\x",
+    "a\u{2009}b\\\\c",
+    "1\u{a0}000 \\\\ 2",
+    "\\hspace{1em}\u{a0}x",
+    "\\kern 1pt\u{a0}x",
+    "\\begin{alignat}{\u{e9}} a \\end{alignat}",
+    "\\begin{alignat}{\u{a0}2} a \\end{alignat}",
+    "\\begin{alignat}\u{e9}",
+    "\\begin{alignedat}{\u{e9}} a \\end{alignedat}",
+    "\\begin{alignat*}{\u{e9}} a \\end{alignat*}",
+    "\\rule{1pt\u{a0}}{1pt}",
+    "\\rule[1pt\u{a0}]{1pt}{1pt}",
+    "\\rule{1pt}{1pt\u{a0}}",
+    "\\raisebox{1pt\u{a0}}{x}",
+    "\\above 1pt\u{a0} x",
+    "a \\above 1pt\u{a0} b",
+    "\\begin{array}{c} a \\\\[1pt\u{a0}] b \\end{array}",
+    "\\begin{matrix} a \\\\[1\u{e9}] b \\end{matrix}",
+    "\\genfrac{}{}{\u{e9}}{}{a}{b}",
+    "\\genfrac{}{}{1pt\u{a0}}{}{a}{b}",
+    "x^\u{e9}",
+    "x_\u{a0}y",
+    "x^\u{a0}",
+    "\\mathchar\"\u{e9}",
+    "\\char`\u{e9}",
+    "\\char\"\u{e9}",
+    "\\vspace{1pt\u{a0}}",
+    "\\hfil 1pt\u{a0}",
+    "\\Space{1pt\u{a0}}{1pt}{1pt}",
+    "\\phantom{\u{e9}}\\\\[\u{e9}]",
+    "\\\\[\u{e9}]",
+    "\\cr[\u{e9}]",
+    "\\newline[\u{e9}]",
 ];
 
 fn shapes() -> Vec<String> {
@@ -106,6 +168,7 @@ fn shapes() -> Vec<String> {
     shapes.push("\\def\\a#1{#1#1#1#1}\\def\\b#1{\\a{\\a{\\a{#1}}}}\\b{\\b{\\sqrt}}x".to_string());
     // The lexer steps one byte into a character of several: after a
     // number or a unit, and where `\char` wants its digit.
+    shapes.extend(PROBES.iter().map(ToString::to_string));
     for panics in [
         "\\char\u{e9}",
         "\\char 65\u{a0}x",

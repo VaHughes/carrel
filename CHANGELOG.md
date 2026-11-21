@@ -100,9 +100,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   next as its argument was refused, but a `%` comment or a no-break space between them, an
   argument such as `+` or `[n]`, or `\frac\frac a b` repeated hid the chain, and the
   document, pipe or search that held it aborted. So did a no-break space after a length
-  (`\kern 1pt` and one), `\char` before an accented letter, and a long run of `\def`s. Such
-  math is shown as its source. A formula that defines a macro (`\def`, `\newcommand`,
-  `\let`) is now always shown as source; `\hat a\hat b…` and other long rows of commands
+  (`\kern 1pt` and one), `\char` before an accented letter, and a long run of `\def`s. A
+  chain is shown as its source; a no-break or other wide space after a length is read as
+  the plain space it stands for, and the formula renders. A formula that defines a macro
+  (`\def`, `\newcommand`, `\let`) or uses `\char` or `\buildrel` is now always shown as
+  source; `\hat a\hat b…` and other long rows of commands
   that have their arguments render however long they are.
 - **A diff keeps every line of a hunk.** A removed `-- comment` (written `--- comment`) or
   an added `++ i;` was taken for a file header and dropped, and lines such as `---i;` were

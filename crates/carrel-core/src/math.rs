@@ -129,10 +129,12 @@ const MAX_DEPTH: u32 = 256;
 /// out. See [`MathClass`] for what the atoms carry.
 #[must_use]
 pub fn parse(latex: &str) -> Option<MathExpr> {
-    let latex = &*brace_root_indexes(latex);
-    if nesting(latex).refused() {
+    let latex = brace_root_indexes(latex);
+    let mut text = Vec::new();
+    if scan(&latex, &mut text).refused() {
         return None;
     }
+    let latex = &*plain_spaces(&latex, text);
     let storage = Storage::new();
     let mut events = Vec::new();
     for ev in Parser::new(latex, &storage) {
@@ -385,7 +387,7 @@ fn arity(word: &[u8]) -> Option<u8> {
         .map(|wants| wants as u8)
 }
 
-/// What the scan found: see [`nesting`].
+/// What the scan found: see [`scan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Nesting {
     /// The deepest a group sits inside others.
@@ -532,26 +534,50 @@ fn skip_token(s: &str, i: usize, end: usize, run: &mut u32) -> usize {
     }
 }
 
-/// What reads a number or a length: row breaks, kerns and skips, `\hspace`,
-/// `\Space`, `\genfrac`, the `alignat` family.
-const READS_NUMBERS: [&str; 8] = [
-    "\\\\", "\\cr", "kern", "skip", "hspace", "\\Space", "genfrac", "align",
+/// Commands whose braced argument is text the parser takes whole and
+/// never lexes.
+const TAKES_TEXT: [&[u8]; 8] = [
+    b"text",
+    b"textrm",
+    b"textbf",
+    b"textit",
+    b"textsf",
+    b"texttt",
+    b"operatorname",
+    b"mathop",
 ];
 
-/// Would the lexer panic here? After a number or a unit it steps over one
-/// whitespace character as one BYTE, which lands inside a no-break space.
-/// Only [`READS_NUMBERS`] get that far: `5` and a no-break space before
-/// `\text{kg}` is safe, and renders.
-fn steps_into_a_character(latex: &str) -> bool {
-    if latex.is_ascii() || !READS_NUMBERS.iter().any(|word| latex.contains(word)) {
-        return false;
+/// `latex` with each no-break, em or other wide space that follows an ASCII
+/// letter or digit made a plain space, except inside `text` — the ranges
+/// the scan found to be a text argument, where the space is the author's.
+///
+/// The parser's lexer steps over "one whitespace character" as one BYTE
+/// after a number or a unit it is reading as a length, and panics inside a
+/// character of several: `\kern 1pt` and a no-break space, `\\[1pt` and
+/// one. Everywhere the lexer reads, a wide space is whitespace like any
+/// other, so the plain one changes nothing but that; refusing the formula
+/// instead cost every matrix pasted with a no-break space in it.
+fn plain_spaces(latex: &str, mut text: Vec<std::ops::Range<usize>>) -> std::borrow::Cow<'_, str> {
+    if latex.is_ascii() {
+        return latex.into();
     }
+    text.sort_unstable_by_key(|r| r.start);
+    let mut text = text.into_iter().peekable();
+    let mut out = String::with_capacity(latex.len());
     let mut after_word = false;
-    latex.chars().any(|c| {
-        let steps = after_word && c.is_whitespace() && !c.is_ascii();
+    let mut kept_to = 0;
+    for (i, c) in latex.char_indices() {
+        while text.peek().is_some_and(|r| r.start <= i) {
+            kept_to = kept_to.max(text.next().map_or(0, |r| r.end));
+        }
+        if after_word && i >= kept_to && c.is_whitespace() && !c.is_ascii() {
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
         after_word = c.is_ascii_alphanumeric();
-        steps
-    })
+    }
+    out.into()
 }
 
 /// How deeply `latex` nests, by a scan that runs before the parser is
@@ -589,14 +615,13 @@ fn steps_into_a_character(latex: &str) -> bool {
 /// the parser, and a definition is lost at the end of its formula anyway.
 /// So is a formula whose groups cost more to cut than a small multiple of
 /// its length, which keeps the scan linear.
+///
+/// `text` takes the braced arguments of [`TAKES_TEXT`], for
+/// [`plain_spaces`].
 #[allow(clippy::too_many_lines)]
-fn nesting(latex: &str) -> Nesting {
+fn scan(latex: &str, text: &mut Vec<std::ops::Range<usize>>) -> Nesting {
     let b = latex.as_bytes();
     let mut found = Nesting::default();
-    if steps_into_a_character(latex) {
-        found.unbounded = true;
-        return found;
-    }
     // Groups nested one in the next to [`MAX_DEPTH`] cost half this.
     let (mut cost, budget) = (Cost::default(), 128 * b.len() + 65_536);
     // Groups still to scan, as `(start, end, depth)`.
@@ -789,11 +814,21 @@ fn nesting(latex: &str) -> Nesting {
                                 frames.push(OPEN_ENDED);
                             }
                         }
-                        word => match arity(word) {
-                            Some(0) => fill(&mut frames),
-                            Some(wants) => frames.push(wants),
-                            None => frames.push(OPEN_ENDED),
-                        },
+                        word => {
+                            if TAKES_TEXT.contains(&word)
+                                && i < end
+                                && b[i] == b'{'
+                                && let Some(len) =
+                                    group_content(&b[i + 1..end], b"{", b"}", depth + 1, &mut cost)
+                            {
+                                text.push(i + 1..i + 1 + len);
+                            }
+                            match arity(word) {
+                                Some(0) => fill(&mut frames),
+                                Some(wants) => frames.push(wants),
+                                None => frames.push(OPEN_ENDED),
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -1045,6 +1080,10 @@ fn content(c: &Content) -> MathExpr {
 mod tests {
     use super::*;
 
+    fn nesting(latex: &str) -> Nesting {
+        scan(latex, &mut Vec::new())
+    }
+
     /// The depth guard must run BEFORE `pulldown-latex`, whose cost is
     /// quadratic in group nesting: `{`×15 000 took a second in release, and
     /// the debug build here is slower still. Refused by the scan, each of
@@ -1261,24 +1300,64 @@ mod tests {
             assert!(nesting(&s).refused(), "{link:?}");
             assert_eq!(parse(&s), None);
         }
-        // A macro, a long run of comments, and the three shapes on which
-        // the parser's lexer panics are refused whatever else they hold.
+        // A macro, a long run of comments, and the two shapes on which the
+        // parser's lexer panics on a letter are refused whatever else they
+        // hold.
         for s in [
             r"\def\a{x}\a",
             r"\let\a=x \a",
             r"\newcommand{\a}{x}\a",
             r"\char`a",
             r"\buildrel a\over b",
-            "\\kern 1pt\u{a0}x",
             "\\begin{alignat}{\u{e9}}x\\end{alignat}",
             &"%\n".repeat(65),
         ] {
             assert!(nesting(s).refused(), "{s:?}");
         }
         assert!(!nesting(&"%\n".repeat(64)).refused());
-        assert!(!nesting("a\u{a0}+ b \u{a0} 1\u{a0}c").refused());
-        assert!(parse("5\u{a0}\\text{kg}").is_some());
-        assert!(nesting("a & 1\u{a0}\\\\ b").refused());
+        // A wide space is no reason to refuse: see `plain_spaces`.
+        assert!(!nesting("a & 1\u{a0}\\\\ b \\kern 1pt\u{a0}x").refused());
+    }
+
+    /// The copy the parser is given: a wide space after a letter or digit
+    /// is a plain one wherever the lexer reads, and the author's inside a
+    /// text argument — found as the parser finds it, not by its name.
+    #[test]
+    fn a_wide_space_is_plain_wherever_the_lexer_reads() {
+        let plain = |latex: &str| {
+            let mut text = Vec::new();
+            assert!(!scan(latex, &mut text).refused(), "{latex:?}");
+            plain_spaces(latex, text).into_owned()
+        };
+        for (latex, given) in [
+            ("\\kern 1pt\u{a0}x", "\\kern 1pt x"),
+            (
+                "a\u{a0}&= b\u{3000}\\\\[1pt\u{2003}] c",
+                "a &= b \\\\[1pt ] c",
+            ),
+            ("\\text{a\u{a0}b}\u{a0}c\u{a0}", "\\text{a\u{a0}b}\u{a0}c "),
+            ("\\text {5\u{a0}kg}", "\\text {5\u{a0}kg}"),
+            (
+                "\\textbf{a\u{a0}{b\u{a0}}c\u{a0}}d\u{a0}",
+                "\\textbf{a\u{a0}{b\u{a0}}c\u{a0}}d ",
+            ),
+            (
+                "\\operatorname{a\u{a0}b}\\mathop{c\u{a0}d}",
+                "\\operatorname{a\u{a0}b}\\mathop{c\u{a0}d}",
+            ),
+            // No text argument: a comment, an escaped brace, a longer name.
+            ("%\\text{\n\\kern 1pt\u{a0}x}", "%\\text{\n\\kern 1pt x}"),
+            ("\\text\\{1pt\u{a0}\\}", "\\text\\{1pt \\}"),
+            ("\\textstyle{1pt\u{a0}}", "\\textstyle{1pt }"),
+            (
+                "\\hspace{1em\u{a0}}\\frac{1\u{a0}}{2}",
+                "\\hspace{1em }\\frac{1 }{2}",
+            ),
+            // Not after a letter or digit: nothing reads a length there.
+            ("\u{a0}a +\u{a0}b", "\u{a0}a +\u{a0}b"),
+        ] {
+            assert_eq!(plain(latex), given, "{latex:?}");
+        }
     }
 
     #[test]

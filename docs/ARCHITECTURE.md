@@ -197,11 +197,13 @@ Key facts that are easy to get wrong:
   start: inside a hunk `--- x` is a removed line.
 - **`math::parse` scans before `pulldown-latex` runs, and the scan reads what the parser
   reads.** The parser recurses per command taking the next as a bare argument (a stack
-  overflow, which is an abort) and its lexer panics on a few inputs. `math::nesting` keeps the
+  overflow, which is an abort) and its lexer panics on a few inputs. `math::scan` keeps the
   frames the parser would have open, cutting groups with a copy of the parser's own loop and
   counting arguments from lists a test holds to the parser (`the_argument_lists_say_what_the_
   parser_reads`). A command it has no count for stays open to the end of its group; a macro
-  definition is refused outright. `tests/math_stack.rs` runs the parser on hostile shapes in
+  definition is refused outright. A wide space after a letter or digit is handed to the
+  parser as a plain one (`plain_spaces`), except in a text argument: the lexer steps one byte
+  into it after a length. `tests/math_stack.rs` runs the parser on hostile shapes in
   a child process. Re-run both before any `pulldown-latex` bump.
 - **pulldown-cmark emits no `Paragraph` inside a tight list item**, so `NodeKind::Item` is a
   leaf. The `every_byte_of_display_text_is_covered_by_a_block_or_a_separator` test catches
