@@ -659,3 +659,40 @@ fn back_follows_the_old_paragraph_when_the_file_changed_while_away() {
         "return to the old heading, not whatever moved into byte zero"
     );
 }
+
+/// Back clamped the view by the height of the document it was LEAVING. A
+/// document with headings has a heading bar and so fewer text rows than one
+/// without, and Back from one into the end of the other came to rest a row
+/// or two past the last screenful.
+#[test]
+fn back_never_rests_past_the_last_screenful() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = tmp.path().canonicalize().unwrap();
+    let mut src = String::from("[other](other.md)\n\n");
+    for i in 0..40 {
+        let _ = write!(
+            src,
+            "Paragraph {i} with enough words to wrap across a narrow window more than once.\n\n"
+        );
+    }
+    std::fs::write(lib.join("a.md"), &src).unwrap();
+    std::fs::write(lib.join("other.md"), "# Other\n\ntext\n").unwrap();
+    for resize in [None, Some((60u16, 12u16)), Some((20, 30))] {
+        let mut a = carrel::app::App::new_home(lib.clone(), Vec::new(), 20, 15);
+        a.open_path(&lib.join("a.md")).unwrap();
+        carrel::app::update(&mut a, carrel::action::Action::GoToEnd);
+        carrel::app::update(&mut a, carrel::action::Action::LinkOpen(0));
+        assert!(a.path.contains("other"), "followed");
+        if let Some((w, h)) = resize {
+            a.on_resize(w, h);
+        }
+        carrel::app::update(&mut a, carrel::action::Action::Back);
+        let max = a.layout.max_scroll(a.text_h());
+        assert!(
+            a.view.scroll_row <= max,
+            "{resize:?}: {} > {max}",
+            a.view.scroll_row
+        );
+        assert_eq!(a.view.scroll_row, max, "{resize:?}: still at the end");
+    }
+}

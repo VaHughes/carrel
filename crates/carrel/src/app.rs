@@ -1620,8 +1620,22 @@ impl App {
         let at = |b: u32| crate::state::Place::kept(&self.doc, DocByte(b));
         // An end is exclusive: at a paragraph's end it is the separator,
         // which belongs to the NEXT block, and a drag was dropped when a
-        // paragraph it never touched changed. Keep the last byte it holds.
-        let last = |start: u32, end: u32| at(if end > start { end - 1 } else { end });
+        // paragraph it never touched changed. Keep the last character it
+        // holds, by its first byte: the byte before the end is inside a
+        // character of several bytes, and a place there comes back cut.
+        let tail = |start: u32, end: u32| -> u32 {
+            if end <= start {
+                return 0;
+            }
+            let text = &self.doc.text;
+            let end = (end as usize).min(text.len());
+            let mut first = end.saturating_sub(1);
+            while first > 0 && !text.is_char_boundary(first) {
+                first -= 1;
+            }
+            (end - first) as u32
+        };
+        let last = |start: u32, end: u32| at(end - tail(start, end));
         let (s0, s1) = sel
             .as_ref()
             .map_or((anchor.0, anchor.1), |s| (s.start, s.end));
@@ -1630,7 +1644,7 @@ impl App {
             anchor,
             selection: sel,
             places: [at(anchor.0), last(anchor.0, anchor.1), at(s0), last(s0, s1)],
-            ends: [u32::from(anchor.1 > anchor.0), u32::from(s1 > s0)],
+            ends: [tail(anchor.0, anchor.1), tail(s0, s1)],
         })
     }
 
@@ -1649,6 +1663,14 @@ impl App {
         }
         let [a0, a1, s0, s1] = d.places.map(|p| p.resolve(&self.doc).0);
         let (a1, s1) = (a1 + d.ends[0], s1 + d.ends[1]);
+        // The same character, so the same length — but never a cut one.
+        let text = &self.doc.text;
+        if [a0, a1, s0, s1]
+            .iter()
+            .any(|&b| !text.is_char_boundary(b as usize))
+        {
+            return;
+        }
         self.sel_anchor = Some((a0, a1));
         self.selection = d.selection.map(|_| s0.min(s1)..s0.max(s1));
     }
@@ -2123,7 +2145,7 @@ impl App {
         self.marks = desk.marks;
         self.notes.entries = desk.notes;
         self.relayout();
-        self.land_on(place.resolve(&self.doc).0, self.text_h());
+        self.land_on(place.resolve(&self.doc).0);
         true
     }
 
@@ -2263,7 +2285,12 @@ impl App {
     /// sections that were left collapsed, so the place is expanded to, like
     /// every other destination. Back used to land inside a collapsed
     /// section: the top of a document with the place it meant at no height.
-    fn land_on(&mut self, anchor: u32, h: u16) {
+    fn land_on(&mut self, anchor: u32) {
+        // The height of the document landed ON, asked now: a caller's own
+        // figure is from before the document changed, and one with a
+        // heading bar has fewer text rows than one without — Back between
+        // them rested a row or two past the last screenful.
+        let h = self.text_h();
         self.following = false;
         self.auto_read = false;
         let last = u32::try_from(self.doc.text.len().saturating_sub(1)).unwrap_or(u32::MAX);
@@ -4040,8 +4067,9 @@ struct DragCarrier {
     anchor: (u32, u32),
     selection: Option<std::ops::Range<u32>>,
     places: [crate::state::Place; 4],
-    /// What to add back to the two end places, each kept at the last byte
-    /// its range holds: 1, or 0 for an empty range.
+    /// What to add back to the two end places, each kept at the last
+    /// character its range holds: that character's length in bytes, or 0
+    /// for an empty range.
     ends: [u32; 2],
 }
 
@@ -6258,9 +6286,9 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             link_follow(app)
         }
 
-        Action::Back => go_back(app, h),
-        Action::Forward => go_forward(app, h),
-        Action::BackTo(index) => go_back_to(app, index as usize, h),
+        Action::Back => go_back(app),
+        Action::Forward => go_forward(app),
+        Action::BackTo(index) => go_back_to(app, index as usize),
 
         // A bookmark lands on the block the reader is looking at, not on a
         // raw scroll offset: `zz` and a resize both move the offset, and a
@@ -7169,12 +7197,12 @@ fn close_file(app: &mut App) -> Outcome {
     Outcome::Redraw
 }
 
-fn go_back(app: &mut App, h: u16) -> Outcome {
+fn go_back(app: &mut App) -> Outcome {
     let Some((prev, anchor)) = app.history.pop() else {
         return Outcome::Idle;
     };
     let from = app.location();
-    if go_to(app, &prev, anchor, h)
+    if go_to(app, &prev, anchor)
         && let Some(from) = from
     {
         app.future.push(from);
@@ -7183,12 +7211,12 @@ fn go_back(app: &mut App, h: u16) -> Outcome {
 }
 
 /// `Back`'s mirror: return to where the last `Back` came from.
-fn go_forward(app: &mut App, h: u16) -> Outcome {
+fn go_forward(app: &mut App) -> Outcome {
     let Some((next, anchor)) = app.future.pop() else {
         return Outcome::Idle;
     };
     let from = app.location();
-    if go_to(app, &next, anchor, h)
+    if go_to(app, &next, anchor)
         && let Some(from) = from
     {
         // Not `push_history`: that would empty the rest of the way forward.
@@ -7200,25 +7228,25 @@ fn go_forward(app: &mut App, h: u16) -> Outcome {
 /// `Back`, as many times as it takes to reach history entry `index` — a
 /// click on a segment of the trail. One step at a time, so the way forward
 /// is exactly what pressing `Back` that many times would have left.
-fn go_back_to(app: &mut App, index: usize, h: u16) -> Outcome {
+fn go_back_to(app: &mut App, index: usize) -> Outcome {
     if index >= app.history.len() {
         return Outcome::Idle; // a segment from a frame the trail outlived
     }
     while app.history.len() > index {
-        go_back(app, h);
+        go_back(app);
     }
     Outcome::Redraw
 }
 
 /// Go to a history entry. Says whether the reader is now there.
-fn go_to(app: &mut App, to: &Path, place: Place, h: u16) -> bool {
+fn go_to(app: &mut App, to: &Path, place: Place) -> bool {
     // A same-document entry resolves against the current parse, including
     // any watched rewrite. No second read or annotation reload is needed.
     if app.file.as_deref() == Some(to)
         || (to == Path::new("(stdin)") && app.showing_pipe())
         || desk_index(to).is_some_and(|i| app.on_desk == Some(i))
     {
-        app.land_on(place.resolve(&app.doc).0, h);
+        app.land_on(place.resolve(&app.doc).0);
         return true;
     }
     // A generated page: reopened from its kept source, with the sections
@@ -7253,13 +7281,13 @@ fn go_to(app: &mut App, to: &Path, place: Place, h: u16) -> bool {
         if app.apply_fold_keys(&app.piped_folds.clone()) {
             app.relayout();
         }
-        app.land_on(place.resolve(&app.doc).0, h);
+        app.land_on(place.resolve(&app.doc).0);
         app.announce_pipe_stop();
         return true;
     }
     match app.open_path(to) {
         Ok(()) => {
-            app.land_on(place.resolve(&app.doc).0, h);
+            app.land_on(place.resolve(&app.doc).0);
             true
         }
         Err(e) => {

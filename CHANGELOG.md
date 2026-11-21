@@ -4,6 +4,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Back and Forward never come to rest past the last screenful**: returning to the end of
+  a document from one with a heading bar left the view a row or two too low.
 - **A diagram piped into carrel is drawn** (`cat design.md | carrel`); on a pipe every
   mermaid block stayed source.
 - **`theme = Nord` is `nord`**: a theme's name is read whatever its letter case. Switching
@@ -39,7 +41,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   folder you are reading in, the document's own folder first, shows each answer as it
   is found, and stops looking when the pane closes.
 - **A selection dragged to the end of a paragraph survives a live reload** that changed
-  the paragraph after it.
+  the paragraph after it. So does one that ends on an accented letter, a CJK character or an
+  emoji.
 - **A menu that fits above the status row stays above it** wherever it is opened; an empty
   search prompt no longer says `0 searching…` or `no matches`; the help sheet keeps its
   corner and name while a filter is typed.

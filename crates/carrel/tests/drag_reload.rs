@@ -138,3 +138,28 @@ fn a_double_click_on_a_heading_selects_its_word_and_unfolds() {
     assert_eq!(sel.as_deref(), Some("Two"));
     assert!(a.folded.is_empty());
 }
+
+/// A drag ending on a character of several bytes: the kept place was the
+/// byte before the exclusive end, which is INSIDE that character, and it
+/// came back a byte past the character's start — a range that cuts it, and
+/// a release that copied nothing.
+#[test]
+fn a_drag_ending_on_a_wide_character_survives_an_edit_above() {
+    for (last, want) in [
+        ("界", "here 界"),
+        ("é", "here é"),
+        ("👩‍💻", "here 👩‍💻"),
+        ("x", "here x"),
+    ] {
+        let src = format!("intro\n\nhere {last} after\n");
+        let mut a = App::new("t.md".into(), Document::parse(&src), 60, 20);
+        let h = byte(&a, "here");
+        update(&mut a, Action::SelectAnchor((h, h + 1)));
+        let c = byte(&a, last);
+        let end = c + u32::try_from(last.len()).unwrap();
+        update(&mut a, Action::SelectDrag((c, end)));
+        a.reload_from(&format!("a new paragraph\n\n{src}"));
+        update(&mut a, Action::SelectRelease);
+        assert_eq!(a.clipboard.as_deref(), Some(want), "{last}");
+    }
+}
