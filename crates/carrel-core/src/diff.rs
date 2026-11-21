@@ -44,6 +44,7 @@ pub fn looks_like_diff(text: &str) -> bool {
         l.starts_with("diff --git ")
             || l.starts_with("Index: ")
             || is_commit_line(l)
+            || mail_commit(l).is_some()
             || is_hunk_header(l)
     })
 }
@@ -70,12 +71,13 @@ pub(crate) fn hunk_lines(l: &str) -> Option<(usize, usize)> {
     }
     let (old, rest) = l.strip_prefix("@@ -")?.split_once(" +")?;
     let (new, _) = rest.split_once(" @@")?;
+    // All digits, so a count that does not parse is one too large to hold.
     let count = |range: &str| {
         range
             .split_once(',')
-            .map_or(Some(1), |(_, n)| n.parse().ok())
+            .map_or(1, |(_, n)| n.parse().unwrap_or(usize::MAX))
     };
-    Some((count(old)?, count(new)?))
+    Some((count(old), count(new)))
 }
 
 /// `12` or `12,3`.
@@ -93,6 +95,32 @@ fn is_commit_line(l: &str) -> bool {
         let sha = rest.split_whitespace().next().unwrap_or("");
         sha.len() >= 7 && sha.bytes().all(|c| c.is_ascii_hexdigit())
     })
+}
+
+/// The commit a `git format-patch` mail is of, from the line that opens
+/// it: `From <sha> Mon Sep 17 00:00:00 2001`. The date is git's own
+/// constant, there so the line cannot be mistaken for anything else — a
+/// sentence that opens with `From` least of all.
+fn mail_commit(l: &str) -> Option<&str> {
+    let sha = l
+        .strip_prefix("From ")?
+        .strip_suffix(" Mon Sep 17 00:00:00 2001")?;
+    (matches!(sha.len(), 40 | 64) && sha.bytes().all(|c| c.is_ascii_hexdigit())).then_some(sha)
+}
+
+/// A line other tools write between the files of one diff — `diff -ru`,
+/// Subversion, Mercurial — which keeps the diff going.
+fn is_between_files(l: &str) -> bool {
+    [
+        "\\",
+        "diff ",
+        "Index: ",
+        "=====",
+        "Only in ",
+        "Binary files ",
+    ]
+    .iter()
+    .any(|start| l.starts_with(start))
 }
 
 /// The fence that can safely wrap `body`.
@@ -150,6 +178,8 @@ struct FileDiff {
     body: String,
     added: usize,
     removed: usize,
+    /// A hunk has been read, its lines counted off its header.
+    walked: bool,
 }
 
 impl FileDiff {
@@ -1068,16 +1098,19 @@ pub fn to_markdown(src: &str) -> String {
             }
             hunk = (0, 0);
         }
-        // A commit opens a new section and closes whatever came before.
-        if is_commit_line(line) {
+        // A commit opens a new section and closes whatever came before, and
+        // so does a mail of `git format-patch`, which is a commit.
+        let mail = mail_commit(line);
+        if mail.is_some() || is_commit_line(line) {
             std::mem::take(&mut file).flush(&mut out);
             flush_message(&mut message, &mut out);
-            let sha = line
-                .strip_prefix("commit ")
-                .unwrap_or("")
-                .split_whitespace()
-                .next()
-                .unwrap_or("");
+            let sha = mail.unwrap_or_else(|| {
+                line.strip_prefix("commit ")
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+            });
             let short = &sha[..sha.len().min(12)];
             let _ = writeln!(out, "# commit {short}\n");
             continue;
@@ -1094,8 +1127,17 @@ pub fn to_markdown(src: &str) -> String {
         // dropped — the heading already says which file this is, and keeping
         // them would put two red/green lines at the top of every fence that
         // mean nothing to a reader.
+        //
+        // Once a hunk has been read, only another hunk goes on with the
+        // file: its lines were counted off, so whatever follows them — a
+        // patch's `-- ` signature, the next mail — is not the diff. It read
+        // as a removed line, and stayed in the file's fence.
+        let ended = file.walked && hunk_lines(line).is_none() && !line.starts_with('\\');
+        if !file.heading.is_empty() && ended {
+            std::mem::take(&mut file).flush(&mut out);
+        }
         if !file.heading.is_empty() {
-            if line.starts_with("--- ") || line.starts_with("+++ ") {
+            if !file.walked && (line.starts_with("--- ") || line.starts_with("+++ ")) {
                 continue;
             }
             // `index abc..def 100644`, `new file mode`, `similarity index` —
@@ -1113,8 +1155,10 @@ pub fn to_markdown(src: &str) -> String {
             }
             if let Some(lines) = hunk_lines(line) {
                 hunk = lines;
+                // A header that counts no lines says nothing about the
+                // ones under it: they stay, counted by their sigils.
+                file.walked |= lines != (0, 0);
             } else if line.starts_with('+') && !line.starts_with("+++") {
-                // Outside any hunk this can count: a combined diff's `@@@`.
                 file.added += 1;
             } else if line.starts_with('-') && !line.starts_with("---") {
                 file.removed += 1;
@@ -1130,9 +1174,17 @@ pub fn to_markdown(src: &str) -> String {
         if is_hunk_header(line) || line.starts_with("--- ") || line.starts_with("+++ ") {
             flush_message(&mut message, &mut out);
             file.heading = String::new();
+            if let Some(lines) = hunk_lines(line) {
+                hunk = lines;
+                file.walked |= lines != (0, 0);
+            }
             file.body.push_str(line);
             file.body.push('\n');
             continue;
+        }
+        // Prose under the last hunk of plain `diff -u` output is prose.
+        if !file.body.is_empty() && file.walked && !is_between_files(line) {
+            std::mem::take(&mut file).flush(&mut out);
         }
         if !file.body.is_empty() {
             file.body.push_str(line);

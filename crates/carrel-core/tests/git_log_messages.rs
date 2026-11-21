@@ -284,6 +284,139 @@ fn a_hunk_keeps_lines_that_look_like_file_headers() {
     );
 }
 
+/// The fenced blocks of a diff as the reader holds them, in order.
+fn fences(src: &str) -> Vec<String> {
+    let doc = Document::parse(&to_markdown(src));
+    doc.nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::CodeBlock { .. }))
+        .map(|n| doc.text[n.doc.start as usize..n.doc.end as usize].to_string())
+        .collect()
+}
+
+fn headings(src: &str) -> Vec<String> {
+    let doc = Document::parse(&to_markdown(src));
+    doc.nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Heading { .. }))
+        .map(|n| doc.text[n.doc.start as usize..n.doc.end as usize].to_string())
+        .collect()
+}
+
+/// `git format-patch` writes a mail per commit: a `From <sha>` line, mail
+/// headers, the message, the diff, and a `-- ` signature. A hunk ends where
+/// its `@@` counts say, so the signature is no removed line and the next
+/// mail is no part of the file before it.
+#[test]
+fn a_format_patch_mbox_is_a_commit_per_mail() {
+    let src = "From 1111111111111111111111111111111111111111 Mon Sep 17 00:00:00 2001\n\
+From: A <a@x>\nDate: Mon, 1 Jan 2026 00:00:00 +0000\nSubject: [PATCH 1/2] first thing\n\n\
+Body text.\n---\n f.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\n\
+diff --git a/f.txt b/f.txt\nindex 111..222 100644\n--- a/f.txt\n+++ b/f.txt\n\
+@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n-- \n2.47.0\n\n\
+From 2222222222222222222222222222222222222222 Mon Sep 17 00:00:00 2001\n\
+From: A <a@x>\nSubject: [PATCH 2/2] second\n\n---\n\
+diff --git a/g.txt b/g.txt\nindex 111..222 100644\n--- a/g.txt\n+++ b/g.txt\n\
+@@ -1 +1 @@\n-x\n+y\n-- \n2.47.0\n\n";
+    assert_eq!(
+        headings(src),
+        [
+            "commit 111111111111",
+            "f.txt  +1 \u{2212}1",
+            "commit 222222222222",
+            "g.txt  +1 \u{2212}1"
+        ]
+    );
+    assert_eq!(
+        fences(src),
+        [
+            "@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n",
+            "@@ -1 +1 @@\n-x\n+y\n"
+        ]
+    );
+    let t = diff_shown(src);
+    // Nothing of a mail is lost: its headers, its message, its signature.
+    for want in [
+        "From: A <a@x>\nDate: Mon, 1 Jan 2026 00:00:00 +0000\nSubject: [PATCH 1/2] first thing",
+        "Body text.",
+        "1 file changed, 1 insertion(+), 1 deletion(-)",
+        "2.47.0",
+        "Subject: [PATCH 2/2] second",
+    ] {
+        assert!(t.contains(want), "{want:?} not in {t:?}");
+    }
+    assert_eq!(t.matches("-- 2.47.0").count(), 2, "{t:?}");
+    assert!(carrel_core::looks_like_diff(
+        "From 1111111111111111111111111111111111111111 Mon Sep 17 00:00:00 2001\nFrom: A\n"
+    ));
+    // A line of prose that opens with `From` is no mail.
+    assert_eq!(
+        headings("commit 1111111111111111111111111111111111111111\n\nFrom 2222222 we learned\n"),
+        ["commit 111111111111"]
+    );
+}
+
+/// What follows a diff's last hunk is not the diff: a patch's signature,
+/// or prose under plain `diff -u` output.
+#[test]
+fn text_after_the_last_hunk_is_outside_the_fence() {
+    // One patch, as `git am` takes it.
+    let src = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+y\n-- \n2.43.0\n";
+    assert_eq!(headings(src), ["f  +1 \u{2212}1"]);
+    assert_eq!(fences(src), ["@@ -1 +1 @@\n-x\n+y\n"]);
+    assert!(
+        diff_shown(src).contains("-- 2.43.0"),
+        "{:?}",
+        diff_shown(src)
+    );
+    // `\\ No newline` belongs to the hunk it follows, and a second hunk to
+    // its file.
+    let src = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+y\n\\ No newline at end of file\n@@ -9 +9 @@\n-p\n+q\n\nThat is all.\n";
+    assert_eq!(headings(src), ["f  +2 \u{2212}2"]);
+    assert_eq!(
+        fences(src),
+        ["@@ -1 +1 @@\n-x\n+y\n\\ No newline at end of file\n@@ -9 +9 @@\n-p\n+q\n"]
+    );
+    assert!(
+        diff_shown(src).ends_with("That is all.\n"),
+        "{:?}",
+        diff_shown(src)
+    );
+    // Plain `diff -u`, two files, then a remark.
+    let src = "--- a.txt\t2026-01-01\n+++ b.txt\t2026-01-02\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n--- c.txt\n+++ d.txt\n@@ -1 +1 @@\n-x\n+y\nSee the - list above.\n- one more\n";
+    let fenced = fences(src);
+    assert_eq!(fenced.len(), 1, "{fenced:?}");
+    assert!(fenced[0].ends_with("@@ -1 +1 @@\n-x\n+y\n"), "{fenced:?}");
+    assert!(
+        diff_shown(src).contains("See the - list above."),
+        "{:?}",
+        diff_shown(src)
+    );
+    // The lines other tools write between files stay with the diff.
+    for src in [
+        "Index: f.txt\n=====\n--- f.txt\t(revision 1)\n+++ f.txt\t(working copy)\n@@ -1 +1 @@\n-a\n+b\nIndex: g.txt\n=====\n--- g.txt\n+++ g.txt\n@@ -1 +1 @@\n-x\n+y\n",
+        "diff -ru a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nOnly in b: new.txt\ndiff -ru a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-x\n+y\n",
+    ] {
+        let fenced = fences(src);
+        assert_eq!(fenced.len(), 1, "{fenced:?}");
+        assert!(
+            fenced[0].ends_with("--- a/y\n+++ b/y\n@@ -1 +1 @@\n-x\n+y\n")
+                || fenced[0].ends_with("+++ g.txt\n@@ -1 +1 @@\n-x\n+y\n"),
+            "{fenced:?}"
+        );
+    }
+    // A header that cannot be believed costs no line and no count: a count
+    // too large to hold, and one that counts nothing over lines that exist.
+    for header in ["@@ -1,99999999999999999999 +1,2 @@", "@@ -0,0 +0,0 @@"] {
+        let src = format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{header}\n-two\n+TWO\n");
+        assert_eq!(headings(&src), ["f  +1 \u{2212}1"], "{header}");
+        assert_eq!(fences(&src), [format!("{header}\n-two\n+TWO\n")]);
+    }
+    // A hunk cut short by the next file loses nothing and counts what is there.
+    let src = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,5 +1,5 @@\n one\n-two\n+TWO\ndiff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-g1\n+g2\n";
+    assert_eq!(headings(src), ["f  +1 \u{2212}1", "g  +1 \u{2212}1"]);
+}
+
 /// The counts beside a file's name are of the lines shown: `---i;` is a
 /// removed line and `+++++` an added one, and neither was counted.
 #[test]

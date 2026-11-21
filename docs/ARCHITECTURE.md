@@ -194,7 +194,8 @@ Key facts that are easy to get wrong:
   record line is shown exactly as written, smart punctuation and `^` included. No hyphen pair
   survives unescaped outside a code span or an autolink, so `--force` and `<!--` never become
   dashes. A hunk's lines are counted off by its `@@` header, never recognized by how they
-  start: inside a hunk `--- x` is a removed line.
+  start: inside a hunk `--- x` is a removed line, and what follows the counted lines (a
+  patch's `-- ` signature, the next `git format-patch` mail, prose) ends the file's fence.
 - **`math::parse` scans before `pulldown-latex` runs, and the scan reads what the parser
   reads.** The parser recurses per command taking the next as a bare argument (a stack
   overflow, which is an abort) and its lexer panics on a few inputs. `math::scan` keeps the

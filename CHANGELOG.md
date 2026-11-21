@@ -110,15 +110,22 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   an added `++ i;` was taken for a file header and dropped, and lines such as `---i;` were
   left out of the `+N −M` counts. Hunks are now read by the line counts in their `@@`
   header, and such a line is colored, and its changed words marked, as the removal or
-  addition it is. A file heading shows its path as named: `my--file...x.sql`, not
-  `my–file…x.sql`.
+  addition it is. A file's section ends where its hunks do: a `git format-patch` mail's
+  `-- ` signature is no longer a removed line (`+1 −2` for a one-line change) and the next
+  mail no longer sits in the file's block; each mail is a commit section, and prose under
+  plain `diff -u` output is prose. A file heading shows its path as named:
+  `my--file...x.sql`, not `my–file…x.sql`.
 - **`git log | carrel` shows what the message says.** `<sha>`, `Vec<String>` and
   `/proc/<pid>/stat` are text, not HTML to strip (an autolink `<https://…>` is still a
   link); headers, trailers, indented lines and `#` comments keep `a^b^c`, `...` and their
   quotes as typed; an embed `![[my--notes]]` shows no backslash; a line holding only `+`
   or `1.` is that text, not an empty list item; and a URL typed on into `[[…]]` keeps its
-  `--`. In any document, a bare URL with an entity in it keeps its hyphens even when the
-  paragraph has a dash typed elsewhere.
+  `--`.
+- **A bare URL copies the address that was typed.** With an entity in it
+  (`…/1--2?a&amp;b`) it copied and showed a dash for `--` whenever the same dash was
+  typed elsewhere in the paragraph (`1–2`), copied `…` for `...` and a curled quote for
+  `'`, and of two URLs alike but for a typed dash one could take the other's address.
+  Each URL is now read from the characters typed at its own place.
 - **A link's text and address reach the terminal exactly as the screen shows them.** The
   hyperlink wrapper around a link carried bidi overrides and zero-width characters that
   the rest of the screen drops, so a terminal that reorders text could show a link
