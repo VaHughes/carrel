@@ -1470,7 +1470,17 @@ impl Diagrams {
     }
 
     fn sync(&mut self, app: &App) {
-        if app.is_home() || app.file == self.for_file {
+        if app.is_home() {
+            // The document is closed. Nothing waits for its art, so the
+            // worker's next send fails and it stops; and the next document
+            // opened — the same file again included — is asked afresh, as
+            // `Images::sync` already does. Its open cleared the art, and a
+            // reopened file used to match the old key and stay source.
+            self.rx = None;
+            self.for_file = None;
+            return;
+        }
+        if app.file == self.for_file {
             return;
         }
         self.for_file.clone_from(&app.file);
@@ -3989,6 +3999,47 @@ mod tests {
         // 13%-of-a-core case, now about 2%.
         assert_eq!(rescan_pause(ms(300)), Duration::from_secs(15));
         assert_eq!(rescan_pause(Duration::from_mins(1)), RESCAN_MAX);
+    }
+
+    /// Closing a document drops the wait for its diagrams, and opening it
+    /// again asks again. The renderer was keyed on the file alone and went
+    /// on believing it had drawn that file — while the reopened document
+    /// had cleared its art with everything else, so a document opened twice
+    /// from the list showed its diagrams as source the second time.
+    #[test]
+    fn a_document_opened_again_from_the_list_has_its_diagrams_drawn_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "```mermaid\ngraph TD\n a[alpha]-->b[beta]\n```\n").unwrap();
+        let mut app = App::new_home(dir.path().into(), vec![], 80, 24);
+        let mut diagrams = Diagrams::new();
+        let drawn = |app: &mut App, diagrams: &mut Diagrams| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while app.diagram_art.is_empty() && Instant::now() < deadline {
+                diagrams.sync(app);
+                diagrams.drain(app);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            !app.diagram_art.is_empty()
+        };
+
+        app.open_path(&file).unwrap();
+        assert!(drawn(&mut app, &mut diagrams), "drawn the first time");
+
+        update(&mut app, carrel::action::Action::CloseFile);
+        assert!(
+            app.is_home(),
+            "closing a file opened from the list goes back to it"
+        );
+        diagrams.sync(&app);
+        assert!(
+            diagrams.rx.is_none(),
+            "nothing waits for a closed document's art"
+        );
+
+        app.open_path(&file).unwrap();
+        assert!(app.diagram_art.is_empty(), "the art went with the document");
+        assert!(drawn(&mut app, &mut diagrams), "and is drawn again");
     }
 
     /// The hyperlink pass is the one place document text reaches the
