@@ -54,6 +54,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   added since. A save now merges with what is on disk: a bookmark, highlight or note
   added in either window stays, one removed in either stays removed, and the window that
   saved shows the other's from then on. If both rewrite the same note, both texts are kept.
+- **A damaged file-list cache no longer stops carrel from starting.** A cache line with
+  an impossible date made the file list panic on every start in that folder until the
+  cache was deleted; the line is now skipped.
 - **A bookmark that could not be saved says so.** With a state directory carrel cannot
   write to, `m` reported `bookmark 1 of 1` and the bookmark was gone at the next start.
   The status row now adds that it was not saved and why; it stays set until you quit.

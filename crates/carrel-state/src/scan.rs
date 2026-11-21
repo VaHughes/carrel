@@ -254,7 +254,9 @@ pub fn load_cache_in(dir: &Path, root: &Path) -> Vec<Entry> {
             let secs: u64 = secs.parse().ok()?;
             Some(Entry {
                 path: PathBuf::from(crate::state::unescape_field(path)),
-                mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+                // Checked: `+` panics on a time the clock cannot hold, and
+                // the number is whatever the file says.
+                mtime: SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs))?,
             })
         })
         .collect()
@@ -780,5 +782,32 @@ mod tests {
         save_cache_in(d.path(), root, &[]);
         fs::write(d.path().join(cache_name(root)), "\u{0}not a cache\nnope").unwrap();
         assert_eq!(load_cache_in(d.path(), root), [] as [crate::scan::Entry; 0]);
+    }
+
+    /// A number in a cache file is whatever someone wrote there. A time no
+    /// clock can hold panicked the addition, and with it every start in
+    /// that folder until the file was deleted; the line is skipped instead,
+    /// and the lines around it still read.
+    #[test]
+    fn a_cached_time_no_clock_can_hold_costs_only_its_line() {
+        let d = tempfile::tempdir().unwrap();
+        let root = Path::new("/some/root");
+        fs::write(
+            d.path().join(cache_name(root)),
+            "1700000000\t/a.md\n18446744073709551615\t/b.md\n\
+             9223372036854775808\t/c.md\n-1\t/d.md\n7\t/e.md\n",
+        )
+        .unwrap();
+        let got: Vec<PathBuf> = load_cache_in(d.path(), root)
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert_eq!(got.first(), Some(&PathBuf::from("/a.md")));
+        assert_eq!(got.last(), Some(&PathBuf::from("/e.md")));
+        assert!(!got.contains(&PathBuf::from("/b.md")), "{got:?}");
+        // Whatever was kept goes back out without a panic either.
+        let kept = load_cache_in(d.path(), root);
+        save_cache_in(d.path(), root, &kept);
+        assert_eq!(load_cache_in(d.path(), root), kept);
     }
 }
