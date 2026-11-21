@@ -8,7 +8,7 @@ use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use crate::state::{escape_field, unescape_field, write_atomic, write_private};
+use crate::state::{escape_field, locked, unescape_field, write_atomic, write_private};
 
 const CONTEXT: usize = 32;
 const HEADER: &str = "carrel-marginalia-v1";
@@ -164,12 +164,7 @@ fn read_sidecar(path: &Path) -> io::Result<String> {
 /// A missing sidecar is empty; all other read and format errors propagate.
 pub fn load_in(dir: &Path, file: &Path, text: &str) -> io::Result<Vec<Annotation>> {
     let (path, key) = identity(dir, file)?;
-    let saved = match read_sidecar(&path) {
-        Ok(saved) => saved,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut annotations = decode(&saved, &key)?;
+    let mut annotations = stored(&path, &key)?;
     for annotation in &mut annotations {
         annotation.reanchor(text);
     }
@@ -178,15 +173,150 @@ pub fn load_in(dir: &Path, file: &Path, text: &str) -> io::Result<Vec<Annotation
 
 /// Atomically replace one document's sidecar without touching the source file.
 /// Existing malformed data is never overwritten by this writer.
+///
+/// The list replaces the sidecar whole, so this is for a caller that knows
+/// no other reader has the document open; a reader saves with [`sync_in`].
 pub fn save_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Result<()> {
     let (path, key) = identity(dir, file)?;
-    match read_sidecar(&path) {
-        Ok(existing) => {
-            decode(&existing, &key)?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+    std::fs::create_dir_all(dir)?;
+    locked(dir, || {
+        stored(&path, &key)?;
+        write_sidecar(&path, &key, annotations)
+    })
+}
+
+/// Save what this session did to the notes, not what it holds: `mine` is
+/// merged with the sidecar as it is on disk NOW, against `base` — the list
+/// as this session last read or wrote it — and the result is written and
+/// returned, for the caller to show and to use as its next `base`.
+///
+/// Two readers on one document each held the whole list and each wrote the
+/// whole list, so the second to save erased the first one's notes. Here a
+/// note another reader added since `base` is kept, one it deleted is not
+/// brought back, and this session's own additions, edits and deletions
+/// apply (`merge` has the rule and what happens when both touched one
+/// note). The read, the merge and the write share one lock.
+///
+/// A note that came from disk is placed in `text`, the open document's
+/// display text, as [`load_in`] would place it. Existing malformed data is
+/// never overwritten, as with [`save_in`].
+pub fn sync_in(
+    dir: &Path,
+    file: &Path,
+    text: &str,
+    base: &[Annotation],
+    mine: &[Annotation],
+) -> io::Result<Vec<Annotation>> {
+    let (path, key) = identity(dir, file)?;
+    std::fs::create_dir_all(dir)?;
+    locked(dir, || {
+        let disk = stored(&path, &key)?;
+        let merged = merge(text, base, mine, &disk);
+        write_sidecar(&path, &key, &merged)?;
+        Ok(merged)
+    })
+}
+
+/// What a note is, apart from what it says: the passage it is on. The
+/// range is not part of it — that is derived, and moves with every edit of
+/// the document.
+fn passage(a: &Annotation) -> (&str, &str, &str) {
+    (&a.quote, &a.before, &a.after)
+}
+
+/// Each note's index among the notes on the same passage, so two on one
+/// passage (a repeated line with identical surroundings) stay two.
+fn nth(list: &[Annotation]) -> Vec<usize> {
+    (0..list.len())
+        .map(|i| {
+            list[..i]
+                .iter()
+                .filter(|a| passage(a) == passage(&list[i]))
+                .count()
+        })
+        .collect()
+}
+
+fn find<'a>(
+    list: &'a [Annotation],
+    nths: &[usize],
+    a: &Annotation,
+    n: usize,
+) -> Option<&'a Annotation> {
+    list.iter()
+        .zip(nths)
+        .find(|&(b, &k)| k == n && passage(b) == passage(a))
+        .map(|(b, _)| b)
+}
+
+/// Two texts for one note, when both readers wrote one: neither is dropped.
+fn both(mine: &str, theirs: &str) -> String {
+    if theirs.is_empty() || mine.contains(theirs) {
+        mine.into()
+    } else if mine.is_empty() {
+        theirs.into()
+    } else {
+        format!("{mine}\n\n{theirs}")
     }
+}
+
+/// The three-way merge behind [`sync_in`], note by note:
+///
+/// - untouched here: whatever the disk says, including "deleted";
+/// - added, edited or deleted here and untouched there: what was done here;
+/// - touched by both: nothing anyone wrote is lost — an edit beats a
+///   delete on either side, and two different texts are both kept, this
+///   session's first.
+///
+/// This session's notes keep their order (the pane's rows are indexes into
+/// it); another reader's additions follow.
+fn merge(
+    text: &str,
+    base: &[Annotation],
+    mine: &[Annotation],
+    disk: &[Annotation],
+) -> Vec<Annotation> {
+    let (base_n, mine_n, disk_n) = (nth(base), nth(mine), nth(disk));
+    let mut out = Vec::with_capacity(mine.len());
+    for (m, &n) in mine.iter().zip(&mine_n) {
+        let b = find(base, &base_n, m, n);
+        let d = find(disk, &disk_n, m, n);
+        let note = match (b, d) {
+            // Deleted there and not edited here.
+            (Some(b), None) if b.note == m.note => continue,
+            (Some(_) | None, None) => m.note.clone(),
+            (Some(b), Some(d)) if b.note == m.note => d.note.clone(),
+            (Some(b), Some(d)) if b.note == d.note => m.note.clone(),
+            (_, Some(d)) => both(&m.note, &d.note),
+        };
+        out.push(Annotation { note, ..m.clone() });
+    }
+    for (d, &n) in disk.iter().zip(&disk_n) {
+        if find(mine, &mine_n, d, n).is_some() {
+            continue;
+        }
+        // Deleted here — unless it was edited there since.
+        if find(base, &base_n, d, n).is_some_and(|b| b.note == d.note) {
+            continue;
+        }
+        let mut d = d.clone();
+        d.reanchor(text);
+        out.push(d);
+    }
+    out
+}
+
+/// The sidecar's notes as they are stored; a missing sidecar is empty.
+/// Every read of one comes through here, and so through [`read_sidecar`].
+fn stored(path: &Path, key: &str) -> io::Result<Vec<Annotation>> {
+    match read_sidecar(path) {
+        Ok(existing) => decode(&existing, key),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_sidecar(path: &Path, key: &str, annotations: &[Annotation]) -> io::Result<()> {
     let mut output = format!("{HEADER}\t{key}\n");
     for annotation in annotations {
         let (start, end) = annotation.range.as_ref().map_or_else(
@@ -203,12 +333,12 @@ pub fn save_in(dir: &Path, file: &Path, annotations: &[Annotation]) -> io::Resul
         );
     }
     // Validate even callers constructing Annotation fields directly.
-    decode(&output, &key)?;
+    decode(&output, key)?;
     std::fs::create_dir_all(
         path.parent()
             .ok_or_else(|| invalid("missing sidecar directory"))?,
     )?;
-    write_private(&path, &output)
+    write_private(path, &output)
 }
 
 /// Where [`export_in`] writes: `exports/<stem>-notes-<8 hex>.md` under the
@@ -451,5 +581,87 @@ mod tests {
         let exported = export_markdown(&file, &[a]);
         assert!(exported.contains("Unresolved"));
         assert!(exported.contains("> first\n> second\n\nmy\nnote\n"));
+    }
+
+    fn on(quote: &str, note: &str) -> Annotation {
+        let text = "alpha beta gamma delta";
+        let start = u32::try_from(text.find(quote).unwrap()).unwrap();
+        let end = start + u32::try_from(quote.len()).unwrap();
+        Annotation::new(text, start..end, note.into()).unwrap()
+    }
+
+    fn said(list: &[Annotation]) -> Vec<String> {
+        list.iter()
+            .map(|a| format!("{}={}", a.quote, a.note))
+            .collect()
+    }
+
+    /// Every case the merge has, one passage each: what this session did
+    /// against what another did since the baseline.
+    #[test]
+    fn sync_merges_each_note_three_ways() {
+        let text = "alpha beta gamma delta";
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        let base = [on("alpha", "a"), on("beta", "b"), on("gamma", "g")];
+        save_in(temp.path(), &file, &base).unwrap();
+        // Another session: edits alpha, deletes beta, adds delta.
+        let theirs = [on("alpha", "a2"), on("gamma", "g"), on("delta", "d")];
+        save_in(temp.path(), &file, &theirs).unwrap();
+        // This one: edits gamma, still holds beta, adds a highlight on "be".
+        let mine = [
+            on("alpha", "a"),
+            on("beta", "b"),
+            on("gamma", "g2"),
+            on("be", ""),
+        ];
+        let merged = sync_in(temp.path(), &file, text, &base, &mine).unwrap();
+        assert_eq!(said(&merged), ["alpha=a2", "gamma=g2", "be=", "delta=d"]);
+        assert!(merged.iter().all(|a| a.range.is_some()));
+        assert_eq!(load_in(temp.path(), &file, text).unwrap(), merged);
+        // Nothing changed anywhere: a save is the file as it is.
+        let again = sync_in(temp.path(), &file, text, &merged, &merged).unwrap();
+        assert_eq!(again, merged);
+    }
+
+    #[test]
+    fn sync_never_drops_text_either_side_wrote() {
+        let text = "alpha beta gamma delta";
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        let base = [on("alpha", "a"), on("beta", "b"), on("gamma", "g")];
+        // Deleted here, edited there: the edit stays.
+        // Edited here, deleted there: the edit stays.
+        // Edited on both sides, differently: both texts, this one's first.
+        save_in(
+            temp.path(),
+            &file,
+            &[on("alpha", "a!"), on("gamma", "theirs")],
+        )
+        .unwrap();
+        let mine = [on("beta", "b!"), on("gamma", "mine")];
+        let merged = sync_in(temp.path(), &file, text, &base, &mine).unwrap();
+        assert_eq!(
+            said(&merged),
+            ["beta=b!", "gamma=mine\n\ntheirs", "alpha=a!"]
+        );
+        // Both adding a bare highlight on one passage is one highlight, and
+        // a note on a passage the other only highlighted is that note.
+        let temp = tempfile::tempdir().unwrap();
+        save_in(temp.path(), &file, &[on("alpha", ""), on("beta", "")]).unwrap();
+        let mine = [on("alpha", ""), on("beta", "note")];
+        let merged = sync_in(temp.path(), &file, text, &[], &mine).unwrap();
+        assert_eq!(said(&merged), ["alpha=", "beta=note"]);
+    }
+
+    #[test]
+    fn sync_refuses_a_sidecar_it_cannot_read_and_leaves_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        save_in(temp.path(), &file, &[]).unwrap();
+        let (path, _) = identity(temp.path(), &file).unwrap();
+        std::fs::write(&path, "broken").unwrap();
+        assert!(sync_in(temp.path(), &file, "", &[], &[]).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "broken");
     }
 }

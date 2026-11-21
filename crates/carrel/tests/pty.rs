@@ -2091,3 +2091,79 @@ fn what_links_here_answers_in_a_document_opened_from_the_file_list() {
         "the sibling's linking line must be listed"
     );
 }
+
+/// Two real readers on one document, in two ptys, each setting a bookmark
+/// and writing a note: both of each are on disk afterwards. The second to
+/// save used to write only its own.
+///
+/// No step is timed. Each reader waits for a line of the other's screen:
+/// A acts once B is up (so B has loaded the empty lists and holds them), B
+/// acts once A's note is saved, and A quits once B's is — so each save
+/// happens beside a reader whose own list does not have it.
+#[test]
+fn two_readers_on_one_document_keep_each_others_bookmarks_and_notes() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut src = String::from("# Shared\n");
+    for i in 0..60 {
+        let _ = write!(src, "\nParagraph number {i}.\n");
+    }
+    std::fs::write(dir.path().join("shared.md"), src).unwrap();
+    let bin = env!("CARGO_BIN_EXE_carrel");
+    // One word: the first paint moves the cursor over the text's spaces.
+    let (up, saved) = ("Shared", "Notes saved");
+    // Reader `me`: once both are up and `other` shows `after`, type `keys`;
+    // once B's note is saved, quit.
+    let run = |me: &str, other: &str, after: &str, keys: &str| {
+        let d = dir.path().display();
+        let wait = |text: &str, cap: &str| {
+            format!(
+                "i=0; while [ $i -lt 200 ] && ! grep -qF '{text}' '{d}/{cap}' 2>/dev/null; \
+                 do sleep 0.1; i=$((i+1)); done"
+            )
+        };
+        let cmd = format!(
+            "( {}; {}; printf '{keys}'; {}; printf 'q' ) | \
+             XDG_CONFIG_HOME='{d}/cfg' XDG_STATE_HOME='{d}/state' XDG_CACHE_HOME='{d}/cache' \
+             HOME='{d}' \
+             timeout 60 script -fqec 'stty rows 20 cols 76; {bin} shared.md' '{d}/{me}' \
+             >/dev/null 2>&1",
+            wait(up, me),
+            wait(after, other),
+            wait(saved, "cap-b"),
+        );
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(dir.path())
+            .status()
+            .expect("sh must run");
+        assert!(status.success(), "{me} must exit cleanly");
+        captured(&dir.path().join(me))
+    };
+    let (a, b) = std::thread::scope(|scope| {
+        // A: bookmark the top and note it. B: a page down, then the same.
+        let a = scope.spawn(|| run("cap-a", "cap-b", up, "maA1\\r"));
+        let b = run("cap-b", "cap-a", saved, " maB1\\r");
+        (a.join().unwrap(), b)
+    });
+    assert!(a.contains("bookmark 1 of 1"), "{a:?}");
+    assert!(b.contains("bookmark 2 of 2"), "B's save found A's: {b:?}");
+    let state = dir.path().join("state/carrel");
+    let marks = std::fs::read_to_string(state.join("bookmarks")).unwrap();
+    let (_, list) = marks.trim_end().split_once('\t').unwrap();
+    assert_eq!(marks.lines().count(), 1, "{marks:?}");
+    // A place holds commas of its own; each one starts `s<byte>`.
+    assert_eq!(list.split(",s").count(), 2, "{marks:?}");
+    let notes: String = std::fs::read_dir(state.join("marginalia"))
+        .unwrap()
+        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect();
+    assert!(
+        notes.contains("\tA1\t") && notes.contains("\tB1\t"),
+        "{notes:?}"
+    );
+}

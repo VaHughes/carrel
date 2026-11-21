@@ -525,6 +525,9 @@ pub struct App {
     /// NOT survive an edit to the file, which is honest for a reader and is
     /// said so in the help.
     pub marks: Vec<u32>,
+    /// The bookmarks as the state file last had them, read or written by
+    /// this session: what `save_marks` merges against.
+    marks_loaded: Vec<crate::state::Place>,
     /// What the last reload could not find, kept for the next (see
     /// `reload_from`). Private: nothing outside a reload reads it.
     reload_hold: Option<ReloadHold>,
@@ -1194,6 +1197,7 @@ impl App {
             outline_margin: false,
             hyphenate: true,
             marks: Vec::new(),
+            marks_loaded: Vec::new(),
             reload_hold: None,
             diff_ok: false,
             diff_forced: None,
@@ -1393,10 +1397,52 @@ impl App {
 
     /// Persist the bookmark list. Inert for a piped document, which has no
     /// path to key on — the same contract position saving already has.
-    fn save_marks(&self) {
-        if let (Some(dir), Some(file)) = (self.state_dir.as_deref(), self.file.as_deref()) {
-            let _ = crate::state::save_marks_in(dir, file, &self.mark_places());
+    ///
+    /// **Merged with the file, not written over it.** Another carrel may
+    /// have this document open: its bookmarks are on disk and not in
+    /// `marks`, and replacing the line erased them. So the list is read
+    /// again here and merged three ways against `marks_loaded`, what this
+    /// session last saw on disk (`state::merge3`) — in blocks of the open
+    /// document, which is what a mark is, with all three lists placed in it
+    /// by the one rule. `marks` comes back holding the other reader's too.
+    ///
+    /// An error leaves `marks` as the reader made them and `marks_loaded`
+    /// as it was, so the next save tries the same changes again.
+    fn save_marks(&mut self) -> std::io::Result<()> {
+        let (Some(dir), Some(file)) = (self.state_dir.clone(), self.file.clone()) else {
+            return Ok(());
+        };
+        let base = self.blocks_of(&self.marks_loaded);
+        let mut merged = Vec::new();
+        let written = crate::state::sync_marks_in(&dir, &file, |disk| {
+            merged = crate::state::merge3(&base, &self.marks, &self.blocks_of(&disk));
+            merged.sort_unstable();
+            merged
+                .iter()
+                .map(|&m| crate::state::Place::kept(&self.doc, DocByte(m)))
+                .collect()
+        })?;
+        self.marks = merged;
+        self.marks_loaded = written;
+        Ok(())
+    }
+
+    /// Where each of `places` is a bookmark in the open document: the start
+    /// of its block, each block once, in document order.
+    fn blocks_of(&self, places: &[crate::state::Place]) -> Vec<u32> {
+        if self.doc.block_count() == 0 {
+            return Vec::new();
         }
+        let mut marks: Vec<u32> = places
+            .iter()
+            .map(|p| {
+                let b = self.doc.block_at_doc(p.resolve(&self.doc));
+                self.doc.node_for_block(b).doc.start
+            })
+            .collect();
+        marks.sort_unstable();
+        marks.dedup();
+        marks
     }
 
     /// Load the bookmark list for the open file. Called from
@@ -1414,6 +1460,7 @@ impl App {
             _ => Vec::new(),
         };
         self.set_marks_from(&places);
+        self.marks_loaded = places;
     }
 
     /// The bookmarks as places in the current document — what is saved, and
@@ -1559,20 +1606,7 @@ impl App {
     /// a bookmarked file can become when it is rewritten — has nowhere to
     /// put one, and keeps none.
     fn set_marks_from(&mut self, places: &[crate::state::Place]) {
-        if self.doc.block_count() == 0 {
-            self.marks.clear();
-            return;
-        }
-        let mut marks: Vec<u32> = places
-            .iter()
-            .map(|p| {
-                let b = self.doc.block_at_doc(p.resolve(&self.doc));
-                self.doc.node_for_block(b).doc.start
-            })
-            .collect();
-        marks.sort_unstable();
-        marks.dedup();
-        self.marks = marks;
+        self.marks = self.blocks_of(places);
     }
 
     /// Load a document and switch to the reader.
@@ -6088,21 +6122,35 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             }
             let block = app.layout.block_at_row(app.view.scroll_row);
             let at = app.doc.node_for_block(block).doc.start;
-            if let Some(i) = app.marks.iter().position(|&m| m == at) {
+            let cleared = if let Some(i) = app.marks.iter().position(|&m| m == at) {
                 app.marks.remove(i);
-                app.note = Some("bookmark cleared".into());
-                // The open list's cursor indexes the marks.
-                app.mark_list = app
-                    .mark_list
-                    .filter(|_| !app.marks.is_empty())
-                    .map(|i| i.min(app.marks.len() - 1));
+                true
             } else {
                 app.marks.push(at);
                 app.marks.sort_unstable();
+                false
+            };
+            // The save can change the list — it brings in the bookmarks
+            // another carrel set on this document — so the count is taken
+            // after it, and so is the open list's cursor, which indexes it.
+            let saved = app.save_marks();
+            app.mark_list = app
+                .mark_list
+                .filter(|_| !app.marks.is_empty())
+                .map(|i| i.min(app.marks.len() - 1));
+            let mut note = if cleared {
+                "bookmark cleared".to_string()
+            } else {
                 let n = app.marks.iter().position(|&m| m == at).unwrap_or(0) + 1;
-                app.note = Some(format!("bookmark {n} of {}", app.marks.len()));
+                format!("bookmark {n} of {}", app.marks.len())
+            };
+            // It is set, or cleared, for as long as this reader is open;
+            // saying only that would be a promise the disk did not keep.
+            if let Err(e) = saved {
+                use std::fmt::Write as _;
+                let _ = write!(note, " — but not saved, so only until you quit: {e}");
             }
-            app.save_marks();
+            app.note = Some(note);
             Outcome::Redraw
         }
 

@@ -49,6 +49,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   `q`; the notes list's **copy all**, the notes store under `marginalia/`, and
   `--tutorial` in the synopsis are documented; the config key list no longer miscounts
   itself.
+- **Two carrels on the same document keep each other's bookmarks and notes.** Each used
+  to save the whole list it held, so the one that saved last erased what the other had
+  added since. A save now merges with what is on disk: a bookmark, highlight or note
+  added in either window stays, one removed in either stays removed, and the window that
+  saved shows the other's from then on. If both rewrite the same note, both texts are kept.
+- **A bookmark that could not be saved says so.** With a state directory carrel cannot
+  write to, `m` reported `bookmark 1 of 1` and the bookmark was gone at the next start.
+  The status row now adds that it was not saved and why; it stays set until you quit.
 - **A Ctrl or Alt chord carrel does not bind does nothing.** It used to act as its bare
   letter outside text inputs: Ctrl-D on the file list opened the folder browser, Ctrl-T
   in the reader switched the table view, Alt-Q closed the document. The chords carrel

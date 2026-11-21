@@ -54,14 +54,14 @@ use std::path::{Path, PathBuf};
 /// just the concurrent-reader one: without it the rename can reach the disk
 /// before the data does, and the survivor is a correctly-named empty file.
 ///
-/// **This does not make concurrent writers safe, and is not meant to.** Two
-/// carrels in two terminals still race — each reads the whole file, each
-/// rewrites the whole file, and the later `rename` wins entire, so the loser's
-/// session is discarded. That is last-writer-wins, unchanged from before;
-/// what changes is that the loser's outcome is a coherent older file rather
-/// than a shredded one. Doing better needs a lock file, which needs a policy
-/// for the stale lock a killed reader leaves behind, and that is a worse
-/// trade for state this size.
+/// **This alone does not make concurrent writers safe.** Two carrels in two
+/// terminals each read the whole file and each rewrite the whole file, and
+/// the later `rename` wins entire. What makes them safe is one level up:
+/// every save in this module re-reads the file inside [`locked`] and changes
+/// only its own part of it, and the lists a reader edits by hand —
+/// bookmarks, notes — are merged three ways against what the session
+/// loaded ([`merge3`]). A reading position is one value per document and
+/// stays last-writer-wins, which is what a position is.
 ///
 /// **A symlink is written through, not replaced.** `rename` onto a link
 /// replaces the LINK, so a stow-managed `~/.config/carrel/config` pointing
@@ -89,6 +89,9 @@ pub(crate) fn write_atomic(path: &Path, text: impl AsRef<[u8]>) -> std::io::Resu
 pub(crate) fn write_private(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
     write_with(path, text.as_ref(), Some(0o600))
 }
+
+/// Numbers this process's temp files, so no two of them share a name.
+static NEXT_TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn write_with(path: &Path, text: &[u8], new_mode: Option<u32>) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -128,8 +131,10 @@ fn write_with(path: &Path, text: &[u8], new_mode: Option<u32>) -> std::io::Resul
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     // The pid keeps two carrels from writing the same temp file and renaming
-    // each other's half-written bytes into place.
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    // each other's half-written bytes into place; the counter does the same
+    // for two threads of one (the scan's cache writer is one).
+    let n = NEXT_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
     let write = |tmp: &Path| -> std::io::Result<()> {
         let mut f = std::fs::File::create(tmp)?;
         // Set after creating rather than passed to `open`, because the
@@ -152,6 +157,86 @@ fn write_with(path: &Path, text: &[u8], new_mode: Option<u32>) -> std::io::Resul
         return Err(e);
     }
     Ok(())
+}
+
+/// How long a save waits for another carrel's save to finish before going
+/// ahead without the lock. A save holds it for one small file's read and
+/// write, so a wait this long means the holder is stopped, not busy — and
+/// a reader's keypress must not hang for good on a stopped process.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Run `f` — one read-modify-write of a file under `dir` — while holding
+/// the state directory's advisory lock, so two carrels saving at the same
+/// instant take turns instead of each rewriting the file from a read the
+/// other has already made stale.
+///
+/// The lock is `flock` on `<dir>/.lock`, a file of its own because every
+/// save REPLACES its target (`rename`), and a lock on the replaced inode
+/// would guard nothing. The kernel drops it when the holder exits, however
+/// it exits, so there is no stale lock to have a policy about.
+///
+/// **Best effort, never a refusal.** Where the lock file cannot be made (a
+/// read-only directory — the save itself will say so), where the
+/// filesystem has no locks, or where the holder does not let go within
+/// [`LOCK_WAIT`], `f` runs anyway: the re-read inside it still merges
+/// everything but a save landing in the same few milliseconds.
+///
+/// Not reentrant: `f` must not call another locked save.
+pub(crate) fn locked<R>(dir: &Path, f: impl FnOnce() -> R) -> R {
+    locked_within(dir, LOCK_WAIT, f)
+}
+
+fn locked_within<R>(dir: &Path, wait: std::time::Duration, f: impl FnOnce() -> R) -> R {
+    let mut open = std::fs::OpenOptions::new();
+    open.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open.mode(0o600);
+    }
+    let lock = open.open(dir.join(".lock")).ok();
+    if let Some(file) = &lock {
+        let until = std::time::Instant::now() + wait;
+        while let Err(std::fs::TryLockError::WouldBlock) = file.try_lock() {
+            if std::time::Instant::now() >= until {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+    let out = f();
+    // Closing the file releases the lock.
+    drop(lock);
+    out
+}
+
+/// Merge a list this session edited with what is on disk now, given what
+/// the session last saw there.
+///
+/// `mine` used to replace the file's list whole, so with one document open
+/// in two terminals the second to save erased what the first had added. A
+/// union would stop that and bring back everything either one deleted; the
+/// baseline is what tells an item another session ADDED (on disk, not in
+/// `base`: kept) from one this session DELETED (on disk and in `base`, not
+/// in `mine`: dropped), and one another session deleted (in `base`, gone
+/// from disk: dropped, even though `mine` still holds it).
+///
+/// The order is `mine`'s, then the other sessions' additions in disk order.
+#[must_use]
+pub fn merge3<T: PartialEq + Clone>(base: &[T], mine: &[T], disk: &[T]) -> Vec<T> {
+    let mut out: Vec<T> = Vec::with_capacity(mine.len());
+    for m in mine {
+        let deleted_elsewhere = base.contains(m) && !disk.contains(m);
+        if !deleted_elsewhere && !out.contains(m) {
+            out.push(m.clone());
+        }
+    }
+    for d in disk {
+        if !base.contains(d) && !out.contains(d) {
+            out.push(d.clone());
+        }
+    }
+    out
 }
 
 /// `None` where there are no Unix permission bits to carry over — which is
@@ -398,8 +483,7 @@ fn base_dir_from(
 /// **Any other failure is an error, and a save stops at it.** Every save
 /// here rewrites the whole file from what it read, so a file it could not
 /// read — no permission, an I/O error — would be replaced by the one entry
-/// being saved. `marginalia::save_in` refuses for the same reason. The
-/// callers drop the error, so the refusal is quiet.
+/// being saved. `marginalia::save_in` refuses for the same reason.
 fn read_state(path: &Path) -> std::io::Result<Vec<u8>> {
     match read_regular(path) {
         Ok(b) => Ok(b),
@@ -894,6 +978,16 @@ pub fn save_position_in(
     words: u32,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
+    locked(dir, || position_into(dir, file, place, permille, words))
+}
+
+fn position_into(
+    dir: &Path,
+    file: &Path,
+    place: Option<Place>,
+    permille: u16,
+    words: u32,
+) -> std::io::Result<()> {
     let path = dir.join("positions");
     let existing = read_state(&path)?;
     let k = key(file);
@@ -1013,6 +1107,32 @@ fn marks_of<'a>(line: &'a [u8], k: &str) -> Option<&'a str> {
 /// long as every write comes through here.
 pub fn save_marks_in(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
+    locked(dir, || marks_into(dir, file, marks))
+}
+
+/// Rewrite `file`'s bookmarks from what is on disk NOW: `merge` is handed
+/// the list as it stands and returns the one to write, and the read, the
+/// merge and the write happen under one `locked`, so no other carrel's
+/// save can land between them. Returns what was written.
+///
+/// This is how a reader saves; [`save_marks_in`] replaces the list whole,
+/// which is only right for a caller that knows nobody else has the
+/// document open. `merge` decides in its own coordinates (the reader's are
+/// blocks of the open document) — see [`merge3`] for the rule.
+pub fn sync_marks_in(
+    dir: &Path,
+    file: &Path,
+    merge: impl FnOnce(Vec<Place>) -> Vec<Place>,
+) -> std::io::Result<Vec<Place>> {
+    std::fs::create_dir_all(dir)?;
+    locked(dir, || {
+        let marks = merge(load_marks_in(dir, file));
+        marks_into(dir, file, &marks)?;
+        Ok(marks)
+    })
+}
+
+fn marks_into(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Result<()> {
     let path = dir.join("bookmarks");
     let existing = read_state(&path)?;
     let k = escape_path(&key(file));
@@ -1097,6 +1217,10 @@ fn is_folds_of(line: &[u8], k: &str) -> bool {
 /// a document left fully expanded costs the file nothing.
 pub fn save_folds_in(dir: &Path, file: &Path, keys: &[String]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
+    locked(dir, || folds_into(dir, file, keys))
+}
+
+fn folds_into(dir: &Path, file: &Path, keys: &[String]) -> std::io::Result<()> {
     let path = dir.join("folds");
     let existing = read_state(&path)?;
     let k = escape_path(&key(file));
@@ -1978,11 +2102,11 @@ mod tests {
             std::fs::read_to_string(dir.path().join("positions")).unwrap(),
             ""
         );
-        // Nothing left behind.
+        // Nothing left behind but the lock file, which is meant to stay.
         let stray: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|n| n.starts_with('.') && n != ".")
+            .filter(|n| n.starts_with('.') && n != "." && n != ".lock")
             .collect();
         assert!(stray.is_empty(), "{stray:?}");
     }
@@ -2194,5 +2318,107 @@ mod tests {
                 .file_type()
                 .is_fifo()
         );
+    }
+
+    #[test]
+    fn merge3_keeps_both_sides_additions_and_both_sides_deletions() {
+        // Every case of (in base, in mine, on disk), one item each.
+        let base = ["kept", "mine-", "theirs-", "both-"];
+        let mine = ["kept", "theirs-", "mine+", "both+"];
+        let disk = ["kept", "mine-", "theirs+", "both+"];
+        assert_eq!(
+            merge3(&base, &mine, &disk),
+            ["kept", "mine+", "both+", "theirs+"]
+        );
+        // No baseline at all is a union; nothing changed is the disk.
+        assert_eq!(merge3(&[], &[1, 2], &[2, 3]), [1, 2, 3]);
+        assert_eq!(merge3(&[1, 2], &[1, 2], &[2, 3]), [2, 3]);
+        assert_eq!(merge3(&[1, 2], &[], &[]), [0; 0]);
+    }
+
+    /// Many savers at once, each adding its own bookmark the way a reader
+    /// does: read, merge, write. Without the lock the reads interleave and
+    /// a save built on a stale read erases the ones that landed since.
+    #[test]
+    fn concurrent_syncs_of_one_documents_marks_lose_none() {
+        const N: u32 = 12;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("doc.md");
+        std::fs::write(&file, "x").unwrap();
+        std::thread::scope(|scope| {
+            for i in 0..N {
+                let (dir, file) = (dir.path(), file.as_path());
+                scope.spawn(move || {
+                    let mine = [Place::Legacy(i)];
+                    sync_marks_in(dir, file, |disk| merge3(&[], &mine, &disk)).unwrap();
+                });
+            }
+        });
+        let mut got: Vec<u32> = load_marks_in(dir.path(), &file)
+            .into_iter()
+            .map(|p| match p {
+                Place::Legacy(n) => n,
+                Place::Src { .. } => unreachable!(),
+            })
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, (0..N).collect::<Vec<_>>());
+        // No temp file is left behind, and the lock file holds nothing.
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, [".lock", "bookmarks", "doc.md"]);
+        assert_eq!(std::fs::read(dir.path().join(".lock")).unwrap(), b"");
+    }
+
+    /// Positions of DIFFERENT documents share one file, so they need the
+    /// same turn-taking: each save rewrites every document's line.
+    #[test]
+    fn concurrent_position_saves_for_different_documents_lose_none() {
+        const N: u32 = 12;
+        let dir = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for i in 0..N {
+                let dir = dir.path();
+                scope.spawn(move || {
+                    let file = dir.join(format!("doc{i}.md"));
+                    save_position_in(dir, &file, Some(Place::Legacy(i + 1)), 0, 0).unwrap();
+                    save_folds_in(dir, &file, &[format!("h{i}")]).unwrap();
+                });
+            }
+        });
+        assert_eq!(recent_in(dir.path()).len(), N as usize);
+        for i in 0..N {
+            let file = dir.path().join(format!("doc{i}.md"));
+            assert_eq!(load_folds_in(dir.path(), &file), [format!("h{i}")]);
+        }
+    }
+
+    /// A holder that never lets go — a stopped process — delays a save and
+    /// does not prevent it.
+    #[test]
+    fn a_lock_held_too_long_is_waited_for_and_then_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = std::fs::File::create(dir.path().join(".lock")).unwrap();
+        held.lock().unwrap();
+        let wait = std::time::Duration::from_millis(60);
+        let started = std::time::Instant::now();
+        let ran = locked_within(dir.path(), wait, || true);
+        assert!(started.elapsed() >= wait, "it waited its turn first");
+        assert!(ran);
+        // And one that does let go is waited for, not passed.
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+                drop(held);
+            });
+            locked(dir.path(), || {
+                assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+            });
+        });
     }
 }

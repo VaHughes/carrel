@@ -20,6 +20,10 @@ pub struct Notes {
     pub draft: Option<Draft>,
     /// A failed read must never turn into permission to overwrite the sidecar.
     pub load_error: Option<String>,
+    /// The sidecar as this session last read or wrote it: what a save
+    /// merges against, so a second reader on the same document loses
+    /// nothing (`marginalia::sync_in`).
+    pub loaded: Vec<Annotation>,
 }
 
 impl Notes {
@@ -67,7 +71,10 @@ pub fn load(app: &mut App) {
     app.notes = Notes::default();
     if let (Some(dir), Some(file)) = (app.state_dir.as_deref(), app.file.as_deref()) {
         match marginalia::load_in(dir, file, &app.doc.text) {
-            Ok(entries) => app.notes.entries = entries,
+            Ok(entries) => {
+                app.notes.loaded.clone_from(&entries);
+                app.notes.entries = entries;
+            }
             Err(error) => {
                 let message = format!("Could not read notes: {error}");
                 app.notes.load_error = Some(message.clone());
@@ -131,15 +138,24 @@ fn commit(app: &mut App, entries: Vec<Annotation>) -> bool {
         app.note = Some(error.clone());
         return false;
     }
-    if let (Some(dir), Some(file)) = (app.state_dir.as_deref(), app.file.as_deref()) {
-        if let Err(error) = marginalia::save_in(dir, file, &entries) {
-            app.note = Some(format!("Could not save notes: {error}"));
-            return false;
+    let entries = if let (Some(dir), Some(file)) = (app.state_dir.as_deref(), app.file.as_deref()) {
+        // Merged with the sidecar as it is now, not written over it:
+        // another carrel may have this document open and notes of its own.
+        match marginalia::sync_in(dir, file, &app.doc.text, &app.notes.loaded, &entries) {
+            Ok(merged) => {
+                app.notes.loaded.clone_from(&merged);
+                app.note = Some("Notes saved separately from the document.".into());
+                merged
+            }
+            Err(error) => {
+                app.note = Some(format!("Could not save notes: {error}"));
+                return false;
+            }
         }
-        app.note = Some("Notes saved separately from the document.".into());
     } else {
         app.note = Some("Notes kept for this session only — export before leaving.".into());
-    }
+        entries
+    };
     app.notes.entries = entries;
     app.notes.current = None;
     true
