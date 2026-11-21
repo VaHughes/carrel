@@ -160,7 +160,8 @@ weight, slant, strike and OSC 8 links (never a colour) for embedding in another 
 output, and `carrel --tasks FILE` prints the document's task list as checkbox lines. While a producer is
 still writing, the reader is already open — and your position and search matches hold as
 content arrives. Collapsed sections and bookmarks stay in place too. An endless pipe stops
-being read at 64 MB or 2,000,000 lines, and the status bar says so. Press `F` to keep up with
+being read at 64 MB or 2,000,000 lines in every mode: the status bar says so in the reader,
+and a line on stderr where carrel prints and exits. Press `F` to keep up with
 the end while it grows, and `y` to copy the code block you are looking at
 (`]` and `[` step between them).
 
@@ -560,7 +561,7 @@ The module map, the decisions already made, and the pinned dependencies are in
       OSC 8 hyperlinks, never a colour, `NO_COLOR` reduces it to `--plain`; still never
       fetching anything itself
 - [x] Document info card (`I`; `g` belongs to the gg prefix) — words, minutes, structure,
-      links, when it last changed
+      links, when it last changed (UTC)
 - [x] Favourites — roots remembered by the folder browser, newest first, capped at eight;
       choosing a folder records it, and the browser always lists them, starred
 - [x] A home list that keeps up — the tree is walked again while the list is on screen, so

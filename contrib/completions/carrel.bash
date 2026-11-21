@@ -1,5 +1,5 @@
 # bash completion for carrel — a quiet place to read your markdown.
-# Hand-written: carrel's CLI is six forms and does not use clap, so adding a
+# Hand-written: carrel's CLI is a handful of forms and does not use clap, so adding a
 # CLI framework just to generate this would be the tail wagging the dog.
 #
 # The suffixes are the ones carrel actually opens, not just `.md`: the file

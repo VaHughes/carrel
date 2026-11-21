@@ -39,6 +39,8 @@ carrel \- a quiet place to read your markdown
 .RB [ \-\-diff | \-\-no\-diff | \-\-no\-mouse ]
 .I FILE
 .br
+.B carrel \-\-tutorial
+.br
 .B carrel \-\-help
 .br
 .B carrel \-\-version
@@ -68,8 +70,9 @@ immediately and your position and search matches hold while content lands.
 .B carrel \-
 forces stdin mode; with stdout also piped the document renders as plain
 text instead, so pipelines pass through.
-The reader stops reading a pipe at 64 MB or 2,000,000 lines, whichever
-comes first, and says so; what arrived stays readable.
+Carrel stops reading a pipe at 64 MB or 2,000,000 lines, whichever
+comes first, and says so \(em on the status row in the reader, on standard
+error where it prints and exits; what arrived stays readable.
 .SH OPENING AT A PLACE
 .IB FILE : LINE
 opens
@@ -172,7 +175,9 @@ Half a page forward and back.
 Jump to the start or the end.
 .TP
 .B 42G
-Jump to a line by number.
+Jump to a row by number: row 42 of the page as it is laid out at this
+width, not line 42 of the file. For a line of the file, open
+.IR FILE :42.
 .TP
 .B { }
 Move to the previous or next block.
@@ -208,7 +213,9 @@ Esc cancels, Ctrl-J inserts a newline. Pasting into the editor inserts text.
 .B V
 Open notes and highlights. Arrows select, Enter jumps, a edits, Delete removes,
 and E exports quote-and-note Markdown. Clickable buttons
-provide the same actions. Missing or ambiguous quotes stay in the list, marked
+provide the same actions, and one more that has no key:
+.B copy all
+puts every note, with the passage it is about, on the clipboard. Missing or ambiguous quotes stay in the list, marked
 .BR ? ,
 and the title counts them.
 An export is written to
@@ -286,7 +293,8 @@ Select the next or previous link.
 .B Enter
 Follow the selected link. With no link selected and an image at the reading
 position, open its full-screen lightbox. Click an image or choose Images from
-the menu to open it too; [ and ] or arrows change images, Esc or q closes.
+the menu to open it too; [ and ] or arrows change images, and Esc, Enter or
+q closes.
 Over an image outside the folder, which is not opened, the lightbox asks and
 a second Enter (or its [show] button) shows that image. A markdown file beside this one opens in the reader;
 any destination with a scheme \(em a URL, a
@@ -303,8 +311,9 @@ Next theme. On an Omarchy desktop the rotation includes
 the palette derived from the theme the rest of the desktop is wearing.
 .TP
 .B ,
-Open the settings pane: every preference carrel remembers, with the value it
-currently has, and the path of the file they are written to. Enter changes
+Open the settings pane: the preferences that can be changed from inside
+carrel, each with the value it currently has, and the path of the file they
+are written to. Enter changes
 the highlighted row \(em booleans flip, the text width steps \(em and
 .B \-
 steps it back. Every row is clickable. The margin outline has no key of its
@@ -322,7 +331,7 @@ while you scroll).
 .TP
 .B I
 Show or hide the document card: words, reading time, structure, links,
-when the file last changed. It scrolls with the reading keys \(em
+when the file last changed (in UTC). It scrolls with the reading keys \(em
 .BR j / k ,
 the arrows,
 .BR Space / b ,
@@ -587,7 +596,7 @@ direction, drops straight back to three, so a correction stays precise.
 .B scrollbar
 Dragging the thumb tracks the pointer and keeps hold of the point on the thumb
 you took it by, so the view does not jump when the hand lands. Clicking the
-empty track pages one screen toward the click rather than teleporting there.
+empty track goes to that place in the document.
 The track is notched where the document's top\-level sections begin, and
 dotted where a search matched.
 .TP
@@ -795,9 +804,16 @@ Killed by signal N. The terminal is restored first.
 .B \-\-
 ends the options, so
 .B carrel \-\- ./\-weird.md
-opens a file whose name begins with a dash. An unknown single\-dash flag is
-ignored when stdin is a pipe, because git hands its pager flags it does not
-expect to be understood; interactively it is an error.
+opens a file whose name begins with a dash: nothing after it is read as an
+option. When stdin is a pipe, the flags a tool hands its pager meaning
+.BR less (1)
+\(em
+.BR \-R ,
+.B \-FRX
+and the like, any run of the letters
+.B FRSXMKsinrEeq
+\(em are ignored; any other unknown option is an error there as it is
+interactively.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
@@ -808,7 +824,9 @@ Where the config, the reading positions and the index cache live; see
 .BR FILES .
 Each falls back to the usual place under
 .B HOME
-when it is unset or empty.
+when it is unset, empty, or a relative path \(em which is not a valid value,
+and would otherwise put these files in whatever folder carrel was started
+in.
 .SH CLIPBOARD
 Copying \(em a drag, a double or triple click,
 .B y
@@ -845,14 +863,14 @@ holds a line break or control character, starts or ends with a space, or is not
 UTF\-8 is used for the session but not saved. A line that is not UTF\-8 is
 skipped when reading; while one is there, or while the file cannot be read,
 carrel saves no setting rather than rewrite what it could not read.
-The nine keys are
+The keys are
 .RS
 .TP
 .B max_width
 The line length in columns \(em prose wraps here and centres on the page.
-Default 90; 0 turns it off and lets prose fill the terminal. Any other value
-below 20 is raised to 20, a line narrower than that being unreadable rather
-than merely narrow. Tables, code, images and diagrams ignore it and use the
+Default 90; 0 turns it off and lets prose fill the terminal. A value from 1
+to 19 is raised to 20, a line narrower than that being unreadable rather
+than merely narrow; anything that is not a whole number is ignored. Tables, code, images and diagrams ignore it and use the
 full width.
 .TP
 .B theme
@@ -976,7 +994,7 @@ restyles an open reader without a restart; carrel does not read the file at
 all while you are on a fixed palette.
 .TP
 .I $XDG_STATE_HOME/carrel
-Three tab\-separated files, written atomically so a crash cannot truncate them.
+Tab\-separated files, written atomically so a crash cannot truncate them.
 .B positions
 holds reading positions, so a document reopens where you left it;
 .B bookmarks
@@ -988,6 +1006,18 @@ holds which sections were left collapsed, by heading, so they are collapsed
 when the document is opened again. Each keeps the 500 most recent documents
 and drops the oldest beyond that \(em they are a convenience, not a database.
 A tab or a newline in a path is escaped, so no filename can corrupt a file.
+Beside them,
+.B marginalia/
+holds the notes and highlights made with
+.B a
+and
+.BR v ,
+one file per document, and
+.B exports/
+what
+.B E
+writes from the notes list. Anything here or at the config path that is not
+a regular file is left unread.
 .TP
 .I $XDG_CACHE_HOME/carrel
 The file index: paths and modification times, nothing else. One

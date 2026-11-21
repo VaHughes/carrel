@@ -16,6 +16,38 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A menu that fits above the status row stays above it** wherever it is opened; an empty
   search prompt no longer says `0 searching…` or `no matches`; the help sheet keeps its
   corner and name while a filter is typed.
+- **A file whose name is not UTF-8 can be opened from the command line.**
+  `carrel $'caf\xe9.md'` crashed before it started; now it opens, `caf\xe9.md:42` opens
+  it at that line, and a pattern, width or option that is not UTF-8 is refused by name.
+- **Nothing after `--` is an option, with or without a terminal.**
+  `carrel -- -weird.md pattern </dev/null` looked for a file called `pattern`,
+  `carrel --plain -- -dash.md` did not open it, and a file called `--no-mouse` or `--diff`
+  could not be opened at all.
+- **On a pipe, only a pager's own flags are ignored** (`-R`, `-FRX`: any run of
+  `FRSXMKsinrEeq`). Every single-dash argument used to be dropped there, so
+  `echo x | carrel -z` exited 0; it is an unknown option now, as it is at a terminal.
+- **An error never echoes an argument raw.** An unknown option, a bad width or pattern is
+  shown the way a file name is, with an ESC as `\x1b`: `carrel $'--x\e[2J'` cleared the
+  screen.
+- **The settings pane names the theme that is showing.** It read `Theme  terminal` under
+  every theme.
+- **An endless pipe is cut at 64 MB or 2,000,000 lines in every mode.** `--plain -`,
+  `--render -`, `- PATTERN` and `cmd | carrel | …` read all of stdin, so
+  `yes '# x' | carrel --plain -` ran out of memory; they stop where the reader stops and
+  say so on stderr.
+- **A FIFO where the config or a state file should be no longer hangs startup.** Config,
+  positions, bookmarks, folds, notes, the index cache and the desktop palette are read only
+  from regular files.
+- **A relative `XDG_CONFIG_HOME`, `XDG_STATE_HOME` or `XDG_CACHE_HOME` is ignored**, as
+  the XDG specification says it must be. It used to be honored, which read a config from,
+  and wrote positions and the index into, whatever folder carrel was started in.
+- **The document card's `last changed` time says it is UTC.** It was UTC unlabeled, hours
+  off what `ls -l` shows.
+- **Man page and help corrected**: a click on the scrollbar track goes there (it does not
+  page); `42G` goes to a row, not a line of the file; the lightbox closes on Esc, Enter or
+  `q`; the notes list's **copy all**, the notes store under `marginalia/`, and
+  `--tutorial` in the synopsis are documented; the config key list no longer miscounts
+  itself.
 - **A Ctrl or Alt chord carrel does not bind does nothing.** It used to act as its bare
   letter outside text inputs: Ctrl-D on the file list opened the folder browser, Ctrl-T
   in the reader switched the table view, Alt-Q closed the document. The chords carrel
