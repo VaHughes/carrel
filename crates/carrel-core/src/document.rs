@@ -568,14 +568,23 @@ pub(crate) fn bare_urls(t: &str, raw: &str, runs_on: bool) -> Vec<BareUrl> {
                 // An entity or an escape in it keeps it from pairing, but
                 // its dashes are still smart punctuation's unless the
                 // author typed one: `a--b?c&amp;d` showed and copied
-                // `a–b`, an address nobody could type back.
-                let hyphens = url.contains(['\u{2013}', '\u{2014}'])
-                    && !raw.contains(['\u{2013}', '\u{2014}']);
+                // `a–b`, an address nobody could type back. Typed THERE,
+                // between the same two characters — a dash anywhere in the
+                // paragraph used to count, and kept every URL's.
+                let chars: Vec<char> = url.chars().collect();
+                let smart = chars.iter().enumerate().any(|(k, c)| {
+                    matches!(c, '\u{2013}' | '\u{2014}') && {
+                        let around: String = chars[k.saturating_sub(1)..(k + 2).min(chars.len())]
+                            .iter()
+                            .collect();
+                        !raw.contains(&around)
+                    }
+                });
                 BareUrl {
-                    url: if hyphens { hyphenated(&url) } else { url },
+                    url: if smart { hyphenated(&url) } else { url },
                     shown,
                     typed: None,
-                    hyphens,
+                    hyphens: smart,
                 }
             }
         })

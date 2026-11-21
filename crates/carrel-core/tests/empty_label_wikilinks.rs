@@ -135,6 +135,41 @@ fn no_phantom_link_from_the_replay() {
     assert_eq!(d.text.matches(" b").count(), 1, "{:?}", d.text);
 }
 
+/// The same with a dash typed elsewhere in the paragraph: one `—` in the
+/// sentence used to turn the repair off for every unpaired URL in it. A
+/// dash typed in the URL itself is still the author's.
+#[test]
+fn an_unpaired_bare_url_keeps_its_hyphens_beside_a_typed_dash() {
+    for dash in ['\u{2014}', '\u{2013}'] {
+        let d = Document::parse(&format!(
+            "see https://x.example/a--b?c&amp;d ok {dash} done\n"
+        ));
+        assert_eq!(&*d.links[0], "https://x.example/a--b?c&d", "{dash}");
+        assert!(
+            d.text
+                .contains(&format!("see https://x.example/a--b?c&d ok {dash} done")),
+            "{:?}",
+            d.text
+        );
+    }
+    let d = Document::parse(
+        "x \u{2014} https://x.example/a---b--c?d&amp;e and www.q\u{2013}r.example/z&amp;y\n",
+    );
+    assert_eq!(
+        d.links.iter().map(|l| &**l).collect::<Vec<_>>(),
+        [
+            "https://x.example/a---b--c?d&e",
+            "http://www.q\u{2013}r.example/z&y"
+        ]
+    );
+    assert!(
+        d.text
+            .contains("https://x.example/a---b--c?d&e and www.q\u{2013}r.example/z&y"),
+        "{:?}",
+        d.text
+    );
+}
+
 /// A bare URL that cannot be paired with the source (an entity in it)
 /// still showed AND copied an en dash for the `--` typed in it.
 #[test]
