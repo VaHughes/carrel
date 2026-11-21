@@ -190,6 +190,8 @@ fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
         }
         let open = i + 1;
         let mut depth = 0usize;
+        // A root in the index has an index of its own.
+        let mut brackets = 0usize;
         let mut close = None;
         let mut j = open;
         while j < bytes.len() {
@@ -198,6 +200,8 @@ fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
                 b'{' => depth += 1,
                 b'}' if depth == 0 => break,
                 b'}' => depth -= 1,
+                b'[' if depth == 0 => brackets += 1,
+                b']' if depth == 0 && brackets > 0 => brackets -= 1,
                 b']' if depth == 0 => {
                     close = Some(j);
                     break;
@@ -1467,6 +1471,11 @@ mod tests {
             panic!("expected a root first: {items:?}")
         };
         assert!(index.as_ref().is_some_and(|i| i.is_compound()), "{index:?}");
+        let text = |src| inline_text(&parse(src).expect("it parses"));
+        assert_eq!(text(r"\sqrt[3]{x}"), "3√x");
+        assert_eq!(text(r"\sqrt[n+1]{x}+z"), "(n + 1)√x + z");
+        // A root in the index: the outer index ends at ITS bracket.
+        assert_eq!(text(r"\sqrt[\sqrt[3]{2}]{y}"), "3√2√y");
     }
 
     #[test]
@@ -1515,7 +1524,9 @@ pub fn inline_text(expr: &MathExpr) -> String {
             format!("{}/{}", grouped(num), grouped(den))
         }
         MathExpr::Sqrt { radicand, index } => {
-            let idx = index.as_deref().map(inline_text).unwrap_or_default();
+            // Grouped like the radicand: an index of several terms left
+            // bare read as a sum with the root in it (`n + 1√x`).
+            let idx = index.as_deref().map(grouped).unwrap_or_default();
             format!("{idx}\u{221a}{}", grouped(radicand))
         }
         MathExpr::Script { base, sub, sup, .. } => {

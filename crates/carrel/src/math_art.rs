@@ -312,15 +312,26 @@ fn sqrt(
         } else {
             one_row(&r)
         };
+        // An index of several terms is bracketed, or `n + 1√x` reads as a
+        // sum with the root of x in it.
         let idx = match index {
+            Some(i) if i.is_compound() => format!("({})", one_row(&lay(i, mode, depth + 1)?)),
             Some(i) => one_row(&lay(i, mode, depth + 1)?),
             None => String::new(),
         };
         return MathBox::sym(&format!("{idx}√{inner}"));
     }
-    // The overbar spans the radicand; the radical sign sits on the baseline.
-    let bar = MathBox::sym(&format!(" {}", "‾".repeat(r.width as usize)))?;
-    let sign = MathBox::row_of(&[MathBox::sym("√")?, r])?;
+    // The overbar spans the radicand; the radical sign sits on the baseline,
+    // and the index — which a display block used to drop, so a cube root
+    // was drawn as a square root — stands raised to its left, on the
+    // overbar's row.
+    let idx = match index {
+        Some(i) => one_row(&lay(i, Mode::Inline, depth + 1)?),
+        None => String::new(),
+    };
+    let pad = " ".repeat(carrel_core::display_width(&idx) as usize);
+    let bar = MathBox::sym(&format!("{idx} {}", "‾".repeat(r.width as usize)))?;
+    let sign = MathBox::row_of(&[MathBox::sym(&format!("{pad}√"))?, r])?;
     let baseline = bar.height() + sign.baseline;
     Some(MathBox::stack(vec![bar, sign], baseline))
 }
@@ -716,6 +727,34 @@ mod tests {
         assert_eq!(b.rows.len(), 2, "{:?}", b.rows);
         assert!(b.rows[0].contains('‾'), "overbar: {:?}", b.rows);
         assert!(b.rows[1].contains('√'), "radical sign: {:?}", b.rows);
+    }
+
+    /// A root's index is drawn. In a display block it was dropped — a cube
+    /// root looked like a square root — and inline an index of several
+    /// terms read as part of what came before (`n + 1√x`).
+    #[test]
+    fn an_indexed_root_shows_its_index_in_both_modes() {
+        let root = |index: MathExpr| MathExpr::Sqrt {
+            radicand: Box::new(sym("x")),
+            index: Some(Box::new(index)),
+        };
+        let b = lay_out(&root(sym("3")), Mode::Display);
+        assert_eq!(b.rows.len(), 2, "{:?}", b.rows);
+        assert_eq!(b.rows[0].trim_end(), "3 ‾", "{:?}", b.rows);
+        assert_eq!(b.rows[1].trim_end(), " √x", "{:?}", b.rows);
+        let sum = MathExpr::Row(vec![sym("n"), sym("+"), sym("1")].into());
+        let b = lay_out(&root(sum.clone()), Mode::Display);
+        assert!(
+            b.rows[0].starts_with("n + 1 ‾") || b.rows[0].starts_with("n+1 ‾"),
+            "{:?}",
+            b.rows
+        );
+        let inline = one_row(&lay_out(&root(sum), Mode::Inline));
+        assert!(
+            inline.starts_with('(') && inline.contains(")√x"),
+            "{inline}"
+        );
+        assert_eq!(one_row(&lay_out(&root(sym("3")), Mode::Inline)), "3√x");
     }
 
     #[test]

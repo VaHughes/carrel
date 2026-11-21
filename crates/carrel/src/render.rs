@@ -1043,7 +1043,10 @@ fn paint_marks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         targets,
         app,
         Rect::new(x, y, w, h),
-        &format!("{} bookmarks", app.marks.len()),
+        &match app.marks.len() {
+            1 => "1 bookmark".to_string(),
+            n => format!("{n} bookmarks"),
+        },
     );
 
     let entries: Vec<_> = app

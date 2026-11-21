@@ -274,8 +274,10 @@ fn main() -> ExitCode {
     DIFF_FORCED.set(diff_forced).ok();
     MOUSE_OFF.set(mouse_off).ok();
     if let Some(complaint) = flag_complaint(&args) {
-        say!("carrel: {complaint}");
+        // The reason LAST: the usage is forty lines, and printed after the
+        // reason it scrolled the reason off a short terminal.
         say_bare!("{USAGE}");
+        say!("carrel: {complaint}");
         return ExitCode::FAILURE;
     }
     // Everything after `--` is a name, whatever it looks like:
@@ -4699,15 +4701,19 @@ mod tests {
     fn long_peek(lines: usize, cols: u16, rows: u16) -> App {
         use carrel::action::Action;
         let src = long_src(lines);
-        let mut app = App::new(
-            "t.md".into(),
-            carrel_core::Document::parse(&src),
-            cols,
-            rows,
-        );
+        // Opened where there is room, and carried by hand to a size that
+        // has none: a click on a mark there says so and opens nothing, and
+        // a resize closes the box, so no input leaves one open and undrawn
+        // — the state `peek_drawn` exists to keep honest all the same.
+        let mut app = App::new("t.md".into(), carrel_core::Document::parse(&src), 60, 20);
         let byte = u32::try_from(app.doc.text.find("[^n]").unwrap()).unwrap();
         update(&mut app, Action::FootnotePeek { at: (4, 0), byte });
         assert!(app.peek.is_some());
+        if (cols, rows) != (60, 20) {
+            let peek = app.peek.take();
+            app.on_resize(cols, rows);
+            app.peek = peek;
+        }
         app
     }
 

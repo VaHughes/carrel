@@ -659,3 +659,24 @@ fn display_math_in_the_box_is_drawn_as_on_the_page() {
     // The rows around the drawing are still the text's own.
     check_rows(&app, cols, rows);
 }
+
+/// A click on a footnote mark in a window too short to draw its box used
+/// to do nothing and say nothing. It says there is no room, and what works.
+#[test]
+fn a_footnote_mark_in_a_short_window_says_there_is_no_room() {
+    let src = "Text with a mark[^m].\n\n[^m]: the footnote text.\n";
+    for (rows, opens) in [(4u16, false), (20, true)] {
+        let mut a = App::new("t.md".into(), Document::parse(src), 40, rows);
+        let mark = u32::try_from(a.doc.text.find("mark").unwrap() + 4).unwrap();
+        update(
+            &mut a,
+            Action::FootnotePeek {
+                at: (16, 0),
+                byte: mark,
+            },
+        );
+        assert_eq!(a.peek.is_some(), opens, "{rows} rows");
+        let note = a.note.clone().unwrap_or_default();
+        assert_eq!(note.contains("no room"), !opens, "{rows} rows: {note}");
+    }
+}

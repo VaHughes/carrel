@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A click on a footnote mark in a window too short for its box says so**, and that `%`
+  goes to the footnote, instead of doing nothing. A mistyped option prints its reason
+  after the usage, where it stays on screen.
 - **A dead link is struck through in a file named bare** (`carrel notes.md`): there a link
   to a missing file looked like a live one, while the same document opened from the file
   list showed it struck.
@@ -22,7 +25,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **`theme = Nord` is `nord`**: a theme's name is read whatever its letter case. Switching
   theme when the config cannot be written says the choice lasts only until you quit.
 - **An indexed root reads the right way round**: `\sqrt[3]{x}` showed as `x√3`, and
-  an index of more than one term (`\sqrt[n+1]{x}`) spilled out after the root.
+  an index of more than one term (`\sqrt[n+1]{x}`) spilled out after the root. In a
+  display block the index is drawn (a cube root looked like a square root), and inline
+  an index of several terms is bracketed: `(n + 1)√x`.
 - **A config or state file of an absurd size is refused, not read**: a sparse `config`
   claiming 100 TB used to stop carrel before its first frame.
 - **A very large table takes about half the memory to open**: a 2,000 by 2,000 table of

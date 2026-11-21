@@ -4658,6 +4658,14 @@ fn open_peek(app: &mut App, at: (u16, u16), byte: u32) -> Outcome {
         def,
         format!("[^{name}]"),
     ));
+    // A window too short to draw the box in: say so, and what does work,
+    // instead of a click that does nothing at all.
+    if !app.peek_drawn() {
+        app.peek = None;
+        app.note = Some(format!(
+            "no room to show [^{name}] here — % goes to the footnote"
+        ));
+    }
     Outcome::Redraw
 }
 
