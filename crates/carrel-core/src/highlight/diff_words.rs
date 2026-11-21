@@ -6,11 +6,48 @@ use unicode_segmentation::UnicodeSegmentation;
 pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token> {
     let mut lines = Vec::new();
     let mut offset = 0;
+    // Lines the hunk being read still has to come, old side and new. In a
+    // hunk a line is what its sigil says, whatever follows the sigil: a
+    // removed `-- note` is written `--- note`.
+    let mut hunk = (0usize, 0usize);
+    let mut misread: Vec<Token> = Vec::new();
     for line in text.split_inclusive('\n') {
+        let in_hunk = hunk != (0, 0);
+        let first = line.as_bytes().first();
+        let side = match first {
+            Some(b'-') if in_hunk || !line.starts_with("--- ") => Side::Old,
+            Some(b'+') if in_hunk || !line.starts_with("+++ ") => Side::New,
+            _ => Side::Neither,
+        };
+        if in_hunk {
+            let both = !matches!(first, Some(b'-' | b'+' | b'\\'));
+            hunk.0 = hunk
+                .0
+                .saturating_sub(usize::from(side == Side::Old || both));
+            hunk.1 = hunk
+                .1
+                .saturating_sub(usize::from(side == Side::New || both));
+        } else if let Some(counts) = crate::diff::hunk_lines(line.trim_end()) {
+            hunk = counts;
+        }
+        // The grammar reads such a line as a file header whatever hunk it
+        // is in, and it was painted as one: the color of plumbing.
+        if in_hunk && (line.starts_with("---") || line.starts_with("+++")) {
+            let kind = if side == Side::Old {
+                TokenKind::Deleted
+            } else {
+                TokenKind::Inserted
+            };
+            let at = base + offset as u32;
+            misread.push(Token {
+                doc: at..at + line.len() as u32,
+                kind,
+            });
+        }
         // This marker describes the preceding line; it is not context and
         // must not split a replacement at end of file.
         if !line.starts_with("\\ No newline at end of file") {
-            lines.push((offset, line));
+            lines.push((offset, line, side));
         }
         offset += line.len();
     }
@@ -20,11 +57,11 @@ pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token>
     let mut budget = 1_000_000usize;
     while i < lines.len() {
         let start = i;
-        while i < lines.len() && removed(lines[i].1) {
+        while i < lines.len() && lines[i].2 == Side::Old {
             i += 1;
         }
         let middle = i;
-        while i < lines.len() && added(lines[i].1) {
+        while i < lines.len() && lines[i].2 == Side::New {
             i += 1;
         }
         if start < middle && middle < i {
@@ -41,6 +78,7 @@ pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token>
         }
     }
     changed.sort_unstable_by_key(|r| r.start);
+    let tokens = reclassified(tokens, misread);
     let mut result = Vec::new();
     let mut index = 0;
     for token in tokens {
@@ -82,18 +120,56 @@ pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token>
     result
 }
 
-fn removed(s: &str) -> bool {
-    s.starts_with('-') && !s.starts_with("--- ")
+/// `tokens` with each of `lines` — whole lines, in order — in place of
+/// whatever the grammar made of that line.
+fn reclassified(tokens: Vec<Token>, lines: Vec<Token>) -> Vec<Token> {
+    if lines.is_empty() {
+        return tokens;
+    }
+    let mut out = Vec::with_capacity(tokens.len() + lines.len());
+    for token in tokens {
+        let mut at = token.doc.start;
+        let mut next = lines.partition_point(|line| line.doc.end <= at);
+        while at < token.doc.end {
+            match lines.get(next) {
+                Some(line) if line.doc.start < token.doc.end => {
+                    if line.doc.start > at {
+                        out.push(Token {
+                            doc: at..line.doc.start,
+                            kind: token.kind,
+                        });
+                    }
+                    at = line.doc.end;
+                    next += 1;
+                }
+                _ => {
+                    out.push(Token {
+                        doc: at..token.doc.end,
+                        kind: token.kind,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    out.extend(lines);
+    out.sort_unstable_by_key(|token| token.doc.start);
+    out
 }
-fn added(s: &str) -> bool {
-    s.starts_with('+') && !s.starts_with("+++ ")
+
+/// Which side of a change a line belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Old,
+    New,
+    Neither,
 }
 
 type Word<'a> = (u32, &'a str);
-fn words<'a>(lines: &[(usize, &'a str)]) -> Vec<Word<'a>> {
+fn words<'a>(lines: &[(usize, &'a str, Side)]) -> Vec<Word<'a>> {
     lines
         .iter()
-        .flat_map(|(offset, line)| {
+        .flat_map(|(offset, line, _)| {
             line[1..]
                 .split_word_bound_indices()
                 .filter(|(_, word)| !word.chars().all(char::is_whitespace))
@@ -199,6 +275,49 @@ mod tests {
                 ("old".into(), TokenKind::DeletedWord),
                 ("new".into(), TokenKind::InsertedWord)
             ]
+        );
+    }
+
+    /// Inside a hunk a line is what its sigil says: a removed `-- note` is
+    /// written `--- note`, and was passed over as a file header.
+    #[test]
+    fn a_hunk_line_that_looks_like_a_header_is_still_compared() {
+        assert_eq!(
+            changes("@@ -1,2 +1,2 @@\n context\n--- old note\n+-- new note\n"),
+            vec![
+                ("old".into(), TokenKind::DeletedWord),
+                ("new".into(), TokenKind::InsertedWord)
+            ]
+        );
+        assert_eq!(
+            changes("@@ -1 +1 @@\n-- i = 1;\n+++ i = 2;\n"),
+            vec![
+                ("-".into(), TokenKind::DeletedWord),
+                ("1".into(), TokenKind::DeletedWord),
+                ("+".into(), TokenKind::InsertedWord),
+                ("+".into(), TokenKind::InsertedWord),
+                ("2".into(), TokenKind::InsertedWord)
+            ]
+        );
+        // And it is painted as the removal it is, not as a file header.
+        let text = "@@ -1,2 +1,2 @@\n context\n--- old note\n+-- new note\n";
+        let line = text.find("--- old").unwrap() as u32;
+        let kinds: Vec<TokenKind> = highlight("diff", text, 0)
+            .into_iter()
+            .filter(|t| t.doc.start < line + 12 && t.doc.end > line)
+            .map(|t| t.kind)
+            .collect();
+        assert!(
+            !kinds.is_empty()
+                && kinds
+                    .iter()
+                    .all(|k| matches!(k, TokenKind::Deleted | TokenKind::DeletedWord)),
+            "{kinds:?}"
+        );
+        // After the hunk's lines, a header pair is a header pair again.
+        assert_eq!(
+            changes("@@ -1 +1 @@\n-a\n+a\n--- a/old\n+++ b/new\n"),
+            [] as [(String, crate::highlight::TokenKind); 0]
         );
     }
 

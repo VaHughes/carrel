@@ -64,7 +64,7 @@ fn is_hunk_header(l: &str) -> bool {
 
 /// How many lines a hunk header says follow on each side, old and new:
 /// `@@ -1,3 +1,4 @@` is `(3, 4)`, and a side with no count is one line.
-fn hunk_lines(l: &str) -> Option<(usize, usize)> {
+pub(crate) fn hunk_lines(l: &str) -> Option<(usize, usize)> {
     if !is_hunk_header(l) {
         return None;
     }
