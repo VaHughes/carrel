@@ -1758,7 +1758,8 @@ impl Document {
 /// known. Replaying the *pushes* — not the strings — is what keeps inline
 /// styles, links, and provenance intact through the buffering.
 struct PushCall {
-    text: String,
+    /// What was pushed, as a range of [`TableRec::text`].
+    text: Range<u32>,
     src: Range<usize>,
     prov: ProvKind,
     style: Style,
@@ -1766,11 +1767,21 @@ struct PushCall {
 }
 
 /// A table being buffered: cells of recorded pushes, per row.
+///
+/// Flat — one list of pushes, one buffer of their text, and where each cell
+/// and row ends. A list per cell and a string per push cost some 300 bytes
+/// for a one-character cell, which made a 2,000 x 2,000 table of them need
+/// a gigabyte and a half to parse.
 #[derive(Default)]
 struct TableRec {
-    rows: Vec<Vec<Vec<PushCall>>>,
-    row: Vec<Vec<PushCall>>,
-    cell: Vec<PushCall>,
+    calls: Vec<PushCall>,
+    /// The text of every push, end to end.
+    text: String,
+    /// Per finished cell, where its pushes end in `calls`. A cell starts
+    /// where the one before it ended.
+    cells: Vec<u32>,
+    /// Per finished row, where its cells end in `cells`.
+    rows: Vec<u32>,
     /// Display column within the current cell, so tabs captured here expand
     /// relative to the CELL start. Expanding at capture is what keeps the
     /// width measurement and the replayed emission agreeing — a raw tab
@@ -2448,8 +2459,10 @@ impl<'a> Builder<'a> {
             } else {
                 kind
             };
-            t.cell.push(PushCall {
-                text: expanded.into_owned(),
+            let start = t.text.len() as u32;
+            t.text.push_str(&expanded);
+            t.calls.push(PushCall {
+                text: start..t.text.len() as u32,
                 src,
                 prov,
                 style: self.style,
@@ -2652,15 +2665,22 @@ impl<'a> Builder<'a> {
     /// ordinary reflow layer later, complete and searchable, never truncated.
     fn flush_table(&mut self, src_end: usize) {
         let Some(t) = self.table.take() else { return };
-        let rows = t.rows;
+        let text = |call: &PushCall| &t.text[call.text.start as usize..call.text.end as usize];
+        // The `i`th row's cells, or cell's pushes: each starts where the
+        // one before it ended.
+        let span = |ends: &[u32], i: usize| {
+            let from = if i == 0 { 0 } else { ends[i - 1] as usize };
+            from..ends[i] as usize
+        };
+        let rows = || (0..t.rows.len()).map(|r| span(&t.rows, r));
 
         // Max-content width per column.
         let mut cols: Vec<u16> = Vec::new();
-        for row in &rows {
-            for (c, cell) in row.iter().enumerate() {
-                let w = cell
+        for row in rows() {
+            for (c, cell) in row.map(|i| span(&t.cells, i)).enumerate() {
+                let w = t.calls[cell]
                     .iter()
-                    .fold(0u16, |a, p| a.saturating_add(display_width(&p.text)));
+                    .fold(0u16, |a, p| a.saturating_add(display_width(text(p))));
                 if c == cols.len() {
                     cols.push(w);
                 } else if let Some(slot) = cols.get_mut(c) {
@@ -2672,18 +2692,18 @@ impl<'a> Builder<'a> {
         // Replay. A three-cell gap between columns, so the paint-time
         // separator sits centred with a space either side.
         let ncols = cols.len();
-        let mut cell_starts: Vec<u32> = Vec::with_capacity(rows.len() * ncols);
-        for row in rows {
+        let mut cell_starts: Vec<u32> = Vec::with_capacity(t.rows.len() * ncols);
+        for row in rows() {
             let n = row.len();
-            for (c, cell) in row.into_iter().enumerate() {
+            for (c, cell) in row.map(|i| span(&t.cells, i)).enumerate() {
                 cell_starts.push(self.text.len() as u32);
                 let mut w = 0u16;
-                for call in cell {
-                    w = w.saturating_add(display_width(&call.text));
+                for call in &t.calls[cell] {
+                    w = w.saturating_add(display_width(text(call)));
                     let (style, link) = (self.style, self.current_link);
                     self.style = call.style;
                     self.current_link = call.link;
-                    self.push(&call.text, call.src, call.prov);
+                    self.push(text(call), call.src.clone(), call.prov);
                     self.style = style;
                     self.current_link = link;
                 }
@@ -3149,15 +3169,13 @@ impl<'a> Builder<'a> {
                 // 2026-08-11; this was a TODO pointing at it as open work.)
                 Event::End(TagEnd::TableCell) => {
                     if let Some(t) = self.table.as_mut() {
-                        let cell = std::mem::take(&mut t.cell);
-                        t.row.push(cell);
+                        t.cells.push(t.calls.len() as u32);
                         t.cell_col = 0;
                     }
                 }
                 Event::End(TagEnd::TableRow | TagEnd::TableHead) => {
                     if let Some(t) = self.table.as_mut() {
-                        let row = std::mem::take(&mut t.row);
-                        t.rows.push(row);
+                        t.rows.push(t.cells.len() as u32);
                     }
                 }
                 Event::Start(Tag::TableCell | Tag::TableRow | Tag::TableHead) => {}
@@ -3909,6 +3927,14 @@ mod tests {
             }
         }
         src
+    }
+
+    /// A table is buffered whole before any of it is written, so what one
+    /// recorded push costs is what a cell costs. With its own `String` it
+    /// was 56 bytes and an allocation — and each cell had a list of them.
+    #[test]
+    fn a_buffered_table_push_owns_no_text_of_its_own() {
+        assert!(std::mem::size_of::<PushCall>() <= 40);
     }
 
     proptest::proptest! {

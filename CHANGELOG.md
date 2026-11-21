@@ -6,6 +6,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 - **A config or state file of an absurd size is refused, not read**: a sparse `config`
   claiming 100 TB used to stop carrel before its first frame.
+- **A very large table takes about half the memory to open**: a 2,000 by 2,000 table of
+  one-character cells needed 1.5 GB and now needs 0.8.
 - **A note with thousands of `[[wikilinks]]` opens at once in a folder of thousands of
   notes.** The folder was listed once per link that was not an exact file name — five
   seconds to open an index note of 2,000 links beside 8,000 notes — and again for every

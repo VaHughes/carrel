@@ -2090,6 +2090,7 @@ impl App {
         }
         self.resolve_wikilinks();
         self.find_dead_links();
+        self.count_info_links();
     }
 
     /// Open the built-in guide as a retained page, like search results.
@@ -2289,6 +2290,8 @@ impl App {
         // A heading click's byte, kept for the second press of a double
         // click: it names the old parse's text.
         self.click_fold = None;
+        // The old parse's count; whoever shows the new one counts again.
+        self.info_links = None;
         self.folded.clear();
         self.folded_details.clear();
         self.image_dims.clear();
@@ -2490,9 +2493,7 @@ impl App {
                 f.selected = f.selected.min(f.rows.len().saturating_sub(1));
             }
         }
-        if self.info {
-            self.info_links = Some(local_link_count(self));
-        }
+        self.count_info_links();
         if self.following {
             self.view
                 .scroll_to(&self.doc, &self.layout, u32::MAX, self.text_h());
@@ -2775,6 +2776,12 @@ impl App {
     pub fn index_links(&mut self) {
         self.resolve_wikilinks();
         self.find_dead_links();
+    }
+
+    /// Count the info card's local links for the document now showing, if
+    /// the card is up. After the wikilinks are resolved, never before.
+    fn count_info_links(&mut self) {
+        self.info_links = self.info.then(|| local_link_count(self));
     }
 
     /// Resolve every `[[wikilink]]` target once per document. One directory
