@@ -62,6 +62,22 @@ fn is_hunk_header(l: &str) -> bool {
             .is_some_and(|(r, _)| is_line_range(r))
 }
 
+/// How many lines a hunk header says follow on each side, old and new:
+/// `@@ -1,3 +1,4 @@` is `(3, 4)`, and a side with no count is one line.
+fn hunk_lines(l: &str) -> Option<(usize, usize)> {
+    if !is_hunk_header(l) {
+        return None;
+    }
+    let (old, rest) = l.strip_prefix("@@ -")?.split_once(" +")?;
+    let (new, _) = rest.split_once(" @@")?;
+    let count = |range: &str| {
+        range
+            .split_once(',')
+            .map_or(Some(1), |(_, n)| n.parse().ok())
+    };
+    Some((count(old)?, count(new)?))
+}
+
 /// `12` or `12,3`.
 fn is_line_range(s: &str) -> bool {
     let (a, b) = s.split_once(',').unwrap_or((s, "0"));
@@ -200,7 +216,10 @@ impl FileDiff {
 /// starts that open a block; everything inline (`code`, *emphasis*, links)
 /// keeps working, and so do lists, which commit bodies use. Smart
 /// punctuation's dashes do not ([`escape_dashes`]): `--` in a commit
-/// message is a flag or an HTML comment, not an en dash.
+/// message is a flag or an HTML comment, not an en dash. Nor does raw
+/// HTML: a message is not HTML, and a tag the reader would strip is a
+/// word of it (`--target <sha>`, `Vec<String>`), so [`settle`] escapes the
+/// `<` of every tag the parse finds. An autolink is a link, and stays one.
 ///
 /// Every backslash this adds is planned as a [`Plan`] and then checked
 /// against the parse of the text it produces ([`settle`]), never against
@@ -429,6 +448,10 @@ struct Parsed {
     literal: Vec<(std::ops::Range<usize>, bool)>,
     /// Where math is. All of it is broken open: a message is shell.
     math: Vec<std::ops::Range<usize>>,
+    /// Where raw HTML is, each range opening at its `<`. All of it is
+    /// broken open too: a message is not HTML, and the reader strips a
+    /// tag, so `Vec<String>` read as `Vec`.
+    html: Vec<std::ops::Range<usize>>,
     breaks: std::collections::HashSet<usize>,
     /// The ranges flagged droppable, in order.
     droppable: Vec<std::ops::Range<usize>>,
@@ -444,6 +467,7 @@ impl Parsed {
         let mut parsed = Parsed {
             literal: Vec::new(),
             math: Vec::new(),
+            html: Vec::new(),
             breaks: std::collections::HashSet::new(),
             droppable: Vec::new(),
             linked: Vec::new(),
@@ -451,6 +475,8 @@ impl Parsed {
         let mut events = crate::document::body_events(text).peekable();
         // Inside a link or a code block the reader links no bare URL.
         let mut no_urls = 0usize;
+        // The wikilink being read, and how many links are open inside it.
+        let mut wiki: Option<(std::ops::Range<usize>, usize)> = None;
         while let Some((event, r)) = events.next() {
             if urls {
                 match &event {
@@ -495,14 +521,57 @@ impl Parsed {
                     _ => {}
                 }
             }
+            let wikilink = match &event {
+                Event::Start(Tag::Link {
+                    link_type: LinkType::WikiLink { .. },
+                    ..
+                }) => Some(r.clone()),
+                Event::Start(Tag::Image {
+                    link_type: LinkType::WikiLink { .. },
+                    ..
+                }) if text.as_bytes().get(r.start) == Some(&b'!') => Some(r.start + 1..r.end),
+                _ => None,
+            };
+            match (&event, &mut wiki) {
+                (Event::Start(Tag::Link { .. } | Tag::Image { .. }), Some((_, inner))) => {
+                    *inner += 1;
+                }
+                (Event::Start(_), None) => wiki = wikilink.map(|w| (w, 0)),
+                (Event::End(TagEnd::Link | TagEnd::Image), Some((_, inner))) => {
+                    if *inner == 0 {
+                        wiki = None;
+                    } else {
+                        *inner -= 1;
+                    }
+                }
+                _ => {}
+            }
+            // Math or HTML in a wikilink's label is undone by breaking the
+            // wikilink: the parser reports it offset there (`[[$|f$]]` gave
+            // its math as `f$`), so its own opener cannot be found.
+            let within = wiki.as_ref().map(|(w, _)| w.clone());
             match event {
+                Event::InlineHtml(_) | Event::Html(_) => {
+                    if let Some(w) = within {
+                        parsed.html.push(w);
+                    } else if text.as_bytes().get(r.start) == Some(&b'<') {
+                        parsed.html.push(r.clone());
+                    }
+                    parsed.literal.push((r, true));
+                }
                 Event::Code(_)
-                | Event::InlineHtml(_)
-                | Event::Html(_)
                 | Event::Start(Tag::Link {
                     link_type: LinkType::Autolink | LinkType::Email,
                     ..
                 }) => parsed.literal.push((r, true)),
+                // An embed is the same wikilink behind a `!`, and its
+                // opener is the bracket.
+                Event::Start(Tag::Image {
+                    link_type: LinkType::WikiLink { .. },
+                    ..
+                }) if text.as_bytes().get(r.start) == Some(&b'!') => {
+                    parsed.literal.push((r.start + 1..r.end, false));
+                }
                 // A wikilink shows its target raw but smart-punctuates a
                 // label, so `[[#|---]]` read as a dash with the escape out
                 // and kept a backslash with it in. Neither is the message:
@@ -512,7 +581,7 @@ impl Parsed {
                     ..
                 }) => parsed.literal.push((r, false)),
                 Event::InlineMath(_) | Event::DisplayMath(_) => {
-                    parsed.math.push(r.clone());
+                    parsed.math.push(within.unwrap_or_else(|| r.clone()));
                     parsed.literal.push((r, true));
                 }
                 Event::HardBreak => {
@@ -590,7 +659,9 @@ fn settle(mut plan: Plan) -> String {
         .bytes()
         .filter(|b| matches!(b, b'`' | b'<' | b'$' | b'['))
         .count();
-    if plan.bare.is_empty() && (plan.esc.is_empty() || (openers == 0 && breaks == 0)) {
+    // With no escape planned there is still raw HTML to find, if any.
+    let unescaped = plan.esc.is_empty() && !plan.base.contains('<');
+    if plan.bare.is_empty() && (unescaped || (openers == 0 && breaks == 0)) {
         return plan.render(|_| true).0;
     }
     // Break every construct one parse finds at once, not the first: one at
@@ -648,6 +719,7 @@ fn settle(mut plan: Plan) -> String {
         };
         let mut found = parsed2.showing(&at2, |_| true);
         found.extend(parsed2.math.iter().cloned());
+        found.extend(parsed2.html.iter().cloned());
         if !found.is_empty() {
             if break_all(&mut plan, &found, &at2) {
                 continue;
@@ -736,8 +808,10 @@ fn indent_cols(l: &str) -> usize {
 /// escaped too.
 fn record_safe(l: &str, plan: &mut Plan) {
     let start = plan.base.len();
-    for c in l.chars() {
-        if is_inline_special(c) {
+    let mut chars = l.chars().peekable();
+    while let Some(c) = chars.next() {
+        // A dot before another: three unescaped in a row are an ellipsis.
+        if is_inline_special(c) || (c == '.' && chars.peek() == Some(&'.')) {
             plan.escape_next();
         }
         plan.base.push(c);
@@ -830,21 +904,39 @@ fn is_trailer_line(l: &str) -> bool {
         && key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
 
-/// Does `c` mean something inline?
+/// Does `c` mean something inline? Markup, and the quotes smart
+/// punctuation curls.
 fn is_inline_special(c: char) -> bool {
     matches!(
         c,
-        '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '!' | '|' | '~' | '&' | '$'
+        '\\' | '`'
+            | '*'
+            | '_'
+            | '['
+            | ']'
+            | '<'
+            | '>'
+            | '#'
+            | '!'
+            | '|'
+            | '~'
+            | '^'
+            | '&'
+            | '$'
+            | '\''
+            | '"'
     )
 }
 
 /// Backslash-escape every character that means something inline, so a
 /// file path reads exactly as git wrote it: `<mail>` keeps its brackets
-/// instead of becoming an autolink, `*` and `_` stay literal.
+/// instead of becoming an autolink, `*` and `_` stay literal, and no
+/// `--` or `...` in a name becomes a dash or an ellipsis.
 fn escape_inline(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
-    for c in s.chars() {
-        if is_inline_special(c) {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if is_inline_special(c) || (matches!(c, '-' | '.') && chars.peek() == Some(&c)) {
             out.push('\\');
         }
         // A lone CR would end the heading line; see `emit_message`.
@@ -894,7 +986,16 @@ fn list_marker(line: &str) -> Option<usize> {
 /// heading). Inline markup at the start — `` `code` ``, `*emphasis*`,
 /// `[a link](x)` — is left alone, because it cannot leave its paragraph.
 fn neutralize(line: &str, plan: &mut Plan) {
-    if !line.is_empty() && line.chars().all(|c| "-=*_|: \t".contains(c)) {
+    // A marker with nothing after it is an empty list item, and the marker
+    // is gone from the screen: `+`, or `1.` with its delimiter.
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    if (1..=9).contains(&digits) && matches!(&line[digits..], "." | ")") {
+        plan.base.push_str(&line[..digits]);
+        plan.escape_next();
+        plan.base.push_str(&line[digits..]);
+        return;
+    }
+    if !line.is_empty() && line.chars().all(|c| "-+=*_|: \t".contains(c)) {
         // Every glyph, not just the first: `\---` would still read `--` as
         // an en dash, so the line would print as `-–`.
         for c in line.chars() {
@@ -933,6 +1034,11 @@ pub fn to_markdown(src: &str) -> String {
     // paragraph — emitting per line would make every commit message a
     // stack of one-line paragraphs.
     let mut message: Vec<&str> = Vec::new();
+    // Lines the hunk being read still has to come, old side and new. Inside
+    // a hunk a line is content whatever it looks like: a removed `-- note`
+    // is written `--- note`, which read as a file header and was dropped,
+    // and `---i;` was left out of the counts.
+    let mut hunk = (0usize, 0usize);
 
     let flush_message = |message: &mut Vec<&str>, out: &mut String| {
         emit_message(message, out);
@@ -940,6 +1046,27 @@ pub fn to_markdown(src: &str) -> String {
     };
 
     for line in src.lines() {
+        if hunk != (0, 0) {
+            let side = match line.as_bytes().first() {
+                // Context, which some tools write with its space trimmed.
+                Some(b' ') | None => Some((1, 1)),
+                Some(b'-') => Some((1, 0)),
+                Some(b'+') => Some((0, 1)),
+                // `\ No newline at end of file` is a line of neither side.
+                Some(b'\\') => Some((0, 0)),
+                // The hunk is shorter than it said: read on as outside it.
+                Some(_) => None,
+            };
+            if let Some((old, new)) = side {
+                hunk = (hunk.0.saturating_sub(old), hunk.1.saturating_sub(new));
+                file.removed += usize::from((old, new) == (1, 0));
+                file.added += usize::from((old, new) == (0, 1));
+                file.body.push_str(line);
+                file.body.push('\n');
+                continue;
+            }
+            hunk = (0, 0);
+        }
         // A commit opens a new section and closes whatever came before.
         if is_commit_line(line) {
             std::mem::take(&mut file).flush(&mut out);
@@ -983,7 +1110,10 @@ pub fn to_markdown(src: &str) -> String {
             {
                 continue;
             }
-            if line.starts_with('+') && !line.starts_with("+++") {
+            if let Some(lines) = hunk_lines(line) {
+                hunk = lines;
+            } else if line.starts_with('+') && !line.starts_with("+++") {
+                // Outside any hunk this can count: a combined diff's `@@@`.
                 file.added += 1;
             } else if line.starts_with('-') && !line.starts_with("---") {
                 file.removed += 1;
@@ -1723,6 +1853,23 @@ Author: B <b@example.com>
             " www.a.b/",
             "\r",
             "[[x|]]",
+            "![[",
+            "!",
+            "<sha>",
+            "Vec<word>",
+            "<word/>",
+            "<Word x=word>",
+            "<!-- word -->",
+            "</",
+            "^",
+            "x^2^",
+            "~",
+            "...",
+            "\"",
+            "'",
+            "http://a",
+            "$|f$",
+            "|",
         ];
 
         fn line() -> impl Strategy<Value = String> {
@@ -1888,9 +2035,6 @@ Author: B <b@example.com>
                 let (headings, structure) = stolen_structure(&src);
                 prop_assert_eq!(&headings, &want, "{}", to_markdown(&src));
                 prop_assert!(structure.is_empty(), "{:?}\n{}", structure, to_markdown(&src));
-                // And no message text vanishes — into a link reference
-                // definition, say. (Inline HTML may hide what it wraps, as
-                // the author's own markup; it stays inside its paragraph.)
                 // No hyphen pair in a message becomes a dash.
                 let doc = Document::parse(&to_markdown(&src));
                 prop_assert!(
@@ -1903,11 +2047,17 @@ Author: B <b@example.com>
                     doc.text.matches('\\').count() <= src.matches('\\').count(),
                     "{:?}\n{}", doc.text, to_markdown(&src)
                 );
-                if !src.contains('<') {
+                // And no message text vanishes: not into a link reference
+                // definition, and not into a tag the reader would strip —
+                // a message is not HTML, and its `<sha>` is a word. (A link
+                // hides its destination and a wikilink its target: the
+                // author's own markup, which stays in its paragraph.)
+                let hides = src.contains("](") || src.contains("[[");
+                for word in ["word", "sha"].into_iter().filter(|_| !hides) {
                     prop_assert_eq!(
-                        doc.text.matches("word").count(),
-                        src.matches("word").count(),
-                        "{:?}", doc.text
+                        doc.text.matches(word).count(),
+                        src.matches(word).count(),
+                        "{:?}\n{}", doc.text, to_markdown(&src)
                     );
                 }
             }

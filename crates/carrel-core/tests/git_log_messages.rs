@@ -205,3 +205,276 @@ fn every_other_wikilink_reads_as_before() {
         );
     }
 }
+
+/// An embed wikilink `![[…]]` shows its target raw, like a plain one, so
+/// an escape inside it showed as a backslash.
+#[test]
+fn an_embed_wikilink_shows_no_added_backslash() {
+    for (msg, want) in [
+        ("Use ![[my--notes]] and ![[cost $5]] here", "my--notes"),
+        ("see ![[a\n> quoted]] end", "quoted"),
+        ("x ![[#|---]] y", "---"),
+        ("![[a--b]]", "a--b"),
+    ] {
+        let t = shown(msg);
+        assert!(
+            !t.contains(['\\', '\u{2013}', '\u{2014}']),
+            "{msg:?}: {t:?}"
+        );
+        assert!(t.contains(want), "{msg:?}: {t:?}");
+    }
+}
+
+/// A bare URL typed on into a wikilink was one URL with the escapes in
+/// and a wikilink holding math with them out, so the escapes were dropped
+/// for a link the reader never made.
+#[test]
+fn a_url_typed_on_into_a_wikilink_keeps_its_text() {
+    for msg in [
+        "see http://a[[$|f$]]-- and --force",
+        "www.a.b/[[$|f$]]--",
+        "http://a[[$|f$]]--",
+        "http://a![[$|f$]]--",
+        "http://a[[b--c]]--",
+    ] {
+        let t = shown(msg);
+        assert!(t.contains(msg), "{msg:?}: {t:?}");
+    }
+}
+
+/// The file headings and fenced bodies of a diff, as the reader shows them.
+fn diff_shown(src: &str) -> String {
+    Document::parse(&to_markdown(src)).text
+}
+
+/// Inside a hunk a line is content whatever it starts with: a removed
+/// `-- comment` is written `--- comment`, and an added `++ i;` is `+++ i;`.
+/// Both were taken for a file header and dropped, and the counts with them.
+#[test]
+fn a_hunk_keeps_lines_that_look_like_file_headers() {
+    let src = "diff --git a/x.sql b/x.sql\n--- a/x.sql\n+++ b/x.sql\n@@ -1,3 +1,3 @@\n keep\n--- old comment\n+-- new comment\n+++ i;\n";
+    let t = diff_shown(src);
+    assert!(t.contains("x.sql  +2 \u{2212}1"), "{t:?}");
+    assert!(
+        t.contains("--- old comment\n+-- new comment\n+++ i;"),
+        "{t:?}"
+    );
+    // The header pair itself is still dropped, in every file of a diff, and
+    // so is the plumbing before a hunk.
+    let two = format!(
+        "{src}diff --git a/y b/y\nindex 1..2 100644\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"
+    );
+    let t = diff_shown(&two);
+    assert!(!t.contains("--- a/"), "{t:?}");
+    assert!(!t.contains("+++ b/"), "{t:?}");
+    assert!(!t.contains("index 1..2"), "{t:?}");
+    assert!(t.contains("y  +1 \u{2212}1"), "{t:?}");
+    // A hunk header with no count means one line; `\ No newline` is no line.
+    let src = "diff --git a/z b/z\n--- a/z\n+++ b/z\n@@ -1 +1 @@\n--- a\n\\ No newline at end of file\n+++ b\n\\ No newline at end of file\n";
+    let t = diff_shown(src);
+    assert!(t.contains("z  +1 \u{2212}1"), "{t:?}");
+    assert!(t.contains("--- a\n"), "{t:?}");
+    assert!(t.contains("+++ b\n"), "{t:?}");
+    // A line of the hunk that reads like plumbing is content too.
+    let src = "diff --git a/w b/w\n--- a/w\n+++ b/w\n@@ -1,2 +1,2 @@\n index 3 of 4\n-old mode on\n+new mode off\n";
+    let t = diff_shown(src);
+    assert!(
+        t.contains(" index 3 of 4\n-old mode on\n+new mode off"),
+        "{t:?}"
+    );
+}
+
+/// The counts beside a file's name are of the lines shown: `---i;` is a
+/// removed line and `+++++` an added one, and neither was counted.
+#[test]
+fn a_files_counts_are_of_the_hunk_lines_shown() {
+    let src = "diff --git a/x.c b/x.c\n--- a/x.c\n+++ b/x.c\n@@ -1,4 +1,4 @@\n for (;;) {\n---i;\n-----\n+++i;\n+++++\n }\n";
+    let t = diff_shown(src);
+    assert!(t.starts_with("x.c  +2 \u{2212}2\n"), "{t:?}");
+    assert!(t.contains("\n---i;\n-----\n+++i;\n+++++\n }"), "{t:?}");
+}
+
+mod hunks {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// What a line of a hunk may say after its sigil: everything the
+    /// adapter looks for at the start of a line outside one.
+    const CONTENT: &[&str] = &[
+        "",
+        "x",
+        "- note",
+        "-- note",
+        "+ more",
+        "++ i;",
+        "-- a/x",
+        "++ b/x",
+        "--",
+        "++",
+        "index 1..2 100644",
+        "new file mode 100644",
+        "rename from a",
+        "commit 0abcdef0123456789",
+        "diff --git a/q b/q",
+        "@@ -1 +1 @@",
+        "```",
+        "~~~~",
+        "# heading",
+        " indented",
+        "\\ No newline at end of file",
+    ];
+
+    fn hunk() -> impl Strategy<Value = Vec<(char, &'static str)>> {
+        prop::collection::vec(
+            (
+                prop::sample::select(vec![' ', '-', '+']),
+                prop::sample::select(CONTENT),
+            ),
+            1..12,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        /// Every line of every hunk comes back, in order and whole, and
+        /// the counts are the hunk's own arithmetic.
+        #[test]
+        fn every_hunk_line_is_shown_and_counted(
+            files in prop::collection::vec(prop::collection::vec(hunk(), 1..3), 1..3),
+            in_a_log in any::<bool>(),
+        ) {
+            let mut src = String::new();
+            let mut want = String::new();
+            if in_a_log {
+                src.push_str("commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A\n\n    Subject\n\n");
+                want.push_str("commit 0abcdef01234\nAuthor: A\nSubject\n");
+            }
+            for (i, hunks) in files.iter().enumerate() {
+                src.push_str(&format!(
+                    "diff --git a/f{i} b/f{i}\nindex 1..2 100644\n--- a/f{i}\n+++ b/f{i}\n"
+                ));
+                let (mut added, mut removed) = (0, 0);
+                let mut body = String::new();
+                for lines in hunks {
+                    let old = lines.iter().filter(|(sigil, _)| *sigil != '+').count();
+                    let new = lines.iter().filter(|(sigil, _)| *sigil != '-').count();
+                    body.push_str(&format!("@@ -1,{old} +1,{new} @@\n"));
+                    for (sigil, content) in lines {
+                        body.push_str(&format!("{sigil}{content}\n"));
+                    }
+                    added += lines.len() - old;
+                    removed += lines.len() - new;
+                }
+                src.push_str(&body);
+                want.push_str(&format!("f{i}"));
+                if added + removed > 0 {
+                    want.push_str(&format!("  +{added} \u{2212}{removed}"));
+                }
+                want.push_str(&format!("\n{body}\n"));
+            }
+            prop_assert_eq!(diff_shown(&src), want, "{}", src);
+        }
+    }
+}
+
+/// A path is shown as it is named: no dash, ellipsis or curled quote.
+#[test]
+fn a_file_heading_is_not_smart_punctuated() {
+    for path in [
+        "my--file...x.sql",
+        "it's \"quoted\".md",
+        "a---b.md",
+        "x^2^.md",
+        "H~2~O.md",
+        "a..b....c",
+        "dir/-- notes --/x",
+        "www.a--b.example/it's...x.html",
+        "a\\b ^c^ [[x|]] $y$ ![[z--w]]",
+        "---",
+        "...",
+        "\u{e9}...\u{fc}--\u{2014}",
+    ] {
+        let src = format!("diff --git a/{path} b/{path}\n@@ -1 +1 @@\n-a\n+b\n");
+        let t = diff_shown(&src);
+        assert!(
+            t.starts_with(&format!("{path}  +1 \u{2212}1")),
+            "{path:?}: {t:?}"
+        );
+    }
+}
+
+/// A record line — a header, a trailer, an indented line, a `#` comment —
+/// is shown exactly as written: no superscript, no ellipsis, no curled
+/// quote.
+#[test]
+fn a_record_line_is_shown_as_written() {
+    let msg = "Subject\n\n    x = a^b^c and H~2~O \"q\" it's... done\n\nSigned-off-by: A^x^ \"B\" <a@b.c>";
+    let t = shown(msg);
+    assert!(
+        t.contains("x = a^b^c and H~2~O \"q\" it's... done"),
+        "{t:?}"
+    );
+    assert!(t.contains("Signed-off-by: A^x^ \"B\" <a@b.c>"), "{t:?}");
+    let src = "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: O'Neil \"Red\" ... <o@n.il>\n\n    S\n\n    # a 'b' c.. d... e^f^\n";
+    let t = Document::parse(&to_markdown(src)).text;
+    assert!(t.contains("Author: O'Neil \"Red\" ... <o@n.il>"), "{t:?}");
+    assert!(t.contains("# a 'b' c.. d... e^f^"), "{t:?}");
+}
+
+/// A line that is only a list marker is the text it is, not an empty item.
+#[test]
+fn a_lone_list_marker_is_text() {
+    for marker in ["+", "1.", "2)", "-", "*", "123456789."] {
+        let src = commit(&format!("Subject\n\n{marker}\ntext after"));
+        let d = Document::parse(&to_markdown(&src));
+        assert!(
+            d.text.contains(&format!("{marker} text after")),
+            "{marker:?}: {:?}",
+            d.text
+        );
+        assert!(
+            !d.nodes.iter().any(|n| matches!(n.kind, NodeKind::Item)),
+            "{marker:?} opened a list"
+        );
+        // Under a marker with text, which is a list, it is still shown.
+        let t = shown(&format!("Subject\n\n- item\n{marker}\n"));
+        assert!(t.contains(marker), "{marker:?}: {t:?}");
+    }
+}
+
+/// A commit message is not HTML: `<sha>` and `Vec<String>` are text, and
+/// the reader's tag stripping deleted them.
+#[test]
+fn angle_brackets_in_a_message_are_shown() {
+    let msg = "Use gh release create --target <sha> when needed\n\n\
+               Sampling /proc/<pid>/stat showed that Vec<String> and From<Intent> are fine.\n\
+               A file named README<ESC>c.md could reset it. See <details> folds, <b>bold</b>,\n\
+               <a href=\"x--y\">, <!-- a note -->, <?php x ?> and </div>.\n\
+               Control: a 3 < 4 comparison and an email <a@b.co> stay.\n\n\
+               \x20   indented <kbd>\n\
+               Reviewed-by: R <r@x.y> <tag>";
+    let t = shown(msg);
+    for want in [
+        "--target <sha> when",
+        "/proc/<pid>/stat",
+        "Vec<String> and From<Intent> are",
+        "README<ESC>c.md",
+        "See <details> folds, <b>bold</b>,",
+        "<a href=\u{201c}x--y\u{201d}>, <!-- a note -->, <?php x ?> and </div>.",
+        "a 3 < 4 comparison",
+        "indented <kbd>",
+        "Reviewed-by: R <r@x.y> <tag>",
+    ] {
+        assert!(t.contains(want), "{want:?} not in {t:?}");
+    }
+    assert!(!t.contains('\\'), "{t:?}");
+    // An autolink the author wrote is still a link.
+    let d = Document::parse(&to_markdown(&commit(
+        "see <https://x.example/a--b> and <b>",
+    )));
+    assert_eq!(
+        d.links.iter().map(|l| &**l).collect::<Vec<_>>(),
+        ["https://x.example/a--b"]
+    );
+    assert!(d.text.contains("and <b>"), "{:?}", d.text);
+}
