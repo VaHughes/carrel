@@ -1566,6 +1566,38 @@ impl Document {
             .unwrap_or_else(|| u32::try_from(self.text.len()).unwrap_or(u32::MAX))
     }
 
+    /// [`Self::section_end`] for every heading at once, in node order.
+    ///
+    /// One pass, where asking per heading is a forward scan each — and a
+    /// document that is all same-level-or-deeper headings (`git log`, a
+    /// heading per commit) makes each of those scans run to the end. A
+    /// caller that wants many ends asks once, as with
+    /// [`Self::heading_slugs`]. Derived per call, like the rest of the
+    /// section index.
+    #[must_use]
+    pub fn section_ends(&self) -> Vec<(NodeId, u32)> {
+        let len = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
+        let mut out: Vec<(NodeId, u32)> = Vec::new();
+        // Indices into `out` of the headings whose section is still open;
+        // their levels strictly increase, so a heading closes a suffix.
+        let mut open: Vec<(u8, usize)> = Vec::new();
+        for node in &self.nodes {
+            let NodeKind::Heading { level } = node.kind else {
+                continue;
+            };
+            while let Some(&(l, i)) = open.last() {
+                if l < level {
+                    break;
+                }
+                out[i].1 = node.doc.start;
+                open.pop();
+            }
+            open.push((level, out.len()));
+            out.push((node.id, len));
+        }
+        out
+    }
+
     /// The node for a block index.
     #[must_use]
     pub fn node_for_block(&self, b: BlockIdx) -> &Node {
@@ -3859,6 +3891,40 @@ mod tests {
         let len = u32::try_from(d.text.len()).unwrap();
         assert_eq!(d.section_end(top), len, "nothing outranks an H1 here");
         assert_eq!(d.section_end(next), len);
+    }
+
+    /// A document of headings at random levels, some inside quotes and
+    /// lists, with or without text between them.
+    fn sectioned_source(shape: &[(u8, u8)]) -> String {
+        let mut src = String::new();
+        for (i, &(level, kind)) in shape.iter().enumerate() {
+            let hashes = "#".repeat(usize::from(level));
+            match kind {
+                0 => src.push_str(&format!("{hashes} h{i}\n\n")),
+                1 => src.push_str(&format!("{hashes} h{i}\n\nbody {i}\n\n")),
+                2 => src.push_str(&format!("> {hashes} q{i}\n\n")),
+                3 => src.push_str(&format!("- item\n\n  {hashes} l{i}\n\n")),
+                _ => src.push_str(&format!("plain {i}\n\n")),
+            }
+        }
+        src
+    }
+
+    proptest::proptest! {
+        /// The one-pass index is the per-heading scan, for every heading.
+        #[test]
+        fn every_section_end_at_once_is_each_one_asked_alone(
+            shape in proptest::collection::vec((1u8..=6, 0u8..5), 0..60)
+        ) {
+            let d = Document::parse(&sectioned_source(&shape));
+            let alone: Vec<(NodeId, u32)> = d
+                .nodes
+                .iter()
+                .filter(|n| matches!(n.kind, NodeKind::Heading { .. }))
+                .map(|n| (n.id, d.section_end(n.id)))
+                .collect();
+            proptest::prop_assert_eq!(d.section_ends(), alone);
+        }
     }
 
     #[test]

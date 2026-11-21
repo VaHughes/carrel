@@ -6,6 +6,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 - **A config or state file of an absurd size is refused, not read**: a sparse `config`
   claiming 100 TB used to stop carrel before its first frame.
+- **Collapsing every section (`zM`) of a document with tens of thousands of headings is
+  instant**, and so is every resize and reload while they are collapsed. A long
+  `git log | carrel` — a heading per commit — froze for seconds on each.
 - **A one-column table whose last row is empty no longer crashes carrel**: `--plain`,
   `--render`, a pipe and the columns view (`t`) all stopped on it.
 - **The notes list closes on Esc, `q` or `V` in a window too small to show it**; before,

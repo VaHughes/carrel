@@ -2509,13 +2509,16 @@ impl App {
         if self.folded.is_empty() && self.folded_details.is_empty() {
             return std::collections::HashSet::new();
         }
+        // Every section end in one pass, and the spans merged, so the cost
+        // is the blocks plus the folds: `zM` over a `git log` folds a
+        // heading per commit, and asking each fold for its end and each
+        // block about each fold took seconds, again on every resize.
         let mut spans: Vec<(u32, u32)> = self
-            .folded
-            .iter()
-            .map(|&id| {
-                let n = &self.doc.nodes[id.0 as usize];
-                (n.doc.end, self.doc.section_end(id))
-            })
+            .doc
+            .section_ends()
+            .into_iter()
+            .filter(|(id, _)| self.folded.contains(id))
+            .map(|(id, end)| (self.doc.nodes[id.0 as usize].doc.end, end))
             .collect();
         spans.extend(self.folded_details.iter().filter_map(|&i| {
             self.doc
@@ -2523,11 +2526,15 @@ impl App {
                 .get(i as usize)
                 .map(|r| (r.summary.end, r.end))
         }));
+        let spans = merge_open_spans(spans);
         (0..self.doc.block_count())
             .map(|i| BlockIdx(i as u32))
             .filter(|&b| {
                 let start = self.doc.node_for_block(b).doc.start;
-                spans.iter().any(|&(from, to)| start > from && start < to)
+                // The last span opening before `start` is the only one that
+                // can hold it: the merged spans are disjoint and in order.
+                let i = spans.partition_point(|&(from, _)| from < start);
+                i > 0 && start < spans[i - 1].1
             })
             .collect()
     }
@@ -6899,6 +6906,23 @@ fn footnote_jump(app: &mut App, h: u16) -> Outcome {
     Outcome::Redraw
 }
 
+/// The union of open intervals `(from, to)`, as disjoint spans in order.
+///
+/// Open at both ends, so two spans that only touch are not one: the byte
+/// they meet at is inside neither, and a block starting there is visible.
+fn merge_open_spans(mut spans: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    spans.retain(|&(from, to)| from < to);
+    spans.sort_unstable();
+    let mut out: Vec<(u32, u32)> = Vec::with_capacity(spans.len());
+    for (from, to) in spans {
+        match out.last_mut() {
+            Some(last) if from < last.1 => last.1 = last.1.max(to),
+            _ => out.push((from, to)),
+        }
+    }
+    out
+}
+
 /// Every distinct destination the open document points at, in reading order.
 ///
 /// Resolution is exactly the reader's own rule — wikilinks through
@@ -9354,6 +9378,102 @@ mod tests {
         assert_eq!(
             a.note.as_deref(),
             Some("reloaded — 1 change · c goes to it")
+        );
+    }
+
+    /// `hidden_blocks` as it was first written: every block asked about
+    /// every fold, each fold's end found by its own scan. Slow, and plainly
+    /// the rule — kept as the oracle the one-pass version must agree with.
+    fn hidden_blocks_one_fold_at_a_time(a: &App) -> std::collections::HashSet<BlockIdx> {
+        let mut spans: Vec<(u32, u32)> = a
+            .folded
+            .iter()
+            .map(|&id| (a.doc.nodes[id.0 as usize].doc.end, a.doc.section_end(id)))
+            .collect();
+        spans.extend(a.folded_details.iter().filter_map(|&i| {
+            a.doc
+                .details
+                .get(i as usize)
+                .map(|r| (r.summary.end, r.end))
+        }));
+        (0..a.doc.block_count())
+            .map(|i| BlockIdx(i as u32))
+            .filter(|&b| {
+                let start = a.doc.node_for_block(b).doc.start;
+                spans.iter().any(|&(from, to)| start > from && start < to)
+            })
+            .collect()
+    }
+
+    /// Headings at random levels, paragraphs, and `<details>` regions that
+    /// open and close around them — nested, back to back, or left open.
+    fn foldable_source(shape: &[(u8, u8)]) -> String {
+        let mut src = String::new();
+        for (i, &(level, kind)) in shape.iter().enumerate() {
+            let hashes = "#".repeat(usize::from(level));
+            match kind {
+                0 => writeln!(src, "{hashes} h{i}\n").unwrap(),
+                1 => writeln!(src, "{hashes} h{i}\n\nbody {i}\n").unwrap(),
+                2 => writeln!(src, "body {i}\n\nmore {i}\n").unwrap(),
+                3 => writeln!(src, "<details><summary>s{i}</summary>\n\ninside {i}\n").unwrap(),
+                4 => writeln!(src, "</details>\n").unwrap(),
+                _ => writeln!(src, "> {hashes} q{i}\n>\n> quoted {i}\n").unwrap(),
+            }
+        }
+        src
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(400))]
+
+        /// Whatever is folded, the one-pass answer is the slow one's.
+        #[test]
+        fn the_hidden_blocks_are_the_same_found_in_one_pass_or_fold_by_fold(
+            shape in proptest::collection::vec((1u8..=6, 0u8..6), 0..40),
+            picks in proptest::collection::vec(proptest::prelude::any::<bool>(), 80),
+        ) {
+            let mut a = App::new("f.md".into(), Document::parse(&foldable_source(&shape)), 40, 12);
+            let mut pick = picks.iter().copied().cycle();
+            a.folded = a
+                .doc
+                .nodes
+                .iter()
+                .filter(|n| matches!(n.kind, carrel_core::NodeKind::Heading { .. }))
+                .filter(|_| pick.next().unwrap())
+                .map(|n| n.id)
+                .collect();
+            a.folded_details = (0..u32::try_from(a.doc.details.len()).unwrap())
+                .filter(|_| pick.next().unwrap())
+                .collect();
+            proptest::prop_assert_eq!(a.hidden_blocks(), hidden_blocks_one_fold_at_a_time(&a));
+        }
+    }
+
+    /// **Collapsing everything costs the document, not its square.**
+    ///
+    /// `git log | carrel` is a heading per commit. Finding what a fold hides
+    /// asked every block about every fold, and every fold for its end by a
+    /// scan of its own: 25,000 commits took three and a half seconds to
+    /// collapse and three more on every resize after. The bound is a long
+    /// way from both sides: about a second here unoptimized, and the old
+    /// code needed about two minutes.
+    #[test]
+    fn collapsing_every_section_of_a_long_log_does_not_square_its_headings() {
+        let mut src = String::new();
+        // One level, as a log is: no section holds another, so nothing
+        // short-circuits and every block is asked about every fold.
+        for i in 0..100_000 {
+            writeln!(src, "# commit {i}\n").unwrap();
+        }
+        let mut a = App::new("log.md".into(), Document::parse(&src), 60, 20);
+        let t = std::time::Instant::now();
+        update(&mut a, Action::FoldAll);
+        a.on_resize(50, 20);
+        let took = t.elapsed();
+        assert_eq!(a.folded.len(), 100_000);
+        assert!(
+            took < std::time::Duration::from_secs(10),
+            "collapse and a resize took {took:?}"
         );
     }
 
