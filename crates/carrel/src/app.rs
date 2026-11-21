@@ -590,6 +590,10 @@ pub struct App {
     /// is presentation-shaped but width-INDEPENDENT (fixed-width text), so
     /// it may live in state; a block with no entry paints as source.
     pub diagram_art: HashMap<BlockIdx, Vec<String>>,
+    /// Mermaid blocks a limit kept as source, and which limit: the block
+    /// says so on its gap row, and `r` counts them. A block that is merely
+    /// not drawable (a syntax error, an unknown family) is not here.
+    pub diagram_refused: HashMap<BlockIdx, crate::diagrams::Refused>,
     /// Laid-out math art by block, both forms, computed ONCE per document.
     /// A `MathExpr` has no width input, so a resize chooses between the forms
     /// (see [`App::math_form`]) and never recomputes them. A block absent from
@@ -1250,6 +1254,7 @@ impl App {
             image_dims: HashMap::new(),
             wiki: HashMap::new(),
             diagram_art: HashMap::new(),
+            diagram_refused: HashMap::new(),
             math_art: HashMap::new(),
             show_rendered: true,
             font_px: (8, 16),
@@ -2439,6 +2444,7 @@ impl App {
         self.image_outside.clear();
         self.lightbox = None;
         self.diagram_art.clear();
+        self.diagram_refused.clear();
         self.changed.clear();
         self.change_base = None;
         self.step_cursor = None;
@@ -6932,14 +6938,15 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
 
         Action::RenderedToggle => {
             app.show_rendered = !app.show_rendered;
-            app.note = Some(
-                if app.show_rendered {
-                    "diagrams: drawn"
-                } else {
-                    "diagrams: as text"
-                }
-                .to_string(),
-            );
+            // A block a limit kept as source does not change with this key;
+            // say so, or pressing it over one looks like a key that broke.
+            let kept = app.diagram_refused.len();
+            app.note = Some(match (app.show_rendered, kept) {
+                (false, _) => "diagrams: as text".to_string(),
+                (true, 0) => "diagrams: drawn".to_string(),
+                (true, 1) => "diagrams: drawn · 1 too large, shown as text".to_string(),
+                (true, n) => format!("diagrams: drawn · {n} too large, shown as text"),
+            });
             app.relayout();
             Outcome::Redraw
         }

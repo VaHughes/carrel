@@ -237,9 +237,17 @@ Scroll a wide table sideways in columns view. The table also has clickable
 left and right buttons below it. From cards, this switches to columns.
 .TP
 .B r
-Toggle diagrams and math between drawn and text. A diagram too large to draw
-legibly (more than a few hundred nodes, messages or tasks, or wider than 500
-columns) is always shown as its source.
+Toggle diagrams and math between drawn and text. A diagram is always shown
+as its source when the renderer does not know its kind, when it has a syntax
+error, or when drawing it would cost too much time or memory. The last is
+decided before anything is drawn, from the size of the source (comments
+aside), how many things the diagram holds and how deeply they nest, how
+crowded a flowchart's ranks could be, and the size of the finished drawing;
+a document with a great many diagrams also has a budget for all of them
+together. The limits are several times the largest diagram a person draws
+by hand, and none is a limit on width. A diagram kept as source for its
+cost says so on the line under it; one that is merely not drawable does
+not.
 .TP
 .B ] [
 Move to the next or previous code block. The one in focus is marked in the

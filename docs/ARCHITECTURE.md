@@ -469,11 +469,18 @@ Key facts:
   more than 4 GB and the failed allocation aborted the process; a 20 KB flowchart fan laid out
   for over a minute; 14 KB of `a & b & … --> c & d & …` parsed to a million edges — and a
   thread cannot be stopped, so every limit is decided before the step it protects: source
-  bytes and `&` fan-out off the text, items and nesting off the parse (`merman`'s own resource
-  policy, set explicitly), the sequence grid by `sequence_cells` (its renderer budgets
-  nothing), then the art's rows and columns. Per document: source requested, art cells kept,
-  seconds of rendering. Over any of them the block stays source, silently, as math does past
-  its guard. **The values were measured against 0.8.0-alpha.5; re-measure on a bump.**
+  bytes (comment lines aside), `&` fan-out and `{ }` depth off the text; items and nesting
+  off the parse (`merman`'s own resource policy, set explicitly); a flowchart's nodes,
+  nodes × edges and squared degrees (`FlowCost` — its layout time follows the tallest rank,
+  which the model cannot give, so these bound it from above); the sequence grid by
+  `sequence_cells` (its renderer budgets nothing); then the art's cells. **Each limit is a
+  bound on cost, set from the measurements in the module doc with headroom over ordinary
+  diagrams; none bounds width or height**, and `ordinary_diagrams_are_drawn_whatever_their_width`
+  holds the corpus that must keep drawing. Per document: source requested, art cells kept,
+  seconds of rendering. A block a limit kept as source is reported (`diagrams::Refused` →
+  `App::diagram_refused`) and says so on its gap row, beside the copy chip; a block that is
+  merely not drawable says nothing.
+  **The values were measured against 0.8.0-alpha.5; re-measure on a bump.**
   `Diagrams::sync` in `main.rs` drops the receiver when the document closes, which is what
   stops the worker and what makes a reopened file ask again.
 - **Selection is a doc-byte range**; `cluster_at_col` in core is the pointer-hit inverse of

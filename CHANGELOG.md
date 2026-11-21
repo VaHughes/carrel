@@ -151,9 +151,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A mermaid diagram can no longer exhaust memory or tie up a core.** A 49 KB sequence
   diagram with 3,000 participants made carrel ask for more than 4 GB and abort, leaving
   the terminal in the alternate screen; other shapes laid out for minutes. A diagram is
-  now measured before it is drawn — source size, how many things it holds, how deeply
-  they nest, how large its drawing would be — and past the limits it is shown as its
-  source, as an unsupported one always was. A document's diagrams share a budget too.
+  now measured by what drawing it would cost before it is drawn, and one past a limit is
+  shown as its source with a line under it saying so (`r` counts them too). The limits
+  sit above what people draw — a 300-node flowchart and a 300-message sequence
+  diagram are inside them with room to spare — and none is on width: a chart wider than the window
+  is cut at its edge, as before. A document's diagrams share a budget too.
 - **A document opened a second time from the file list draws its diagrams again**; they
   stayed as source until the file changed.
 - **A document with a very long `tags:` list scrolls as fast as any other.** Every frame

@@ -1545,7 +1545,39 @@ fn block_area(app: &App, block: BlockIdx, full: Rect) -> Rect {
     Rect::new(x, full.y, w, full.height)
 }
 
-/// A block's margin marks, and a code block's copy chip.
+/// Why a mermaid block is still source, when a limit is why
+/// ([`App::diagram_refused`]): a dim line on the block's own gap row, left
+/// of the copy chip — the row the layout guarantees and nothing else
+/// paints, so it costs no rows and covers no text. Without it a diagram
+/// refused for its size looks exactly like one with a typo in it, and `r`
+/// over it looks like a key that does nothing.
+///
+/// Not while the reader has turned the drawings off: every diagram is text
+/// then, by choice.
+fn paint_refusal(frame: &mut Frame, app: &App, block: BlockIdx, area: Rect, skip: u32, y: u16) {
+    if !app.show_rendered {
+        return;
+    }
+    let Some(why) = app.diagram_refused.get(&block) else {
+        return;
+    };
+    let rows_here = app
+        .layout
+        .content_height(&app.doc, block)
+        .saturating_sub(skip);
+    let gap_y = y.saturating_add(u16::try_from(rows_here).unwrap_or(u16::MAX));
+    let x = area.x + app.doc.node_for_block(block).indent.min(area.width);
+    // Up to a cell short of the chip (`[copy]` at its widest).
+    let room = area.right().saturating_sub(x).saturating_sub(7);
+    if gap_y >= area.y && gap_y < area.bottom() && room > 0 {
+        frame
+            .buffer_mut()
+            .set_stringn(x, gap_y, why.caption(), usize::from(room), theme::dim());
+    }
+}
+
+/// A block's margin marks, a refused diagram's caption, and a code block's
+/// copy chip.
 ///
 /// Decoration, never in the text — the standing rule the fold `▸` and the
 /// table `│` separators both follow.
@@ -1559,6 +1591,7 @@ fn paint_block_cursor(
     targets: &mut Targets,
 ) {
     paint_margin_marks(frame, app, block, area, skip, y, targets);
+    paint_refusal(frame, app, block, area, skip, y);
     if app.code_focus != Some(block) {
         // Every code block says it can be copied, not only the one the
         // block cursor is on: `y` is a key, and a reader who does not know
@@ -5547,6 +5580,70 @@ mod tests {
         let text: String = (0..12).map(|y| line(&buf, y) + "\n").collect();
         assert!(!text.contains("ARTBOX"), "art hidden after m:\n{text}");
         assert!(text.contains("graph TD"), "source restored:\n{text}");
+    }
+
+    /// A diagram a limit kept as source says so, on the row under it — the
+    /// row the copy chip is on, which costs no layout. Nothing told the
+    /// reader why a chart drawn yesterday was text today, and `r` did
+    /// nothing to it and said nothing either.
+    #[test]
+    fn a_diagram_refused_for_its_size_says_so_under_the_block() {
+        use crate::diagrams::Refused;
+
+        let src = "intro\n\n```mermaid\ngraph TD\n alpha-->beta\n```\n\nafter\n";
+        let mut app = App::new("t.md".into(), Document::parse(src), 60, 14);
+        let rows = |app: &App| -> Vec<String> {
+            let buf = buffer_of(app, 60, 14);
+            (0..14).map(|y| line(&buf, y)).collect()
+        };
+        assert!(
+            !rows(&app).iter().any(|r| r.contains("too large")),
+            "nothing is said of a block no limit touched"
+        );
+
+        app.diagram_refused
+            .insert(carrel_core::BlockIdx(1), Refused::TooLarge);
+        let painted = rows(&app);
+        let source = painted
+            .iter()
+            .position(|r| r.contains("alpha-->beta"))
+            .unwrap();
+        assert!(
+            painted[source + 1].contains(Refused::TooLarge.caption()),
+            "the caption sits on the row under the source: {painted:#?}"
+        );
+        assert!(
+            painted[source + 1].contains("copy"),
+            "beside the copy chip, not over it: {:?}",
+            painted[source + 1]
+        );
+
+        // `r` says what it left alone, and with the diagrams turned to
+        // text there is nothing to explain.
+        crate::app::update(&mut app, Action::RenderedToggle);
+        assert!(!rows(&app).iter().any(|r| r.contains("too large to draw")));
+        crate::app::update(&mut app, Action::RenderedToggle);
+        assert_eq!(
+            app.note.as_deref(),
+            Some("diagrams: drawn · 1 too large, shown as text")
+        );
+
+        // In 24 columns the caption gives way to the chip rather than
+        // running under it.
+        let mut narrow = App::new("t.md".into(), Document::parse(src), 24, 14);
+        narrow
+            .diagram_refused
+            .insert(carrel_core::BlockIdx(1), Refused::Budget);
+        let buf = buffer_of(&narrow, 24, 14);
+        let row = (0..14)
+            .map(|y| line(&buf, y))
+            .find(|r| r.contains("not drawn"))
+            .expect("a caption");
+        let before_chip = row.split("copy").next().unwrap_or_default();
+        assert!(
+            row.contains("copy") && before_chip.ends_with(' '),
+            "{row:?}"
+        );
     }
 
     /// The panel's row span: (first row after the title, footer row). The

@@ -1465,7 +1465,7 @@ impl Images {
 /// document changes, drained once per frame. Art arrival is just another
 /// reflow through the anchor machinery.
 struct Diagrams {
-    rx: Option<Receiver<(BlockIdx, Vec<String>)>>,
+    rx: Option<Receiver<carrel::diagrams::Reply>>,
     /// The file of the document asked for — `None` for one with no file, a
     /// pipe or a tags page. That was also the word for "nothing asked
     /// yet", so a diagram on a pipe was never asked for: `asked` says it.
@@ -1498,8 +1498,8 @@ impl Diagrams {
         }
         self.asked = true;
         self.for_file.clone_from(&app.file);
-        let reqs = carrel::diagrams::requests(&app.doc);
-        self.rx = (!reqs.is_empty()).then(|| carrel::diagrams::spawn(reqs));
+        let plan = carrel::diagrams::plan(&app.doc);
+        self.rx = (!plan.is_empty()).then(|| carrel::diagrams::spawn(plan));
     }
 
     fn drain(&mut self, app: &mut App) {
@@ -1507,9 +1507,14 @@ impl Diagrams {
         let mut changed = false;
         loop {
             match rx.try_recv() {
-                Ok((block, art)) => {
+                Ok((block, Ok(art))) => {
                     app.diagram_art.insert(block, art);
                     changed = true;
+                }
+                // A limit kept it source: the block says so under itself.
+                // No rows change, so no reflow.
+                Ok((block, Err(why))) => {
+                    app.diagram_refused.insert(block, why);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -4054,6 +4059,39 @@ mod tests {
         // 13%-of-a-core case, now about 2%.
         assert_eq!(rescan_pause(ms(300)), Duration::from_secs(15));
         assert_eq!(rescan_pause(Duration::from_mins(1)), RESCAN_MAX);
+    }
+
+    /// A diagram a limit keeps as source reaches the reader as that, block
+    /// by block, beside the ones that were drawn — and a reload that mends
+    /// it takes the remark away with the old parse.
+    #[test]
+    fn a_refused_diagram_is_recorded_on_its_block_until_the_document_changes() {
+        use carrel::diagrams::Refused;
+
+        let fan: String = (0..300).map(|i| format!(" root-->n{i}\n")).collect();
+        let src = format!(
+            "```mermaid\ngraph TD\n a[alpha]-->b[beta]\n```\n\n```mermaid\ngraph LR\n{fan}```\n"
+        );
+        let mut app = App::new("t.md".into(), Document::parse(&src), 80, 24);
+        let mut diagrams = Diagrams::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        diagrams.sync(&app);
+        while diagrams.rx.is_some() && Instant::now() < deadline {
+            diagrams.drain(&mut app);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.diagram_art.len(), 1, "the small one is drawn");
+        let refused: Vec<_> = app.diagram_refused.values().copied().collect();
+        assert_eq!(refused, [Refused::TooLarge], "the fan says why it is not");
+        assert!(
+            !app.diagram_art
+                .keys()
+                .any(|b| app.diagram_refused.contains_key(b)),
+            "a block is one or the other"
+        );
+
+        app.reload_from("```mermaid\ngraph TD\n a-->b\n```\n");
+        assert!(app.diagram_refused.is_empty(), "old blocks, old remarks");
     }
 
     /// Closing a document drops the wait for its diagrams, and opening it
