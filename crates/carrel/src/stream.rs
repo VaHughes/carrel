@@ -151,6 +151,77 @@ fn cut_at(s: &str, bytes: usize, lines: usize, limits: Limits) -> Option<(usize,
     }
 }
 
+/// Read `reader` to its end or to `limits`, as BYTES, for the modes that
+/// print a pipe and exit.
+///
+/// They used to read all of stdin whatever its size, so the limit the
+/// reader has was missing from `--plain -`, `--render -`, `- PATTERN` and
+/// the bare pipe-out: `yes '# x' | carrel --plain -` read until memory ran
+/// out. Bytes rather than text because those modes refuse input that looks
+/// binary, which is a question about the bytes as they arrived.
+///
+/// The cut is [`pump`]'s: after the last whole line that fits, and
+/// otherwise at the limit itself, never inside a character.
+///
+/// # Errors
+///
+/// Whatever reading `reader` returns.
+pub fn read_capped(
+    mut reader: impl Read,
+    limits: Limits,
+) -> std::io::Result<(Vec<u8>, Option<Stop>)> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; CHUNK];
+    let mut lines = 0usize;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => return Ok((out, None)),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        let read = &buf[..n];
+        // Just after the newline that ends the last line allowed, when
+        // more follows it: exactly at the limit is still under it.
+        let room = limits.lines.saturating_sub(lines);
+        let by_lines = if room == 0 {
+            Some(0)
+        } else {
+            read.iter()
+                .enumerate()
+                .filter(|&(_, &b)| b == b'\n')
+                .nth(room - 1)
+                .map(|(i, _)| i + 1)
+                .filter(|&cut| cut < n)
+        };
+        let left = limits.bytes.saturating_sub(out.len());
+        let by_bytes = (n > left).then(|| {
+            let mut at = left;
+            // A continuation byte right after the cut means the cut is
+            // inside a character: back out of it.
+            while at > 0 && read[at] & 0xC0 == 0x80 {
+                at -= 1;
+            }
+            read[..at]
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map_or(at, |i| i + 1)
+        });
+        let (cut, stop) = match (by_lines, by_bytes) {
+            (Some(l), Some(b)) if l <= b => (l, Stop::Lines(limits.lines)),
+            (_, Some(b)) => (b, Stop::Bytes(limits.bytes)),
+            (Some(l), None) => (l, Stop::Lines(limits.lines)),
+            (None, None) => {
+                lines += read.iter().map(|&b| usize::from(b == b'\n')).sum::<usize>();
+                out.extend_from_slice(read);
+                continue;
+            }
+        };
+        out.extend_from_slice(&read[..cut]);
+        return Ok((out, Some(stop)));
+    }
+}
+
 /// Read stdin on a thread, sending decoded chunks. Dropping the sender is
 /// the EOF signal, the same contract as `scan::spawn`'s channel.
 #[must_use]
@@ -277,6 +348,57 @@ mod tests {
         };
         let (text, stop) = pumped(src.as_bytes(), limits);
         assert_eq!((text.as_str(), stop), (src.as_str(), None));
+    }
+
+    /// The print-and-exit modes read bytes, and must stop where the
+    /// streaming reader stops: same input, same limits, same text.
+    #[test]
+    fn the_byte_reader_stops_exactly_where_the_stream_does() {
+        let cases: [(&[u8], Limits); 4] = [
+            (
+                b"# x\n",
+                Limits {
+                    bytes: 1 << 20,
+                    lines: 5_000,
+                },
+            ),
+            (
+                "plain w\u{f6}rds\n".as_bytes(),
+                Limits {
+                    bytes: 100_000,
+                    lines: usize::MAX,
+                },
+            ),
+            (
+                "\u{e9}".as_bytes(),
+                Limits {
+                    bytes: 10_001,
+                    lines: usize::MAX,
+                },
+            ),
+            (
+                b"ab\n",
+                Limits {
+                    bytes: 3_000,
+                    lines: 1_000,
+                },
+            ),
+        ];
+        for (line, limits) in cases {
+            let (text, stop) = pumped(Endless { line, at: 0 }, limits);
+            let (bytes, byte_stop) = read_capped(Endless { line, at: 0 }, limits).unwrap();
+            assert!(stop.is_some(), "the fixture must reach a limit");
+            assert_eq!(byte_stop, stop, "{limits:?}");
+            assert_eq!(String::from_utf8(bytes).unwrap(), text, "{limits:?}");
+        }
+        // Under the limits: everything, and no stop.
+        let src = "# a\n\nsome text\n".repeat(100);
+        let limits = Limits {
+            bytes: usize::MAX,
+            lines: 300,
+        };
+        let (bytes, stop) = read_capped(src.as_bytes(), limits).unwrap();
+        assert_eq!((bytes.as_slice(), stop), (src.as_bytes(), None));
     }
 
     #[test]

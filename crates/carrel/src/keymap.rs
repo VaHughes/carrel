@@ -237,7 +237,7 @@ pub const READER_HELP: &[HelpRow] = &[
         Some(Action::BlockStep(-1)),
     ),
     ("gg G Home End", "start / end", Some(Action::GoToStart)),
-    ("42G", "go to line 42", None),
+    ("42G", "go to row 42", None),
     ("§", "search", None),
     (
         "/ ?",

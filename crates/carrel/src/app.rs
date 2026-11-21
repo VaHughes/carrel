@@ -505,8 +505,9 @@ pub struct App {
     pub titles: bool,
     /// The palette's name, for the settings pane to show. `theme.rs` owns
     /// colours and so imports ratatui, which `app.rs` may never do (rule 6)
-    /// — `main.rs` sets this at startup and after each cycle, the same
-    /// contract as [`App::image_kind`].
+    /// — `main.rs` sets this at startup (`apply_config`) and after every
+    /// round of input (`drain_outboxes`), the same contract as
+    /// [`App::image_kind`].
     pub theme_name: &'static str,
     /// The section tree in the left margin is wanted (config `outline_margin`).
     /// Whether it actually shows also needs [`Self::gutter_w`].
@@ -848,9 +849,14 @@ pub const DRAG_SCROLL_MAX: u32 = 3;
 /// Why a document cannot be left while a note on it is being written.
 const LEAVE_WITH_DRAFT: &str = "a note is being written — save it (Enter) or cancel it (Esc) first";
 
-/// Epoch seconds as `YYYY-MM-DD HH:MM`, no calendar library — Howard
+/// Epoch seconds as `YYYY-MM-DD HH:MM UTC`, no calendar library — Howard
 /// Hinnant's `civil_from_days` arithmetic, which every state timestamp here
 /// already implicitly assumes.
+///
+/// UTC, and it says so. Carrel links no time-zone data and local time
+/// through libc needs `unsafe`, which this workspace forbids; unlabeled,
+/// the card showed 20:37 for a file `ls -l` dated 15:37, and near midnight
+/// the wrong day.
 #[must_use]
 pub fn format_epoch(secs: u64) -> String {
     let days = i64::try_from(secs / 86_400).unwrap_or(0);
@@ -866,7 +872,7 @@ pub fn format_epoch(secs: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
         rem / 3600,
         (rem % 3600) / 60
     )
@@ -4009,7 +4015,9 @@ pub enum Setting {
     Preview,
 }
 
-/// Every persisted preference, in the order the pane shows them.
+/// The preferences the pane offers, in the order it shows them. Not every
+/// persisted one: `sort` is set from the file list, and `mouse`, `root` and
+/// `place` have no row.
 #[must_use]
 pub fn settings_rows(app: &App) -> Vec<SettingsRow> {
     let on = |b: bool| if b { "on" } else { "off" }.to_string();
@@ -10006,9 +10014,16 @@ mod tests {
 
     #[test]
     fn epoch_formats_as_a_civil_date() {
-        assert_eq!(format_epoch(0), "1970-01-01 00:00");
-        assert_eq!(format_epoch(59), "1970-01-01 00:00", "seconds never shown");
-        assert_eq!(format_epoch(86_400 * 19_000 + 3_600), "2022-01-08 01:00");
+        assert_eq!(format_epoch(0), "1970-01-01 00:00 UTC");
+        assert_eq!(
+            format_epoch(59),
+            "1970-01-01 00:00 UTC",
+            "seconds never shown"
+        );
+        assert_eq!(
+            format_epoch(86_400 * 19_000 + 3_600),
+            "2022-01-08 01:00 UTC"
+        );
     }
 
     // --- task jumping (X) ---

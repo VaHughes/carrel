@@ -7,6 +7,7 @@
 //!
 //! NO RATATUI — `scripts/check-discipline.sh` rule 6.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Where in a document to open it.
@@ -35,47 +36,73 @@ pub enum Start {
 ///   `#L42` is a line: GitHub's spelling of the same thing.
 /// - Anything else is returned whole, for the ordinary "no such file".
 #[must_use]
-pub fn split_target(arg: &str) -> (PathBuf, Option<Start>) {
+pub fn split_target(arg: impl AsRef<OsStr>) -> (PathBuf, Option<Start>) {
+    let arg = arg.as_ref();
     let whole = || (PathBuf::from(arg), None);
     if std::fs::symlink_metadata(arg).is_ok() {
         return whole();
     }
-    if let Some((path, line)) = line_suffix(arg)
-        && Path::new(path).is_file()
+    // Bytes, not text: a file name need not be UTF-8, and `caf\xe9.md:42`
+    // names a line of a real file as surely as `cafe.md:42` does.
+    let bytes = arg.as_encoded_bytes();
+    if let Some((len, line)) = line_suffix(bytes)
+        && let Some(path) = head(arg, len)
+        && path.is_file()
     {
-        return (PathBuf::from(path), Some(Start::Line(line)));
+        return (path, Some(Start::Line(line)));
     }
-    if let Some((path, frag)) = arg.rsplit_once('#')
+    if let Some(hash) = bytes.iter().rposition(|&b| b == b'#')
+        && let Ok(frag) = std::str::from_utf8(&bytes[hash + 1..])
         && !frag.is_empty()
-        && Path::new(path).is_file()
+        && let Some(path) = head(arg, hash)
+        && path.is_file()
     {
         let start = match frag.strip_prefix('L').and_then(|n| n.parse::<u32>().ok()) {
             Some(line) => Start::Line(line.max(1)),
             None => Start::Fragment(frag.to_string()),
         };
-        return (PathBuf::from(path), Some(start));
+        return (path, Some(start));
     }
     whole()
 }
 
-/// `path:LINE` or `path:LINE:COL`, as `(path, line)`.
-fn line_suffix(arg: &str) -> Option<(&str, u32)> {
-    let number = |s: &str| {
-        (!s.is_empty() && s.len() <= 9 && s.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| s.parse::<u32>().ok())
+/// The first `len` bytes of an operand, as the path they name. The cut is
+/// always just before an ASCII `:` or `#`, so it never divides a character.
+fn head(arg: &OsStr, len: usize) -> Option<PathBuf> {
+    if let Some(text) = arg.to_str() {
+        return text.get(..len).map(PathBuf::from);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        arg.as_bytes()
+            .get(..len)
+            .map(|b| PathBuf::from(OsStr::from_bytes(b)))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// `path:LINE` or `path:LINE:COL`, as `(length of path, line)`.
+fn line_suffix(arg: &[u8]) -> Option<(usize, u32)> {
+    let number = |s: &[u8]| {
+        (!s.is_empty() && s.len() <= 9 && s.iter().all(u8::is_ascii_digit))
+            .then(|| std::str::from_utf8(s).ok()?.parse::<u32>().ok())
             .flatten()
             // Line 0 is the top, as a line past the end is the bottom.
             .map(|n| n.max(1))
     };
-    let (head, last) = arg.rsplit_once(':')?;
-    let last = number(last)?;
+    let colon = arg.iter().rposition(|&b| b == b':')?;
+    let last = number(&arg[colon + 1..])?;
     // Two numbers: the first is the line and the second a column.
-    if let Some((path, line)) = head.rsplit_once(':')
-        && let Some(line) = number(line)
+    if let Some(inner) = arg[..colon].iter().rposition(|&b| b == b':')
+        && let Some(line) = number(&arg[inner + 1..colon])
     {
-        return Some((path, line));
+        return Some((inner, line));
     }
-    Some((head, last))
+    Some((colon, last))
 }
 
 /// A path as it arrives when it is pasted or dropped onto the window.
@@ -307,20 +334,20 @@ mod tests {
         let f = touch(d.path(), "PLAN.md");
         let s = f.to_str().unwrap();
         assert_eq!(
-            split_target(&format!("{s}:42")),
+            split_target(format!("{s}:42")),
             (f.clone(), Some(Start::Line(42)))
         );
         assert_eq!(
-            split_target(&format!("{s}:42:7")),
+            split_target(format!("{s}:42:7")),
             (f.clone(), Some(Start::Line(42))),
             "a column is accepted and ignored"
         );
         assert_eq!(
-            split_target(&format!("{s}#step-3")),
+            split_target(format!("{s}#step-3")),
             (f.clone(), Some(Start::Fragment("step-3".into())))
         );
         assert_eq!(
-            split_target(&format!("{s}#L12")),
+            split_target(format!("{s}#L12")),
             (f.clone(), Some(Start::Line(12))),
             "GitHub's spelling of a line"
         );
@@ -493,6 +520,46 @@ mod tests {
             pasted_path("  plain.md  ", dir.path()).as_deref(),
             Some("plain.md")
         );
+    }
+
+    /// A name is bytes. `std::env::args` panics on one that is not UTF-8,
+    /// so such a file could not be named on the command line at all; and a
+    /// place in it is still a place.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_is_not_utf8_is_a_file_and_may_carry_a_place() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join(OsStr::from_bytes(b"caf\xe9.md"));
+        if std::fs::write(&f, "x\n").is_err() {
+            return; // a filesystem that insists on UTF-8 names
+        }
+        let with = |tail: &[u8]| {
+            let mut b = f.as_os_str().as_bytes().to_vec();
+            b.extend_from_slice(tail);
+            OsString::from_vec(b)
+        };
+        assert_eq!(split_target(&f), (f.clone(), None));
+        assert_eq!(
+            split_target(with(b":42")),
+            (f.clone(), Some(Start::Line(42)))
+        );
+        assert_eq!(
+            split_target(with(b":42:7")),
+            (f.clone(), Some(Start::Line(42)))
+        );
+        assert_eq!(
+            split_target(with(b"#L9")),
+            (f.clone(), Some(Start::Line(9)))
+        );
+        assert_eq!(
+            split_target(with(b"#install")),
+            (f.clone(), Some(Start::Fragment("install".into())))
+        );
+        // A fragment that is not text names nothing; the operand stays whole.
+        let odd = with(b"#\xff");
+        assert_eq!(split_target(&odd), (PathBuf::from(&odd), None));
     }
 
     #[cfg(unix)]

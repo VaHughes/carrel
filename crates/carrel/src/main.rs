@@ -4,6 +4,7 @@
 //! the event loop. Everything else lives in the library so integration tests
 //! can drive it. See the TUI design doc (notes repo).
 
+use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -81,7 +82,8 @@ USAGE:
     NO_COLOR is honoured: colours off, weight and emphasis kept.
     Options come first; --diff and --no-diff are the exception and may
     appear anywhere. `--` ends the options, for a file whose name starts
-    with a dash.
+    with a dash. On a pipe, the flags a tool hands `less` (-R, -FRX) are
+    ignored.
     Exit 1 on an unreadable file, an unknown or misplaced option, a [W]
     that is not a column count, or a search with no matches — so
     `if carrel FILE PATTERN; then` behaves like grep.
@@ -126,7 +128,7 @@ KEYS (while reading):
     y                            copy the code block
     v a                          highlight text / add a note
     V M                          notes list / next note
-    Click image or Enter at it   full-screen image; [ ] browse, Esc closes
+    Click image or Enter at it   full-screen image; [ ] browse, Esc Enter q close
     F                            follow a document that is still arriving
     Mouse: click a link, a heading, a fold marker, a footnote mark, a tag,
     a row of any list or of the help sheet, or any hint along the bottom
@@ -150,15 +152,15 @@ fn diff_forced() -> Option<bool> {
     DIFF_FORCED.get().copied().flatten()
 }
 
-/// Pull `--diff` / `--no-diff` out of the argument list.
-fn take_diff_flag(args: &mut Vec<String>) -> Option<bool> {
+/// Pull `--diff` / `--no-diff` out of the options.
+fn take_diff_flag(args: &mut Vec<OsString>) -> Option<bool> {
     let mut forced = None;
-    args.retain(|a| match a.as_str() {
-        "--diff" => {
+    args.retain(|a| match a.to_str() {
+        Some("--diff") => {
             forced = Some(true);
             false
         }
-        "--no-diff" => {
+        Some("--no-diff") => {
             forced = Some(false);
             false
         }
@@ -185,8 +187,8 @@ fn mouse_enabled() -> bool {
     config::load_all().mouse.unwrap_or(true)
 }
 
-/// Pull `--no-mouse` out of the argument list, as the diff flags are pulled.
-fn take_mouse_flag(args: &mut Vec<String>) -> bool {
+/// Pull `--no-mouse` out of the options, as the diff flags are pulled.
+fn take_mouse_flag(args: &mut Vec<OsString>) -> bool {
     let mut off = false;
     args.retain(|a| {
         if a == "--no-mouse" {
@@ -199,24 +201,45 @@ fn take_mouse_flag(args: &mut Vec<String>) -> bool {
     off
 }
 
-/// A single-dash flag carrel does not know, arriving from something that
-/// thinks it is talking to `less`. `-` itself is the stdin marker and is
-/// never foreign; `--plain` and friends are carrel's own.
-fn is_foreign_pager_flag(a: &str) -> bool {
-    a.len() >= 2
-        && a.starts_with('-')
-        && !a.starts_with("--")
-        && !matches!(a, "-h" | "-V")
-        && !is_negative_number(a)
+/// The `less` flags the tools that page are known to pass it: git's own
+/// default is `FRX`, systemd's `FRSXMK`, man's `-s`, and the rest are what
+/// people put in `core.pager` and `$PAGER` beside them.
+const PAGER_FLAGS: &[u8] = b"FRSXMKsinrEeq";
+
+/// A flag meant for `less`, arriving from something that thinks it is
+/// talking to one: a dash and a run of [`PAGER_FLAGS`], like `-R` or
+/// `-FRX`. Exactly those — every single-dash argument used to be dropped
+/// when stdin was a pipe, so `echo x | carrel -z` exited 0 where the same
+/// typo at a terminal is an unknown option.
+///
+/// Read as bytes: an argument need not be UTF-8.
+fn is_pager_flag(a: &OsStr) -> bool {
+    a.as_encoded_bytes()
+        .strip_prefix(b"-")
+        .is_some_and(|f| !f.is_empty() && f.iter().all(|b| PAGER_FLAGS.contains(b)))
 }
 
 /// `-5`: not a flag anyone passes a pager, but a `[W]` typed wrong. It was
 /// dropped as one, so `--plain t.md -5` rendered at 80 and exited 0 though
 /// `--help` promises exit 1. Left in place, it reaches `width_arg`, which
 /// refuses it by name.
-fn is_negative_number(a: &str) -> bool {
-    a.strip_prefix('-')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+fn is_negative_number(a: &OsStr) -> bool {
+    a.as_encoded_bytes()
+        .strip_prefix(b"-")
+        .is_some_and(|n| !n.is_empty() && n.iter().all(u8::is_ascii_digit))
+}
+
+/// A `<PATTERN>` argument, or a refusal. A pattern is text to look for in
+/// text, so one that is not UTF-8 can match nothing carrel holds; it is
+/// refused by name rather than searched for as something else.
+fn pattern_arg(p: &OsStr) -> Result<&str, ExitCode> {
+    p.to_str().ok_or_else(|| {
+        say!(
+            "carrel: {} is not a pattern carrel can search for — it is not UTF-8",
+            carrel::plain::shown(Path::new(p))
+        );
+        ExitCode::FAILURE
+    })
 }
 
 fn main() -> ExitCode {
@@ -225,51 +248,45 @@ fn main() -> ExitCode {
     if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
         carrel::theme::set_mono(true);
     }
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // `args_os`, not `args`: that one panics on an argument that is not
+    // UTF-8, and a file name is bytes — `carrel $'caf\xe9.md'` names a file.
+    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // `--` ends the options, so `carrel -- -weird.md` opens a file whose
+    // name begins with a dash. Split FIRST: nothing after it is an option,
+    // so nothing below — the flags pulled out wherever they stand, a
+    // pager's own — may be taken from there. Dropping pager flags from the
+    // whole line made `carrel -- -weird.md w </dev/null` look for a file
+    // called `w`.
+    let operands = args.iter().position(|a| a == "--").map(|i| {
+        let rest = args.split_off(i + 1);
+        args.pop();
+        rest
+    });
+    // A bare trailing `--` protects nothing and changes nothing.
+    let operands = operands.filter(|names| !names.is_empty());
     let diff_forced = take_diff_flag(&mut args);
     let mouse_off = take_mouse_flag(&mut args);
 
-    // Pager mode: git hands its pager flags it does not expect to be
-    // understood (`-R`, `-F`, `-X`, …). Ignore unknown single-dash flags
-    // when stdin is a pipe, and keep erroring on them otherwise — silently
-    // swallowing a typo in interactive use would be worse than the error.
+    // Pager mode: git and man hand their pager `less` flags they do not
+    // expect to be understood. Those are ignored when stdin is a pipe.
     if !std::io::stdin().is_terminal() {
-        args.retain(|a| !is_foreign_pager_flag(a));
+        args.retain(|a| !is_pager_flag(a));
     }
     DIFF_FORCED.set(diff_forced).ok();
     MOUSE_OFF.set(mouse_off).ok();
-    // `--` ends the options, so `carrel -- ./-weird.md` opens a file whose
-    // name begins with a dash. Without it such a file was unopenable. Only
-    // what precedes it is checked for flags.
-    let had_separator = args.iter().any(|a| a == "--");
-    let operands_from = match args.iter().position(|a| a == "--") {
-        Some(i) => {
-            args.remove(i);
-            i
-        }
-        None => args.len(),
-    };
-    if let Some(complaint) = flag_complaint(&args[..operands_from]) {
+    if let Some(complaint) = flag_complaint(&args) {
         say!("carrel: {complaint}");
         say_bare!("{USAGE}");
         return ExitCode::FAILURE;
     }
-    // Everything after a leading `--` is a name, whatever it looks like:
+    // Everything after `--` is a name, whatever it looks like:
     // `carrel -- --latest` opens the file called `--latest`.
-    if had_separator && operands_from == 0 {
-        return match args.as_slice() {
-            [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
-            [file] => open(file, None),
-            [file, pattern] => open(file, Some(pattern)),
-            _ => {
-                say_bare!("{USAGE}");
-                ExitCode::FAILURE
-            }
-        };
+    if let Some(names) = operands {
+        return after_options(&args, &names);
     }
     // `--plain PLAN.md:42` prints PLAN.md: the place is for a reader, and
     // refusing the name an agent printed because of it helps nobody.
-    let file_of = |arg: &str| carrel::cli::split_target(arg).0;
+    let file_of = |arg: &OsString| carrel::cli::split_target(arg).0;
     match args.as_slice() {
         [] if !std::io::stdin().is_terminal() => open_stdin(None, false),
         [] => open_home(None),
@@ -298,7 +315,10 @@ fn main() -> ExitCode {
             emit(&format!("carrel {}\n", env!("CARGO_PKG_VERSION")))
         }
         [a] if a == "-" => open_stdin(None, true),
-        [a, pattern] if a == "-" => open_stdin(Some(pattern), true),
+        [a, pattern] if a == "-" => match pattern_arg(pattern) {
+            Ok(pattern) => open_stdin(Some(pattern), true),
+            Err(code) => code,
+        },
         [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
         [flag, a] if flag == "--plain" && a == "-" => print_plain_stdin(80),
         [flag, a, w] if flag == "--plain" && a == "-" => match width_arg(w) {
@@ -324,7 +344,57 @@ fn main() -> ExitCode {
         [a] if a == "--latest" => open_latest(None),
         [a, dir] if a == "--latest" => open_latest(Some(Path::new(dir))),
         [file] => open(file, None),
-        [file, pattern] => open(file, Some(pattern)),
+        [file, pattern] => match pattern_arg(pattern) {
+            Ok(pattern) => open(file, Some(pattern)),
+            Err(code) => code,
+        },
+        _ => {
+            say_bare!("{USAGE}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `carrel [OPTION] -- NAMES`: at most one option, then names that are
+/// names whatever they look like. Dispatched apart from the ordinary line
+/// because there a name is recognized by its spelling — `-` is stdin,
+/// `--help` is help — and after `--` nothing is: `carrel --plain -- -`
+/// prints the file called `-`. A width keeps its place and its rule.
+fn after_options(options: &[OsString], names: &[OsString]) -> ExitCode {
+    let option = match options {
+        [] => {
+            return match names {
+                [p] if Path::new(p).is_dir() => open_home(Some(Path::new(p))),
+                [file] => open(file, None),
+                [file, pattern] => match pattern_arg(pattern) {
+                    Ok(pattern) => open(file, Some(pattern)),
+                    Err(code) => code,
+                },
+                _ => {
+                    say_bare!("{USAGE}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        [option] => option,
+        _ => {
+            say_bare!("{USAGE}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let file_of = |arg: &OsString| carrel::cli::split_target(arg).0;
+    let width = |w: Option<&OsString>| w.map_or(Ok(80), |w| width_arg(w));
+    match (option.to_str(), names) {
+        (Some("--plain"), [file] | [file, _]) => match width(names.get(1)) {
+            Ok(w) => print_plain(&file_of(file), w),
+            Err(code) => code,
+        },
+        (Some("--render"), [file] | [file, _]) => match width(names.get(1)) {
+            Ok(w) => print_ansi(Some(&file_of(file)), w),
+            Err(code) => code,
+        },
+        (Some("--tasks"), [file]) => print_tasks(&file_of(file)),
+        (Some("--latest"), [dir]) => open_latest(Some(Path::new(dir))),
         _ => {
             say_bare!("{USAGE}");
             ExitCode::FAILURE
@@ -337,11 +407,17 @@ fn main() -> ExitCode {
 /// `w.parse().unwrap_or(80)` silently rendered at 80 columns for `10O` (letter
 /// O), `-5`, or a number past `u16` — so a typo produced plausible-looking but
 /// wrong output and exited 0, with nothing to notice.
-fn width_arg(w: &str) -> Result<u16, ExitCode> {
-    w.parse::<u16>().map_err(|_| {
-        say!("carrel: {w:?} is not a width — expected a column count like 72");
-        ExitCode::FAILURE
-    })
+fn width_arg(w: &OsStr) -> Result<u16, ExitCode> {
+    w.to_str()
+        .and_then(|w| w.parse::<u16>().ok())
+        .ok_or_else(|| {
+            // Escaped like a file name: what was typed goes to a terminal.
+            say!(
+                "carrel: \"{}\" is not a width — expected a column count like 72",
+                carrel::plain::shown(Path::new(w))
+            );
+            ExitCode::FAILURE
+        })
 }
 
 /// Every option carrel knows. All of them lead: there is no form where one
@@ -372,36 +448,42 @@ const KNOWN_FLAGS: &[&str] = &[
 /// `-` is the stdin marker, and `--` has already been stripped by the caller
 /// along with everything after it, so a file named `./-weird.md` stays
 /// openable.
-fn flag_complaint(args: &[String]) -> Option<String> {
+fn flag_complaint(args: &[OsString]) -> Option<String> {
+    let known = |a: &OsString| a.to_str().is_some_and(|a| KNOWN_FLAGS.contains(&a));
     if let Some(bad) = args.iter().find(|a| {
-        a.len() > 1
-            && a.starts_with('-')
-            && !KNOWN_FLAGS.contains(&a.as_str())
-            && !is_negative_number(a)
+        let b = a.as_encoded_bytes();
+        b.len() > 1 && b.starts_with(b"-") && !known(a) && !is_negative_number(a)
     }) {
+        // Escaped like a file name: what was typed may hold an ESC, or
+        // bytes that are not UTF-8, and this goes to a terminal. It was
+        // echoed raw, so `carrel $'--x\e[2J'` cleared the screen.
+        let typed = carrel::plain::shown(Path::new(bad));
         // One suggestion, when one option is near: `--plian` is `--plain`.
-        return Some(match carrel::cli::suggest_flag(bad, KNOWN_FLAGS) {
-            Some(near) => format!("unknown option {bad} — did you mean {near}?"),
-            None => format!("unknown option {bad}"),
+        let near = bad
+            .to_str()
+            .and_then(|bad| carrel::cli::suggest_flag(bad, KNOWN_FLAGS));
+        return Some(match near {
+            Some(near) => format!("unknown option {typed} — did you mean {near}?"),
+            None => format!("unknown option {typed}"),
         });
     }
     args.iter()
         .skip(1)
-        .find(|a| KNOWN_FLAGS.contains(&a.as_str()))
-        .map(|f| format!("{f} is an option, and options come first"))
+        .find(|a| known(a))
+        .map(|f| format!("{} is an option, and options come first", f.display()))
 }
 
 /// `--render`: styled linear text to stdout. Attributes and OSC 8 links,
 /// never colours — `NO_COLOR` reduces it to `--plain` exactly.
 fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
     let src = match path {
-        Some(p) => carrel::app::read_document(p),
+        Some(p) => carrel::app::read_document(p).map(|src| (src, None)),
         None => read_stdin_capped(),
     };
     match src {
-        Ok(src) => {
+        Ok((src, stopped)) => {
             let doc = carrel_core::Document::parse(&src);
-            emit(&carrel::ansi::render(&doc, width))
+            emit_stdin(&carrel::ansi::render(&doc, width), stopped)
         }
         Err(e) => {
             match path {
@@ -433,8 +515,12 @@ fn print_tasks(path: &Path) -> ExitCode {
     }
 }
 
-/// Read all of stdin, refusing at the 32-bit position ceiling exactly as
-/// `check_document_size` does for files.
+/// Read stdin to its end or to `stream::LIMITS`, for the modes that print
+/// and exit; the second value is the limit it stopped at, if it did.
+///
+/// The same cut the reader makes. These modes used to take all of stdin,
+/// so `yes '# x' | carrel --plain -` read until memory ran out while the
+/// same pipe into the reader stopped at 2,000,000 lines and said so.
 ///
 /// Decoded by the rule a FILE is read by (`text::decode_document`): a stray
 /// invalid sequence is U+FFFD, and input that looks binary is refused as
@@ -447,21 +533,25 @@ fn print_tasks(path: &Path) -> ExitCode {
 /// refused. Every caller reads the whole input before printing anything, so
 /// refusing costs nothing; the streaming TUI never comes through here and
 /// by design never refuses.
-fn read_stdin_capped() -> std::io::Result<String> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::io::stdin()
-        .lock()
-        .take(u64::from(u32::MAX))
-        .read_to_end(&mut bytes)?;
-    let too_big = bytes.len() >= u32::MAX as usize;
+fn read_stdin_capped() -> std::io::Result<(String, Option<carrel::stream::Stop>)> {
+    let (bytes, stopped) =
+        carrel::stream::read_capped(std::io::stdin().lock(), carrel::stream::LIMITS)?;
     let (src, _) = carrel::text::decode_document(bytes)?;
-    if too_big || src.len() >= u32::MAX as usize {
-        return Err(std::io::Error::other(
-            "stdin exceeds 4 GiB; carrel positions are 32-bit byte offsets",
-        ));
+    Ok((src, stopped))
+}
+
+/// Print what a print-and-exit mode made of stdin, then say on stderr if
+/// the pipe was cut — so the document on stdout stays exactly what was
+/// read. The exit code stays what printing it earned: the limit is
+/// documented behavior, not a failure, and what was printed is a whole
+/// document — the same answer the reader gives, which exits 0 after
+/// showing a cut pipe. `head` is the precedent.
+fn emit_stdin(text: &str, stopped: Option<carrel::stream::Stop>) -> ExitCode {
+    let code = emit(text);
+    if let Some(stop) = stopped {
+        say!("{}", stopped_on_stderr(stop));
     }
-    Ok(src)
+    code
 }
 
 /// A document arriving on a pipe. `forced` is `carrel -`.
@@ -476,9 +566,9 @@ fn open_stdin(pattern: Option<&str>, forced: bool) -> ExitCode {
     // files — stdout's tty-ness notwithstanding.
     if let Some(p) = pattern {
         return match read_stdin_capped() {
-            Ok(src) => {
+            Ok((src, stopped)) => {
                 let (text, found) = report(Path::new("(stdin)"), &src, p);
-                let code = emit(&text);
+                let code = emit_stdin(&text, stopped);
                 // Exit 1 on no match, as grep, rg and ag all do — the README
                 // sells this mode for scripting, and `if carrel - pat; then`
                 // was always true.
@@ -513,16 +603,7 @@ fn run_stdin_or_fallback() -> ExitCode {
         // reads to EOF or to `stream::LIMITS`, whichever comes first.
         let (src, stopped) = collect_stream(&rx);
         let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
-        let code = emit(&carrel::plain::render(&doc, 80));
-        // Said on stderr, so the document on stdout stays exactly what was
-        // read. The exit code stays what printing it earned: the limit is
-        // documented behaviour, not a failure, and what was printed is a
-        // whole document — the same answer the reader gives, which exits 0
-        // after showing a cut pipe. `head` is the precedent.
-        if let Some(stop) = stopped {
-            say!("{}", stopped_on_stderr(stop));
-        }
-        code
+        emit_stdin(&carrel::plain::render(&doc, 80), stopped)
     }
 }
 
@@ -848,9 +929,9 @@ fn diff_ok_for(path: &Path) -> bool {
 /// `--plain -`: piped input as linear text at a width.
 fn print_plain_stdin(width: u16) -> ExitCode {
     match read_stdin_capped() {
-        Ok(src) => {
+        Ok((src, stopped)) => {
             let doc = carrel::app::adapt(&src, diff_forced().unwrap_or(true));
-            emit(&carrel::plain::render(&doc, width))
+            emit_stdin(&carrel::plain::render(&doc, width), stopped)
         }
         Err(e) => {
             say!("carrel: {e}");
@@ -962,7 +1043,7 @@ fn open_home_interactive(
     }
 }
 
-fn open(arg: &str, pattern: Option<&str>) -> ExitCode {
+fn open(arg: &OsStr, pattern: Option<&str>) -> ExitCode {
     // `PLAN.md:42` and `README.md#install` name a place in a file; a path
     // that exists as written is never split.
     let (path, start) = carrel::cli::split_target(arg);
@@ -3018,6 +3099,11 @@ fn drain_outboxes(app: &mut App) -> std::io::Result<()> {
     if std::mem::take(&mut app.theme_cycle) {
         cycle_theme_now(app);
     }
+    // After every round of input, whatever it did: the settings pane shows
+    // this copy, and a copy kept in step only by the routes someone
+    // remembered was a copy nobody set at all — the row read `terminal`
+    // under every theme.
+    app.theme_name = carrel::theme::current_name();
     Ok(())
 }
 
@@ -3424,6 +3510,9 @@ fn apply_config(app: &mut App) {
     app.hyphenate = c.hyphenate.unwrap_or(true);
     // The reading measure. Absent means the default; an explicit 0 means off.
     app.max_width = c.max_width.unwrap_or(config::DEFAULT_MEASURE);
+    // Every entry point has chosen its palette by now ([`startup_theme`]
+    // runs first), so this is the name the first frame is painted in.
+    app.theme_name = carrel::theme::current_name();
 }
 
 /// Apply the saved theme. An unknown name falls back to `terminal` with a
