@@ -1498,6 +1498,15 @@ impl App {
         (places, here)
     }
 
+    /// Bookmark the blocks `places` name in the open document, beside the
+    /// marks already there.
+    fn add_marks_at(&mut self, places: &[crate::state::Place]) {
+        let at = self.blocks_of(places);
+        self.marks.extend(at);
+        self.marks.sort_unstable();
+        self.marks.dedup();
+    }
+
     /// Where each of `places` is a bookmark in the open document: the start
     /// of its block, each block once, in document order.
     fn blocks_of(&self, places: &[crate::state::Place]) -> Vec<u32> {
@@ -2515,10 +2524,7 @@ impl App {
         let held_marks = hold.and_then(|h| h.carriers);
         let marks_found =
             self.marks_after_reload(held_marks.as_deref(), &fresh_marks, had_no_blocks);
-        let placed = self.blocks_of(&elsewhere);
-        self.marks.extend(placed);
-        self.marks.sort_unstable();
-        self.marks.dedup();
+        self.add_marks_at(&elsewhere);
         // Carrying can merge marks (two whose blocks became one) or drop
         // them all, and the open list's selection indexes the old ones.
         self.mark_list = self
@@ -4340,6 +4346,8 @@ pub struct Backlinks {
     pub done: bool,
     /// The folder searched, which the rows' paths are shown relative to.
     pub root: Option<PathBuf>,
+    /// The search stopped at its cap: `rows` are the first found, not all.
+    pub capped: bool,
 }
 
 /// One row of the forward-links pane: a destination this document points

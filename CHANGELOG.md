@@ -87,6 +87,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   far too large, not a regular file or not readable was skipped without a word: carrel
   opened on its defaults and a theme change read as if it had been kept. The status row
   now says the file was not read and is left alone, and `T` says the theme is not saved.
+- **What links here always names the file.** With more hits than rows, a long row showed
+  only the end of its line of context and no file name; a row now keeps the name and cuts
+  the context. A search that stopped at its 200-hit limit says `first 200 found`.
 - **A bookmark that could not be saved says so.** With a state directory carrel cannot
   write to, `m` reported `bookmark 1 of 1` and the bookmark was gone at the next start.
   The status row now adds that it was not saved and why; it stays set until you quit.

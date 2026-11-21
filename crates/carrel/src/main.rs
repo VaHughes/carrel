@@ -666,6 +666,7 @@ impl BacklinkScan {
                 pane.rows.clear();
                 pane.selected = 0;
                 pane.done = false;
+                pane.capped = false;
                 pane.root = Some(root.clone());
             }
             self.query = Some(carrel::links::spawn_under(near, root, file.clone(), 0));
@@ -681,6 +682,11 @@ impl BacklinkScan {
                 Ok(carrel::links::Msg::Found(b, _)) => {
                     if let Some(pane) = app.backlinks.as_mut() {
                         pane.rows.push(b);
+                    }
+                }
+                Ok(carrel::links::Msg::Capped(_)) => {
+                    if let Some(pane) = app.backlinks.as_mut() {
+                        pane.capped = true;
                     }
                 }
                 Ok(carrel::links::Msg::Done(_)) | Err(TryRecvError::Disconnected) => {

@@ -856,6 +856,10 @@ enum Keep {
     Start,
     /// A path is named by how it ends: the file, not the home directory.
     End,
+    /// The first line is a path and the answer; what follows describes it
+    /// and gives way first. A row keeps the whole path (its end, when even
+    /// that is too long) and then as much of the rest as fits.
+    Name,
 }
 
 fn paint_navigation_entries(
@@ -874,6 +878,14 @@ fn paint_navigation_entries(
     let fit = |text: &str| match keep {
         Keep::Start => crate::layout::head_text(text, width),
         Keep::End => crate::layout::tail_text(text, width),
+        Keep::Name => {
+            let name = text.lines().next().unwrap_or_default();
+            if carrel_core::display_width(name) >= width {
+                crate::layout::tail_text(name, width)
+            } else {
+                crate::layout::head_text(&text.replace('\n', " · "), width)
+            }
+        }
     };
     let mut lines: Vec<String> = entries[selected]
         .0
@@ -902,6 +914,12 @@ fn paint_navigation_entries(
             Keep::Start => fit(&rest_of(&entries[selected].0, &lines[..kept])),
             // A path's last row is its END — the file, which is the point.
             Keep::End => fit(&entries[selected].0.replace('\n', " ")),
+            // One row for all of it is the name; past the first rows, the
+            // rest goes on like any label.
+            Keep::Name if kept == 0 => fit(&entries[selected].0),
+            Keep::Name => {
+                crate::layout::head_text(&rest_of(&entries[selected].0, &lines[..kept]), width)
+            }
         };
         lines.truncate(kept);
         lines.push(last);
@@ -912,7 +930,10 @@ fn paint_navigation_entries(
         let shown = if index == selected {
             lines.clone()
         } else {
-            vec![fit(&text.replace('\n', " · "))]
+            vec![match keep {
+                Keep::Name => fit(text),
+                _ => fit(&text.replace('\n', " · ")),
+            }]
         };
         let height = u16::try_from(shown.len()).unwrap_or(u16::MAX);
         if height > area.bottom().saturating_sub(y) {
@@ -1088,7 +1109,10 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
     );
     panel_close(buf, targets, Rect::new(x, y, w, h), Action::BacklinksToggle);
 
-    let lead = if bl.done {
+    let lead = if bl.done && bl.capped {
+        // Not a count: the search stopped there with files still unread.
+        format!("first {} found", bl.rows.len())
+    } else if bl.done {
         format!("{} found", bl.rows.len())
     } else {
         "looking…".to_string()
@@ -1129,7 +1153,7 @@ fn paint_backlinks(frame: &mut Frame, app: &App, targets: &mut Targets) {
         Rect::new(x + 1, y + 1, w - 2, h - 2),
         &entries,
         bl.selected,
-        Keep::End,
+        Keep::Name,
     );
 }
 
@@ -6328,6 +6352,88 @@ mod pane_frame_tests {
         t.draw(|f| draw_full(f, app, &mut painted, &mut HashMap::new()))
             .unwrap();
         (t.backend().buffer().clone(), painted)
+    }
+
+    fn backlinks_pane(rows: usize, capped: bool) -> App {
+        let mut a = App::new("t.md".into(), carrel_core::Document::parse("# T\n"), 80, 16);
+        a.backlinks = Some(crate::app::Backlinks {
+            rows: (0..rows)
+                .map(|i| crate::links::Backlink {
+                    path: format!("/lib/docs/guide/chapter-{i:03}.md").into(),
+                    line: "a long line of context around [the target](../../docs/guide/target.md) \
+                           and the target again, well past the width of the pane"
+                        .into(),
+                })
+                .collect(),
+            selected: 0,
+            done: true,
+            root: Some("/lib".into()),
+            capped,
+        });
+        a
+    }
+
+    fn screen(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The file is the answer, so it is what a row keeps: with more hits
+    /// than rows each one is a single line, and that line used to be the
+    /// END of `path · context` — the same context thirty times, no name.
+    #[test]
+    fn every_backlinks_row_names_its_file_however_little_room_there_is() {
+        let (buf, _) = paint(&backlinks_pane(40, false));
+        let rows = screen(&buf);
+        let listed: Vec<&String> = rows.iter().filter(|r| r.contains("chapter-")).collect();
+        assert!(listed.len() >= 6, "{rows:#?}");
+        for (i, row) in listed.iter().enumerate() {
+            assert!(
+                row.contains(&format!("docs/guide/chapter-{i:03}.md")),
+                "row {i} lost its file: {row:?}"
+            );
+        }
+        // And each still shows as much of its line as fits after the name.
+        assert!(
+            listed[3].contains("· a long line of context"),
+            "{:?}",
+            listed[3]
+        );
+        // A name too long for the row is cut from the front, as a path is.
+        let mut a = backlinks_pane(40, false);
+        for (i, row) in a.backlinks.as_mut().unwrap().rows.iter_mut().enumerate() {
+            row.path = format!("/lib/{}/chapter-{i:03}.md", "deep/".repeat(30)).into();
+        }
+        let (buf, _) = paint(&a);
+        let rows = screen(&buf);
+        assert!(
+            rows.iter().any(|r| r.contains("chapter-003.md")),
+            "{rows:#?}"
+        );
+    }
+
+    /// `200 found` read as "there are 200" when the search had stopped at
+    /// its cap with more files unread.
+    #[test]
+    fn a_capped_backlinks_search_says_it_shows_the_first() {
+        let lead = |app: &App| {
+            let (buf, _) = paint(app);
+            screen(&buf)
+                .into_iter()
+                .find(|r| r.contains(" found"))
+                .unwrap_or_default()
+        };
+        assert!(lead(&backlinks_pane(200, true)).contains("first 200 found"));
+        let whole = lead(&backlinks_pane(200, false));
+        assert!(
+            whole.contains("200 found") && !whole.contains("first"),
+            "{whole:?}"
+        );
     }
 
     /// A menu opened over CJK text whose left edge lands on the right half

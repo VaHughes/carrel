@@ -129,7 +129,7 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Stop after this many. A backlinks pane answers "who points here", not
 /// "enumerate the corpus".
-const MAX_HITS: usize = 200;
+pub const MAX_HITS: usize = 200;
 
 /// One document that links to the target.
 #[derive(Clone, Debug)]
@@ -142,6 +142,9 @@ pub struct Backlink {
 #[derive(Debug)]
 pub enum Msg {
     Found(Backlink, u64),
+    /// The search stopped at [`MAX_HITS`] with files still unread, so what
+    /// was found is the first of them and not a count. Sent before `Done`.
+    Capped(u64),
     Done(u64),
 }
 
@@ -227,8 +230,18 @@ pub fn spawn_under(near: PathBuf, root: PathBuf, target: PathBuf, generation: u6
     std::thread::spawn(move || {
         let stem = stem_of(&target);
         let mut sent = 0usize;
+        // Set when a file comes up after the last hit the cap allows.
+        let capped = std::cell::Cell::new(false);
         let mut visit = |e: Entry, skip: Option<&Path>| -> bool {
-            if watch.strong_count() == 0 || sent >= MAX_HITS {
+            if watch.strong_count() == 0 {
+                return false;
+            }
+            if sent >= MAX_HITS {
+                // The document itself is not a file left unread.
+                if same_file(&e.path, &target) {
+                    return true;
+                }
+                capped.set(true);
                 return false;
             }
             if skip.is_some_and(|near| e.path.starts_with(near)) {
@@ -248,6 +261,9 @@ pub fn spawn_under(near: PathBuf, root: PathBuf, target: PathBuf, generation: u6
                 crate::scan::walk_while(&root, |e| visit(e, Some(&near)));
             }
         }
+        if capped.get() {
+            let _ = tx.send(Msg::Capped(generation));
+        }
         let _ = tx.send(Msg::Done(generation));
     });
     Query { rx, _alive: alive }
@@ -264,7 +280,11 @@ pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<
         let stem = stem_of(&target);
         let mut sent = 0usize;
         for e in entries {
-            if stem.is_empty() || sent >= MAX_HITS {
+            if stem.is_empty() {
+                break;
+            }
+            if sent >= MAX_HITS {
+                let _ = tx.send(Msg::Capped(generation));
                 break;
             }
             if let Some(hit) = backlink(&e.path, &target, &stem) {
@@ -427,6 +447,7 @@ mod tests {
                     assert_eq!(g, 7);
                     break;
                 }
+                Msg::Capped(_) => panic!("one hit is not the cap"),
             }
         }
         assert_eq!(found.len(), 1, "{found:?}");
@@ -439,6 +460,7 @@ mod tests {
         loop {
             match q.rx.recv_timeout(std::time::Duration::from_secs(20)) {
                 Ok(Msg::Found(b, _)) => out.push(b.path),
+                Ok(Msg::Capped(_)) => {}
                 Ok(Msg::Done(_)) => return out,
                 Err(e) => panic!("the query never finished: {e}"),
             }
@@ -494,5 +516,48 @@ mod tests {
             seen < 3
         });
         assert!(!whole && seen == 3, "{whole} {seen}");
+    }
+
+    /// The cap is said, not just kept to: a search that stopped with files
+    /// still to read reports it, and one that read everything does not —
+    /// even when what it found is exactly the cap.
+    #[test]
+    fn a_search_the_cap_stopped_says_so_and_one_that_finished_does_not() {
+        for (linkers, capped) in [(MAX_HITS, false), (MAX_HITS + 1, true)] {
+            let d = tempfile::tempdir().unwrap();
+            let target = write(d.path(), "hub.md", "# Hub\n");
+            for i in 0..linkers {
+                write(d.path(), &format!("n{i}.md"), "see [hub](hub.md)\n");
+            }
+            let drain = |rx: &Receiver<Msg>| {
+                let (mut found, mut said) = (0, false);
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+                        Ok(Msg::Found(..)) => found += 1,
+                        Ok(Msg::Capped(g)) => {
+                            assert_eq!(g, 3);
+                            said = true;
+                        }
+                        Ok(Msg::Done(_)) => return (found, said),
+                        Err(e) => panic!("the query never finished: {e}"),
+                    }
+                }
+            };
+            let root = d.path().to_path_buf();
+            let q = spawn_under(root.clone(), root.clone(), target.clone(), 3);
+            assert_eq!(
+                drain(&q.rx),
+                (MAX_HITS, capped),
+                "{linkers} linkers, walked"
+            );
+            let entries: Vec<_> = (0..linkers)
+                .map(|i| crate::scan::Entry {
+                    path: root.join(format!("n{i}.md")),
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                })
+                .collect();
+            let rx = spawn(entries, target, 3);
+            assert_eq!(drain(&rx), (MAX_HITS, capped), "{linkers} linkers, listed");
+        }
     }
 }
