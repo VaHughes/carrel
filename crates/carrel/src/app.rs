@@ -1569,6 +1569,36 @@ impl App {
         self.selection = d.selection.map(|_| s0.min(s1)..s0.max(s1));
     }
 
+    /// Put the bookmarks in a freshly parsed document: the held ones when
+    /// a reload is holding some, else the ones the last document had.
+    /// Whether every one was found.
+    fn marks_after_reload(
+        &mut self,
+        held: Option<&[(crate::state::Kept, crate::state::Place)]>,
+        fresh: &[(crate::state::Kept, crate::state::Place)],
+        had_no_blocks: bool,
+    ) -> bool {
+        match held {
+            Some(carriers) if self.carry_marks(carriers) => true,
+            // A document with no blocks carries no marks, which is not the
+            // same as finding them: emptied twice before it was rewritten,
+            // the file dropped every bookmark at the second empty read.
+            Some(_) if fresh.is_empty() => {
+                self.carry_marks(fresh);
+                false
+            }
+            // A file OPENED while it had no blocks never showed its saved
+            // bookmarks, so there is nothing to carry and nothing held;
+            // they are placed now that there is somewhere to put them.
+            // Left unplaced, the next `m` saved a list without them.
+            None if had_no_blocks && self.file.is_some() => {
+                self.marks = self.blocks_of(&self.marks_loaded);
+                true
+            }
+            _ => self.carry_marks(fresh),
+        }
+    }
+
     /// Whether every mark's block was found; `false` when one stood in at
     /// its old place instead.
     fn carry_marks(&mut self, carriers: &[(crate::state::Kept, crate::state::Place)]) -> bool {
@@ -2372,6 +2402,7 @@ impl App {
         let folds = self.fold_keys();
         let fresh_marks = self.mark_carriers();
         let drag = self.drag_carrier();
+        let had_no_blocks = self.doc.block_count() == 0;
         self.table_offsets.clear();
         self.doc = self.parse_adapting(src);
         crate::annotation_state::reanchor(self);
@@ -2410,17 +2441,8 @@ impl App {
         // reader who never moved away from the edit.
         let place_found = kept_found(place, &self.doc) || place.edited_in_place(&self.doc);
         let held_marks = hold.and_then(|h| h.carriers);
-        let marks_found = match &held_marks {
-            Some(carriers) if self.carry_marks(carriers) => true,
-            // A document with no blocks carries no marks, which is not the
-            // same as finding them: emptied twice before it was rewritten,
-            // the file dropped every bookmark at the second empty read.
-            Some(_) if fresh_marks.is_empty() => {
-                self.carry_marks(&fresh_marks);
-                false
-            }
-            _ => self.carry_marks(&fresh_marks),
-        };
+        let marks_found =
+            self.marks_after_reload(held_marks.as_deref(), &fresh_marks, had_no_blocks);
         // Carrying can merge marks (two whose blocks became one) or drop
         // them all, and the open list's selection indexes the old ones.
         self.mark_list = self

@@ -194,7 +194,18 @@ fn locked_within<R>(dir: &Path, wait: std::time::Duration, f: impl FnOnce() -> R
         use std::os::unix::fs::OpenOptionsExt as _;
         open.mode(0o600);
     }
-    let lock = open.open(dir.join(".lock")).ok();
+    // Non-blocking, and only a regular file: a FIFO left where the lock
+    // file goes would otherwise hold this open — and so every save —
+    // until something read from it. See `open_regular`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open.custom_flags(libc::O_NONBLOCK);
+    }
+    let lock = open
+        .open(dir.join(".lock"))
+        .ok()
+        .filter(|f| f.metadata().is_ok_and(|m| m.is_file()));
     if let Some(file) = &lock {
         let until = std::time::Instant::now() + wait;
         while let Err(std::fs::TryLockError::WouldBlock) = file.try_lock() {
@@ -2189,7 +2200,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_fifo_where_config_cache_or_notes_should_be_does_not_block() {
-        // Swap the one file a writer left under `dir` for a FIFO.
+        // Swap the one file a writer left under `dir` for a FIFO (the lock
+        // file is not it; that one has a test of its own).
         fn fifo_in_place_of_the_file_under(dir: &Path) -> PathBuf {
             let mut stack = vec![dir.to_path_buf()];
             while let Some(d) = stack.pop() {
@@ -2197,7 +2209,7 @@ mod tests {
                     let p = e.path();
                     if p.is_dir() {
                         stack.push(p);
-                    } else {
+                    } else if e.file_name() != ".lock" {
                         std::fs::remove_file(&p).unwrap();
                         mkfifo(&p);
                         return p;
@@ -2420,5 +2432,75 @@ mod tests {
                 assert!(done.load(std::sync::atomic::Ordering::SeqCst));
             });
         });
+    }
+
+    /// A FIFO where the lock file goes: the save goes ahead unlocked
+    /// rather than waiting in open(2) for a reader that never comes.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_where_the_lock_file_should_be_does_not_block_a_save() {
+        use std::os::unix::fs::FileTypeExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join(".lock");
+        mkfifo(&fifo);
+        let doc = Path::new("/tmp/x.md");
+        let d = dir.path().to_path_buf();
+        let saved = bounded(&fifo, move || {
+            save_position_in(&d, doc, Some(P(7)), 500, 100).unwrap();
+            save_folds_in(&d, doc, &["a".to_string()]).unwrap();
+            sync_marks_in(&d, doc, |disk| merge3(&[], &[P(3)], &disk)).unwrap();
+            let note = crate::marginalia::Annotation::new("word", 0..4, "n".into()).unwrap();
+            crate::marginalia::sync_in(&d, doc, "word", &[], &[note]).unwrap();
+            (
+                load_marks_in(&d, doc),
+                crate::marginalia::load_in(&d, doc, "word").unwrap().len(),
+            )
+        });
+        assert_eq!(saved, Some((vec![P(3)], 1)), "a save blocked on the lock");
+        assert!(
+            std::fs::symlink_metadata(&fifo)
+                .unwrap()
+                .file_type()
+                .is_fifo(),
+            "and the FIFO is left as it was"
+        );
+    }
+
+    /// A FIFO where a reader's own save re-reads: the merge is refused,
+    /// promptly, and nothing replaces what could not be read.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_where_a_merging_save_rereads_is_refused_without_blocking() {
+        use std::os::unix::fs::FileTypeExt as _;
+        let doc = Path::new("/tmp/x.md");
+        let is_fifo = |p: &Path| std::fs::symlink_metadata(p).unwrap().file_type().is_fifo();
+
+        let dir = tempfile::tempdir().unwrap();
+        let note = crate::marginalia::Annotation::new("word", 0..4, "n".into()).unwrap();
+        crate::marginalia::save_in(dir.path(), doc, std::slice::from_ref(&note)).unwrap();
+        let sidecar = std::fs::read_dir(dir.path().join("marginalia"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::remove_file(&sidecar).unwrap();
+        mkfifo(&sidecar);
+        let d = dir.path().to_path_buf();
+        let refused = bounded(&sidecar, move || {
+            crate::marginalia::sync_in(&d, doc, "word", &[], &[note]).is_err()
+        });
+        assert_eq!(refused, Some(true), "the sidecar");
+        assert!(is_fifo(&sidecar));
+
+        let dir = tempfile::tempdir().unwrap();
+        let marks = dir.path().join("bookmarks");
+        mkfifo(&marks);
+        let d = dir.path().to_path_buf();
+        let refused = bounded(&marks, move || {
+            sync_marks_in(&d, doc, |disk| merge3(&[], &[P(3)], &disk)).is_err()
+        });
+        assert_eq!(refused, Some(true), "the bookmarks");
+        assert!(is_fifo(&marks));
     }
 }

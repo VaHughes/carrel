@@ -57,6 +57,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A damaged file-list cache no longer stops carrel from starting.** A cache line with
   an impossible date made the file list panic on every start in that folder until the
   cache was deleted; the line is now skipped.
+- **Bookmarks of a file opened while it was empty come back with its text.** Opened in
+  the moment an agent had truncated it, a document showed no bookmarks even after it was
+  rewritten, and the next `m` saved the list without them.
 - **A bookmark that could not be saved says so.** With a state directory carrel cannot
   write to, `m` reported `bookmark 1 of 1` and the bookmark was gone at the next start.
   The status row now adds that it was not saved and why; it stays set until you quit.

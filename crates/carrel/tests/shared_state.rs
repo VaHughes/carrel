@@ -366,3 +366,41 @@ fn syncing_marks_merges_with_the_file_under_one_read() {
     assert_eq!(written, [p(4), p(3)]);
     assert_eq!(state::load_marks_in(&state_dir, &file), [p(4), p(3)]);
 }
+
+/// A document opened while it was empty — an agent had just truncated it —
+/// has nowhere to show its bookmarks. They come back with the text, so the
+/// next `m` adds to them; it used to find none in memory and save that.
+#[test]
+fn bookmarks_of_a_file_opened_empty_come_back_with_its_text() {
+    let (dir, file) = desk();
+    let mut seed = open(dir.path(), &file);
+    toggle(&mut seed, "First");
+    toggle(&mut seed, "Second");
+    std::fs::write(&file, "").unwrap();
+    let mut app = open(dir.path(), &file);
+    assert!(app.marks.is_empty(), "nothing to mark in an empty document");
+    app.reload().unwrap(); // a second look, still empty
+    std::fs::write(&file, source()).unwrap();
+    app.reload().unwrap();
+    assert_eq!(words(&app), ["First", "Second"]);
+    toggle(&mut app, "Third");
+    assert_eq!(on_disk(dir.path(), &file), ["First", "Second", "Third"]);
+}
+
+/// The same while reading: emptied, looked at twice, rewritten, then `m`.
+#[test]
+fn bookmarks_survive_on_disk_when_the_open_file_is_emptied_and_rewritten() {
+    let (dir, file) = desk();
+    let mut app = open(dir.path(), &file);
+    toggle(&mut app, "First");
+    toggle(&mut app, "Second");
+    std::fs::write(&file, "").unwrap();
+    app.reload().unwrap();
+    app.reload().unwrap();
+    let saved = state::load_marks_in(&dir.path().join("state"), &file);
+    assert_eq!(saved.len(), 2, "an empty read saves nothing");
+    std::fs::write(&file, source()).unwrap();
+    app.reload().unwrap();
+    toggle(&mut app, "Third");
+    assert_eq!(on_disk(dir.path(), &file), ["First", "Second", "Third"]);
+}
