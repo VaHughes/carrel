@@ -3497,7 +3497,7 @@ pub struct Frontmatter {
 /// `src` with every inline math span replaced by the text
 /// [`Document::parse`] puts in its place, or `None` when it holds none.
 ///
-/// Rendering reorders and invents (`\sqrt[3]{x}` shows `x√3`), so no
+/// Rendering reorders and invents (`x^{ab}_{c}` shows `x_c^(ab)`), so no
 /// pattern over the source can stand in for it; the source filter runs its
 /// loose pass over this instead. The spans are the parser's own — the same
 /// events, options and rendering the builder uses — which is what makes the

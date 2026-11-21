@@ -4,6 +4,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **An indexed root reads the right way round**: `\sqrt[3]{x}` showed as `x√3`, and
+  an index of more than one term (`\sqrt[n+1]{x}`) spilled out after the root.
 - **A config or state file of an absurd size is refused, not read**: a sparse `config`
   claiming 100 TB used to stop carrel before its first frame.
 - **A very large table takes about half the memory to open**: a 2,000 by 2,000 table of

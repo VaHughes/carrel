@@ -129,6 +129,7 @@ const MAX_DEPTH: u32 = 256;
 /// out. See [`MathClass`] for what the atoms carry.
 #[must_use]
 pub fn parse(latex: &str) -> Option<MathExpr> {
+    let latex = &*brace_root_indexes(latex);
     if nesting(latex).refused() {
         return None;
     }
@@ -146,6 +147,83 @@ pub fn parse(latex: &str) -> Option<MathExpr> {
     } else {
         None
     }
+}
+
+/// `\sqrt[n+1]{x}` with its index braced: `\sqrt[{n+1}]{x}`.
+///
+/// The parser emits a root's index after its radicand with nothing around
+/// it, so `n+1` arrives as three atoms and only the first can be told from
+/// what follows the root: the reader showed `n√x + 1`. Braced, it arrives
+/// as one group. A formula with a comment in it is left as written — a `]`
+/// after a `%` is not the index's end — and so is an index already braced
+/// or never closed.
+fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
+    const ROOT: &str = "\\sqrt";
+    if !latex.contains(ROOT) || latex.contains('%') {
+        return latex.into();
+    }
+    let bytes = latex.as_bytes();
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut from = 0;
+    while let Some(at) = latex[from..].find(ROOT).map(|i| i + from) {
+        let mut i = at + ROOT.len();
+        from = i;
+        // `\sqrtsign` is another command; `\\sqrt` is a line break and text.
+        let escaped = latex[..at]
+            .bytes()
+            .rev()
+            .take_while(|&b| b == b'\\')
+            .count()
+            % 2
+            == 1;
+        if escaped || bytes.get(i).is_some_and(u8::is_ascii_alphabetic) {
+            continue;
+        }
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'[') {
+            continue;
+        }
+        let open = i + 1;
+        let mut depth = 0usize;
+        let mut close = None;
+        let mut j = open;
+        while j < bytes.len() {
+            match bytes[j] {
+                b'\\' => j += 1,
+                b'{' => depth += 1,
+                b'}' if depth == 0 => break,
+                b'}' => depth -= 1,
+                b']' if depth == 0 => {
+                    close = Some(j);
+                    break;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        let Some(close) = close else { continue };
+        let index = &latex[open..close];
+        let one_group = index.trim().starts_with('{')
+            && index.trim().ends_with('}')
+            && !index.trim()[1..index.trim().len() - 1].contains(['{', '}']);
+        if index.trim().is_empty() || one_group {
+            continue;
+        }
+        out.push_str(&latex[copied..open]);
+        out.push('{');
+        out.push_str(index);
+        out.push('}');
+        copied = close;
+        from = close;
+    }
+    if copied == 0 {
+        return latex.into();
+    }
+    out.push_str(&latex[copied..]);
+    out.into()
 }
 
 /// How many commands may be waiting on an argument at once.
@@ -788,9 +866,10 @@ fn parse_one(events: &[Event], cursor: &mut usize, depth: u32) -> Option<Step> {
             index: None,
         }),
         Event::Visual(Visual::Root) => {
-            // `\sqrt[n]{x}` — the index comes first in the stream.
-            let index = Box::new(operand(events, cursor, depth + 1)?);
+            // `\sqrt[n]{x}` — the radicand comes first in the stream, as
+            // MathML's `mroot` holds it, whatever the source order.
             let radicand = Box::new(operand(events, cursor, depth + 1)?);
+            let index = Box::new(operand(events, cursor, depth + 1)?);
             Step::Node(MathExpr::Sqrt {
                 radicand,
                 index: Some(index),
@@ -1270,6 +1349,45 @@ mod tests {
         };
         assert!(index.is_none());
         assert!(radicand.is_compound(), "x+1 is a row: {radicand:?}");
+    }
+
+    /// `\sqrt[3]{x+1}`: the 3 is the index. The parser emits the radicand
+    /// first, as an `mroot` element holds it, and the two were read the other
+    /// way round, so a cube root of x showed as the x-th root of 3.
+    #[test]
+    fn an_indexed_root_keeps_its_index_and_its_radicand_apart() {
+        let Some(MathExpr::Sqrt { radicand, index }) = parse(r"\sqrt[3]{x+1}") else {
+            panic!("expected a root")
+        };
+        assert!(radicand.is_compound(), "x+1 is the radicand: {radicand:?}");
+        let index = index.expect("an index");
+        assert!(!index.is_compound(), "3 is the index: {index:?}");
+        // An index of several atoms is one index, and nothing after the
+        // root is taken into it or pushed out of it.
+        for (src, braced) in [
+            (r"\sqrt[n+1]{x}+z", r"\sqrt[{n+1}]{x}+z"),
+            (r"\sqrt [n+1] x", r"\sqrt [{n+1}] x"),
+            (r"\sqrt[\frac{1}{2}]{x}", r"\sqrt[{\frac{1}{2}}]{x}"),
+            (r"\sqrt[a]{\sqrt[b+c]{x}}", r"\sqrt[{a}]{\sqrt[{b+c}]{x}}"),
+            (r"\sqrt[{n+1}]{x}", r"\sqrt[{n+1}]{x}"),
+            (r"\sqrt{x}[y]", r"\sqrt{x}[y]"),
+            (r"\sqrtsign[n+1]", r"\sqrtsign[n+1]"),
+            (r"a\\sqrt[n+1]", r"a\\sqrt[n+1]"),
+            (r"\sqrt[n+1", r"\sqrt[n+1"),
+            (r"\sqrt[n}]", r"\sqrt[n}]"),
+            ("\\sqrt[n%]\n]{x}", "\\sqrt[n%]\n]{x}"),
+            (r"\sqrt[é+1]{x}", r"\sqrt[{é+1}]{x}"),
+        ] {
+            assert_eq!(brace_root_indexes(src), braced, "{src}");
+        }
+        let Some(MathExpr::Row(items)) = parse(r"\sqrt[n+1]{x}+z") else {
+            panic!("expected a row")
+        };
+        assert_eq!(items.len(), 3, "the root, the plus, the z: {items:?}");
+        let MathExpr::Sqrt { index, .. } = &items[0] else {
+            panic!("expected a root first: {items:?}")
+        };
+        assert!(index.as_ref().is_some_and(|i| i.is_compound()), "{index:?}");
     }
 
     #[test]

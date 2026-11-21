@@ -34,7 +34,7 @@
 //!    both are tried, which is what makes this a superset rather than a
 //!    guess about which `[` opens a link.
 //! 3. **Math.** Inline math is rendered, and rendering reorders and invents
-//!    (`\sqrt[3]{x}` shows `x√3`, `\frac{a}{b}` shows `a/b`), so no pattern
+//!    (`x^{ab}_{c}` shows `x_c^(ab)`, `\frac{a}{b}` shows `a/b`), so no pattern
 //!    over the source can stand in for it. A file that can hold inline math
 //!    at all — a `$` that may open one and a later `$` that may close it, by
 //!    pulldown-cmark's own flanking rule — is tokenized (no document is
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn math_that_reorders_its_source_is_still_passed() {
-        passes("a $\\sqrt[3]{x}$ b\n", "x√3");
+        passes("a $\\sqrt[3]{x}$ b\n", "3√x");
         passes("a $x^{ab}_{c}$ b\n", "x_c^(ab)");
         passes("a $\\binom{n}{k}$ b\n", "(n/k)");
         passes("a $\\pmod{n}$ b\n", "(modn)");
