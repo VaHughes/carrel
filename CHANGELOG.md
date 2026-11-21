@@ -107,6 +107,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   reversed; its address now goes out as plain ASCII with everything else percent-encoded
   (so `https://例え.jp/ü` still opens), and a note whose file name has a space, `#` or `?`
   in it opens from a wikilink. A search match or a selection inside a link stays lit.
+- **A mermaid diagram can no longer exhaust memory or tie up a core.** A 49 KB sequence
+  diagram with 3,000 participants made carrel ask for more than 4 GB and abort, leaving
+  the terminal in the alternate screen; other shapes laid out for minutes. A diagram is
+  now measured before it is drawn — source size, how many things it holds, how deeply
+  they nest, how large its drawing would be — and past the limits it is shown as its
+  source, as an unsupported one always was. A document's diagrams share a budget too.
+- **A document opened a second time from the file list draws its diagrams again**; they
+  stayed as source until the file changed.
 - **A document with a very long `tags:` list scrolls as fast as any other.** Every frame
   re-read the whole frontmatter once for each of its rows on screen; 80,000 tags took
   seconds to draw and seconds more for each line scrolled.

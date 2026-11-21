@@ -459,6 +459,18 @@ Key facts:
   protocol is likewise never probed (`from_query_stdio` hangs), so `Images::kind()` reports
   what `from_fontsize` actually chose and the info card prints it rather than the README's
   claim. Anything added here that cannot be checked must say so.
+- **A mermaid block is bounded before it is drawn** (`diagrams.rs`, the table in its module
+  doc). `merman`'s cost is not a function of source size — a 49 KB sequence diagram wanted
+  more than 4 GB and the failed allocation aborted the process; a 20 KB flowchart fan laid out
+  for over a minute; 14 KB of `a & b & … --> c & d & …` parsed to a million edges — and a
+  thread cannot be stopped, so every limit is decided before the step it protects: source
+  bytes and `&` fan-out off the text, items and nesting off the parse (`merman`'s own resource
+  policy, set explicitly), the sequence grid by `sequence_cells` (its renderer budgets
+  nothing), then the art's rows and columns. Per document: source requested, art cells kept,
+  seconds of rendering. Over any of them the block stays source, silently, as math does past
+  its guard. **The values were measured against 0.8.0-alpha.5; re-measure on a bump.**
+  `Diagrams::sync` in `main.rs` drops the receiver when the document closes, which is what
+  stops the worker and what makes a reopened file ask again.
 - **Selection is a doc-byte range**; `cluster_at_col` in core is the pointer-hit inverse of
   `cols_for_doc_range`. Copy goes out via OSC 52.
 
