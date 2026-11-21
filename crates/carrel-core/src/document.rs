@@ -484,30 +484,41 @@ pub(crate) fn extended_autolinks(text: &str) -> Vec<(Range<usize>, String)> {
 /// A bare URL in one text run: where it shows (`shown`, in the display
 /// text), the address it copies, and — when it is paired with a URL in
 /// the source — where that was typed (`typed`, in the source text).
-/// `hyphens`: the display differs from what was typed, and its dashes are
-/// smart punctuation's, to be shown (and in `url`, copied) as the hyphens
-/// typed — paired or not.
+/// `shown_as`: what to show there instead, where smart punctuation made a
+/// dash of hyphens typed in it — paired or not.
 pub(crate) struct BareUrl {
     pub(crate) shown: Range<usize>,
     pub(crate) url: String,
     pub(crate) typed: Option<Range<usize>>,
-    pub(crate) hyphens: bool,
+    pub(crate) shown_as: Option<String>,
 }
 
-/// `s` with smart punctuation's dashes put back as the hyphens they were
-/// typed as. Dashes only: a curly quote in a URL stays curly, since
-/// `it’s` still reads as prose.
-fn hyphenated(s: &str) -> String {
-    s.replace('\u{2014}', "---").replace('\u{2013}', "--")
-}
+/// One stretch of a text run that smart punctuation wrote: where it is in
+/// the display text, how long, and the ASCII it was typed as.
+pub(crate) type Smart<'a> = (usize, usize, &'a str);
 
 /// The bare URLs the reader links in a text run `t`, whose source is
 /// `raw`. `runs_on`: the run goes straight on into markup.
 ///
+/// The URL a link copies is the one the AUTHOR typed. Smart punctuation
+/// rewrites the text (`it's` becomes `it’s`, `--` an en dash), and a URL
+/// built from that names a different page. `smart` says what smart
+/// punctuation wrote in `t`, in order, and each URL is then put back from
+/// its own bytes ([`as_typed`]). Without it — `diff`, which wants only
+/// `typed`, where in `raw` a URL the reader links was typed — each
+/// displayed URL takes the next source URL it IS once smart punctuation is
+/// undone, and one that is no source URL (an entity or an escape in it)
+/// has no place there.
+///
 /// Shared with `diff`, which must know exactly which URLs these are: it
 /// leaves a URL's `--` unescaped only where this links it, and an escape
 /// anywhere else is the dash it is there to stop.
-pub(crate) fn bare_urls(t: &str, raw: &str, runs_on: bool) -> Vec<BareUrl> {
+pub(crate) fn bare_urls(
+    t: &str,
+    raw: &str,
+    runs_on: bool,
+    smart: Option<&[Smart<'_>]>,
+) -> Vec<BareUrl> {
     let mut hits = extended_autolinks(t);
     // A URL cut short is worse than no link: it copies another page.
     // `https://x.com/a\_b` and `https://x.com/_private_` reach here as
@@ -523,22 +534,20 @@ pub(crate) fn bare_urls(t: &str, raw: &str, runs_on: bool) -> Vec<BareUrl> {
                 typed: Some(shown.clone()),
                 shown,
                 url,
-                hyphens: false,
+                shown_as: None,
             })
             .collect();
     }
-    // The URL a link copies is the one the AUTHOR typed. Smart
-    // punctuation rewrites the text (`it's` becomes `it’s`, `--` an en
-    // dash), and a URL built from that names a different page — so where
-    // the source differs, the same scan over the source gives the URLs.
-    // Each displayed URL takes the next source URL it IS once smart
-    // punctuation is undone (`unsmartened`); one that is no source URL —
-    // an entity or an escape in it, whose decoded form is the one meant —
-    // keeps its own. Paired one by one, not by the run: a `Q&A` or a
-    // `C:\dir` elsewhere in the paragraph used to turn the pairing off
-    // for every URL in it, and a `'` the source scan reads as a boundary,
-    // where the display's `’` is not, gave the source one link more and
-    // did the same.
+    if let Some(smart) = smart {
+        return hits
+            .into_iter()
+            .map(|(shown, url)| as_typed(t, shown, url, smart))
+            .collect();
+    }
+    // Paired one by one, not by the run: a `Q&A` or a `C:\dir` elsewhere
+    // in the paragraph used to turn the pairing off for every URL in it,
+    // and a `'` the source scan reads as a boundary, where the display's
+    // `’` is not, gave the source one link more and did the same.
     let typed = if hits.is_empty() {
         Vec::new()
     } else {
@@ -552,43 +561,68 @@ pub(crate) fn bare_urls(t: &str, raw: &str, runs_on: bool) -> Vec<BareUrl> {
             // in order: asking only for the undone form let `it’s` (typed
             // curly) take a later `it's`, and the two swapped addresses.
             let plain = unsmartened(&url);
-            if let Some(i) = typed[next_typed..]
+            let pair = typed[next_typed..]
                 .iter()
                 .position(|(_, u)| *u == url || *u == plain)
-            {
-                next_typed += i + 1;
-                let (r, u) = &typed[next_typed - 1];
-                BareUrl {
-                    hyphens: *u != url,
-                    shown,
-                    url: u.clone(),
-                    typed: Some(r.clone()),
-                }
-            } else {
-                // An entity or an escape in it keeps it from pairing, but
-                // its dashes are still smart punctuation's unless the
-                // author typed one: `a--b?c&amp;d` showed and copied
-                // `a–b`, an address nobody could type back. Typed THERE,
-                // between the same two characters — a dash anywhere in the
-                // paragraph used to count, and kept every URL's.
-                let chars: Vec<char> = url.chars().collect();
-                let smart = chars.iter().enumerate().any(|(k, c)| {
-                    matches!(c, '\u{2013}' | '\u{2014}') && {
-                        let around: String = chars[k.saturating_sub(1)..(k + 2).min(chars.len())]
-                            .iter()
-                            .collect();
-                        !raw.contains(&around)
-                    }
+                .map(|i| {
+                    next_typed += i + 1;
+                    typed[next_typed - 1].0.clone()
                 });
-                BareUrl {
-                    url: if smart { hyphenated(&url) } else { url },
-                    shown,
-                    typed: None,
-                    hyphens: smart,
-                }
+            BareUrl {
+                shown,
+                url,
+                typed: pair,
+                shown_as: None,
             }
         })
         .collect()
+}
+
+/// The URL shown at `shown` in `t`, as it was typed: its address with
+/// every stretch smart punctuation wrote put back as the ASCII typed
+/// there, and its text with the dashes put back — a dash is never part of
+/// an address, so `a–b` showed one nobody could type back, while a curled
+/// quote or an ellipsis still reads as prose.
+///
+/// Asked of the bytes each character came from, never of the paragraph or
+/// of another URL: a `1–2` typed beside a URL used to vouch for the `1--2`
+/// in it, and of two URLs alike but for a typed dash, one took the
+/// other's address. What is left of the display — an entity decoded, an
+/// escape taken — is the address meant.
+fn as_typed(t: &str, shown: Range<usize>, url: String, smart: &[Smart<'_>]) -> BareUrl {
+    let first = smart.partition_point(|&(at, ..)| at < shown.start);
+    let within = &smart[first..];
+    let within = &within[..within.partition_point(|&(at, ..)| at < shown.end)];
+    let put_back = |dashes_only: bool| {
+        let mut out = String::with_capacity(shown.len() + 8);
+        let mut at = shown.start;
+        for &(start, len, typed) in within {
+            let end = (start + len).min(shown.end);
+            out.push_str(&t[at..start]);
+            if dashes_only && !typed.starts_with('-') {
+                out.push_str(&t[start..end]);
+            } else {
+                out.push_str(typed);
+            }
+            at = end;
+        }
+        out.push_str(&t[at..shown.end]);
+        out
+    };
+    // A `www.` run's address is its text behind `http://`.
+    let address = url
+        .strip_suffix(&t[shown.clone()])
+        .filter(|_| !within.is_empty())
+        .map(|scheme| format!("{scheme}{}", put_back(false)));
+    BareUrl {
+        shown_as: within
+            .iter()
+            .any(|(.., typed)| typed.starts_with('-'))
+            .then(|| put_back(true)),
+        url: address.unwrap_or(url),
+        shown,
+        typed: None,
+    }
 }
 
 /// Trimmed from the end of a bare URL: sentence punctuation, and the
@@ -2029,6 +2063,9 @@ struct Builder<'a> {
     wiki: Vec<bool>,
     /// The link currently open, applied to every run pushed inside it.
     current_link: Option<LinkId>,
+    /// What smart punctuation wrote in the text run being pushed: where in
+    /// the run, how long, and the source range it was typed at.
+    smart: Vec<(usize, usize, Range<usize>)>,
     /// Inside an image's alt text. Alt pushes must not mark the block mixed.
     in_image: bool,
     /// `Some` while a table is being buffered. `push()` records instead of
@@ -2101,6 +2138,7 @@ impl<'a> Builder<'a> {
             links: Vec::new(),
             wiki: Vec::new(),
             current_link: None,
+            smart: Vec::new(),
             in_image: false,
             table: None,
             meta: None,
@@ -2137,6 +2175,32 @@ impl<'a> Builder<'a> {
             .is_some_and(|o| matches!(o.kind, NodeKind::CodeBlock { .. }))
     }
 
+    /// Remember `text`, at `at` in the run being joined, if smart
+    /// punctuation wrote it over the ASCII at `src`.
+    fn note_smart(&mut self, at: usize, text: &str, src: &Range<usize>) {
+        let typed = &self.source[src.clone()];
+        let written = !text.is_empty()
+            && text.chars().all(|c| {
+                matches!(
+                    c,
+                    '\u{2013}'
+                        | '\u{2014}'
+                        | '\u{2026}'
+                        | '\u{2018}'
+                        | '\u{2019}'
+                        | '\u{201C}'
+                        | '\u{201D}'
+                )
+            });
+        if written
+            && typed
+                .bytes()
+                .all(|b| matches!(b, b'-' | b'.' | b'\'' | b'"'))
+        {
+            self.smart.push((at, text.len(), src.clone()));
+        }
+    }
+
     /// Push text, turning bare `www.` runs into links on the way.
     ///
     /// Skipped entirely inside an explicit link (`current_link` is set) — a
@@ -2147,7 +2211,12 @@ impl<'a> Builder<'a> {
             self.push(t, src, ProvKind::Verbatim);
             return;
         }
-        let hits = bare_urls(t, &self.source[src.clone()], runs_on);
+        let smart: Vec<Smart<'_>> = self
+            .smart
+            .iter()
+            .map(|(at, len, typed)| (*at, *len, &self.source[typed.clone()]))
+            .collect();
+        let hits = bare_urls(t, &self.source[src.clone()], runs_on, Some(&smart));
         if hits.is_empty() {
             self.push_scripted(t, src, ProvKind::Verbatim);
             return;
@@ -2156,7 +2225,7 @@ impl<'a> Builder<'a> {
         for BareUrl {
             shown: range,
             url,
-            hyphens,
+            shown_as,
             ..
         } in hits
         {
@@ -2165,12 +2234,10 @@ impl<'a> Builder<'a> {
             // could type back. (A `git log` message used to escape the `--`
             // to keep it two hyphens, which cut the URL there and lost the
             // link.) Quotes keep their curl: `it’s` still reads as prose.
-            let shown: Cow<'_, str> =
-                if hyphens && t[range.clone()].contains(['\u{2013}', '\u{2014}']) {
-                    hyphenated(&t[range.clone()]).into()
-                } else {
-                    Cow::Borrowed(&t[range.clone()])
-                };
+            let shown: Cow<'_, str> = match shown_as {
+                Some(typed) => typed.into(),
+                None => Cow::Borrowed(&t[range.clone()]),
+            };
             if range.start > cursor {
                 // The prefix's source range is unknowable byte-for-byte once
                 // we split, so it is Substituted, not Verbatim — the same rule
@@ -2910,13 +2977,23 @@ impl<'a> Builder<'a> {
                 Event::Text(first) => {
                     let mut joined: Option<String> = None;
                     let mut end = src.end;
+                    self.smart.clear();
                     while let Some((Event::Text(next), nsrc)) = events.peek() {
                         if nsrc.start != end {
                             break;
                         }
-                        joined
-                            .get_or_insert_with(|| first.to_string())
-                            .push_str(next);
+                        // Smart punctuation arrives as a text event of its
+                        // own, over the ASCII it was typed as: the one
+                        // place that is known byte for byte.
+                        let run = match &mut joined {
+                            Some(run) => run,
+                            None => {
+                                self.note_smart(0, &first, &src);
+                                joined.insert(first.to_string())
+                            }
+                        };
+                        self.note_smart(run.len(), next, nsrc);
+                        run.push_str(next);
                         end = nsrc.end;
                         events.next();
                     }

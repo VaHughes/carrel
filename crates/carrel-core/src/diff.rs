@@ -512,7 +512,7 @@ impl Parsed {
                         // shows its smart punctuation.
                         let raw = &text[r.start..end];
                         parsed.linked.extend(
-                            crate::document::bare_urls(&shown, raw, runs_on)
+                            crate::document::bare_urls(&shown, raw, runs_on, None)
                                 .into_iter()
                                 .filter_map(|u| u.typed)
                                 .map(|t| r.start + t.start..r.start + t.end),

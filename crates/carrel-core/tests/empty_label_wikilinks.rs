@@ -170,6 +170,57 @@ fn an_unpaired_bare_url_keeps_its_hyphens_beside_a_typed_dash() {
     );
 }
 
+/// Whether a dash in a URL was typed is asked of the bytes it came from,
+/// not of the paragraph: `1–2` typed in a range beside a URL holding
+/// `1--2` used to vouch for the URL's.
+#[test]
+fn a_bare_urls_punctuation_is_what_was_typed_at_that_place() {
+    for (src, link) in [
+        (
+            "range 1\u{2013}2 and https://a.b/1--2?x&amp;y",
+            "https://a.b/1--2?x&y",
+        ),
+        (
+            "https://a.b/1\u{2013}2?x&amp;y and https://a.b/1--2?x&amp;y",
+            "https://a.b/1--2?x&y",
+        ),
+        // One of each in one URL: each stays what it was.
+        (
+            "a https://a.b/c\u{2013}d--e---f?x&amp;y z",
+            "https://a.b/c\u{2013}d--e---f?x&y",
+        ),
+        ("a https://a.b/c\u{2013}d--e z", "https://a.b/c\u{2013}d--e"),
+        // The address is the one typed in every character: no ellipsis,
+        // no curled quote.
+        (
+            "see https://a.b/x...y--z?q&amp;r ok",
+            "https://a.b/x...y--z?q&r",
+        ),
+        (
+            "see https://a.b/it's\"q\"x?q&amp;r ok",
+            "https://a.b/it's\"q\"x?q&r",
+        ),
+        (
+            "10\u{2014}20 www.a--b.c/10---20&amp;e",
+            "http://www.a--b.c/10---20&e",
+        ),
+    ] {
+        let d = Document::parse(&format!("{src}\n"));
+        assert_eq!(&**d.links.last().unwrap(), link, "{src:?}");
+        // And what is shown has the URL's dashes as typed.
+        let shown = link.trim_start_matches("http://www.");
+        let shown = shown
+            .replace("...", "\u{2026}")
+            .replace('\'', "\u{2019}")
+            .replace('"', "\u{201c}");
+        assert!(
+            d.text.contains(shown.trim_start_matches("https://")),
+            "{src:?}: {:?}",
+            d.text
+        );
+    }
+}
+
 /// A bare URL that cannot be paired with the source (an entity in it)
 /// still showed AND copied an en dash for the `--` typed in it.
 #[test]
@@ -183,9 +234,11 @@ fn an_unpaired_bare_url_copies_its_hyphens() {
     );
     let d = Document::parse("see https://x.example/a---b?c&amp;d ok\n");
     assert_eq!(&*d.links[0], "https://x.example/a---b?c&d");
-    // Curly quotes stay curly, as in a paired URL.
+    // A quote is shown curled, as in a paired URL, and copied as typed,
+    // as in a paired URL.
     let d = Document::parse("see https://x.example/it's?c&amp;d ok\n");
-    assert_eq!(&*d.links[0], "https://x.example/it\u{2019}s?c&d");
+    assert_eq!(&*d.links[0], "https://x.example/it's?c&d");
+    assert!(d.text.contains("it\u{2019}s?c&d ok"), "{:?}", d.text);
 }
 
 /// Inside a code span or math nothing is a wikilink, so nothing changes.
