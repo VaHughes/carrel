@@ -146,8 +146,15 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   hyperlink wrapper around a link carried bidi overrides and zero-width characters that
   the rest of the screen drops, so a terminal that reorders text could show a link
   reversed; its address now goes out as plain ASCII with everything else percent-encoded
-  (so `https://例え.jp/ü` still opens), and a note whose file name has a space, `#` or `?`
-  in it opens from a wikilink. A search match or a selection inside a link stays lit.
+  (so `https://例え.jp/ü` still opens). A search match or a selection inside a link stays
+  lit.
+- **The hyperlink a terminal gets for a `[[wikilink]]` is an address it can open**: the
+  note's absolute `file:///…` path with the name percent-encoded. A document opened by a
+  relative path (`carrel notes.md`) gave `file://plain.md`, which names a host, and a
+  space or `?` in the name went out raw. `--render` does the same now, and wraps no
+  hyperlink around a wikilink whose note is missing or a document read from a pipe; it
+  used to wrap every one in the bare note name. Following a wikilink inside carrel is
+  unchanged.
 - **A mermaid diagram can no longer exhaust memory or tie up a core.** A 49 KB sequence
   diagram with 3,000 participants made carrel ask for more than 4 GB and abort, leaving
   the terminal in the alternate screen; other shapes laid out for minutes. A diagram is

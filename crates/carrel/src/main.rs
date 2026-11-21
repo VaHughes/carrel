@@ -484,7 +484,7 @@ fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
     match src {
         Ok((src, stopped)) => {
             let doc = carrel_core::Document::parse(&src);
-            emit_stdin(&carrel::ansi::render(&doc, width), stopped)
+            emit_stdin(&carrel::ansi::render_file(&doc, width, path), stopped)
         }
         Err(e) => {
             match path {

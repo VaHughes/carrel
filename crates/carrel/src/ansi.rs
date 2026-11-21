@@ -118,9 +118,19 @@ pub fn osc8_target(url: &str) -> String {
 /// and written bare they would be read as a fragment, a query and an escape.
 /// Everything outside the unreserved set and `/` is encoded, byte for byte,
 /// so a name that is not UTF-8 survives too.
+///
+/// Always the ABSOLUTE path, made so against the working directory
+/// ([`std::path::absolute`]: no symlink is followed and no `..` folded, so
+/// it is the path the reader itself would open). What follows `file://` is
+/// a host: a document opened as `carrel notes.md` resolves its wikilinks to
+/// `plain.md`, and `file://plain.md` names a machine called `plain.md` and
+/// no file at all.
 #[must_use]
 pub fn osc8_file_uri(path: &std::path::Path) -> String {
     use std::fmt::Write as _;
+    // Fails only for an empty path, which then encodes to an empty one.
+    let absolute = std::path::absolute(path);
+    let path = absolute.as_deref().unwrap_or(path);
     let mut out = String::from("file://");
     for &b in path.as_os_str().as_encoded_bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'.' | b'_' | b'~') {
@@ -132,10 +142,42 @@ pub fn osc8_file_uri(path: &std::path::Path) -> String {
     out
 }
 
-/// The OSC 8 opener for `url`, cleaned by [`osc8_target`] HERE rather than
-/// at the call site so that no caller can forget it.
-fn osc8_open(url: &str) -> String {
-    format!("\u{1b}]8;;{}\u{1b}\\", osc8_target(url))
+/// The OSC 8 opener for a destination [`link_targets`] prepared.
+fn osc8_open(target: &str) -> String {
+    format!("\u{1b}]8;;{target}\u{1b}\\")
+}
+
+/// What each of the document's links is to a terminal, by link id: the
+/// destination in the form the sequence may carry, or `None` for a link
+/// that gets no hyperlink at all. Made HERE, once, for every link, so that
+/// no path to the output can forget the cleaning.
+///
+/// An ordinary link is its destination through [`osc8_target`]. A
+/// `[[wikilink]]` holds a note's name, which is not an address: it is the
+/// `file://` URI of the note when the note stands beside `file`
+/// ([`crate::wiki`], the reader's own rule, without the library index a
+/// printed page has none of), and nothing when it does not, or when there
+/// is no `file` to stand beside.
+fn link_targets(doc: &Document, file: Option<&std::path::Path>) -> Vec<Option<String>> {
+    let dir = file.map(|f| match f.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    });
+    let mut notes = dir.map(|dir| crate::wiki::Resolver::new(dir, &[]));
+    doc.links
+        .iter()
+        .enumerate()
+        .map(|(i, dest)| {
+            let id = carrel_core::LinkId(u32::try_from(i).unwrap_or(u32::MAX));
+            let target = if doc.is_wikilink(id) {
+                let note = dest.split('#').next().filter(|n| !n.is_empty())?;
+                osc8_file_uri(&notes.as_mut()?.resolve(note)?)
+            } else {
+                osc8_target(dest)
+            };
+            (!target.is_empty()).then_some(target)
+        })
+        .collect()
 }
 
 /// Render the whole document at `width`, attributes on, colours off.
@@ -145,6 +187,18 @@ pub fn render(doc: &Document, width: u16) -> String {
         doc,
         width,
         std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
+    )
+}
+
+/// [`render`], for the document at `file` (`None` for a pipe): see
+/// [`render_for`] for what the file is needed for.
+#[must_use]
+pub fn render_file(doc: &Document, width: u16, file: Option<&std::path::Path>) -> String {
+    render_for(
+        doc,
+        width,
+        std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
+        file,
     )
 }
 
@@ -163,12 +217,32 @@ pub fn render(doc: &Document, width: u16) -> String {
 /// line of its own, exactly as in plain output ([`Division::Never`]).
 #[must_use]
 pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
+    render_for(doc, width, styled, None)
+}
+
+/// The same, for the document at `file`: a `[[wikilink]]` whose note is
+/// there beside it becomes a hyperlink to that file. With no file — a pipe
+/// — no wikilink is a hyperlink, and neither is one whose note is missing:
+/// a note's NAME is not an address, and a terminal handed one can do
+/// nothing with it.
+#[must_use]
+pub fn render_for(
+    doc: &Document,
+    width: u16,
+    styled: bool,
+    file: Option<&std::path::Path>,
+) -> String {
     let width = width.max(20);
     // Aligned tables, like plain output: cards exist only on a screen.
     let layout = if styled {
         Layout::linear(doc, width, hyphenation_for(doc), Division::Overwide)
     } else {
         Layout::linear(doc, width, Hyphenation::Off, Division::Never)
+    };
+    let targets = if styled {
+        link_targets(doc, file)
+    } else {
+        Vec::new()
     };
     let mut out = String::new();
     let mut rows: Vec<Row> = Vec::new();
@@ -200,7 +274,7 @@ pub fn render_with(doc: &Document, width: u16, styled: bool) -> String {
                         text,
                         row.doc.start,
                         node.inlines.iter(),
-                        &doc.links,
+                        &targets,
                         heading_bold,
                     ) {
                         let (bytes, attrs, url) = seg;
@@ -278,7 +352,7 @@ fn segments<'a>(
     text: &'a str,
     row_start: u32,
     inlines: impl Iterator<Item = &'a Inline>,
-    links: &'a [Box<str>],
+    links: &'a [Option<String>],
     heading_bold: bool,
 ) -> Vec<Seg<'a>> {
     let row_end = row_start + text.len() as u32;
@@ -303,10 +377,7 @@ fn segments<'a>(
         }
         let mut attrs = Attrs::from_style(inl.style);
         attrs.bold |= heading_bold;
-        let url = inl
-            .link
-            .and_then(|id| links.get(id.0 as usize))
-            .map(|b| &**b);
+        let url = inl.link.and_then(|id| links.get(id.0 as usize)?.as_deref());
         out.push((s..e, attrs, url));
         cursor = e;
     }
@@ -462,6 +533,77 @@ mod tests {
             osc8_file_uri(Path::new("/w/日\u{202E}\u{1b}.md")),
             "file:///w/%E6%97%A5%E2%80%AE%1B.md"
         );
+    }
+
+    /// In `file://plain.md` the name is a HOST. A path given relative —
+    /// which is how a document opened as `carrel notes.md` hands over its
+    /// wikilinks — must go out as the absolute path it names.
+    #[test]
+    fn a_file_uri_is_absolute_whatever_the_path_was() {
+        use std::path::Path;
+        let here = std::env::current_dir().unwrap();
+        let here = here.to_str().unwrap();
+        assert!(here.starts_with('/') && !here.contains(' '), "{here}");
+        assert_eq!(
+            osc8_file_uri(Path::new("plain.md")),
+            format!("file://{here}/plain.md")
+        );
+        assert_eq!(
+            osc8_file_uri(Path::new("sub/what? now.md")),
+            format!("file://{here}/sub/what%3F%20now.md")
+        );
+        // Not canonicalised: the path is the one the reader would open.
+        assert_eq!(
+            osc8_file_uri(Path::new("../x.md")),
+            format!("file://{here}/../x.md")
+        );
+        assert_eq!(
+            osc8_file_uri(Path::new("/abs/a b.md")),
+            "file:///abs/a%20b.md"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let raw = std::ffi::OsStr::from_bytes(b"caf\xe9.md");
+            assert_eq!(
+                osc8_file_uri(Path::new(raw)),
+                format!("file://{here}/caf%E9.md")
+            );
+        }
+    }
+
+    /// `--render` wraps a wikilink in a hyperlink only when the note is
+    /// there, and then as the file it is. It wrapped every one in the bare
+    /// note name (`ESC ] 8 ; ; Known`), which is not an address.
+    #[test]
+    fn a_rendered_wikilink_is_a_file_uri_when_its_note_exists_and_no_link_when_not() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Known note.md"), "x\n").unwrap();
+        let file = dir.path().join("index.md");
+        let doc = Document::parse(
+            "see [[Known note]], [[Unknown]], [[#Here]] and [w](https://e.com/x)\n",
+        );
+        let targets = |out: &str| -> Vec<String> {
+            out.split("\u{1b}]8;;")
+                .skip(1)
+                .filter_map(|rest| rest.split("\u{1b}\\").next())
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let out = render_for(&doc, 80, true, Some(&file));
+        let known = osc8_file_uri(&dir.path().join("Known note.md"));
+        assert!(known.starts_with("file:///") && known.ends_with("/Known%20note.md"));
+        assert_eq!(targets(&out), [known, "https://e.com/x".to_string()]);
+        // The words are all still there.
+        let shown = render_for(&doc, 80, false, Some(&file));
+        assert!(
+            shown.contains("Known note") && shown.contains("Unknown"),
+            "{shown}"
+        );
+
+        // With no file to stand beside — a pipe — no wikilink is an address.
+        assert_eq!(targets(&render_with(&doc, 80, true)), ["https://e.com/x"]);
     }
 
     #[test]

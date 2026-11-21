@@ -5732,6 +5732,19 @@ mod tests {
         assert_eq!(links.len(), 1, "the unresolved wikilink emits nothing");
         assert_eq!(links[0].url, "file:///tmp/Known.md");
         assert_eq!(links[0].text, "Known");
+
+        // A document opened by a relative path resolves its notes to
+        // relative paths, and `file://Known.md` names a host.
+        app.wiki.insert(
+            carrel_core::LinkId(0),
+            std::path::PathBuf::from("notes/Known.md"),
+        );
+        t.draw(|f| draw_with_links(f, &app, &mut links)).unwrap();
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(
+            links[0].url,
+            format!("file://{}/notes/Known.md", here.display())
+        );
     }
 
     fn home_app(n: usize, cols: u16, rows: u16) -> App {
