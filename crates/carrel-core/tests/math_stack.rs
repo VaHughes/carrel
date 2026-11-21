@@ -103,9 +103,7 @@ fn shapes() -> Vec<String> {
     shapes.push("\\relax ".repeat(LINKS));
     shapes.push("%c\n".repeat(100 * LINKS));
     // A chain a macro writes, which no scan of the source can see.
-    shapes.push(format!(
-        "\\def\\a#1{{#1#1#1#1}}\\def\\b#1{{\\a{{\\a{{\\a{{#1}}}}}}}}\\b{{\\b{{\\sqrt}}}}x"
-    ));
+    shapes.push("\\def\\a#1{#1#1#1#1}\\def\\b#1{\\a{\\a{\\a{#1}}}}\\b{\\b{\\sqrt}}x".to_string());
     // The lexer steps one byte into a character of several: after a
     // number or a unit, and where `\char` wants its digit.
     for panics in [

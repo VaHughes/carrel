@@ -454,6 +454,28 @@ fn skip_token(s: &str, i: usize, end: usize, run: &mut u32) -> usize {
     }
 }
 
+/// What reads a number or a length: row breaks, kerns and skips, `\hspace`,
+/// `\Space`, `\genfrac`, the `alignat` family.
+const READS_NUMBERS: [&str; 8] = [
+    "\\\\", "\\cr", "kern", "skip", "hspace", "\\Space", "genfrac", "align",
+];
+
+/// Would the lexer panic here? After a number or a unit it steps over one
+/// whitespace character as one BYTE, which lands inside a no-break space.
+/// Only [`READS_NUMBERS`] get that far: `5` and a no-break space before
+/// `\text{kg}` is safe, and renders.
+fn steps_into_a_character(latex: &str) -> bool {
+    if latex.is_ascii() || !READS_NUMBERS.iter().any(|word| latex.contains(word)) {
+        return false;
+    }
+    let mut after_word = false;
+    latex.chars().any(|c| {
+        let steps = after_word && c.is_whitespace() && !c.is_ascii();
+        after_word = c.is_ascii_alphanumeric();
+        steps
+    })
+}
+
 /// How deeply `latex` nests, by a scan that runs before the parser is
 /// allowed near it.
 ///
@@ -489,24 +511,13 @@ fn skip_token(s: &str, i: usize, end: usize, run: &mut u32) -> usize {
 /// the parser, and a definition is lost at the end of its formula anyway.
 /// So is a formula whose groups cost more to cut than a small multiple of
 /// its length, which keeps the scan linear.
+#[allow(clippy::too_many_lines)]
 fn nesting(latex: &str) -> Nesting {
     let b = latex.as_bytes();
     let mut found = Nesting::default();
-    // After a number or a unit the lexer steps over one whitespace
-    // character as one BYTE, and panics inside a no-break space. Only these
-    // read a number: `5` and a no-break space before `\text{kg}` is safe.
-    const READS_NUMBERS: [&str; 8] = [
-        "\\\\", "\\cr", "kern", "skip", "hspace", "\\Space", "genfrac", "align",
-    ];
-    if !latex.is_ascii() && READS_NUMBERS.iter().any(|word| latex.contains(word)) {
-        let mut after_word = false;
-        for c in latex.chars() {
-            if after_word && c.is_whitespace() && !c.is_ascii() {
-                found.unbounded = true;
-                return found;
-            }
-            after_word = c.is_ascii_alphanumeric();
-        }
+    if steps_into_a_character(latex) {
+        found.unbounded = true;
+        return found;
     }
     // Groups nested one in the next to [`MAX_DEPTH`] cost half this.
     let (mut cost, budget) = (Cost::default(), 128 * b.len() + 65_536);

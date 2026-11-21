@@ -462,6 +462,7 @@ struct Parsed {
 impl Parsed {
     /// Parsed with the document's own options, math and all — the parse
     /// the reader will make of this text.
+    #[allow(clippy::too_many_lines)]
     fn of(text: &str, urls: bool) -> Self {
         use pulldown_cmark::{Event, LinkType, Tag, TagEnd};
         let mut parsed = Parsed {

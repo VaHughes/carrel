@@ -297,6 +297,7 @@ fn a_files_counts_are_of_the_hunk_lines_shown() {
 mod hunks {
     use super::*;
     use proptest::prelude::*;
+    use std::fmt::Write as _;
 
     /// What a line of a hunk may say after its sigil: everything the
     /// adapter looks for at the start of a line outside one.
@@ -350,27 +351,28 @@ mod hunks {
                 want.push_str("commit 0abcdef01234\nAuthor: A\nSubject\n");
             }
             for (i, hunks) in files.iter().enumerate() {
-                src.push_str(&format!(
+                let _ = write!(
+                    src,
                     "diff --git a/f{i} b/f{i}\nindex 1..2 100644\n--- a/f{i}\n+++ b/f{i}\n"
-                ));
+                );
                 let (mut added, mut removed) = (0, 0);
                 let mut body = String::new();
                 for lines in hunks {
                     let old = lines.iter().filter(|(sigil, _)| *sigil != '+').count();
                     let new = lines.iter().filter(|(sigil, _)| *sigil != '-').count();
-                    body.push_str(&format!("@@ -1,{old} +1,{new} @@\n"));
+                    let _ = writeln!(body, "@@ -1,{old} +1,{new} @@");
                     for (sigil, content) in lines {
-                        body.push_str(&format!("{sigil}{content}\n"));
+                        let _ = writeln!(body, "{sigil}{content}");
                     }
                     added += lines.len() - old;
                     removed += lines.len() - new;
                 }
                 src.push_str(&body);
-                want.push_str(&format!("f{i}"));
+                let _ = write!(want, "f{i}");
                 if added + removed > 0 {
-                    want.push_str(&format!("  +{added} \u{2212}{removed}"));
+                    let _ = write!(want, "  +{added} \u{2212}{removed}");
                 }
-                want.push_str(&format!("\n{body}\n"));
+                let _ = write!(want, "\n{body}\n");
             }
             prop_assert_eq!(diff_shown(&src), want, "{}", src);
         }

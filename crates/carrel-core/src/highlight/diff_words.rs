@@ -3,17 +3,31 @@
 use super::{Token, TokenKind};
 use unicode_segmentation::UnicodeSegmentation;
 
-pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token> {
+/// A line of the block: where it starts, its text, the side it is on.
+type Line<'a> = (usize, &'a str, Side);
+
+/// The block's lines with the side each is on, and a whole-line token for
+/// each the grammar misreads.
+///
+/// In a hunk a line is what its sigil says, whatever follows the sigil — a
+/// removed `-- note` is written `--- note` — so the hunk's lines are counted
+/// off its `@@` header, as `diff::to_markdown` counts them. The grammar
+/// reads such a line as a file header wherever it stands, and it was painted
+/// as one: the color of plumbing.
+fn sides(text: &str, base: u32) -> (Vec<Line<'_>>, Vec<Token>) {
     let mut lines = Vec::new();
+    let mut misread = Vec::new();
     let mut offset = 0;
-    // Lines the hunk being read still has to come, old side and new. In a
-    // hunk a line is what its sigil says, whatever follows the sigil: a
-    // removed `-- note` is written `--- note`.
+    // Lines the hunk being read still has to come, old side and new.
     let mut hunk = (0usize, 0usize);
-    let mut misread: Vec<Token> = Vec::new();
     for line in text.split_inclusive('\n') {
+        let first = line.as_bytes().first().copied();
+        // Anything but a sigil, context or the no-newline marker: the hunk
+        // is shorter than it said.
+        if !matches!(first, Some(b'-' | b'+' | b' ' | b'\\' | b'\n' | b'\r')) {
+            hunk = (0, 0);
+        }
         let in_hunk = hunk != (0, 0);
-        let first = line.as_bytes().first();
         let side = match first {
             Some(b'-') if in_hunk || !line.starts_with("--- ") => Side::Old,
             Some(b'+') if in_hunk || !line.starts_with("+++ ") => Side::New,
@@ -27,22 +41,19 @@ pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token>
             hunk.1 = hunk
                 .1
                 .saturating_sub(usize::from(side == Side::New || both));
+            if line.starts_with("---") || line.starts_with("+++") {
+                let at = base + offset as u32;
+                misread.push(Token {
+                    doc: at..at + line.len() as u32,
+                    kind: if side == Side::Old {
+                        TokenKind::Deleted
+                    } else {
+                        TokenKind::Inserted
+                    },
+                });
+            }
         } else if let Some(counts) = crate::diff::hunk_lines(line.trim_end()) {
             hunk = counts;
-        }
-        // The grammar reads such a line as a file header whatever hunk it
-        // is in, and it was painted as one: the color of plumbing.
-        if in_hunk && (line.starts_with("---") || line.starts_with("+++")) {
-            let kind = if side == Side::Old {
-                TokenKind::Deleted
-            } else {
-                TokenKind::Inserted
-            };
-            let at = base + offset as u32;
-            misread.push(Token {
-                doc: at..at + line.len() as u32,
-                kind,
-            });
         }
         // This marker describes the preceding line; it is not context and
         // must not split a replacement at end of file.
@@ -51,6 +62,11 @@ pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token>
         }
         offset += line.len();
     }
+    (lines, misread)
+}
+
+pub(super) fn emphasize(text: &str, base: u32, tokens: Vec<Token>) -> Vec<Token> {
+    let (lines, misread) = sides(text, base);
     let mut changed = Vec::new();
     let mut i = 0;
     // A total budget, not a per-line budget: adversarial fences stay cheap.
@@ -166,7 +182,7 @@ enum Side {
 }
 
 type Word<'a> = (u32, &'a str);
-fn words<'a>(lines: &[(usize, &'a str, Side)]) -> Vec<Word<'a>> {
+fn words<'a>(lines: &[Line<'a>]) -> Vec<Word<'a>> {
     lines
         .iter()
         .flat_map(|(offset, line, _)| {
