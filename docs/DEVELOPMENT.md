@@ -114,6 +114,16 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
   drop it (`captured()` in `tests/pty.rs`) — the piped tests passed on that echo for a week
   while nothing piped was shown. Look for words, not phrases: ratatui skips unchanged blank
   cells with a cursor move, so `two arrived` on screen is `two`, a move, `arrived` in bytes.
+- **A crash repro runs under `ulimit -c 1`**, set in a fresh shell (or
+  `prlimit --core=1:1 <cmd>`). With systemd-coredump, `core_pattern` is a pipe, and the
+  kernel skips a piped handler only for a core limit of exactly 1: `ulimit -c 0` still
+  records every abort (and on a desktop that announces crashes, announces each one).
+- **Esc and a key are two writes.** A terminal reads ESC and a letter arriving together as
+  Alt-letter, which carrel does not bind: a driver that sends `\x1bgg` in one write sends
+  Alt-g, then `g`. Send Esc, wait for its effect, then send the rest.
+- **In a script under `pipefail`, never pipe into `grep -q`.** grep exits at its first
+  match, the writer gets SIGPIPE, and the pipeline fails at random; both check scripts did
+  this and reported a missing file once in a few dozen runs. Use `grep … >/dev/null`.
 - **A pty test waits for the effect, never for a fixed delay.** Under load a click and
   the `q` after it arrive together and the app quits before acting, or a resize overtakes
   typed keys still queued. `pty_run_until` sends `q` only once the expected text is in the

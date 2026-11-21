@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-14 (adversarial bug hunt; open items cleared)
+Last updated: 2026-11-21 (second adversarial hunt: eight hunters, three rounds of review)
 
 ## Current state
 
@@ -16,9 +16,9 @@ Last updated: 2026-11-14 (adversarial bug hunt; open items cleared)
   artifacts after `release.yml`'s `--target` hit a 403 (fixed on `main`, unproven until
   the next tag). Its nix build fails one test that assumed `/tmp`; fixed on `main`, so
   the nixpkgs PR should wait for the next release.
-- **Unreleased work (2026-10-31 through 2026-11-14):** the GUI-preparation work from
+- **Unreleased work (2026-10-31 through 2026-11-21):** the GUI-preparation work from
   Q29/Q33, three known limits cleared, the reading-input and navigation fixes, and the
-  2026-11-14 adversarial hunt's fixes below. The next release is the first with
+  2026-11-14 and 2026-11-21 adversarial hunts' fixes below. The next release is the first with
   three crates, so it is also the first test of `publish.yml` publishing `carrel-state`
   (not yet on crates.io; the name was free on 2026-10-31).
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
@@ -46,6 +46,67 @@ Last updated: 2026-11-14 (adversarial bug hunt; open items cleared)
   and the GUI.
 
 ## Recently completed
+
+- Unreleased (2026-11-21) — **a second adversarial hunt: eight hunters, five fixers, then
+  three rounds of cold review of the fixes.** Hunters: cargo-fuzz over core with invariant
+  oracles, a random-sequence fuzzer over the real key and mouse dispatchers, a black-box pty
+  tester, a security hunter, a performance hunter, a documentation-versus-behavior checker
+  and two cold code reviewers. About ninety reproduced defects, each fixed test-first with
+  the test break-checked; the reviews of the fixes found about twenty more in them (two
+  regressions in the first round), fixed the same way. Gates: **1,818 tests**,
+  zero-warning clippy on 1.97, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
+  1.95; parse 1.6 ms/MB, height pass 4.6 ms/MB ASCII and 14.3 ms/MB CJK.
+  - *Crashes.* Math is scanned as pulldown-latex tokenizes it (`math::nesting`): `%`
+    comments, Unicode spaces, `\frac+`, `\sqrt[ab]`, `\sideset` and macro definitions
+    all reached its recursion or its lexer and aborted; `\def`/`\let`/`\newcommand`,
+    `\char` and `\buildrel` show as source, and a non-ASCII space is made plain in the
+    copy the parser reads (`plain_spaces`). A one-column table ending in an empty row
+    crashed `--plain`, `--render`, a pipe and the columns view (`layout::table_line_ends`).
+    A command-line argument that is not UTF-8 panicked (`args_os` throughout;
+    `cli::split_target` on bytes). A mermaid sequence diagram of 3,000 participants took
+    4 GB: diagrams are bounded before they are drawn (`diagrams.rs` module doc has the
+    limits and the measurements). A poisoned index cache panicked at every start. A sparse
+    config claiming 100 TB aborted (`state::read_regular`, `MAX_STATE_BYTES`).
+  - *Data.* Two readers on one document keep each other's bookmarks and notes: every save
+    re-reads its file under `flock` on `<state dir>/.lock` and merges three ways against
+    what the session last saw (`state::merge3`, `sync_marks_in`, `marginalia::sync_in`); a
+    note both edited is joined once, by paragraph. A kept place is written
+    `…^<prev>^<next>` — the 2026-11-14 form had a comma in it and a bookmarks line is split
+    on commas, which made a phantom bookmark on the first block; old lines are mended on
+    read (`state::mark_fields`). A bookmark that could not be saved says so. Config and
+    state are read only from regular files, without blocking (`state::open_regular`), and a
+    relative or empty `XDG_*_HOME` is ignored (`state::base_dir`).
+  - *Security.* The hyperlink pass prints what the finished frame's cells hold, one span
+    per style run, so no bidi or zero-width character the cells drop reaches the terminal
+    inside a link; its URL is `ansi::osc8_target`. An unknown option is escaped like a file
+    name. A FIFO named `x.md` cannot hold the backlinks worker.
+  - *Reader.* An unbound Ctrl or Alt chord does nothing in any keymap (`keys::stray_chord`;
+    owner decision, below). `L` works from the file list and for a bare file name, streams
+    its answers from the document's folder outward, and stops when closed
+    (`BacklinkScan`, `links::Query`). A carried drag keeps the last character it holds. A
+    menu that fits stays above the status row (`App::menu_rows`). The notes list closes in
+    a tiny window. Back clamps by the document it lands on. A piped document has its
+    diagrams drawn. `\sqrt[3]{x}` reads `3√x` (`math::brace_root_indexes`). The settings
+    pane shows the real theme; theme names match in any letter case.
+  - *Diffs and git log.* Hunks are walked by their `@@` counts, so a removed `-- comment`
+    or an added `++i` is kept and counted; a `git format-patch` mail is a commit; a
+    message's `<word>` and `![[embed]]` show as written; a bare URL is rebuilt from its own
+    source bytes (`as_typed`), never matched against the paragraph.
+  - *Performance.* Collapse-all, and a resize while collapsed, are linear in the headings
+    (`Document::section_ends`; 25,000 commits: 5.5 s to 14 ms). The info card and links
+    pane are linear in the links and never resolve during paint. A document's wikilinks
+    list their folder once (`wiki::Resolver`; 16,000 notes: 15 s to 0.12 s). A table costs
+    half the memory (`TableRec` is flat). A frontmatter card's tag buttons are found once
+    per document (`App::card_tags`).
+  - *Command line and documents.* Nothing after `--` is an option, with or without a
+    terminal. On a pipe every single-dash flag but `-h` and `-V` is a pager's and is
+    ignored. The modes that print a pipe stop at the reader's limit. The man page, `--help`
+    and README were corrected in a dozen places, with a drift guard for config keys and
+    long flags.
+  - *Process.* `ulimit -c 0` does not stop systemd-coredump (`core_pattern` is a pipe; only
+    a limit of exactly 1 is skipped): crash repros run under `ulimit -c 1`. The two check
+    scripts piped into `grep -q` under `pipefail` and failed at random; they read to the
+    end now.
 
 - Unreleased (2026-11-14, afternoon) — **the open items cleared, each through its own
   cold review.** Built on the owner's two decisions (outside images: click to show, per
@@ -518,14 +579,20 @@ planned:
   design: letters are the filter; the border says `esc close`).
 - The lightbox and the notes pane cover the whole frame, `≡` and the lamp included (by
   design; both have their own buttons).
-- In a single-column table shown as cards, the rule under an EMPTY body cell comes back
-  one row lower after a resize: the blank cell's row holds its line's only byte, so that
-  rule has none of its own and keeps the next card's first. Every other rule is named by
-  the `\n` ending the card above it (`layout::card_rows`, guarded by
+- In a single-column table shown as cards, a row beside an EMPTY cell can come back one
+  row off after a resize, when that exact row was on top: the rule under an empty body
+  cell (one lower), the top rule over an empty header cell (as the first body row), and
+  the blank text row of an empty last cell (as the rule under it). The blank cell's row
+  holds its line's only byte, so two rows share it. Every other rule is named by the
+  `\n` ending the card above it (`layout::card_rows`, guarded by
   `view::tests::every_card_row_restores_to_itself`).
-- Math with more than 64 argument-taking commands in a row separated by at most one atom
-  (`\hat a\hat a …`) shows as source; symbols (`\alpha`, `\cdot`, …) never count
-  (`math::NO_ARGUMENT`).
+- Math with more than 64 commands waiting on an argument at once, written without braces
+  (`\sqrt\sqrt…x`), shows as source: pulldown-latex parses a bare argument by recursion.
+  A long ROW of them (`\hat a\hat a …`) renders at any length. More than 64 unknown
+  commands in one group, or 64 comments in a row, cost a formula its rendering too
+  (`math::MAX_BARE_CHAIN`, `MAX_COMMENT_RUN`).
+- Only a document's first 2,000 links are judged dead or alive; past that a dead link
+  looks like a live one (`App::find_dead_links`: each judgment is a `stat`).
 - In a note draft, Up and Down are unbound: the box wraps at paint time
   (`annotation_render::draft_rows`) and the editor does not know its width, so moving by
   stored line would skip wrapped rows. Home and End go to the cursor's line.
@@ -535,7 +602,14 @@ planned:
 Upstream: pulldown-cmark 0.13.4 repeats the rest of a paragraph after an empty-label
 wikilink (`[[x|]] abc` read `]] abc abc`); `document::body_events` reads such a link as
 if escaped (`mask_empty_labels` masks its brackets with same-length `%`, parses that, and
-re-borrows every string from the real source), and can go when a release fixes it.
+re-borrows every string from the real source). 0.13.6 fixes it upstream and is what the
+lockfile holds since 2026-11-21 (one of 37,545 markdown files on this machine parses
+differently under it, a list's end, and more correctly); the mask stays while the
+declared floor is 0.13.4, and reads `[[x|]]` the same under both.
+
+Upstream: pulldown-latex 0.8.0 emits a root's index after its radicand with nothing
+around it (`\sqrt[n+1]{x}` is the radicand group, then `n`, `+`, `1`), so the index is
+braced before parsing (`math::brace_root_indexes`).
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
@@ -559,6 +633,25 @@ state machine over them, dispatching on `Intent` with one explicit arm for what 
 implement. The GTK4 GUI phase is not started and has no date.
 
 ## Recent decisions
+
+- 2026-11-21: **an unbound Ctrl or Alt chord does nothing** (owner). Each keymap names the
+  letters it binds with Ctrl (`keys::stray_chord`); Alt is never bound. Ctrl-J/K/N/P and
+  Ctrl-Space no longer act on the reader's page, where they were never bound. The cost:
+  a terminal reads Esc and a letter arriving together as Alt-letter, so on a slow link
+  Esc-then-`j` typed fast now loses both keys where it used to lose only the Esc.
+- 2026-11-21: **on a pipe, a single-dash flag is a pager's and is ignored** (all but `-h`
+  and `-V`): every letter is a `less` option, and a pager that refuses one shows nothing
+  of what was piped to it. An unknown `--long` option is an error everywhere.
+- 2026-11-21: **two readers' edits to one note are joined, by paragraph, once**; nothing
+  either wrote is dropped. A reading position stays last-writer-wins.
+- 2026-11-21: **what links here searches the folder being read in**, the document's own
+  folder first, and says `first 200 found` when it stopped at its cap.
+- 2026-11-21: **a formula that defines a macro shows as source** (`\def`, `\let`,
+  `\newcommand`; also `\char`, `\buildrel`): expansion can write a chain no scan of the
+  source sees, and the parser's recursion aborts the reader.
+- 2026-11-21: **printed output leaves out what the cells refuse**: a Hangul filler or a
+  lone medial or final jamo takes no cell on screen and is not printed by `--plain` or
+  `--render` either.
 
 - 2026-11-14: **a drag across a collapsed section copies the hidden text too**, as
   editors with folding do (the selection is a byte range; a fold hides rows, not text).
