@@ -591,6 +591,10 @@ planned:
   A long ROW of them (`\hat a\hat a …`) renders at any length. More than 64 unknown
   commands in one group, or 64 comments in a row, cost a formula its rendering too
   (`math::MAX_BARE_CHAIN`, `MAX_COMMENT_RUN`).
+- A mermaid diagram past its cost limits (2,000 items; for a flowchart 500 nodes, or a
+  shape whose widest rank would take seconds to lay out; 64 KiB of source outside
+  comments; a document's diagrams together 5 s of drawing) stays source, with a caption.
+  The worst shape that still draws takes about 1.5 s and 90 MB, off the UI thread.
 - Only a document's first 2,000 links are judged dead or alive; past that a dead link
   looks like a live one (`App::find_dead_links`: each judgment is a `stat`).
 - In a note draft, Up and Down are unbound: the box wraps at paint time
@@ -613,6 +617,19 @@ braced before parsing (`math::brace_root_indexes`).
 
 Upstream: delete `render::declare_wide_cells` when ratatui#2721 (fix for #2651) ships in a
 release — it merged 2026-08-24, but ratatui's latest release is still 0.30.2.
+
+For the owner (2026-11-21, not changed):
+- *Esc then a key on a slow link.* With unbound chords inert, Esc-then-`j` arriving in one
+  read is Alt-j and both keys are lost (before, the `j` acted and the Esc was lost). One
+  way out that keeps the decision: read Alt-letter as Esc alone in the maps that type
+  nothing. Not done, because "does nothing" was the decision.
+- *British spellings in user-facing text* that predate this work: `--help` (`colours`,
+  `honoured`), the man page (11), the README (15), the fish and zsh completions. Not
+  swept, by the standing rule against sweeping spellings nobody asked to change.
+- *Exported notes are the note's text as typed*, so read back as markdown a `<tag>` in a
+  note vanishes and its lines join. Escaping them would change what `C` copies.
+- A mouse report with a zero coordinate panics inside crossterm 0.29 in a debug build
+  (an overflow check; release wraps). No conforming terminal sends one.
 
 Known defects: none open. The last, stray backslashes in `git log | carrel`, is fixed
 by planning every escape the message-to-markdown pass adds as data and settling it
@@ -651,7 +668,16 @@ implement. The GTK4 GUI phase is not started and has no date.
   source sees, and the parser's recursion aborts the reader.
 - 2026-11-21: **printed output leaves out what the cells refuse**: a Hangul filler or a
   lone medial or final jamo takes no cell on screen and is not printed by `--plain` or
-  `--render` either.
+  `--render` either. Tag characters and the interlinear annotation controls reach no
+  cell, no copy and no printed line (`carrel_core::hidden::strip`), except in a
+  well-formed flag; bidi marks stay in printed body text, which may be right-to-left.
+- 2026-11-21: **a hyperlink is an address a terminal can open, or is not sent**: a
+  destination with a scheme as written; a local file that resolves, or a placed wikilink,
+  as an absolute `file:///` URI; none for `#fragment` alone, a dead link, a path outside
+  the folder, or anything on a pipe. The link selected with Tab is a hyperlink too.
+- 2026-11-21: **a diagram is refused by what it would cost, not by how big it is**, and
+  says so on its gap row (`too large to draw — shown as text`). The limits and the
+  measurements behind them are in `diagrams.rs`'s module doc.
 
 - 2026-11-14: **a drag across a collapsed section copies the hidden text too**, as
   editors with folding do (the selection is a byte range; a fold hides rows, not text).
