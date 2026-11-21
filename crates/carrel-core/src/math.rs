@@ -215,7 +215,15 @@ fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
         let one_group = index.trim().starts_with('{')
             && index.trim().ends_with('}')
             && !index.trim()[1..index.trim().len() - 1].contains(['{', '}']);
-        if index.trim().is_empty() || one_group {
+        if index.trim().is_empty() {
+            // `\sqrt[]{x}` is a square root: with the empty brackets left
+            // in, the parser took whatever came next for the index.
+            out.push_str(&latex[copied..open - 1]);
+            copied = close + 1;
+            from = close + 1;
+            continue;
+        }
+        if one_group {
             continue;
         }
         out.push_str(&latex[copied..open]);
@@ -1472,10 +1480,19 @@ mod tests {
         };
         assert!(index.as_ref().is_some_and(|i| i.is_compound()), "{index:?}");
         let text = |src| inline_text(&parse(src).expect("it parses"));
-        assert_eq!(text(r"\sqrt[3]{x}"), "3√x");
+        assert_eq!(text(r"\sqrt[3]{x}"), "∛x");
+        assert_eq!(text(r"2\sqrt[3]{x}"), "2∛x");
+        assert_eq!(text(r"\sqrt[4]{x}"), "∜x");
+        assert_eq!(text(r"\sqrt[2]{x}"), "√x");
+        assert_eq!(text(r"\sqrt[5]{x}"), "⁵√x");
+        assert_eq!(text(r"\sqrt[n]{x}"), "ⁿ√x");
+        assert_eq!(text(r"\sqrt[k]{x}"), "k√x");
         assert_eq!(text(r"\sqrt[n+1]{x}+z"), "(n + 1)√x + z");
         // A root in the index: the outer index ends at ITS bracket.
-        assert_eq!(text(r"\sqrt[\sqrt[3]{2}]{y}"), "3√2√y");
+        assert_eq!(text(r"\sqrt[\sqrt[3]{2}]{y}"), "∛2√y");
+        // Empty brackets are no index at all.
+        assert_eq!(text(r"\sqrt[]{x}+1"), "√x + 1");
+        assert_eq!(text(r"\sqrt[ ]{x}+1"), "√x + 1");
     }
 
     #[test]
@@ -1524,10 +1541,7 @@ pub fn inline_text(expr: &MathExpr) -> String {
             format!("{}/{}", grouped(num), grouped(den))
         }
         MathExpr::Sqrt { radicand, index } => {
-            // Grouped like the radicand: an index of several terms left
-            // bare read as a sum with the root in it (`n + 1√x`).
-            let idx = index.as_deref().map(grouped).unwrap_or_default();
-            format!("{idx}\u{221a}{}", grouped(radicand))
+            format!("{}{}", root_sign(index.as_deref()), grouped(radicand))
         }
         MathExpr::Script { base, sub, sup, .. } => {
             let mut out = inline_text(base);
@@ -1612,6 +1626,30 @@ const SUBS: [(char, char); 14] = [
 
 /// The Unicode raised or lowered form, if EVERY character has one. `None` the
 /// moment one does not — a half-translated script reads worse than `^(n+1)`.
+/// The radical for an inline root, index and all: `∛` and `∜` have signs of
+/// their own, any other simple index is raised (`ⁿ√`), and one of several
+/// terms is bracketed. Written bare it ran into whatever stood before the
+/// root — `2\sqrt[3]{x}` read `23√x` — or read as a sum with the root in it
+/// (`n + 1√x`).
+#[must_use]
+pub fn root_sign(index: Option<&MathExpr>) -> String {
+    let Some(index) = index else {
+        return "\u{221a}".into();
+    };
+    if let MathExpr::Sym { text, .. } = index {
+        match text.trim() {
+            "2" => return "\u{221a}".into(),
+            "3" => return "\u{221b}".into(),
+            "4" => return "\u{221c}".into(),
+            _ => {}
+        }
+    }
+    match unicode_script(index, SUPERS) {
+        Some(raised) => format!("{raised}\u{221a}"),
+        None => format!("{}\u{221a}", grouped(index)),
+    }
+}
+
 fn unicode_script(expr: &MathExpr, table: [(char, char); 14]) -> Option<String> {
     let MathExpr::Sym { text, .. } = expr else {
         return None;

@@ -312,14 +312,9 @@ fn sqrt(
         } else {
             one_row(&r)
         };
-        // An index of several terms is bracketed, or `n + 1√x` reads as a
-        // sum with the root of x in it.
-        let idx = match index {
-            Some(i) if i.is_compound() => format!("({})", one_row(&lay(i, mode, depth + 1)?)),
-            Some(i) => one_row(&lay(i, mode, depth + 1)?),
-            None => String::new(),
-        };
-        return MathBox::sym(&format!("{idx}√{inner}"));
+        // The core's own radical, so a root reads the same in a display
+        // block's inline parts as in a sentence.
+        return MathBox::sym(&format!("{}{inner}", carrel_core::root_sign(index)));
     }
     // The overbar spans the radicand; the radical sign sits on the baseline,
     // and the index — which a display block used to drop, so a cube root
@@ -754,7 +749,7 @@ mod tests {
             inline.starts_with('(') && inline.contains(")√x"),
             "{inline}"
         );
-        assert_eq!(one_row(&lay_out(&root(sym("3")), Mode::Inline)), "3√x");
+        assert_eq!(one_row(&lay_out(&root(sym("3")), Mode::Inline)), "∛x");
     }
 
     #[test]

@@ -7791,6 +7791,11 @@ fn word_range_at(text: &str, byte: u32) -> Option<std::ops::Range<u32>> {
     while !text.is_char_boundary(at) {
         at -= 1;
     }
+    // White space is in no word: the stretch below would end AT it and be
+    // the word before, which a double click on a gap then selected.
+    if text[at..].chars().next().is_some_and(char::is_whitespace) {
+        return None;
+    }
     // No word crosses white space, so only the stretch between the nearest
     // two is segmented — not the document.
     let from = text[..at]
@@ -9480,6 +9485,15 @@ mod tests {
         let lone = App::new("t.md".into(), Document::parse("a \u{301} b\n"), 80, 10);
         let at = u32::try_from(lone.doc.text.find('\u{301}').unwrap()).unwrap();
         assert_eq!(word_range_at(&lone.doc.text, at), None);
+        // White space is not part of the word before it: a double click on
+        // the space after a word, or on a line's end, selected that word.
+        for text in ["one two\n", "one\ttwo\n", "one\u{a0}two\n", "one \n"] {
+            let gap = u32::try_from(text.find(char::is_whitespace).unwrap()).unwrap();
+            assert_eq!(word_range_at(text, gap), None, "{text:?}");
+            assert_eq!(word_range_at(text, 0), Some(0..3), "{text:?}");
+        }
+        let end = u32::try_from("one two\n".len() - 1).unwrap();
+        assert_eq!(word_range_at("one two\n", end), None, "the line's end");
     }
 
     #[test]

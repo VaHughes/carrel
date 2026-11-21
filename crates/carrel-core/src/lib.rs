@@ -57,7 +57,7 @@ pub use layout::{
     cluster_at_col, cluster_width, cols_for_doc_range, cols_for_doc_ranges, display_width, wrap,
     wrap_chunk, wrap_chunk_in, wrap_divided, wrap_range, wrap_with,
 };
-pub use math::{MathClass, MathExpr, MatrixDelim};
+pub use math::{MathClass, MathExpr, MatrixDelim, root_sign};
 pub use position::{Affinity, BlockIdx, DocByte, NodeId, SrcByte};
 /// Re-exported so a frontend can hold what [`content_pattern`] returns
 /// without its own `regex` dependency line.

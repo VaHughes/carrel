@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn math_that_reorders_its_source_is_still_passed() {
-        passes("a $\\sqrt[3]{x}$ b\n", "3√x");
+        passes("a $\\sqrt[3]{x}$ b\n", "∛x");
         passes("a $x^{ab}_{c}$ b\n", "x_c^(ab)");
         passes("a $\\binom{n}{k}$ b\n", "(n/k)");
         passes("a $\\pmod{n}$ b\n", "(modn)");
