@@ -189,7 +189,11 @@ def main(binary, scratch, from_home=False):
         expect("1 of 2")
         send("n")
         expect("2 of 2")
-        send("\x1bgg")
+        # Esc on its own, then `gg`: sent as one write, ESC+g is Alt-g, a
+        # chord carrel does not bind, and neither key would do anything.
+        send("\x1b")
+        wait_for(lambda: "2 of 2" not in screen.text(), "Esc clears the search")
+        send("gg")
         resize(80,24)
         expect("selectable")
         # Select text, resize with selection active, and release in the new frame.

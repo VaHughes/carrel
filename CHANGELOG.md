@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A Ctrl or Alt chord carrel does not bind does nothing.** It used to act as its bare
+  letter outside text inputs: Ctrl-D on the file list opened the folder browser, Ctrl-T
+  in the reader switched the table view, Alt-Q closed the document. The chords carrel
+  binds are unchanged, and Ctrl-C now quits from the notes list as it does everywhere else.
 - **`[[x|]]` reads exactly as `\[\[x|\]\]` would**: wrapped in `*`, `**` or `~~` it no
   longer shows its closer and styles the rest of the paragraph, a label that ends in `|`
   (`[[notes|a|]]`) is a link again, and no phantom link follows it. A bare URL with an

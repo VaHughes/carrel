@@ -44,6 +44,9 @@ impl Keys {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if editing {
             let key = erase_alias(key);
+            if stray_chord(key, "csjwu") {
+                return None;
+            }
             let input = match key.code {
                 KeyCode::Esc => N::Cancel,
                 KeyCode::Char('c') if ctrl => N::Cancel,
@@ -63,7 +66,14 @@ impl Keys {
             };
             return Some(Action::NoteInput(input));
         }
+        if stray_chord(key, "c") {
+            return None;
+        }
         match key.code {
+            // The one chord every dispatcher answers: raw mode clears ISIG,
+            // so nothing else can honor it. The list did not, and Ctrl-C
+            // over the notes did nothing at all.
+            KeyCode::Char('c') if ctrl => Some(Action::Quit),
             KeyCode::Esc | KeyCode::Char('q' | 'V') => Some(Action::NotesToggle),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::NoteMove(1)),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::NoteMove(-1)),
@@ -89,12 +99,15 @@ impl Keys {
         if self.pending_g {
             self.pending_g = false;
             return match key.code {
-                KeyCode::Char('g') => Some(Action::GoToStart),
+                KeyCode::Char('g') if !is_chord(key) => Some(Action::GoToStart),
                 _ => None,
             };
         }
         if self.pending_z {
             self.pending_z = false;
+            if stray_chord(key, "") {
+                return None;
+            }
             return match key.code {
                 KeyCode::Char('z') => Some(Action::Recenter(Where::Middle)),
                 KeyCode::Char('t') => Some(Action::Recenter(Where::Top)),
@@ -104,6 +117,9 @@ impl Keys {
                 KeyCode::Char('R') => Some(Action::UnfoldAll),
                 _ => None,
             };
+        }
+        if stray_chord(key, READER_CHORDS) {
+            return None;
         }
 
         match key.code {
@@ -274,9 +290,21 @@ impl Keys {
         if self.pending_g {
             self.pending_g = false;
             return match key.code {
-                KeyCode::Char('g') => Some(Action::HomeGo(Edge::First)),
+                KeyCode::Char('g') if !is_chord(key) => Some(Action::HomeGo(Edge::First)),
                 _ => None,
             };
+        }
+
+        // The file list binds no letter chord but these: Ctrl-D is a shell
+        // user's exit reflex, and as the bare `d` it opened the folder
+        // picker. The modes that type add the two erasing chords.
+        let bound = if mode == HomeMode::Normal {
+            "njpkc"
+        } else {
+            "njpkcwu"
+        };
+        if stray_chord(key, bound) {
+            return None;
         }
 
         // Movement and commit work identically in every mode. So does F1 —
@@ -391,6 +419,9 @@ impl Keys {
     /// nothing is lost by spending them. `Q` still quits outright.
     #[must_use]
     pub fn map_lightbox(key: KeyEvent) -> Option<Action> {
+        if stray_chord(key, "c") {
+            return None;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => Some(Action::Dismiss),
             KeyCode::Char('[') | KeyCode::Left => Some(Action::ImageStep(-1)),
@@ -408,6 +439,9 @@ impl Keys {
         let key = erase_alias(key);
         if let Some(k) = erase_chord(key) {
             return Some(Action::HelpKey(k));
+        }
+        if stray_chord(key, "cnjpk") {
+            return None;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -435,6 +469,9 @@ impl Keys {
     /// No filter, so the letters stay free — `L` closes it the way it opened.
     #[must_use]
     pub fn map_backlinks(key: KeyEvent) -> Option<Action> {
+        if stray_chord(key, "njpkc") {
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('n' | 'j') if ctrl => Some(Action::BacklinksMove(1)),
@@ -452,6 +489,9 @@ impl Keys {
     /// feel like one pane read in either direction.
     #[must_use]
     pub fn map_forward(key: KeyEvent) -> Option<Action> {
+        if stray_chord(key, "njpkc") {
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('n' | 'j') if ctrl => Some(Action::ForwardMove(1)),
@@ -468,6 +508,9 @@ impl Keys {
     /// Bookmark-list bindings: the same short list shape as the link panes.
     #[must_use]
     pub fn map_marks(key: KeyEvent) -> Option<Action> {
+        if stray_chord(key, "njpkc") {
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('n' | 'j') if ctrl => Some(Action::MarkListMove(1)),
@@ -494,6 +537,9 @@ impl Keys {
     /// and on a card there is nothing else for `g` to begin.
     #[must_use]
     pub fn map_info(key: KeyEvent) -> Option<Action> {
+        if stray_chord(key, "njpkcdufb") {
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('n' | 'j') if ctrl => Some(Action::Scroll(Span::Line, 1)),
@@ -520,6 +566,9 @@ impl Keys {
     /// do not mind.
     #[must_use]
     pub fn map_settings(key: KeyEvent) -> Option<Action> {
+        if stray_chord(key, "njpkc") {
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('n' | 'j') if ctrl => Some(Action::SettingsMove(1)),
@@ -543,6 +592,9 @@ impl Keys {
         let key = erase_alias(key);
         if let Some(k) = erase_chord(key) {
             return Some(Action::OutlineKey(k));
+        }
+        if stray_chord(key, "njpkc") {
+            return None;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -569,6 +621,9 @@ impl Keys {
         // this one did not, and the modifier was never inspected — so Ctrl-C
         // typed a literal `c` into the query and the user's universal escape
         // did nothing visible.
+        if stray_chord(key, "cwu") {
+            return None;
+        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Some(Action::Quit);
         }
@@ -592,6 +647,9 @@ impl Keys {
     /// choosing and leaving is a key that does something invisible.
     #[must_use]
     pub fn map_menu(key: KeyEvent) -> Option<Action> {
+        if stray_chord(key, "cnjpk") {
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('c') if ctrl => Some(Action::Quit),
@@ -769,6 +827,27 @@ fn is_chord(key: KeyEvent) -> bool {
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
+/// The letters the reader binds with Ctrl: quit or copy, the six scroll
+/// chords, and vim's way back.
+const READER_CHORDS: &str = "cdufbeyo";
+
+/// Whether `key` is a Ctrl or Alt chord on a character that the map asking
+/// does not bind: with Alt held at all (carrel binds no Alt chord), or on a
+/// character outside `bound`, the letters that map gives a Ctrl meaning.
+///
+/// Such a key does nothing. The maps match the character and only some arms
+/// look at the modifier, so a chord nobody bound used to act as its bare
+/// letter: Ctrl-D on the file list opened the folder picker (a shell user's
+/// exit reflex), Ctrl-T in the reader switched the table view, Alt-Q closed
+/// the document. Only character keys: Alt-Enter and Ctrl-Left stay what
+/// Enter and Left are.
+fn stray_chord(key: KeyEvent, bound: &str) -> bool {
+    let KeyCode::Char(c) = key.code else {
+        return false;
+    };
+    is_chord(key) && (key.modifiers.contains(KeyModifiers::ALT) || !bound.contains(c))
+}
+
 /// Ctrl-H as the Backspace it is, for the inputs that type.
 ///
 /// crossterm maps only 0x7F to Backspace; 0x08 — what terminals and ssh
@@ -913,6 +992,90 @@ mod tests {
         );
         assert_eq!(keys.map_home(chord('w'), HomeMode::Normal), None);
         assert_eq!(keys.map_home(chord('u'), HomeMode::Normal), None);
+    }
+
+    /// A chord nobody bound does nothing, in every map. The maps match the
+    /// character and only some arms look at the modifier, so Ctrl-D on the
+    /// file list opened the folder picker, Ctrl-T in the reader switched
+    /// the table view and Alt-Q closed the document.
+    #[test]
+    fn an_unbound_chord_does_nothing_in_any_map() {
+        use crate::home::HomeMode;
+        type Map = Box<dyn Fn(KeyEvent) -> Option<Action>>;
+        let home = |mode| -> Map { Box::new(move |k| Keys::new().map_home(k, mode)) };
+        // Each map with the letters it binds with Ctrl, and nothing else.
+        let maps: Vec<(&str, &str, Map)> = vec![
+            (
+                "reader",
+                "cdufbeyo",
+                Box::new(|k| Keys::new().map(k, false)),
+            ),
+            (
+                "reader search",
+                "chwu",
+                Box::new(|k| Keys::new().map(k, true)),
+            ),
+            ("file list", "njpkc", home(HomeMode::Normal)),
+            ("file filter", "njpkchwu", home(HomeMode::Filter)),
+            ("file search", "njpkchwu", home(HomeMode::Search)),
+            ("folder picker", "njpkchwu", home(HomeMode::Picker)),
+            ("help", "njpkchwu", Box::new(Keys::map_help)),
+            ("outline", "njpkchwu", Box::new(Keys::map_outline)),
+            ("backlinks", "njpkc", Box::new(Keys::map_backlinks)),
+            ("links", "njpkc", Box::new(Keys::map_forward)),
+            ("bookmarks", "njpkc", Box::new(Keys::map_marks)),
+            ("info", "njpkcdufb", Box::new(Keys::map_info)),
+            ("settings", "njpkc", Box::new(Keys::map_settings)),
+            ("menu", "njpkc", Box::new(Keys::map_menu)),
+            ("lightbox", "c", Box::new(Keys::map_lightbox)),
+            ("notes list", "c", Box::new(|k| Keys::map_notes(k, false))),
+            (
+                "note draft",
+                "csjhwu",
+                Box::new(|k| Keys::map_notes(k, true)),
+            ),
+        ];
+        let ctrl = KeyModifiers::CONTROL;
+        let alt = KeyModifiers::ALT;
+        let shift = KeyModifiers::SHIFT;
+        for (name, bound, map) in &maps {
+            for c in (' '..='~').filter(char::is_ascii_graphic).chain([' ']) {
+                for mods in [ctrl, alt, ctrl | alt, ctrl | shift, alt | shift] {
+                    let got = map(KeyEvent::new(KeyCode::Char(c), mods));
+                    let is_bound = !mods.contains(alt) && bound.contains(c);
+                    assert_eq!(
+                        got.is_some(),
+                        is_bound,
+                        "{mods:?}+{c:?} in the {name}: {got:?}"
+                    );
+                }
+            }
+            // A pending prefix does not make a chord its letter either.
+        }
+        for c in ['g', 'z', 'a', 't', 'M', 'R'] {
+            for first in ['g', 'z'] {
+                let mut keys = Keys::new();
+                assert_eq!(keys.map(k(first), false), None);
+                let got = keys.map(KeyEvent::new(KeyCode::Char(c), ctrl), false);
+                assert_eq!(got, None, "{first} then Ctrl-{c}");
+                let mut keys = Keys::new();
+                assert_eq!(keys.map_home(k('g'), HomeMode::Normal), None);
+                let got = keys.map_home(KeyEvent::new(KeyCode::Char(c), alt), HomeMode::Normal);
+                assert_eq!(got, None, "g then Alt-{c} on the file list");
+            }
+        }
+        // Only character keys: a modifier on Enter or an arrow changes nothing.
+        let mut keys = Keys::new();
+        assert_eq!(
+            keys.map(KeyEvent::new(KeyCode::Enter, alt), false),
+            Some(Action::LinkFollow)
+        );
+        // And the bare letters are what they were.
+        assert_eq!(keys.map(k('t'), false), Some(Action::TableToggle));
+        assert_eq!(
+            keys.map_home(k('d'), HomeMode::Normal),
+            Some(Action::PickerOpen)
+        );
     }
 
     #[test]

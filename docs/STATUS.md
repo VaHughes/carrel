@@ -532,12 +532,6 @@ planned:
 - Files open synchronously (about 1.5 s at 52 MB); a model node costs ~230 bytes, so a
   64 MB file of one-line headings still costs gigabytes.
 
-For the owner (2026-11-14, not changed — "keybindings stay exactly as they are"): outside
-text inputs, an unbound Ctrl or Alt chord acts as its bare letter, in the reader and on the
-file list alike — Ctrl-D on the file list opens the folder picker (a shell user's exit
-reflex), Ctrl-T toggles tables, Alt-Q closes the document. Making chords inert would be
-one guard per keymap; the text inputs already have it (`keys::is_chord`).
-
 Upstream: pulldown-cmark 0.13.4 repeats the rest of a paragraph after an empty-label
 wikilink (`[[x|]] abc` read `]] abc abc`); `document::body_events` reads such a link as
 if escaped (`mask_empty_labels` masks its brackets with same-length `%`, parses that, and
