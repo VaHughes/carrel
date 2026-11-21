@@ -421,7 +421,13 @@ Key facts:
   **text and style back off the cells** (one span per run of one style), so the pass prints
   only what ratatui's cells hold and has no character filter of its own to drift. A
   destination goes through `ansi::osc8_target` (shared with `--render`): `clip::line`, then
-  percent-encoding to bytes 33-126; a wikilink's path through `ansi::osc8_file_uri`.
+  percent-encoding to bytes 33-126. **A target is an address a terminal can open, or it is
+  not sent**: a destination with a scheme as written; a relative path or a placed wikilink as
+  the absolute `file:///` URI of the file it names, fragment kept (`ansi::osc8_local` over
+  `App::link_files` / `App::wiki`, both filled once per document — `find_dead_links` does the
+  one look at the disk, under the folder rule, via `app::local_link`); and no hyperlink for
+  `#fragment`, a dead link, or a path the folder rule did not look at. `--render` applies the
+  same rule in `ansi::link_targets`, with the document's own folder as the boundary.
 - **Hidden text has one rule, `carrel_core::hidden::strip`**, asked by every exit: the
   screen (`render::scrub_cells`, a pass over the finished buffer before `settle_links`, so no
   painter can forget it), the clipboard (`clip`), and printed output (`plain::push_text`).

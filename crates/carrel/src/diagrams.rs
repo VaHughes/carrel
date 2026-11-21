@@ -583,7 +583,7 @@ mod tests {
     use super::*;
 
     /// `line(0)`, `line(1)`, … one after another: a generated diagram's body.
-    fn each(n: usize, line: impl Fn(usize) -> String) -> String {
+    fn each(n: usize, mut line: impl FnMut(usize) -> String) -> String {
         let mut s = String::new();
         for i in 0..n {
             s += &line(i);
@@ -710,13 +710,13 @@ mod tests {
         let mut rng = Lcg(7);
         let mut s = format!("flowchart {dir}\n");
         s += &each(nodes, |i| format!(" n{i}[Service {i}]\n"));
-        for i in 1..nodes {
-            s += &format!(" n{} --> n{i}\n", rng.below(i));
-        }
-        for _ in nodes - 1..edges {
+        s += &each(nodes - 1, |i| {
+            format!(" n{} --> n{}\n", rng.below(i + 1), i + 1)
+        });
+        s += &each(edges + 1 - nodes, |_| {
             let (a, b) = (rng.below(nodes), rng.below(nodes));
-            s += &format!(" n{a} --> n{}\n", if a == b { (b + 1) % nodes } else { b });
-        }
+            format!(" n{a} --> n{}\n", if a == b { (b + 1) % nodes } else { b })
+        });
         s
     }
 
@@ -724,14 +724,15 @@ mod tests {
         let mut rng = Lcg(11);
         let mut s = String::from("sequenceDiagram\n");
         s += &each(participants, |i| format!(" participant P{i}\n"));
-        for _ in 0..messages {
+        s += &each(messages, |_| {
             let a = rng.below(participants);
             let b = (a + 1 + rng.below(participants - 1)) % participants;
-            s += &format!(" P{a}->>P{b}: {}\n", "m".repeat(label));
-        }
+            format!(" P{a}->>P{b}: {}\n", "m".repeat(label))
+        });
         s
     }
 
+    #[allow(clippy::too_many_lines)] // a list of fixtures
     fn ordinary() -> Vec<(&'static str, String)> {
         let groups = each(10, |g| {
             format!(
@@ -800,7 +801,7 @@ mod tests {
                     "erDiagram\n{}{}",
                     each(29, |i| format!(
                         " T{} ||--o{{ T{} : has\n",
-                        (i + 1) / 2,
+                        i.div_ceil(2),
                         i + 1
                     )),
                     each(30, |i| format!(" T{i} {{\n  int id\n  string name\n }}\n"))
@@ -1251,7 +1252,11 @@ mod tests {
         };
         // 1,005 rows; the box is its label and four cells of frame.
         assert_eq!(size(&chain(991)), Ok((1005, 995)));
-        assert!(1005 * 995 <= MAX_ART_CELLS && 1005 * 996 > MAX_ART_CELLS);
+        assert_eq!(
+            MAX_ART_CELLS / 1005,
+            995,
+            "one column either side of the limit"
+        );
         assert_eq!(size(&chain(992)), Err(Some(Refused::TooLarge)));
     }
 
@@ -1277,18 +1282,15 @@ mod tests {
         );
         let first = plan.requests[0].0;
         let last = plan.requests[fits - 1].0;
-        let (large, budget): (Vec<&(BlockIdx, Refused)>, Vec<&(BlockIdx, Refused)>) = plan
-            .refused
-            .iter()
-            .partition(|(_, why)| *why == Refused::TooLarge);
+        let of = |kind: Refused| -> Vec<BlockIdx> {
+            let kept = plan.refused.iter().filter(|(_, why)| *why == kind);
+            kept.map(|(b, _)| *b).collect()
+        };
+        let (large, budget) = (of(Refused::TooLarge), of(Refused::Budget));
         assert_eq!(large.len(), 1);
-        assert!(large[0].0 < first, "the oversized block came first");
+        assert!(large[0] < first, "the oversized block came first");
         assert_eq!(budget.len(), 5);
-        assert!(
-            budget
-                .iter()
-                .all(|(b, why)| *b > last && *why == Refused::Budget)
-        );
+        assert!(budget.iter().all(|b| *b > last));
     }
 
     #[test]
@@ -1316,10 +1318,11 @@ mod tests {
     /// is drawn; and a diagram refused after its parse is answered in turn.
     #[test]
     fn the_worker_reports_each_refusal_with_its_reason() {
+        let fan = each(300, |i| format!(" root-->n{i}\n"));
+        let nest = "namespace N {\n".repeat(100);
         let md = format!(
-            "```mermaid\ngraph TD\n a-->b\n```\n\n```mermaid\ngraph LR\n{}```\n\n```mermaid\n{}```\n\n```mermaid\npie\n \"A\": 1\n```\n",
-            each(300, |i| format!(" root-->n{i}\n")),
-            format!("classDiagram\n{}", "namespace N {\n".repeat(100)),
+            "```mermaid\ngraph TD\n a-->b\n```\n\n```mermaid\ngraph LR\n{fan}```\n\n\
+             ```mermaid\nclassDiagram\n{nest}```\n\n```mermaid\npie\n \"A\": 1\n```\n"
         );
         let plan = plan(&Document::parse(&md));
         assert_eq!(plan.requests.len(), 3, "the brace nest is not even copied");

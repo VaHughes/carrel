@@ -678,6 +678,12 @@ pub struct App {
     /// Links that lead nowhere; see `Self::find_dead_links`. Painted
     /// struck through.
     pub dead_links: std::collections::HashSet<LinkId>,
+    /// The file each relative link names, for the ones that name one: found
+    /// by the same single look at the disk that finds the dead ones
+    /// (`Self::find_dead_links`), under the same folder rule. What the
+    /// hyperlink pass hands a terminal for a local link is this file's
+    /// address; a link with no entry here and no scheme gets no hyperlink.
+    pub link_files: HashMap<LinkId, PathBuf>,
     /// `(done, total)` task items; see [`Self::task_counts`].
     task_counts: (u32, u32),
     /// Every generated document opened since the file list, in the order
@@ -1273,6 +1279,7 @@ impl App {
             footnote_marks: Vec::new(),
             card_tags: Vec::new(),
             dead_links: std::collections::HashSet::new(),
+            link_files: HashMap::new(),
             step_cursor: None,
             task_counts: (0, 0),
             desks: Vec::new(),
@@ -2975,6 +2982,7 @@ impl App {
         /// unknown, not dead.
         const MAX: usize = 2000;
         self.dead_links.clear();
+        self.link_files.clear();
         // No links, nothing to judge — and the slug and title sets below
         // cost a walk over every heading. `yes '# x' | carrel` has millions
         // and not one link, and building them took seconds per reparse.
@@ -3010,6 +3018,7 @@ impl App {
             .unwrap_or(dir);
         let root = self.library_root().and_then(|r| r.canonicalize().ok());
         let mut dead = std::collections::HashSet::new();
+        let mut files = HashMap::new();
         for i in 0..self.doc.links.len().min(MAX) {
             let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
             let dest = self.doc.links[i].as_ref();
@@ -3039,20 +3048,21 @@ impl App {
                 // is untrusted, and a `stat` of wherever it points (a network
                 // mount, another user's files) is a thing it should not be
                 // able to make a reader do by being opened.
-                let paths: Vec<PathBuf> = crate::links::candidates(bare)
-                    .iter()
-                    .map(|n| fold_lexically(&dir.join(n)))
-                    .collect();
-                let inside = root
-                    .as_ref()
-                    .is_none_or(|root| paths.iter().all(|n| n.starts_with(root)));
-                inside && !paths.iter().any(|n| n.exists())
+                match local_link(&dir, root.as_deref(), bare) {
+                    LocalLink::Outside => false,
+                    LocalLink::Missing => true,
+                    LocalLink::File(path) => {
+                        files.insert(id, path);
+                        false
+                    }
+                }
             };
             if is_dead {
                 dead.insert(id);
             }
         }
         self.dead_links = dead;
+        self.link_files = files;
     }
 
     /// Every heading, in reading order, as layout blocks. Derived, never
@@ -7107,7 +7117,7 @@ fn merge_open_spans(mut spans: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     out
 }
 
-/// The links pane's rows ([`forward_rows`]), counted by kind, for the info
+/// The links pane's rows (`forward_rows`), counted by kind, for the info
 /// card. One row, one link: the card once counted for itself — every
 /// `://` destination, repeats and all, and nothing for a `mailto:` — and
 /// said 24 where the pane listed 23.
@@ -7868,6 +7878,38 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         }
     }
     Outcome::Redraw
+}
+
+/// What a relative link destination names on disk.
+pub(crate) enum LocalLink {
+    /// Somewhere outside `root`: not looked at, so nothing is known.
+    Outside,
+    /// Nothing, under any of the names it might mean.
+    Missing,
+    /// This file.
+    File(PathBuf),
+}
+
+/// Look for the file `bare` (a destination, its `#fragment` taken off)
+/// names beside a document in `dir`, which is absolute.
+///
+/// Every name the link might mean is folded WITHOUT touching the disk
+/// first. If any of them leaves `root` the link is not looked at — not
+/// judged, and not probed either: a document is untrusted, and a `stat` of
+/// wherever it points (a network mount, another user's files) is a thing
+/// it should not be able to make a reader do by being opened.
+pub(crate) fn local_link(dir: &Path, root: Option<&Path>, bare: &str) -> LocalLink {
+    let paths: Vec<PathBuf> = crate::links::candidates(bare)
+        .iter()
+        .map(|n| fold_lexically(&dir.join(n)))
+        .collect();
+    if root.is_some_and(|root| !paths.iter().all(|n| n.starts_with(root))) {
+        return LocalLink::Outside;
+    }
+    paths
+        .into_iter()
+        .find(|n| n.exists())
+        .map_or(LocalLink::Missing, LocalLink::File)
 }
 
 /// A path with its `.` and `..` components resolved by hand. No disk: the

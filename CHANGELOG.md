@@ -148,13 +148,16 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   reversed; its address now goes out as plain ASCII with everything else percent-encoded
   (so `https://例え.jp/ü` still opens). A search match or a selection inside a link stays
   lit.
-- **The hyperlink a terminal gets for a `[[wikilink]]` is an address it can open**: the
-  note's absolute `file:///…` path with the name percent-encoded. A document opened by a
-  relative path (`carrel notes.md`) gave `file://plain.md`, which names a host, and a
-  space or `?` in the name went out raw. `--render` does the same now, and wraps no
-  hyperlink around a wikilink whose note is missing or a document read from a pipe; it
-  used to wrap every one in the bare note name. Following a wikilink inside carrel is
-  unchanged.
+- **The hyperlink a terminal gets for a link is an address it can open, or there is
+  none.** A link to a file beside the document, and a `[[wikilink]]` whose note was
+  found, go out as the file's absolute `file:///…` address with the name
+  percent-encoded and any `#fragment` kept; a web or `mailto:` address goes as written.
+  A link the terminal could do nothing with gets no hyperlink: `#heading`, a file that
+  is not there, a path that leaves the folder, a wikilink with no note. They used to go
+  out as `gone.md`, `sub/x.md`, `#d` — and a wikilink in a document opened by a relative
+  path (`carrel notes.md`) as `file://plain.md`, which names a host. `--render` follows
+  the same rule (it wrapped every wikilink in the bare note name), and from a pipe only
+  addresses are hyperlinks. Clicking and following links inside carrel is unchanged.
 - **A mermaid diagram can no longer exhaust memory or tie up a core.** A 49 KB sequence
   diagram with 3,000 participants made carrel ask for more than 4 GB and abort, leaving
   the terminal in the alternate screen; other shapes laid out for minutes. A diagram is

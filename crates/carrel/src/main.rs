@@ -4068,7 +4068,12 @@ mod tests {
     fn a_refused_diagram_is_recorded_on_its_block_until_the_document_changes() {
         use carrel::diagrams::Refused;
 
-        let fan: String = (0..300).map(|i| format!(" root-->n{i}\n")).collect();
+        let mut fan = String::new();
+        for i in 0..300 {
+            fan += " root-->n";
+            fan += &i.to_string();
+            fan.push('\n');
+        }
         let src = format!(
             "```mermaid\ngraph TD\n a[alpha]-->b[beta]\n```\n\n```mermaid\ngraph LR\n{fan}```\n"
         );

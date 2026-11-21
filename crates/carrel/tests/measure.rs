@@ -1385,7 +1385,11 @@ fn hovering_a_link_changes_how_it_looks_even_though_it_is_already_underlined() {
 fn every_osc8_span_carries_the_style_its_cells_were_painted_with() {
     use carrel::action::Action;
 
-    let mut app = app_at(90, 24, "# Head\n\nsee [the docs](./more.md) here\n");
+    let mut app = app_at(
+        90,
+        24,
+        "# Head\n\nsee [the docs](https://example.com/more) here\n",
+    );
     for hovering in [false, true] {
         let (buf, painted) = menu_frame(&app, 90, 24);
         let link = painted.links.first().expect("one link");

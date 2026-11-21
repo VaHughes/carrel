@@ -142,6 +142,20 @@ pub fn osc8_file_uri(path: &std::path::Path) -> String {
     out
 }
 
+/// The `file://` URI of `file`, the file a relative link `dest` was found
+/// to name, with the destination's `#fragment` kept.
+#[must_use]
+pub fn osc8_local(file: &std::path::Path, dest: &str) -> String {
+    let mut uri = osc8_file_uri(file);
+    if let Some((_, fragment)) = dest.split_once('#')
+        && !fragment.is_empty()
+    {
+        uri.push('#');
+        uri.push_str(&osc8_target(fragment));
+    }
+    uri
+}
+
 /// The OSC 8 opener for a destination [`link_targets`] prepared.
 fn osc8_open(target: &str) -> String {
     format!("\u{1b}]8;;{target}\u{1b}\\")
@@ -152,16 +166,29 @@ fn osc8_open(target: &str) -> String {
 /// that gets no hyperlink at all. Made HERE, once, for every link, so that
 /// no path to the output can forget the cleaning.
 ///
-/// An ordinary link is its destination through [`osc8_target`]. A
-/// `[[wikilink]]` holds a note's name, which is not an address: it is the
-/// `file://` URI of the note when the note stands beside `file`
-/// ([`crate::wiki`], the reader's own rule, without the library index a
-/// printed page has none of), and nothing when it does not, or when there
-/// is no `file` to stand beside.
+/// The screen's rule (`render::paint_row`), for a page with no library:
+///
+/// - a destination with a scheme is itself, through [`osc8_target`];
+/// - a relative path is the `file://` URI of the file it names beside
+///   `file`, fragment kept ([`osc8_local`]) — when there is one, and it
+///   does not leave the document's folder, which is as far as a printed
+///   page looks (`app::local_link`);
+/// - a `[[wikilink]]` holds a note's name, which is not an address: it is
+///   the URI of the note when the note stands beside `file`
+///   ([`crate::wiki`], the reader's own rule, without the library index);
+/// - anything else gets nothing: `#heading`, a file that is not there, any
+///   local link at all when there is no `file` to stand beside. A terminal
+///   handed `gone.md` can do nothing with it.
 fn link_targets(doc: &Document, file: Option<&std::path::Path>) -> Vec<Option<String>> {
     let dir = file.map(|f| match f.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => std::path::Path::new("."),
+    });
+    // Absolute, as the folder rule compares paths.
+    let here = dir.map(|dir| {
+        dir.canonicalize()
+            .or_else(|_| std::path::absolute(dir))
+            .unwrap_or_else(|_| dir.to_path_buf())
     });
     let mut notes = dir.map(|dir| crate::wiki::Resolver::new(dir, &[]));
     doc.links
@@ -171,9 +198,16 @@ fn link_targets(doc: &Document, file: Option<&std::path::Path>) -> Vec<Option<St
             let id = carrel_core::LinkId(u32::try_from(i).unwrap_or(u32::MAX));
             let target = if doc.is_wikilink(id) {
                 let note = dest.split('#').next().filter(|n| !n.is_empty())?;
-                osc8_file_uri(&notes.as_mut()?.resolve(note)?)
-            } else {
+                osc8_local(&notes.as_mut()?.resolve(note)?, dest)
+            } else if crate::app::has_scheme(dest) {
                 osc8_target(dest)
+            } else {
+                let here = here.as_deref()?;
+                let bare = dest.split('#').next().filter(|b| !b.is_empty())?;
+                match crate::app::local_link(here, Some(here), bare) {
+                    crate::app::LocalLink::File(found) => osc8_local(&found, dest),
+                    _ => return None,
+                }
             };
             (!target.is_empty()).then_some(target)
         })
@@ -606,15 +640,56 @@ mod tests {
         assert_eq!(targets(&render_with(&doc, 80, true)), ["https://e.com/x"]);
     }
 
+    /// `--render` follows the screen's rule for every link, not only for
+    /// wikilinks: a file beside the document is its absolute address, and a
+    /// link a terminal could do nothing with gets no hyperlink.
+    #[test]
+    fn a_rendered_local_link_is_a_file_uri_and_a_dead_or_in_page_one_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("d2.md"), "x\n").unwrap();
+        std::fs::write(dir.path().join("sub/x y.md"), "x\n").unwrap();
+        let file = dir.path().join("doc.md");
+        let doc = Document::parse(
+            "# Here\n\n[a](d2.md#sec) [c](sub/x%20y.md) [gone](gone.md) [frag](#here) \
+             [up](../outside.md) [web](https://e.com/p#f)\n",
+        );
+        let targets = |out: &str| -> Vec<String> {
+            out.split("\u{1b}]8;;")
+                .skip(1)
+                .filter_map(|rest| rest.split("\u{1b}\\").next())
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let root = osc8_file_uri(&dir.path().canonicalize().unwrap());
+        assert_eq!(
+            targets(&render_for(&doc, 100, true, Some(&file))),
+            [
+                format!("{root}/d2.md#sec"),
+                format!("{root}/sub/x%20y.md"),
+                "https://e.com/p#f".to_string()
+            ]
+        );
+        // From a pipe there is no folder to look in.
+        assert_eq!(
+            targets(&render_with(&doc, 100, true)),
+            ["https://e.com/p#f"]
+        );
+        // Every word is still printed.
+        let shown = render_for(&doc, 100, false, Some(&file));
+        assert!(shown.contains("gone") && shown.contains("frag"), "{shown}");
+    }
+
     #[test]
     fn an_entity_encoded_escape_in_a_link_destination_is_stripped() {
         // CommonMark entity-decodes link destinations, so these reach
         // `doc.links` holding a raw ESC or BEL — an author-controlled escape
         // sequence in the middle of our OSC 8 opener.
         for src in [
-            "[c](&#27;]8;;http://evil)\n",
-            "[b](&#7;bel)\n",
-            "[r]\n\n[r]: <&#27;x>\n",
+            "[c](http://e.com/&#27;]8;;http://evil)\n",
+            "[b](http://e.com/&#7;bel)\n",
+            "[r]\n\n[r]: <http://e.com/&#27;x>\n",
         ] {
             let doc = Document::parse(src);
             assert!(
@@ -631,6 +706,12 @@ mod tests {
                 !url.chars().any(char::is_control),
                 "destination smuggled a control byte from {src:?}: {url:?}"
             );
+        }
+        // With no scheme such a destination is a file name, and a file
+        // name that is not there is no hyperlink at all.
+        for src in ["[c](&#27;]8;;http://evil)\n", "[b](&#7;bel)\n"] {
+            let out = render_with(&Document::parse(src), 80, true);
+            assert!(!out.contains("\u{1b}]8;"), "{src:?}: {out:?}");
         }
     }
 }

@@ -2443,13 +2443,25 @@ fn paint_row(
                 // click a name.
                 let url = if app.doc.is_wikilink(id) {
                     match app.wiki.get(&id) {
-                        Some(p) => crate::ansi::osc8_file_uri(p),
+                        Some(p) => crate::ansi::osc8_local(p, &app.doc.links[id.0 as usize]),
                         None => continue,
                     }
                 } else {
-                    // Nothing a hostile destination holds can reach the
-                    // terminal as anything but printable ASCII.
-                    crate::ansi::osc8_target(&app.doc.links[id.0 as usize])
+                    // An address goes as written — nothing a hostile one
+                    // holds can reach the terminal as anything but
+                    // printable ASCII. A file beside the document goes as
+                    // the file it was found to be when the document
+                    // arrived. Anything else — `#heading`, a path outside
+                    // the folder, one past the number looked up — is not
+                    // something a terminal can open, so it is not sent.
+                    let dest = &app.doc.links[id.0 as usize];
+                    if crate::app::has_scheme(dest) {
+                        crate::ansi::osc8_target(dest)
+                    } else if let Some(file) = app.link_files.get(&id) {
+                        crate::ansi::osc8_local(file, dest)
+                    } else {
+                        continue;
+                    }
                 };
                 // Skip absurd URLs outright — the OSC pass re-emits every
                 // frame, and terminals cap near 2 KiB anyway.
@@ -5770,7 +5782,7 @@ mod tests {
     fn wikilinks_emit_osc8_only_when_resolved_and_as_file_uris() {
         let mut app = App::new(
             "t.md".into(),
-            Document::parse("see [[Known]] and [[Unknown]]\n"),
+            Document::parse("see [[Known]] and [[Unknown]] and [[Known#A part]]\n"),
             60,
             8,
         );
@@ -5781,9 +5793,18 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(60, 8)).unwrap();
         let mut links = Vec::new();
         t.draw(|f| draw_with_links(f, &app, &mut links)).unwrap();
-        assert_eq!(links.len(), 1, "the unresolved wikilink emits nothing");
+        app.wiki.insert(
+            carrel_core::LinkId(2),
+            std::path::PathBuf::from("/tmp/Known.md"),
+        );
+        t.draw(|f| draw_with_links(f, &app, &mut links)).unwrap();
+        assert_eq!(links.len(), 2, "the unresolved wikilink emits nothing");
         assert_eq!(links[0].url, "file:///tmp/Known.md");
         assert_eq!(links[0].text, "Known");
+        assert_eq!(
+            links[1].url, "file:///tmp/Known.md#A%20part",
+            "a fragment goes with its file"
+        );
 
         // A document opened by a relative path resolves its notes to
         // relative paths, and `file://Known.md` names a host.
@@ -5797,6 +5818,52 @@ mod tests {
             links[0].url,
             format!("file://{}/notes/Known.md", here.display())
         );
+    }
+
+    /// What a terminal is handed for a link is something it can open, or
+    /// nothing. A link with a scheme goes as written; a file beside the
+    /// document goes as its absolute `file://` address, fragment kept; and
+    /// a bare `gone.md`, a `sub/x.md` or a `#heading` — none of which a
+    /// terminal can resolve against anything — went out as exactly that.
+    #[test]
+    fn a_hyperlink_target_is_an_address_a_terminal_can_open_or_is_not_sent() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("d2.md"), "# Sec\n").unwrap();
+        std::fs::write(d.path().join("sub/x y.md"), "x\n").unwrap();
+        let file = d.path().join("doc.md");
+        std::fs::write(
+            &file,
+            "# Here\n\n[a](d2.md) [b](d2.md#sec) [c](<sub/x y.md>) [d](sub/x%20y.md#L3) \
+             [gone](gone.md) [frag](#here) [nope](d2.md#nope) [up](../outside.md) \
+             [web](https://e.com/p#f) [mail](mailto:a@e.com)\n",
+        )
+        .unwrap();
+        let mut app = App::new_home(d.path().into(), vec![], 120, 12);
+        app.open_path(&file).unwrap();
+        let mut t = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        let mut links = Vec::new();
+        t.draw(|f| draw_with_links(f, &app, &mut links)).unwrap();
+        let root = crate::ansi::osc8_file_uri(&d.path().canonicalize().unwrap());
+        let got: Vec<(String, String)> = links
+            .iter()
+            .map(|l| (l.text.clone(), l.url.replacen(&root, "ROOT", 1)))
+            .collect();
+        let want = [
+            ("a", "ROOT/d2.md"),
+            ("b", "ROOT/d2.md#sec"),
+            ("c", "ROOT/sub/x%20y.md"),
+            ("d", "ROOT/sub/x%20y.md#L3"),
+            // The file is there; whether the fragment is, is the file's to say.
+            ("nope", "ROOT/d2.md#nope"),
+            ("web", "https://e.com/p#f"),
+            ("mail", "mailto:a@e.com"),
+        ]
+        .map(|(t, u)| (t.to_string(), u.to_string()));
+        assert!(root.starts_with("file:///"), "{root}");
+        assert_eq!(got, want);
+        // The ones with no hyperlink are still links to carrel.
+        assert_eq!(app.doc.links.len(), 10);
     }
 
     fn home_app(n: usize, cols: u16, rows: u16) -> App {
