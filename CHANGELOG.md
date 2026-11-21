@@ -4,6 +4,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **A diagram piped into carrel is drawn** (`cat design.md | carrel`); on a pipe every
+  mermaid block stayed source.
+- **`theme = Nord` is `nord`**: a theme's name is read whatever its letter case. Switching
+  theme when the config cannot be written says the choice lasts only until you quit.
 - **An indexed root reads the right way round**: `\sqrt[3]{x}` showed as `x√3`, and
   an index of more than one term (`\sqrt[n+1]{x}`) spilled out after the root.
 - **A config or state file of an absurd size is refused, not read**: a sparse `config`

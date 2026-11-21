@@ -681,7 +681,8 @@ fn active() -> Palette {
 
 /// Select a theme by name or alias. `false` if no such theme exists.
 pub fn set_theme(name: &str) -> bool {
-    if name == OMARCHY {
+    let name = name.trim();
+    if name.eq_ignore_ascii_case(OMARCHY) {
         // Only offered when the desktop actually published a palette, so a
         // stale `theme omarchy` gets the same honest "unknown theme" note as
         // any other name that no longer resolves.
@@ -691,14 +692,20 @@ pub fn set_theme(name: &str) -> bool {
         ACTIVE.store(OMARCHY_SLOT, Ordering::Relaxed);
         return true;
     }
-    let Some(i) = PALETTES
-        .iter()
-        .position(|p| p.name == name || p.alias == Some(name))
-    else {
+    let Some(i) = palette_named(name) else {
         return false;
     };
     ACTIVE.store(i, Ordering::Relaxed);
     true
+}
+
+/// The palette a config's `theme` names. Letter case is not part of a
+/// name: `theme = Nord` was "unknown", while `sort` beside it was read
+/// whatever its case.
+fn palette_named(name: &str) -> Option<usize> {
+    PALETTES.iter().position(|p| {
+        p.name.eq_ignore_ascii_case(name) || p.alias.is_some_and(|a| a.eq_ignore_ascii_case(name))
+    })
 }
 
 /// Advance to the next theme, returning its name.
@@ -1132,6 +1139,22 @@ pub fn selection() -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_theme_is_named_whatever_its_letter_case() {
+        let nord = palette_named("nord").expect("nord is a palette");
+        assert_eq!(palette_named("Nord"), Some(nord));
+        assert_eq!(palette_named("NORD"), Some(nord));
+        assert_eq!(palette_named("nordic"), None);
+        for p in PALETTES {
+            assert_eq!(
+                palette_named(&p.name.to_uppercase()),
+                palette_named(p.name),
+                "{}",
+                p.name
+            );
+        }
+    }
 
     // Theme *switching* is deliberately not tested here: the active palette
     // is process-global, and the unit-test binary runs its tests in parallel

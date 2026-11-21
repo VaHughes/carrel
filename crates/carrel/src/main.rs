@@ -1458,7 +1458,11 @@ impl Images {
 /// reflow through the anchor machinery.
 struct Diagrams {
     rx: Option<Receiver<(BlockIdx, Vec<String>)>>,
+    /// The file of the document asked for — `None` for one with no file, a
+    /// pipe or a tags page. That was also the word for "nothing asked
+    /// yet", so a diagram on a pipe was never asked for: `asked` says it.
     for_file: Option<PathBuf>,
+    asked: bool,
 }
 
 impl Diagrams {
@@ -1466,6 +1470,7 @@ impl Diagrams {
         Self {
             rx: None,
             for_file: None,
+            asked: false,
         }
     }
 
@@ -1477,12 +1482,13 @@ impl Diagrams {
             // `Images::sync` already does. Its open cleared the art, and a
             // reopened file used to match the old key and stay source.
             self.rx = None;
-            self.for_file = None;
+            self.asked = false;
             return;
         }
-        if app.file == self.for_file {
+        if self.asked && self.for_file == app.file {
             return;
         }
+        self.asked = true;
         self.for_file.clone_from(&app.file);
         let reqs = carrel::diagrams::requests(&app.doc);
         self.rx = (!reqs.is_empty()).then(|| carrel::diagrams::spawn(reqs));
@@ -2369,7 +2375,7 @@ fn poll_stream(
         app.reload_from(&text);
         images.synced = (None, None, 0);
         images.initialized = false;
-        diagrams.for_file = None;
+        diagrams.asked = false;
         pace.last = Some((Instant::now(), started.elapsed()));
         pace.dirty = false;
     }
@@ -2437,7 +2443,7 @@ fn poll_reload(
             Ok(()) => {
                 images.synced = (None, None, 0);
                 images.initialized = false;
-                diagrams.for_file = None;
+                diagrams.asked = false;
             }
             Err(e) => app.note = Some(format!("reload failed: {e}")),
         },
@@ -3573,10 +3579,18 @@ fn startup_theme() -> Option<String> {
 /// presentation state — rule 6 keeps colour out of the (ratatui-free) `App`.
 fn cycle_theme_now(app: &mut App) {
     let name = carrel::theme::cycle_theme();
-    app.set_note(format!("theme: {name}"));
     // The choice applies either way; a failed write just doesn't survive the
-    // session, and the note stays honest about the theme itself.
-    let _ = config::save_theme(name);
+    // session, and the note says so rather than reading as if it were kept.
+    let saved = config::save_theme(name).is_ok();
+    app.set_note(theme_note(name, saved));
+}
+
+fn theme_note(name: &str, saved: bool) -> String {
+    if saved {
+        format!("theme: {name}")
+    } else {
+        format!("theme: {name} — not saved, so only until you quit")
+    }
 }
 
 /// Drain the background walk into ONE batch per frame. Per-entry
@@ -4040,6 +4054,24 @@ mod tests {
         app.open_path(&file).unwrap();
         assert!(app.diagram_art.is_empty(), "the art went with the document");
         assert!(drawn(&mut app, &mut diagrams), "and is drawn again");
+    }
+
+    /// A piped document has no file, and "no file" was also the renderer's
+    /// word for "nothing drawn yet": the two matched, so a diagram arriving
+    /// on a pipe was never asked for and stayed source.
+    #[test]
+    fn a_piped_document_has_its_diagrams_drawn() {
+        let src = "```mermaid\ngraph TD\n a[alpha]-->b[beta]\n```\n";
+        let mut app = App::new("(stdin)".into(), carrel_core::Document::parse(src), 80, 24);
+        assert!(app.file.is_none());
+        let mut diagrams = Diagrams::new();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.diagram_art.is_empty() && Instant::now() < deadline {
+            diagrams.sync(&app);
+            diagrams.drain(&mut app);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.diagram_art.is_empty(), "drawn");
     }
 
     /// The hyperlink pass is the one place document text reaches the
