@@ -824,8 +824,10 @@ impl Place {
                 if let Some(p) = k.prev {
                     use std::fmt::Write as _;
                     let _ = write!(f, "^{p:016x}");
+                    // `^` again, not a comma: a bookmarks line is a
+                    // comma-separated list of these.
                     if let Some(n) = k.next {
-                        let _ = write!(f, ",{n:016x}");
+                        let _ = write!(f, "^{n:016x}");
                     }
                 }
                 f
@@ -850,7 +852,9 @@ impl Place {
                 let (hash, k) = k.split_once('.')?;
                 let hex = |h: &str| (h.len() == 16).then(|| u64::from_str_radix(h, 16).ok())?;
                 let (k, prev, next) = match k.split_once('^') {
-                    Some((k, ctx)) => match ctx.split_once(',') {
+                    // The comma is how builds between 2026-11-14 and the
+                    // fix spelled it; `positions` still holds some.
+                    Some((k, ctx)) => match ctx.split_once(['^', ',']) {
                         Some((p, n)) => (k, Some(hex(p)?), Some(hex(n)?)),
                         None => (k, Some(hex(ctx)?), None),
                     },
@@ -1102,7 +1106,7 @@ pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<Place> {
             continue;
         };
         let mut out: Vec<Place> = Vec::new();
-        for m in marks.split(',').filter_map(Place::decode) {
+        for m in mark_fields(marks).iter().filter_map(|m| Place::decode(m)) {
             if !out.contains(&m) {
                 out.push(m);
             }
@@ -1110,6 +1114,35 @@ pub fn load_marks_in(dir: &Path, file: &Path) -> Vec<Place> {
         return out;
     }
     Vec::new()
+}
+
+/// The places on a bookmarks line, one string each.
+///
+/// Split on commas — and then mended, because for a while a kept place
+/// held a comma of its own (`…^<prev>,<next>`), so every such place was cut
+/// in two: the place without its `next`, and sixteen hex digits that were
+/// kept as "a mark from a newer carrel" or, when they were all zeros (the
+/// last block has nothing after it), read as a bookmark on byte 0. Sixteen
+/// hex digits alone are never a place any version wrote, so one that
+/// follows a place still waiting for its `next` is that `next`, and any
+/// other is the half a rewrite left behind and is dropped.
+fn mark_fields(marks: &str) -> Vec<std::borrow::Cow<'_, str>> {
+    let hash = |t: &str| t.len() == 16 && t.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut out: Vec<std::borrow::Cow<'_, str>> = Vec::new();
+    for field in marks.split(',').filter(|f| !f.is_empty()) {
+        if !hash(field) {
+            out.push(field.into());
+            continue;
+        }
+        if let Some(last) = out.last_mut()
+            && let Some((head, prev)) = last.rsplit_once('^')
+            && hash(prev)
+            && !head.contains('^')
+        {
+            *last = format!("{last}^{field}").into();
+        }
+    }
+    out
 }
 
 /// The marks field of `line` if it is document `k`'s line, in the form this
@@ -1174,10 +1207,10 @@ fn marks_into(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Result<()> {
     let mut kept: Vec<&[u8]> = lines(&existing)
         .filter(|l| marks_of(l, &k).is_none())
         .collect();
-    let unread: Vec<&str> = lines(&existing)
+    let unread: Vec<std::borrow::Cow<'_, str>> = lines(&existing)
         .filter_map(|l| marks_of(l, &k))
-        .flat_map(|marks| marks.split(','))
-        .filter(|m| !m.is_empty() && Place::decode(m).is_none())
+        .flat_map(mark_fields)
+        .filter(|m| Place::decode(m).is_none())
         .collect();
     // Room for the line about to be appended, so the cap is a cap on the file
     // and not on the file plus one.
@@ -1204,8 +1237,8 @@ fn marks_into(dir: &Path, file: &Path, marks: &[Place]) -> std::io::Result<()> {
     // A mark this version cannot read stays on the line: it is the reader's,
     // set by a newer carrel, and nothing here can show it or clear it.
     for m in unread {
-        if !joined.iter().any(|j| j == m) {
-            joined.push(m.to_string());
+        if !joined.iter().any(|j| *j == m) {
+            joined.push(m.into_owned());
         }
     }
     if !joined.is_empty() {
@@ -1423,11 +1456,15 @@ mod tests {
                         next: Some(0),
                     }),
                 },
-                "s7+0@00000000000000ab.0+2^0000000000001234,0000000000000000",
+                "s7+0@00000000000000ab.0+2^0000000000001234^0000000000000000",
             ),
         ] {
             assert_eq!(p.encode(), text);
             assert_eq!(Place::decode(text), Some(p), "{text}");
+            // The comma some builds wrote between the two neighbors still
+            // reads, as the same place.
+            let old = text.replacen("1234^", "1234,", 1);
+            assert_eq!(Place::decode(&old), Some(p), "{old}");
         }
         // Nothing this version did not write is read as a place: a newer
         // carrel's field is skipped rather than taken for a position.
@@ -2550,5 +2587,144 @@ mod tests {
         });
         assert_eq!(refused, Some(true), "the bookmarks");
         assert!(is_fifo(&marks));
+    }
+
+    fn any_place() -> impl proptest::strategy::Strategy<Value = Place> {
+        use proptest::prelude::*;
+        // Every field at its extremes as often as anywhere else: a zero
+        // hash is the first and last block's neighbor (`FIRST`).
+        fn edge<T: Clone + std::fmt::Debug + 'static>(
+            lo: T,
+            hi: T,
+            any: impl Strategy<Value = T> + 'static,
+        ) -> impl Strategy<Value = T> {
+            prop_oneof![Just(lo), Just(hi), any]
+        }
+        let around = prop_oneof![
+            Just((None, None)),
+            edge(0, u64::MAX, any::<u64>()).prop_map(|p| (Some(p), None)),
+            (
+                edge(0, u64::MAX, any::<u64>()),
+                edge(0, u64::MAX, any::<u64>())
+            )
+                .prop_map(|(p, n)| (Some(p), Some(n))),
+        ];
+        let kept = (
+            edge(0, u64::MAX, any::<u64>()),
+            edge(0, u32::MAX, any::<u32>()),
+            edge(i32::MIN, i32::MAX, any::<i32>()),
+            around,
+        )
+            .prop_map(|(hash, nth, off, (prev, next))| Kept {
+                hash,
+                nth,
+                off,
+                prev,
+                next,
+            });
+        prop_oneof![
+            edge(0, u32::MAX, any::<u32>()).prop_map(Place::Legacy),
+            (
+                edge(0, u32::MAX, any::<u32>()),
+                edge(i32::MIN, i32::MAX, any::<i32>()),
+                proptest::option::of(kept)
+            )
+                .prop_map(|(src, delta, block)| Place::Src { src, delta, block }),
+        ]
+    }
+
+    proptest::proptest! {
+        /// Whatever places are saved are the places read back: no field
+        /// lost, none invented, in both files that hold one. A kept place
+        /// used to hold a comma, which is what a bookmarks line is split on.
+        #[test]
+        fn any_places_round_trip_through_both_files(
+            marks in proptest::collection::vec(any_place(), 0..6),
+            position in any_place(),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let doc = Path::new("/tmp/round-trip.md");
+            save_marks_in(dir.path(), doc, &marks).unwrap();
+            let mut once: Vec<Place> = Vec::new();
+            for m in &marks {
+                if !once.contains(m) {
+                    once.push(*m);
+                }
+            }
+            proptest::prop_assert_eq!(load_marks_in(dir.path(), doc), once.clone());
+            // And again through a save that changes nothing.
+            sync_marks_in(dir.path(), doc, |disk| disk).unwrap();
+            proptest::prop_assert_eq!(load_marks_in(dir.path(), doc), once.clone());
+            if once.is_empty() {
+                let left = std::fs::read_to_string(dir.path().join("bookmarks")).unwrap();
+                proptest::prop_assert_eq!(left, "");
+            }
+            save_position_in(dir.path(), doc, Some(position), 1, 2).unwrap();
+            proptest::prop_assert_eq!(load_position_in(dir.path(), doc), Some(position));
+        }
+    }
+
+    /// Lines written while a kept place still held a comma: the next half
+    /// is put back on its place, a half left over from a cleared bookmark
+    /// is dropped, and neither is ever read as a bookmark on byte 0.
+    #[test]
+    fn a_bookmarks_line_split_inside_a_place_reads_whole_and_heals() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = Path::new("/tmp/x.md");
+        let other = Path::new("/tmp/other.md");
+        let k = |n: u64| Kept {
+            hash: 0x6a39_0c8c_7379_fd27,
+            nth: 0,
+            off: 0,
+            prev: Some(0x76d2_133d_6be2_8f48),
+            next: Some(n),
+        };
+        let last = Place::Src {
+            src: 50,
+            delta: 0,
+            block: Some(k(0)),
+        };
+        let mid = Place::Src {
+            src: 9,
+            delta: 0,
+            block: Some(k(0x1234_5678_9abc_def0)),
+        };
+        let line = |marks: &str| {
+            std::fs::write(
+                dir.path().join("bookmarks"),
+                format!("/tmp/other.md\t7\n/tmp/x.md\t{marks}\n"),
+            )
+            .unwrap();
+        };
+        let text = || std::fs::read_to_string(dir.path().join("bookmarks")).unwrap();
+
+        // The last block's place: its `next` is the zero hash.
+        line("s50+0@6a390c8c7379fd27.0+0^76d2133d6be28f48,0000000000000000");
+        assert_eq!(load_marks_in(dir.path(), doc), [last]);
+        // Two places, then the halves a mis-split save moved to the end.
+        line(
+            "s50+0@6a390c8c7379fd27.0+0^76d2133d6be28f48,0000000000000000,\
+             s9+0@6a390c8c7379fd27.0+0^76d2133d6be28f48,123456789abcdef0,\
+             0000000000000000,3637cc82b99a2297",
+        );
+        assert_eq!(load_marks_in(dir.path(), doc), [last, mid]);
+        sync_marks_in(dir.path(), doc, |disk| disk).unwrap();
+        assert_eq!(load_marks_in(dir.path(), doc), [last, mid]);
+        // One comma left: the one between the two places.
+        assert_eq!(text().matches(',').count(), 1, "{}", text());
+        assert!(!text().contains("3637cc82b99a2297"), "{}", text());
+        // What a set-then-cleared bookmark left: nothing is there, and the
+        // next save takes the line away instead of keeping it for good.
+        line("3637cc82b99a2297");
+        assert_eq!(load_marks_in(dir.path(), doc), []);
+        line("0000000000000000");
+        assert_eq!(load_marks_in(dir.path(), doc), []);
+        save_marks_in(dir.path(), doc, &[]).unwrap();
+        assert_eq!(text(), "/tmp/other.md\t7\n");
+        assert_eq!(load_marks_in(dir.path(), other), [P(7)]);
+        // A mark in a form no version here wrote is still kept as it is.
+        line("s9+0,future!form");
+        save_marks_in(dir.path(), doc, &[P(3)]).unwrap();
+        assert_eq!(text(), "/tmp/other.md\t7\n/tmp/x.md\t3,future!form\n");
     }
 }

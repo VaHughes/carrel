@@ -8,7 +8,7 @@ use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use crate::state::{escape_field, locked, unescape_field, write_atomic, write_private};
+use crate::state::{escape_field, locked, merge3, unescape_field, write_atomic, write_private};
 
 const CONTEXT: usize = 32;
 const HEADER: &str = "carrel-marginalia-v1";
@@ -249,15 +249,24 @@ fn find<'a>(
         .map(|(b, _)| b)
 }
 
-/// Two texts for one note, when both readers wrote one: neither is dropped.
-fn both(mine: &str, theirs: &str) -> String {
-    if theirs.is_empty() || mine.contains(theirs) {
-        mine.into()
-    } else if mine.is_empty() {
-        theirs.into()
-    } else {
-        format!("{mine}\n\n{theirs}")
-    }
+/// One note's text when both readers changed it: a three-way merge of its
+/// paragraphs ([`merge3`]), this session's first.
+///
+/// By paragraph, and against the baseline, so that it is done ONCE. Simply
+/// appending the other text made the note grow at every later save: the
+/// reader who had not seen the joined text edited its own half, and that
+/// edit was "different from the disk" all over again — joined with a disk
+/// text that already held what it had just replaced. Here a paragraph this
+/// reader removed or rewrote (in `base`, not in `mine`) stays gone, one the
+/// other reader removed stays gone, and what either added is there once.
+fn both(base: &str, mine: &str, theirs: &str) -> String {
+    let paragraphs = |text: &str| -> Vec<String> {
+        text.split("\n\n")
+            .filter(|p| !p.is_empty())
+            .map(Into::into)
+            .collect()
+    };
+    merge3(&paragraphs(base), &paragraphs(mine), &paragraphs(theirs)).join("\n\n")
 }
 
 /// The three-way merge behind [`sync_in`], note by note:
@@ -265,8 +274,8 @@ fn both(mine: &str, theirs: &str) -> String {
 /// - untouched here: whatever the disk says, including "deleted";
 /// - added, edited or deleted here and untouched there: what was done here;
 /// - touched by both: nothing anyone wrote is lost — an edit beats a
-///   delete on either side, and two different texts are both kept, this
-///   session's first.
+///   delete on either side, and two different texts are merged by
+///   paragraph, once (`both`).
 ///
 /// This session's notes keep their order (the pane's rows are indexes into
 /// it); another reader's additions follow.
@@ -287,7 +296,7 @@ fn merge(
             (Some(_) | None, None) => m.note.clone(),
             (Some(b), Some(d)) if b.note == m.note => d.note.clone(),
             (Some(b), Some(d)) if b.note == d.note => m.note.clone(),
-            (_, Some(d)) => both(&m.note, &d.note),
+            (b, Some(d)) => both(b.map_or("", |b| &b.note), &m.note, &d.note),
         };
         out.push(Annotation { note, ..m.clone() });
     }
@@ -663,5 +672,134 @@ mod tests {
         std::fs::write(&path, "broken").unwrap();
         assert!(sync_in(temp.path(), &file, "", &[], &[]).is_err());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "broken");
+    }
+
+    /// One reader of one document, as `annotation_state` is one: the list
+    /// it shows and the list it last saw on disk.
+    struct Session {
+        shown: Vec<Annotation>,
+        loaded: Vec<Annotation>,
+    }
+
+    impl Session {
+        fn open(dir: &Path, file: &Path) -> Self {
+            let shown = load_in(dir, file, "alpha beta gamma delta").unwrap();
+            Self {
+                loaded: shown.clone(),
+                shown,
+            }
+        }
+
+        /// Rewrite the note on "alpha" (adding it if there is none) and save.
+        fn write(&mut self, dir: &Path, file: &Path, note: &str) {
+            let mut mine = self.shown.clone();
+            match mine.iter_mut().find(|a| a.quote == "alpha") {
+                Some(a) => a.note = note.into(),
+                None => mine.push(on("alpha", note)),
+            }
+            self.shown = sync_in(dir, file, "alpha beta gamma delta", &self.loaded, &mine).unwrap();
+            self.loaded.clone_from(&self.shown);
+        }
+
+        fn note(&self) -> String {
+            self.shown
+                .iter()
+                .find(|a| a.quote == "alpha")
+                .map_or(String::new(), |a| a.note.clone())
+        }
+    }
+
+    /// Two readers rewrote one note, and it was joined. Each one's NEXT
+    /// edit replaces what that reader wrote before; it used to be joined
+    /// again with a disk text that already held it, so the note grew with
+    /// every save (30 KB after sixteen alternating edits).
+    #[test]
+    fn a_joined_note_is_joined_once_and_then_edited_like_any_other() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.md");
+        let (dir, file) = (temp.path(), file.as_path());
+        save_in(dir, file, &[on("alpha", "seed")]).unwrap();
+        let mut a = Session::open(dir, file);
+        let mut b = Session::open(dir, file);
+        a.write(dir, file, "from A");
+        b.write(dir, file, "from B");
+        assert_eq!(b.note(), "from B\n\nfrom A");
+        // A has not seen the join; its revision replaces its own text only.
+        a.write(dir, file, "from A, revised");
+        assert_eq!(a.note(), "from A, revised\n\nfrom B");
+        // B has seen `from B\n\nfrom A` and rewrites all of it.
+        b.write(dir, file, "B again");
+        assert_eq!(b.note(), "B again\n\nfrom A, revised");
+        // A, now holding what it saw at its last save, rewrites that.
+        a.write(dir, file, "A alone");
+        assert_eq!(a.note(), "A alone\n\nB again");
+        // B never saw `A alone`, so its rewrite keeps it — once.
+        b.write(dir, file, "settled");
+        assert_eq!(b.note(), "settled\n\nA alone");
+        // What a reader has seen, it edits plainly: no join at all.
+        b.write(dir, file, "B only");
+        assert_eq!(b.note(), "B only");
+        // A, saving the note as it last saw it, changed nothing: the disk's.
+        a.write(dir, file, "A alone\n\nB again");
+        assert_eq!(a.note(), "B only");
+        // Both to the same text at once is that text.
+        let mut c = Session::open(dir, file);
+        a.write(dir, file, "same");
+        c.write(dir, file, "same");
+        assert_eq!(c.note(), "same");
+    }
+
+    proptest::proptest! {
+        /// Any sequence of edits by three readers: every paragraph of the
+        /// note is one somebody typed, none is there twice, and so the
+        /// note is never larger than everything that was typed.
+        #[test]
+        fn a_note_never_holds_a_paragraph_twice_or_outgrows_what_was_typed(
+            ops in proptest::collection::vec((0usize..3, 0u8..4), 1..40),
+        ) {
+            let temp = tempfile::tempdir().unwrap();
+            let file = temp.path().join("a.md");
+            let (dir, file) = (temp.path(), file.as_path());
+            let mut readers: Vec<Session> = (0..3).map(|_| Session::open(dir, file)).collect();
+            let mut typed: Vec<String> = Vec::new();
+            for (n, (who, what)) in ops.into_iter().enumerate() {
+                let r = &mut readers[who];
+                let fresh = format!("p{n} by {who}");
+                let seen = r.note();
+                let mut paragraphs: Vec<&str> =
+                    seen.split("\n\n").filter(|p| !p.is_empty()).collect();
+                let text = match what {
+                    // Replace the note, add a paragraph at either end, or
+                    // drop the first paragraph and add one.
+                    0 => fresh.clone(),
+                    1 => {
+                        paragraphs.push(&fresh);
+                        paragraphs.join("\n\n")
+                    }
+                    2 => {
+                        paragraphs.insert(0, &fresh);
+                        paragraphs.join("\n\n")
+                    }
+                    _ => {
+                        if !paragraphs.is_empty() {
+                            paragraphs.remove(0);
+                        }
+                        paragraphs.push(&fresh);
+                        paragraphs.join("\n\n")
+                    }
+                };
+                typed.push(fresh.clone());
+                r.write(dir, file, &text);
+                let now = r.note();
+                let got: Vec<&str> = now.split("\n\n").filter(|p| !p.is_empty()).collect();
+                for (i, p) in got.iter().enumerate() {
+                    proptest::prop_assert!(typed.iter().any(|t| t == p), "{p:?} was never typed");
+                    proptest::prop_assert!(!got[..i].contains(p), "{p:?} twice in {now:?}");
+                }
+                proptest::prop_assert!(got.contains(&fresh.as_str()), "{fresh:?} lost from {now:?}");
+                let all: usize = typed.iter().map(|t| t.len() + 2).sum();
+                proptest::prop_assert!(now.len() <= all);
+            }
+        }
     }
 }

@@ -1428,16 +1428,74 @@ impl App {
         let base = self.blocks_of(&self.marks_loaded);
         let mut merged = Vec::new();
         let written = crate::state::sync_marks_in(&dir, &file, |disk| {
-            merged = crate::state::merge3(&base, &self.marks, &self.blocks_of(&disk));
-            merged.sort_unstable();
-            merged
+            // Where each place on disk is in THIS parse — which decides
+            // only whether it stays. One that stays is written back as it
+            // was: another reader may have set it in a newer text than
+            // this one has loaded yet, and a place re-made from this parse
+            // would move it to whatever paragraph stood there before.
+            let at: Vec<Vec<u32>> = disk
                 .iter()
-                .map(|&m| crate::state::Place::kept(&self.doc, DocByte(m)))
-                .collect()
+                .map(|p| self.blocks_of(std::slice::from_ref(p)))
+                .collect();
+            let on_disk: Vec<u32> = at.iter().flatten().copied().collect();
+            merged = crate::state::merge3(&base, &self.marks, &on_disk);
+            merged.sort_unstable();
+            // (A place from before places kept their block's text has
+            // nothing to find it by in any other parse; that one is
+            // re-made here, which is how an old file is brought forward.)
+            let mut out: Vec<crate::state::Place> = disk
+                .iter()
+                .zip(&at)
+                .filter_map(|(p, b)| {
+                    let m = *b.iter().find(|m| merged.contains(m))?;
+                    Some(match p {
+                        crate::state::Place::Src { block: Some(_), .. } => *p,
+                        _ => crate::state::Place::kept(&self.doc, DocByte(m)),
+                    })
+                })
+                .collect();
+            // And this session's own: a place for each block nothing on
+            // disk already names.
+            out.extend(
+                merged
+                    .iter()
+                    .filter(|m| !on_disk.contains(m))
+                    .map(|&m| crate::state::Place::kept(&self.doc, DocByte(m))),
+            );
+            out
         })?;
         self.marks = merged;
         self.marks_loaded = written;
         Ok(())
+    }
+
+    /// The saved bookmarks whose block is not in the text on screen, and
+    /// the marks that stand in for them here.
+    ///
+    /// Another reader set them in a version of the file this one has not
+    /// loaded yet (or the file was emptied under this one). Each shows
+    /// where its source byte falls, which is some other paragraph, so
+    /// carrying THAT paragraph's mark into the next parse by its content
+    /// would make the stand-in permanent — and the next `m` would then save
+    /// the bookmark as cleared where it really is. A reload places these
+    /// from the saved place instead, as opening the file would.
+    fn marks_from_elsewhere(&self) -> (Vec<crate::state::Place>, Vec<u32>) {
+        if self.file.is_none() {
+            return (Vec::new(), Vec::new());
+        }
+        let (mut places, mut here, mut found) = (Vec::new(), Vec::new(), Vec::new());
+        for p in &self.marks_loaded {
+            let at = self.blocks_of(std::slice::from_ref(p));
+            if p.finds_its_block(&self.doc) {
+                found.extend(at);
+            } else {
+                places.push(*p);
+                here.extend(at);
+            }
+        }
+        // A block a place of its own also names keeps its mark by content.
+        here.retain(|m| !found.contains(m));
+        (places, here)
     }
 
     /// Where each of `places` is a bookmark in the open document: the start
@@ -1487,13 +1545,17 @@ impl App {
 
     /// Each bookmark as its block's content hash, which same-content block
     /// it is (the `k`th, for a repeated line), and its place as a fallback.
-    fn mark_carriers(&self) -> Vec<(crate::state::Kept, crate::state::Place)> {
+    ///
+    /// Not the marks in `elsewhere`: those stand in for saved places this
+    /// text does not have, and are placed again from the places themselves.
+    fn mark_carriers(&self, elsewhere: &[u32]) -> Vec<(crate::state::Kept, crate::state::Place)> {
         if self.marks.is_empty() {
             return Vec::new();
         }
         let hashes = block_hashes(&self.doc);
         self.marks
             .iter()
+            .filter(|m| !elsewhere.contains(m))
             .map(|&m| {
                 let b = self.doc.block_at_doc(DocByte(m)).get();
                 let h = hashes[b];
@@ -2417,7 +2479,8 @@ impl App {
                 .map(|range| crate::state::Place::kept(&self.doc, DocByte(range.start)))
         });
         let folds = self.fold_keys();
-        let fresh_marks = self.mark_carriers();
+        let (elsewhere, stand_ins) = self.marks_from_elsewhere();
+        let fresh_marks = self.mark_carriers(&stand_ins);
         let drag = self.drag_carrier();
         let had_no_blocks = self.doc.block_count() == 0;
         self.table_offsets.clear();
@@ -2452,6 +2515,10 @@ impl App {
         let held_marks = hold.and_then(|h| h.carriers);
         let marks_found =
             self.marks_after_reload(held_marks.as_deref(), &fresh_marks, had_no_blocks);
+        let placed = self.blocks_of(&elsewhere);
+        self.marks.extend(placed);
+        self.marks.sort_unstable();
+        self.marks.dedup();
         // Carrying can merge marks (two whose blocks became one) or drop
         // them all, and the open list's selection indexes the old ones.
         self.mark_list = self

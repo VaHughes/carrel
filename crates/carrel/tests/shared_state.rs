@@ -404,3 +404,96 @@ fn bookmarks_survive_on_disk_when_the_open_file_is_emptied_and_rewritten() {
     toggle(&mut app, "Third");
     assert_eq!(on_disk(dir.path(), &file), ["First", "Second", "Third"]);
 }
+
+/// A bookmark on the last block is one bookmark. Its saved place ends in
+/// the zero hash (nothing follows the last block), and a bookmarks line
+/// was split inside the place, so that half read back as a bookmark on the
+/// document's first block.
+#[test]
+fn a_bookmark_on_the_last_block_does_not_also_mark_the_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("last.md");
+    // The last block is taller than the window, so `G` puts it on the top
+    // row, which is the block `m` marks.
+    let src = format!(
+        "# Title\n\nIntro paragraph.\n\nSecond paragraph.\n\n```\n{}```\n",
+        "line\n".repeat(60)
+    );
+    std::fs::write(&file, &src).unwrap();
+    let mut app = App::new("last.md".into(), Document::parse(&src), 70, 20);
+    app.state_dir = Some(dir.path().join("state"));
+    app.open_path(&file).unwrap();
+    update(&mut app, Action::GoToEnd);
+    update(&mut app, Action::MarkToggle);
+    let last = app
+        .doc
+        .node_for_block(carrel_core::BlockIdx(app.doc.block_count() as u32 - 1))
+        .doc
+        .start;
+    assert_eq!(app.marks, [last], "the fixture marks the last block");
+    assert_eq!(app.note.as_deref(), Some("bookmark 1 of 1"));
+    toggle(&mut app, "Intro");
+    assert_eq!(app.note.as_deref(), Some("bookmark 1 of 2"));
+    assert_eq!(app.marks, [start_of(&app, "Intro"), last]);
+    let mut again = App::new("last.md".into(), Document::parse(&src), 70, 20);
+    again.state_dir = Some(dir.path().join("state"));
+    again.open_path(&file).unwrap();
+    assert_eq!(again.marks, app.marks);
+    // Set and cleared: the document's line is gone, not left holding half
+    // a place for good.
+    toggle(&mut app, "Intro");
+    update(&mut app, Action::GoToEnd);
+    update(&mut app, Action::MarkToggle);
+    assert!(app.marks.is_empty());
+    let left = std::fs::read_to_string(dir.path().join("state/bookmarks")).unwrap();
+    assert_eq!(left, "");
+}
+
+/// A reader still showing the file as it was (the other has seen it
+/// rewritten) saves its own bookmark and leaves the other's exactly as
+/// they were written — it used to rewrite every one as a place in its own,
+/// older text, which moved a bookmark on a new paragraph to another one.
+#[test]
+fn a_reader_showing_older_text_leaves_the_others_bookmarks_as_written() {
+    let (dir, file) = desk();
+    let mut a = open(dir.path(), &file); // v1
+    let v2 = source().replace(
+        "# Shared\n",
+        "# Shared\n\nBrand new intro paragraph.\n\nAnother new one.\n",
+    ) + "\nNewly appended conclusion.\n";
+    std::fs::write(&file, &v2).unwrap();
+    let open_v2 = || {
+        let mut q = App::new("shared.md".into(), Document::parse(&v2), 70, 20);
+        q.state_dir = Some(dir.path().join("state"));
+        q.open_path(&file).unwrap();
+        q
+    };
+    let mut b = open_v2();
+    toggle(&mut b, "Brand new intro");
+    toggle(&mut b, "Third");
+    let line = || std::fs::read_to_string(dir.path().join("state/bookmarks")).unwrap();
+    let before = line();
+    // A has not reloaded yet.
+    toggle(&mut a, "Second");
+    assert!(
+        line().trim_end().starts_with(before.trim_end()),
+        "B's places are carried through as written:\n{before}\n{}",
+        line()
+    );
+    assert_eq!(words(&open_v2()), ["Brand", "Second", "Third"]);
+    // And B, saving again, neither loses its own nor drops A's.
+    toggle(&mut b, "Fourth");
+    assert_eq!(words(&open_v2()), ["Brand", "Second", "Third", "Fourth"]);
+    // A catches up, and its own next save keeps all of them too.
+    a.reload().unwrap();
+    assert_eq!(
+        words(&a),
+        ["Brand", "Second", "Third"],
+        "placed, not carried"
+    );
+    toggle(&mut a, "First");
+    assert_eq!(
+        words(&open_v2()),
+        ["Brand", "First", "Second", "Third", "Fourth"]
+    );
+}
