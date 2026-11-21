@@ -116,13 +116,15 @@ pub fn cluster_width(g: &str) -> u16 {
     if g == "\r\n" {
         return 1;
     }
-    if g == "\u{AD}" || g.chars().any(char::is_control) {
-        return 0;
+    let mut voiced = 0usize;
+    for c in g.chars() {
+        match c {
+            '\u{AD}' => return 0,
+            '\u{FF9E}' | '\u{FF9F}' => voiced += 1,
+            c if c.is_control() => return 0,
+            _ => {}
+        }
     }
-    let voiced = g
-        .chars()
-        .filter(|c| matches!(c, '\u{FF9E}' | '\u{FF9F}'))
-        .count();
     u16::try_from(UnicodeWidthStr::width(g).saturating_add(voiced)).unwrap_or(1)
 }
 
