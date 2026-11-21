@@ -38,11 +38,34 @@ use crate::layout::Layout;
 /// row ends at it, and linear output ends a line there only where
 /// [`crate::ansi`] writes its own faint hyphen. Left in, a terminal or a
 /// screen reader may show it, sound it, or split the word.
+///
+/// And a Hangul blank: a filler (U+3164, U+FFA0, U+1160), or a medial or
+/// final jamo with no consonant to lead it. The screen's cells refuse such
+/// a cluster, so the layout measures it as nothing, but a terminal handed
+/// one raw draws it — the filler across two columns — and a line of them
+/// ran far past the width it was wrapped to. Left out as a cluster, never
+/// as a character: a syllable written in jamo keeps every one of them.
 pub(crate) fn push_text(out: &mut String, text: &str) {
-    out.extend(
-        text.chars()
-            .filter(|&c| (!c.is_control() || c == '\n') && c != '\u{AD}'),
-    );
+    let shown = |c: char| (!c.is_control() || c == '\n') && c != '\u{AD}';
+    if !text.contains(is_hangul_blank) {
+        out.extend(text.chars().filter(|&c| shown(c)));
+        return;
+    }
+    for cluster in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+        if cluster.contains(is_hangul_blank) && carrel_core::cluster_width(cluster) == 0 {
+            continue;
+        }
+        out.extend(cluster.chars().filter(|&c| shown(c)));
+    }
+}
+
+/// Could `c` be a Hangul cluster no cell holds: a filler, or a medial or
+/// final jamo? Whether it is one is its cluster's width to say.
+fn is_hangul_blank(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1160}'..='\u{11FF}' | '\u{D7B0}'..='\u{D7FF}' | '\u{3164}' | '\u{FFA0}'
+    )
 }
 
 /// One line of document text, safe to print: `push_text`'s filter, for the

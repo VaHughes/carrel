@@ -59,6 +59,36 @@ fn visible(line: &str) -> String {
 }
 
 /// Every line fits `width`, except the lines named, which must be exactly
+/// A Hangul filler, and a medial or final jamo with no consonant to lead
+/// it, take no cell on the screen and so measure none — but a terminal
+/// handed one raw draws it, the filler across two columns. A hundred of them
+/// were one line of `--plain` output 200 cells wide at width 20. Linear
+/// output leaves out what the screen leaves out.
+#[test]
+fn a_blank_the_screen_does_not_show_is_not_printed() {
+    for blank in [
+        "\u{3164}",
+        "\u{FFA0}",
+        "\u{1160}",
+        "\u{1161}\u{11AB}",
+        "\u{D7B0}",
+    ] {
+        let src = format!(
+            "{}\n\nab{blank}cd {blank} ef \u{1112}\u{1161}\u{11AB}{blank}\u{AC00}\u{11AB}\n",
+            blank.repeat(100)
+        );
+        for out in [plain(&src, 20), visible(&styled(&src, 20))] {
+            // The words around it close up, as on the screen, and a whole
+            // syllable keeps the jamo it is made of.
+            assert_eq!(
+                out.trim(),
+                "abcd  ef \u{1112}\u{1161}\u{11AB}\u{AC00}\u{11AB}",
+                "{blank:?}"
+            );
+        }
+    }
+}
+
 /// `structure + run`.
 fn assert_fits_except(out: &str, width: u16, overhangs: &[&str]) {
     for line in out.lines() {

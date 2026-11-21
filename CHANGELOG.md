@@ -6,6 +6,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 - **Back and Forward never come to rest past the last screenful**: returning to the end of
   a document from one with a heading bar left the view a row or two too low.
+- **`--plain` and `--render` leave out the Hangul blanks the screen leaves out.** A Hangul
+  filler (U+3164, U+FFA0, U+1160), or a medial or final jamo with no consonant before it,
+  takes no cell on the screen and is measured as none, but was still printed, so a line of
+  them ran past the width it was wrapped to in any terminal that draws them.
 - **A diagram piped into carrel is drawn** (`cat design.md | carrel`); on a pipe every
   mermaid block stayed source.
 - **`theme = Nord` is `nord`**: a theme's name is read whatever its letter case. Switching

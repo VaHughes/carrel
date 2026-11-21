@@ -99,7 +99,14 @@ pub type WidthFn = dyn Fn(&str) -> u16 + Send + Sync;
 ///   ends a row before it is ever measured as part of one;
 /// - a cluster of no width at all: a zero-width space or joiner standing
 ///   alone, a bidi mark, override or isolate, a byte-order mark, a
-///   combining mark with nothing to combine with.
+///   combining mark with nothing to combine with — and a Hangul filler
+///   (U+3164, U+FFA0, U+1160) or a medial or final jamo with no consonant
+///   to lead it, which a terminal handed one raw WOULD draw. The cells
+///   never hand it one, and linear output leaves it out for the same
+///   reason (`plain::push_text` in the terminal frontend).
+///
+/// `crates/carrel/tests/cell_widths.rs` holds this function to the cell
+/// buffer for every Unicode scalar: change one and the other must follow.
 ///
 /// These once measured one cell (`.max(1)`, Helix's `grapheme_width`), which
 /// is right for an editor that shows a placeholder and wrong for a reader
