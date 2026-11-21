@@ -129,8 +129,7 @@ const MAX_DEPTH: u32 = 256;
 /// out. See [`MathClass`] for what the atoms carry.
 #[must_use]
 pub fn parse(latex: &str) -> Option<MathExpr> {
-    let (groups, bare) = nesting(latex);
-    if groups > MAX_DEPTH || bare > MAX_BARE_CHAIN {
+    if nesting(latex).refused() {
         return None;
     }
     let storage = Storage::new();
@@ -149,7 +148,7 @@ pub fn parse(latex: &str) -> Option<MathExpr> {
     }
 }
 
-/// How long a chain of commands may take each other as bare arguments.
+/// How many commands may be waiting on an argument at once.
 ///
 /// `pulldown-latex` parses a bare argument by recursion: `\sqrt\sqrt…x`,
 /// `\frac 1\frac 1…x` and `\frac{1}\frac{1}…x` each nest native frames per
@@ -157,13 +156,306 @@ pub fn parse(latex: &str) -> Option<MathExpr> {
 /// threads get — at about 150 deep in a debug build and 2 000 in release.
 /// Braced nesting does not recurse there, which is why this bound is far
 /// tighter than [`MAX_DEPTH`]. Nobody writes a bare chain longer than a
-/// few; the scan's chain can also be a run of siblings that only looks like
-/// one (`\vec{a}\vec{b}…` sixty-odd times), which costs that formula its
-/// rendering, never its text.
+/// few; what the scan counts can also be commands it does not know, which
+/// it holds open to the end of their group, and sixty-odd of those cost a
+/// formula its rendering, never its text.
 const MAX_BARE_CHAIN: u32 = 64;
 
-/// How deeply `latex` nests, as `(groups, bare)`, by a linear scan that runs
-/// before the parser is allowed near it.
+/// How many comments may follow one another with no token between them:
+/// the lexer skips a comment by calling itself, a frame per comment.
+const MAX_COMMENT_RUN: u32 = 64;
+
+/// A frame that no argument closes: a command the scan cannot count for.
+const OPEN_ENDED: u8 = u8::MAX;
+
+/// Control words that read nothing after themselves — symbols, operators,
+/// relations, arrows, delimiters, dots, fixed spaces, function names, style
+/// switches — sorted for `binary_search`. A test holds every one of them
+/// to that against the parser itself.
+#[rustfmt::skip]
+const NO_ARGUMENT: &[&str] = &[
+    "Alpha", "And", "Angstrom", "Bbbk", "Beta", "Bot", "Box", "Bumpeq", "Cap", "Chi",
+    "Colonapprox", "Coloneq", "Coloneqq", "Colonsim", "Cup", "Dash", "Delta", "Diamond",
+    "Doteq", "Downarrow", "Earth", "Epsilon", "Eqcolon", "Eqqcolon", "Eta", "Finv", "Game",
+    "Gamma", "Im", "Iota", "Join", "Kappa", "Lambda", "Leftarrow", "Leftrightarrow",
+    "Lleftarrow", "Longleftarrow", "Longleftrightarrow", "Longrightarrow", "Lsh", "Mu", "Nu",
+    "Omega", "Omicron", "Otimes", "P", "Perp", "Phi", "Pi", "Pr", "Psi", "QED", "Re", "Rho",
+    "Rightarrow", "Rrightarrow", "Rsh", "S", "Sigma", "Subset", "Supset", "Tau", "Theta",
+    "Uparrow", "Updownarrow", "Upsilon", "Vdash", "Vert", "Vvdash", "Xi", "Zeta", "aleph",
+    "alpha", "amalg", "angle", "approx", "approxcolon", "approxcoloncolon", "approxeq",
+    "arccos", "arceq", "arcsin", "arctan", "arg", "ast", "astrosun", "asymp", "backcong",
+    "backdprime", "backepsilon", "backprime", "backsim", "backsimeq", "backslash",
+    "backtrprime", "ballotx", "barwedge", "because", "beta", "beth", "between", "bf", "bigcap",
+    "bigcirc", "bigcup", "bigodot", "bigoplus", "bigotimes", "bigsqcap", "bigsqcup", "bigstar",
+    "bigtimes", "bigtriangledown", "bigtriangleup", "biguplus", "bigvee", "bigwedge",
+    "blackhourglass", "blacklozenge", "blacksquare", "blacktriangle", "blacktriangledown",
+    "blacktriangleleft", "blacktriangleright", "bmod", "bot", "bowtie", "boxast", "boxbox",
+    "boxcircle", "boxdot", "boxminus", "boxplus", "boxtimes", "bullet", "bumpeq", "cal", "cap",
+    "cdot", "cdotp", "cdots", "cent", "centerdot", "checkmark", "chi", "circ", "circeq",
+    "circlearrowleft", "circlearrowright", "circledR", "circledS", "circledast", "circledcirc",
+    "circleddash", "circledequal", "circledparallel", "circledvert", "circlehbar", "clubsuit",
+    "coh", "colon", "colonapprox", "coloncolon", "coloncolonapprox", "coloncolonequals",
+    "coloncolonminus", "coloncolonsim", "coloneq", "coloneqq", "colonequals", "colonminus",
+    "colonsim", "complement", "concavediamond", "concavediamondtickleft",
+    "concavediamondtickright", "cong", "coprod", "copyright", "cos", "cosh", "cot", "coth",
+    "csc", "cup", "curlyeqprec", "curlyeqsucc", "curlyvee", "curlywedge", "curvearrowleft",
+    "curvearrowright", "dag", "dagger", "daleth", "dashleftarrow", "dashrightarrow", "dashv",
+    "dblcolon", "ddag", "ddagger", "ddots", "deg", "degree", "delta", "det", "diagdown",
+    "diagup", "diameter", "diamond", "diamondsuit", "digamma", "dim", "displaystyle", "div",
+    "divideontimes", "doteq", "doteqdot", "dotplus", "dots", "dotsb", "dotsc", "dotsi", "dotsm",
+    "dotso", "doublebarwedge", "doublecap", "downarrow", "downdownarrows", "downharpoonleft",
+    "downharpoonright", "dprime", "ell", "emptyset", "enspace", "epsilon", "eqcirc", "eqcolon",
+    "eqdef", "eqeq", "eqqcolon", "eqsim", "eqslantgtr", "eqslantless", "equiv", "eta", "eth",
+    "euro", "exists", "exp", "fallingdotseq", "female", "fint", "flat", "forall", "frown",
+    "fullouterjoin", "gamma", "gcd", "ge", "geq", "geqq", "geqslant", "gets", "gg", "ggg",
+    "gggtr", "gimel", "gnapprox", "gneq", "gneqq", "gnsim", "gt", "gtrapprox", "gtrdot",
+    "gtreqless", "gtreqqless", "gtrless", "gtrsim", "gvertneqq", "hbar", "heartsuit", "hom",
+    "hookleftarrow", "hookrightarrow", "hourglass", "hslash", "iddots", "idotsin", "iff",
+    "iiiint", "iiint", "iint", "imageof", "imath", "impliedby", "implies", "in", "inf", "infty",
+    "int", "intBar", "intbar", "intcap", "intclockwise", "intcup", "intercal", "intlarhk",
+    "intop", "intx", "iota", "isin", "it", "jmath", "kappa", "ker", "lAngle", "lBrace",
+    "lBrack", "lVert", "lambda", "land", "langle", "lbrace", "lbrack", "lceil", "ldotp",
+    "ldots", "le", "leadsto", "leftarrow", "leftarrowtail", "leftharpoondown", "leftharpoonup",
+    "leftleftarrows", "leftmodels", "leftmoon", "leftouterjoin", "leftrightarrow",
+    "leftrightarrows", "leftrightharpoons", "leftrightsquigarrow", "leftthreetimes", "leq",
+    "leqq", "leqslant", "lessapprox", "lessdot", "lesseqgtr", "lesseqqgtr", "lessgtr",
+    "lesssim", "lfloor", "lg", "lgroup", "lhd", "lightning", "lim", "liminf", "limsup", "ll",
+    "llangle", "llcorner", "lll", "llless", "llparenthesis", "lmoustache", "ln", "lnapprox",
+    "lneq", "lneqq", "lnot", "lnsim", "log", "longleftarrow", "longleftrightarrow",
+    "longmapsto", "longrightarrow", "looparrowleft", "looparrowright", "lor", "lozenge",
+    "lozengeminus", "lparen", "lq", "lrcorner", "lt", "ltimes", "lvert", "lvertneqq", "male",
+    "maltese", "mapsfrom", "mapsto", "mathellipsis", "mathsterling", "mathstrut", "max",
+    "measeq", "measuredangle", "medspace", "mho", "mid", "min", "minuscolon", "minuscoloncolon",
+    "models", "mp", "mu", "multimap", "multimapboth", "multimapinv", "nLeftarrow",
+    "nLeftrightarrow", "nRightarrow", "nVDash", "nVdash", "nabla", "natural", "ncong", "ne",
+    "nearrow", "neg", "negmedspace", "negthickspace", "negthinspace", "neq", "nexists", "ngeq",
+    "ngeqq", "ngeqslant", "ngtr", "ni", "nleftarrow", "nleftrightarrow", "nleq", "nleqq",
+    "nleqslant", "nless", "nmid", "nobreakspace", "notin", "notni", "nparallel", "nprec",
+    "npreceq", "nrightarrow", "nshortmid", "nshortparallel", "nsim", "nsubset", "nsubseteq",
+    "nsubseteqq", "nsucc", "nsucceq", "nsupset", "nsupseteq", "nsupseteqq", "ntriangleleft",
+    "ntrianglelefteq", "ntriangleright", "ntrianglerighteq", "nu", "nvDash", "nvdash",
+    "nwarrow", "obar", "obslash", "odiv", "odot", "ogreaterthan", "oiiint", "oiint", "oint",
+    "olessthan", "omega", "omicron", "ominus", "operp", "oplus", "origof", "oslash", "otimes",
+    "otimeshat", "owns", "parallel", "parr", "partial", "permil", "perp", "phi", "pi",
+    "pitchfork", "pm", "pointint", "pounds", "prec", "precapprox", "preccurlyeq", "preceq",
+    "precnapprox", "precneqq", "precnsim", "precsim", "prime", "prod", "propto", "psi",
+    "qprime", "qquad", "quad", "questeq", "rAngle", "rBrace", "rBrack", "rVert", "rangle",
+    "ratio", "rbrace", "rbrack", "rceil", "restriction", "rfloor", "rgroup", "rhd", "rho",
+    "rightarrow", "rightarrowtail", "rightharpoondown", "rightharpoonup", "rightleftarrows",
+    "rightleftharpoons", "rightmoon", "rightouterjoin", "rightrightarrows", "rightsquigarrow",
+    "rightthreetimes", "risingdotseq", "rm", "rmoustache", "rparen", "rppolint", "rq",
+    "rrangle", "rrparenthesis", "rtimes", "rvert", "scoh", "scpolint", "scriptscriptstyle",
+    "scriptstyle", "searrow", "sec", "setminus", "sf", "sgn", "sharp", "shortmid",
+    "shortparallel", "sigma", "sim", "simeq", "sin", "sincoh", "sinh", "smallfrown", "smallint",
+    "smallsetminus", "smallsmile", "smile", "smiley", "spadesuit", "sphericalangle", "sqcap",
+    "sqcup", "sqint", "sqsubset", "sqsubseteq", "sqsupset", "sqsupseteq", "square", "sslash",
+    "standardstate", "star", "stareq", "strictfi", "strictif", "strut", "subset", "subseteq",
+    "subseteqq", "subsetneq", "subsetneqq", "succ", "succapprox", "succcurlyeq", "succeq",
+    "succnapprox", "succneqq", "succnsim", "succsim", "sum", "sun", "sup", "supset", "supseteq",
+    "supseteqq", "supsetneq", "supsetneqq", "surd", "swarrow", "tan", "tanh", "tau",
+    "textstyle", "therefore", "theta", "thickapprox", "thicksim", "thickspace", "thinspace",
+    "times", "to", "top", "triangle", "triangledown", "triangleleft", "trianglelefteq",
+    "triangleminus", "triangleplus", "triangleq", "triangleright", "trianglerighteq",
+    "triangletimes", "trprime", "tt", "twoheadleftarrow", "twoheadrightarrow", "ulcorner",
+    "unlhd", "unrhd", "uparrow", "updownarrow", "upharpoonleft", "upharpoonright", "uplus",
+    "upsilon", "upuparrows", "urcorner", "vDash", "varDelta", "varGamma", "varLambda",
+    "varOmega", "varPhi", "varPi", "varPsi", "varSigma", "varTheta", "varUpsilon", "varXi",
+    "varclubsuit", "vardiamondsuit", "varepsilon", "varheartsuit", "varkappa", "varnothing",
+    "varointclockwise", "varphi", "varpi", "varpropto", "varrho", "varsigma", "varspadesuit",
+    "varsubsetneq", "varsubsetneqq", "varsupsetneq", "varsupsetneqq", "vartheta", "vartriangle",
+    "vartriangleleft", "vartriangleright", "vcentcolon", "vdash", "vdots", "vee", "veebar",
+    "veeeq", "vert", "wedge", "wedgeq", "whitesquaretickleft", "whitesquaretickright", "with",
+    "wp", "wr", "xi", "yen", "zeta",
+];
+
+/// Control words that read one argument and nothing else — fonts,
+/// accents over and under, atom classes, text — sorted likewise.
+#[rustfmt::skip]
+const ONE_ARGUMENT: &[&str] = &[
+    "Overrightarrow", "acute", "bar", "boldsymbol", "breve", "cancel", "check", "color", "ddot",
+    "dot", "grave", "hat", "mathbb", "mathbbit", "mathbf", "mathbfcal", "mathbffrak",
+    "mathbfit", "mathbfsfit", "mathbfsfup", "mathbfup", "mathbin", "mathcal", "mathclose",
+    "mathfrak", "mathinner", "mathit", "mathnormal", "mathop", "mathopen", "mathord",
+    "mathpunct", "mathrel", "mathring", "mathrm", "mathsf", "mathsfit", "mathsfup", "mathtt",
+    "mathup", "not", "operatorname", "overbrace", "overbracket", "overgroup", "overleftarrow",
+    "overleftharpoon", "overleftrightarrow", "overline", "overparen", "overrightarrow",
+    "overrightharpoon", "pmod", "substack", "symbb", "symbbit", "symbf", "symbfcal",
+    "symbffrak", "symbfit", "symbfsfit", "symbfsfup", "symbfup", "symcal", "symfrak", "symit",
+    "symnormal", "symrm", "symsf", "symsfit", "symsfup", "symtt", "symup", "text", "textbf",
+    "textit", "textrm", "textsf", "texttt", "tilde", "underbar", "underbrace", "underbracket",
+    "undergroup", "underleftarrow", "underleftrightarrow", "underline", "underparen",
+    "underrightarrow", "vec", "widecheck", "widehat", "wideparen", "widetilde",
+];
+
+/// The ones that read two: fractions, stacked relations, a color and what
+/// it colors.
+#[rustfmt::skip]
+const TWO_ARGUMENTS: &[&str] = &[
+    "binom", "cfrac", "colorbox", "dbinom", "dfrac", "frac", "overset", "stackrel", "tbinom",
+    "textcolor", "tfrac", "underset",
+];
+
+const THREE_ARGUMENTS: &[&str] = &["fcolorbox"];
+
+/// How many arguments a control word reads and nothing else, for the ones
+/// the scan can count; `None` is a command it cannot.
+fn arity(word: &[u8]) -> Option<u8> {
+    let word = std::str::from_utf8(word).ok()?;
+    [NO_ARGUMENT, ONE_ARGUMENT, TWO_ARGUMENTS, THREE_ARGUMENTS]
+        .iter()
+        .position(|words| words.binary_search(&word).is_ok())
+        .map(|wants| wants as u8)
+}
+
+/// What the scan found: see [`nesting`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Nesting {
+    /// The deepest a group sits inside others.
+    groups: u32,
+    /// The most commands waiting on an argument at one point.
+    bare: u32,
+    /// The longest run of comments with no token between them.
+    comments: u32,
+    /// The formula defines a macro, or the scan gave up on its size.
+    unbounded: bool,
+}
+
+impl Nesting {
+    fn refused(&self) -> bool {
+        self.unbounded
+            || self.groups > MAX_DEPTH
+            || self.bare > MAX_BARE_CHAIN
+            || self.comments > MAX_COMMENT_RUN
+    }
+}
+
+/// What cutting groups has cost so far, and the deepest nesting seen in it.
+#[derive(Default)]
+struct Cost {
+    spent: usize,
+    groups: u32,
+}
+
+/// The parser's own search for where a group ends, on `b` from just past the
+/// opener: the length of the content, or `None` where the parser reports the
+/// group unbalanced. It counts `open` and `close` wherever they stand —
+/// `\left` inside braces, `\right` as the start of `\rightarrow` — skips
+/// comments, and lets a backslash escape the byte after it. The scan has to
+/// cut where the parser cuts, so this copies its loop rather than tidying it.
+///
+/// `cost` takes the bytes read, and how deep the group — itself `at` deep —
+/// holds others of its kind: enough of those is a refusal already, without
+/// cutting each in turn.
+fn group_content(b: &[u8], open: &[u8], close: &[u8], at: u32, cost: &mut Cost) -> Option<usize> {
+    let (mut escaped, mut index, mut depth) = (false, 0usize, 0u32);
+    let balanced = loop {
+        let closes = !escaped && b[index..].starts_with(close);
+        if closes && depth == 0 {
+            break true;
+        }
+        if index + close.len() > b.len() {
+            break false;
+        }
+        if !escaped && b[index..].starts_with(open) {
+            depth += 1;
+            cost.groups = cost.groups.max(at.saturating_add(depth));
+            index += open.len();
+            continue;
+        }
+        if closes {
+            depth -= 1;
+            index += close.len();
+            continue;
+        }
+        match b[index] {
+            b'\\' => escaped = !escaped,
+            b'%' if !escaped => match b[index..].iter().position(|&c| c == b'\n') {
+                Some(line) => index += line,
+                None => break false,
+            },
+            _ => escaped = false,
+        }
+        index += 1;
+    };
+    cost.spent += index;
+    balanced.then_some(index)
+}
+
+/// The byte length of the character at `i`, which is in bounds.
+fn char_len(b: &[u8], i: usize) -> usize {
+    let len = match b[i] {
+        0..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    };
+    len.min(b.len() - i)
+}
+
+/// Past the whitespace at `i` — every kind `char::is_whitespace` knows, since
+/// that is what the lexer trims — stopping at `end`.
+fn skip_space(s: &str, mut i: usize, end: usize) -> usize {
+    while i < end {
+        let Some(c) = s[i..end].chars().next().filter(|c| c.is_whitespace()) else {
+            break;
+        };
+        i += c.len_utf8();
+    }
+    i
+}
+
+/// Past whitespace and comments at `i`: where the lexer's next token starts.
+/// `run` keeps the most comments skipped in one go.
+fn skip_blank(s: &str, mut i: usize, end: usize, run: &mut u32) -> usize {
+    let b = s.as_bytes();
+    let mut comments = 0;
+    loop {
+        i = skip_space(s, i, end);
+        if i >= end || b[i] != b'%' {
+            break;
+        }
+        comments += 1;
+        i = b[i..end]
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(end, |line| i + line + 1);
+    }
+    *run = (*run).max(comments);
+    i
+}
+
+/// The control sequence whose name starts at `i`, just past the backslash:
+/// its name — letters, or else one character — and where the lexer stands
+/// after trimming the space behind it.
+fn control_sequence(s: &str, i: usize, end: usize) -> (&[u8], usize) {
+    let b = &s.as_bytes()[..end];
+    if i >= end {
+        return (&[], end);
+    }
+    let letters = b[i..]
+        .iter()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .count();
+    let len = letters.max(char_len(b, i));
+    (&b[i..i + len], skip_space(s, i + len, end))
+}
+
+/// Past one token at `i`, as the lexer takes one where it wants a
+/// delimiter: a character, or a control sequence and the space after it.
+fn skip_token(s: &str, i: usize, end: usize, run: &mut u32) -> usize {
+    let b = s.as_bytes();
+    let i = skip_blank(s, i, end, run);
+    if i >= end {
+        end
+    } else if b[i] == b'\\' {
+        control_sequence(s, i + 1, end).1
+    } else {
+        i + char_len(&b[..end], i)
+    }
+}
+
+/// How deeply `latex` nests, by a scan that runs before the parser is
+/// allowed near it.
 ///
 /// [`MAX_DEPTH`] in the walker came too late: `pulldown-latex` runs to
 /// completion first, its cost grows with the square of the group nesting —
@@ -175,234 +467,255 @@ const MAX_BARE_CHAIN: u32 = 64;
 /// refusing here protects them all, and the refusal is the documented one:
 /// the literal source is shown.
 ///
-/// `groups` counts unescaped `{`/`}` (which every `_{`, `^{`, `\sqrt{` and
-/// `\frac{` nests through), `\left`/`\right` and `\begin`/`\end`; `\{` and
-/// `\}` are delimiters, not groups. `bare` counts control words in a row
-/// that could each be the next one's argument — at most one letter, digit
-/// or group between two of them (`\frac 1\frac`). Anything else ends a
-/// chain: an operator, `&`, `\\`, a second token. A group starts a fresh
-/// chain inside it: measured, `\sqrt\sqrt{`×1 000 does not recurse, because
-/// the parser walks a braced group without a native frame per level.
-/// Control words that take no argument — symbols, operators, relations,
-/// arrows, dots, spacing, function names — sorted for `binary_search`.
-const NO_ARGUMENT: &[&[u8]] = &[
-    b"Delta",
-    b"Gamma",
-    b"Lambda",
-    b"Leftarrow",
-    b"Leftrightarrow",
-    b"Omega",
-    b"Phi",
-    b"Pi",
-    b"Psi",
-    b"Rightarrow",
-    b"Sigma",
-    b"Theta",
-    b"Upsilon",
-    b"Xi",
-    b"aleph",
-    b"alpha",
-    b"approx",
-    b"ast",
-    b"beta",
-    b"bigcap",
-    b"bigcup",
-    b"bot",
-    b"bullet",
-    b"cap",
-    b"cdot",
-    b"cdots",
-    b"chi",
-    b"circ",
-    b"cong",
-    b"cos",
-    b"cosh",
-    b"cot",
-    b"csc",
-    b"cup",
-    b"ddots",
-    b"deg",
-    b"delta",
-    b"det",
-    b"dim",
-    b"div",
-    b"dots",
-    b"ell",
-    b"emptyset",
-    b"epsilon",
-    b"equiv",
-    b"eta",
-    b"exists",
-    b"exp",
-    b"forall",
-    b"gamma",
-    b"gcd",
-    b"ge",
-    b"geq",
-    b"gg",
-    b"hbar",
-    b"in",
-    b"inf",
-    b"infty",
-    b"int",
-    b"iota",
-    b"kappa",
-    b"lambda",
-    b"land",
-    b"ldots",
-    b"le",
-    b"leftarrow",
-    b"leftrightarrow",
-    b"leq",
-    b"lim",
-    b"ll",
-    b"ln",
-    b"lnot",
-    b"log",
-    b"lor",
-    b"mapsto",
-    b"max",
-    b"mid",
-    b"min",
-    b"mp",
-    b"mu",
-    b"nabla",
-    b"ne",
-    b"neg",
-    b"neq",
-    b"ni",
-    b"notin",
-    b"nu",
-    b"oint",
-    b"omega",
-    b"oplus",
-    b"otimes",
-    b"parallel",
-    b"partial",
-    b"perp",
-    b"phi",
-    b"pi",
-    b"pm",
-    b"prime",
-    b"prod",
-    b"propto",
-    b"psi",
-    b"qquad",
-    b"quad",
-    b"rho",
-    b"rightarrow",
-    b"sec",
-    b"setminus",
-    b"sigma",
-    b"sim",
-    b"simeq",
-    b"sin",
-    b"sinh",
-    b"star",
-    b"subset",
-    b"subseteq",
-    b"sum",
-    b"sup",
-    b"supset",
-    b"supseteq",
-    b"tan",
-    b"tanh",
-    b"tau",
-    b"theta",
-    b"times",
-    b"to",
-    b"top",
-    b"triangle",
-    b"uparrow",
-    b"upsilon",
-    b"varepsilon",
-    b"varphi",
-    b"vartheta",
-    b"vdots",
-    b"wedge",
-    b"xi",
-    b"zeta",
-];
-
-fn nesting(latex: &str) -> (u32, u32) {
-    /// `chain`: commands in the current run; `gap`: plain tokens since the
-    /// last of them.
-    #[derive(Clone, Copy, Default)]
-    struct Run {
-        chain: u32,
-        gap: u32,
-    }
-    impl Run {
-        fn token(&mut self) {
-            self.gap += 1;
-            if self.gap > 1 {
-                self.chain = 0;
-            }
-        }
-        fn open(&mut self, stack: &mut Vec<Run>) {
-            stack.push(*self);
-            *self = Run::default();
-        }
-        fn close(&mut self, stack: &mut Vec<Run>) {
-            if let Some(saved) = stack.pop() {
-                *self = saved;
-            }
-            // The whole group is one token to the run outside it.
-            self.token();
-        }
-    }
-    let mut stack: Vec<Run> = Vec::new();
-    let mut run = Run::default();
-    let (mut groups, mut bare) = (0u32, 0u32);
+/// The scan reads what the parser reads, because every difference between
+/// them was a way past it: a `%` comment or a no-break space between two
+/// commands is nothing to the parser and so nothing here, and a group ends
+/// where [`group_content`] says the parser ends it. Each group — braces,
+/// `\left`…`\right`, an environment, an optional `[…]` — is parsed as its
+/// own text with no native frame per level, so each is scanned on its own
+/// and `groups` is how deep they sit.
+///
+/// Within one group the scan keeps the frames the parser would have open:
+/// a command pushes one holding the arguments it still wants ([`arity`]),
+/// and a character, a group or a symbol fills the innermost, closing every
+/// frame that completes. `bare` is the most frames open at once. Where the
+/// scan is not sure it errs toward more frames, never fewer: a command it
+/// has no count for stays open to the end of its group, `^` and `_` fill
+/// nothing. So `\frac+\frac+…` and `\sqrt[n]\sqrt[n]…` are the chains they
+/// are, and `\hat a\hat b…` is no chain however long.
+///
+/// A macro definition is refused outright (`unbounded`): expansion writes
+/// text the scan never sees, a run of definitions is itself a recursion in
+/// the parser, and a definition is lost at the end of its formula anyway.
+/// So is a formula whose groups cost more to cut than a small multiple of
+/// its length, which keeps the scan linear.
+fn nesting(latex: &str) -> Nesting {
     let b = latex.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        i += 1;
-        match c {
-            b' ' | b'\t' | b'\n' | b'\r' | b'[' | b']' => {}
-            b'{' => run.open(&mut stack),
-            b'}' => run.close(&mut stack),
-            b'\\' => {
-                let name = b[i..]
-                    .iter()
-                    .take_while(|c| c.is_ascii_alphabetic())
-                    .count();
-                match &b[i..i + name] {
-                    b"left" | b"begin" => run.open(&mut stack),
-                    b"right" | b"end" => run.close(&mut stack),
-                    // A control symbol, skipped so `\{` is not read as a
-                    // group: `\\` ends a row, anything else (`\{`, `\,`) is
-                    // one token.
-                    [] => {
-                        if b.get(i) == Some(&b'\\') {
-                            (run.chain, run.gap) = (0, 0);
-                        } else {
-                            run.token();
-                        }
+    let mut found = Nesting::default();
+    // After a number or a unit the lexer steps over one whitespace
+    // character as one BYTE, and panics inside a no-break space. Only these
+    // read a number: `5` and a no-break space before `\text{kg}` is safe.
+    const READS_NUMBERS: [&str; 8] = [
+        "\\\\", "\\cr", "kern", "skip", "hspace", "\\Space", "genfrac", "align",
+    ];
+    if !latex.is_ascii() && READS_NUMBERS.iter().any(|word| latex.contains(word)) {
+        let mut after_word = false;
+        for c in latex.chars() {
+            if after_word && c.is_whitespace() && !c.is_ascii() {
+                found.unbounded = true;
+                return found;
+            }
+            after_word = c.is_ascii_alphanumeric();
+        }
+    }
+    // Groups nested one in the next to [`MAX_DEPTH`] cost half this.
+    let (mut cost, budget) = (Cost::default(), 128 * b.len() + 65_536);
+    // Groups still to scan, as `(start, end, depth)`.
+    let mut groups: Vec<(usize, usize, u32)> = vec![(0, b.len(), 0)];
+    let mut frames: Vec<u8> = Vec::new();
+    // An argument arrived: it fills the innermost frame, and a frame it
+    // completes is itself the argument of the one outside.
+    let fill = |frames: &mut Vec<u8>| {
+        while let Some(wants) = frames.last_mut() {
+            if *wants == OPEN_ENDED {
+                break;
+            }
+            *wants -= 1;
+            if *wants > 0 {
+                break;
+            }
+            frames.pop();
+        }
+    };
+    while let Some((start, end, depth)) = groups.pop() {
+        found.groups = found.groups.max(depth);
+        if depth > MAX_DEPTH {
+            return found;
+        }
+        frames.clear();
+        let mut i = start;
+        // Where the parser would report an error the scan reads on, with
+        // a frame nothing closes: it is not always the parser's error.
+        // `\sideset` takes two tokens unread, a stray `}` among them.
+        loop {
+            if cost.spent > budget || cost.groups > MAX_DEPTH {
+                found.unbounded = cost.spent > budget;
+                found.groups = found.groups.max(cost.groups);
+                return found;
+            }
+            i = skip_blank(latex, i, end, &mut found.comments);
+            if i >= end {
+                break;
+            }
+            match b[i] {
+                b'{' => {
+                    if let Some(len) =
+                        group_content(&b[i + 1..end], b"{", b"}", depth + 1, &mut cost)
+                    {
+                        groups.push((i + 1, i + 1 + len, depth + 1));
+                        i += len + 2;
+                        fill(&mut frames);
+                    } else {
                         i += 1;
-                    }
-                    // A symbol takes no argument, so it nests nothing: it is
-                    // a token, like a letter. Counting it as a link showed
-                    // `\alpha \alpha …` (65 and up) as source. Only names
-                    // known to take none are here: a command left off counts
-                    // as a link, which errs toward refusing, never toward
-                    // the stack overflow the chain guards against.
-                    word if NO_ARGUMENT.binary_search(&word).is_ok() => run.token(),
-                    _ => {
-                        run.chain += 1;
-                        run.gap = 0;
+                        frames.push(OPEN_ENDED);
                     }
                 }
-                i += name;
+                b'}' | b'^' | b'_' => i += 1,
+                b'\\' => {
+                    let (name, after) = control_sequence(latex, i + 1, end);
+                    i = after;
+                    match name {
+                        [] => break,
+                        // A definition; `\char`, whose lexer panics
+                        // before a letter that is not ASCII; `\buildrel`,
+                        // which reads on to `\over` as text, not tokens.
+                        b"def" | b"let" | b"futurelet" | b"newcommand" | b"renewcommand"
+                        | b"providecommand" | b"char" | b"buildrel" => {
+                            found.unbounded = true;
+                            return found;
+                        }
+                        b"left" => {
+                            i = skip_token(latex, i, end, &mut found.comments);
+                            if let Some(len) = group_content(
+                                &b[i..end],
+                                b"\\left",
+                                b"\\right",
+                                depth + 1,
+                                &mut cost,
+                            ) {
+                                groups.push((i, i + len, depth + 1));
+                                i = skip_token(latex, i + len + 6, end, &mut found.comments);
+                                fill(&mut frames);
+                            } else {
+                                frames.push(OPEN_ENDED);
+                            }
+                        }
+                        b"begingroup" => {
+                            if let Some(len) = group_content(
+                                &b[i..end],
+                                b"\\begin",
+                                b"\\end",
+                                depth + 1,
+                                &mut cost,
+                            ) {
+                                groups.push((i, i + len, depth + 1));
+                                i += len + 4;
+                                fill(&mut frames);
+                            } else {
+                                frames.push(OPEN_ENDED);
+                            }
+                        }
+                        b"begin" => {
+                            // The environment's name, then — for the three
+                            // that read a number, and not strictly — that
+                            // argument, before the search for the end.
+                            let cut = |i: &mut usize, cost: &mut Cost| {
+                                if *i >= end || b[*i] != b'{' {
+                                    return None;
+                                }
+                                let len =
+                                    group_content(&b[*i + 1..end], b"{", b"}", depth + 1, cost)?;
+                                *i += len + 2;
+                                Some(&b[*i - len - 1..*i - 1])
+                            };
+                            let content = cut(&mut i, &mut cost).and_then(|environment| {
+                                if matches!(environment, b"alignat" | b"alignat*" | b"alignedat") {
+                                    i = skip_space(latex, i, end);
+                                    let number = cut(&mut i, &mut cost)?;
+                                    // Its lexer steps one BYTE past a
+                                    // character that is not a digit.
+                                    if number.first().is_some_and(|c| !c.is_ascii()) {
+                                        found.unbounded = true;
+                                    }
+                                }
+                                let open = [b"\\begin{", environment, b"}"].concat();
+                                let close = [b"\\end{", environment, b"}"].concat();
+                                let len =
+                                    group_content(&b[i..end], &open, &close, depth + 1, &mut cost)?;
+                                Some((len, close.len()))
+                            });
+                            if let Some((len, close)) = content {
+                                groups.push((i, i + len, depth + 1));
+                                i += len + close;
+                                fill(&mut frames);
+                            } else {
+                                frames.push(OPEN_ENDED);
+                            }
+                        }
+                        b"right" | b"end" | b"endgroup" => frames.push(OPEN_ENDED),
+                        // Two arguments it lexes and never reads — any
+                        // token at all, `\left` or `}` included — and one
+                        // it does.
+                        b"sideset" => {
+                            for _ in 0..2 {
+                                i = skip_space(latex, i, end);
+                                if i < end && b[i] == b'{' {
+                                    i += 1;
+                                    if let Some(len) =
+                                        group_content(&b[i..end], b"{", b"}", depth + 1, &mut cost)
+                                    {
+                                        i += len + 1;
+                                    }
+                                } else {
+                                    i = skip_token(latex, i, end, &mut found.comments);
+                                }
+                            }
+                            frames.push(1);
+                        }
+                        // The lexer takes these itself where it allows
+                        // them, and they are an error anywhere else.
+                        b"limits" | b"nolimits" | b"hline" | b"hdashline" => {}
+                        // One delimiter, which is a token and no argument.
+                        b"big" | b"bigl" | b"bigr" | b"bigm" | b"Big" | b"Bigl" | b"Bigr"
+                        | b"Bigm" | b"bigg" | b"biggl" | b"biggr" | b"biggm" | b"Bigg"
+                        | b"Biggl" | b"Biggr" | b"Biggm" | b"middle" => {
+                            i = skip_token(latex, i, end, &mut found.comments);
+                            fill(&mut frames);
+                        }
+                        b"sqrt" | b"xleftarrow" | b"xrightarrow" | b"\\" | b"cr" => {
+                            // An optional argument is a group of its own
+                            // and fills nothing. Unbalanced, the parser has
+                            // still stepped past the bracket.
+                            if i < end && b[i] == b'[' {
+                                i += 1;
+                                if let Some(len) =
+                                    group_content(&b[i..end], b"[", b"]", depth + 1, &mut cost)
+                                {
+                                    groups.push((i, i + len, depth + 1));
+                                    i += len + 1;
+                                }
+                            }
+                            if matches!(name, b"\\" | b"cr") {
+                                fill(&mut frames);
+                            } else {
+                                frames.push(1);
+                            }
+                        }
+                        // A control symbol: `\{`, `\,`, `\ `. One not
+                        // listed is not the parser's either.
+                        [c] if !c.is_ascii_alphabetic() => {
+                            if b",>:;~!#%&$_|{} \t\n\r".contains(c) {
+                                fill(&mut frames);
+                            } else {
+                                frames.push(OPEN_ENDED);
+                            }
+                        }
+                        word => match arity(word) {
+                            Some(0) => fill(&mut frames),
+                            Some(wants) => frames.push(wants),
+                            None => frames.push(OPEN_ENDED),
+                        },
+                    }
+                }
+                _ => {
+                    i += char_len(&b[..end], i);
+                    fill(&mut frames);
+                }
             }
-            c if c.is_ascii_alphanumeric() => run.token(),
-            _ => (run.chain, run.gap) = (0, 0),
+            found.bare = found.bare.max(frames.len() as u32);
         }
-        groups = groups.max(stack.len() as u32);
-        bare = bare.max(run.chain);
     }
-    (groups, bare)
+    found
 }
 
 /// Parse events until `stop` (or the end), returning them as one row.
@@ -664,7 +977,7 @@ mod tests {
         ];
         let start = std::time::Instant::now();
         for s in &shapes {
-            assert!(nesting(s).0 > MAX_DEPTH, "{:?}…", &s[..20]);
+            assert!(nesting(s).refused(), "{:?}…", &s[..20]);
             assert_eq!(parse(s), None);
         }
         assert!(
@@ -687,46 +1000,195 @@ mod tests {
             format!("{}x", r"\frac{1}".repeat(n)),
             format!("{}x", r"\mathrm ".repeat(n)),
         ] {
-            assert!(nesting(&s).1 > MAX_BARE_CHAIN, "{:?}…", &s[..20]);
+            assert!(nesting(&s).bare > MAX_BARE_CHAIN, "{:?}…", &s[..20]);
             assert_eq!(parse(&s), None);
         }
     }
 
-    /// `binary_search` needs the list sorted, and a typo'd order would
-    /// silently count a symbol as a link (refusing math) — or worse.
+    /// `binary_search` needs the lists sorted, and a typo'd order would
+    /// silently hold a symbol open as a command (refusing math).
     #[test]
-    fn the_no_argument_list_is_sorted_and_unique() {
-        assert!(NO_ARGUMENT.windows(2).all(|w| w[0] < w[1]));
+    fn the_argument_lists_are_sorted_and_disjoint() {
+        let lists = [NO_ARGUMENT, ONE_ARGUMENT, TWO_ARGUMENTS, THREE_ARGUMENTS];
+        for list in lists {
+            assert!(list.windows(2).all(|w| w[0] < w[1]));
+        }
+        let all: Vec<&str> = lists.concat();
+        let unique: std::collections::HashSet<&str> = all.iter().copied().collect();
+        assert_eq!(all.len(), unique.len());
+    }
+
+    /// Every event the parser gives for `s`, or `None` where it reports an
+    /// error.
+    fn events(s: &str) -> Option<Vec<String>> {
+        let storage = Storage::new();
+        Parser::new(s, &storage)
+            .map(|event| event.ok().map(|e| format!("{e:?}")))
+            .collect()
+    }
+
+    /// The scan closes a frame when a listed command has had its count of
+    /// arguments, and a count one short is the stack overflow the scan is
+    /// there to stop. So each list is held to the parser itself: a command
+    /// errors with an argument missing, parses with them all, and then has
+    /// read nothing more — whatever follows parses as it does alone.
+    #[test]
+    fn the_argument_lists_say_what_the_parser_reads() {
+        let lists = [NO_ARGUMENT, ONE_ARGUMENT, TWO_ARGUMENTS, THREE_ARGUMENTS];
+        for (wants, list) in lists.iter().enumerate() {
+            for word in *list {
+                let with = |arguments: usize| format!("\\{word}{}", "{red}".repeat(arguments));
+                let whole = with(wants);
+                let alone = events(&whole).unwrap_or_else(|| panic!("{whole} is an error"));
+                assert!(!alone.is_empty(), "{whole} gives no event");
+                if wants > 0 {
+                    assert_eq!(events(&with(wants - 1)), None, "{word} reads fewer");
+                }
+                for next in [
+                    " b",
+                    " [b]",
+                    "{b}",
+                    " 1.5pt",
+                    "(",
+                    "'",
+                    "\\beta",
+                    " plus 1em",
+                    "=",
+                    "|",
+                ] {
+                    let mut both = alone.clone();
+                    both.extend(events(next).unwrap());
+                    assert_eq!(
+                        events(&format!("{whole}{next}")),
+                        Some(both),
+                        "{whole} reads on into {next:?}"
+                    );
+                }
+            }
+        }
+        // And the control symbols the scan takes for a token.
+        for symbol in b",>:;~!#%&$_|{} " {
+            let symbol = format!("\\{}", *symbol as char);
+            let alone = events(&symbol).unwrap_or_else(|| panic!("{symbol} is an error"));
+            let mut both = alone.clone();
+            both.extend(events("[b]").unwrap());
+            assert_eq!(events(&format!("{symbol}[b]")), Some(both), "{symbol}");
+        }
     }
 
     #[test]
     fn nesting_within_the_limit_still_parses() {
         let n = 100;
         let s = format!("{}x{}", r"\sqrt{".repeat(n), "}".repeat(n));
-        assert_eq!(nesting(&s), (n as u32, 1));
+        let found = nesting(&s);
+        assert_eq!((found.groups, found.bare), (n as u32, 1));
         assert!(parse(&s).is_some());
         // Near both limits, the walker's own guard decides, without a crash.
         let _ = parse(&format!("{}x{}", "{".repeat(256), "}".repeat(256)));
         let _ = parse(&format!("{}x", r"\sqrt".repeat(64)));
         // Escaped braces are delimiters, not groups; `\\` escapes itself.
-        assert_eq!(nesting(r"\{\{\{x\}\}\}").0, 0);
-        assert_eq!(nesting(r"a\\{b}").0, 1);
-        assert_eq!(nesting(r"\left(\frac{a}{b}\right)").0, 2);
+        assert_eq!(nesting(r"\{\{\{x\}\}\}").groups, 0);
+        assert_eq!(nesting(r"a\\{b}").groups, 1);
+        assert_eq!(nesting(r"\left(\frac{a}{b}\right)").groups, 2);
         // Siblings and ordinary formulas are short chains.
-        assert_eq!(nesting(r"\frac{a}{b}\frac{c}{d}").1, 1);
-        assert_eq!(nesting(r"\frac 12\frac 34").1, 1);
-        assert_eq!(nesting(&r"\alpha+\beta\cdot x_1 ".repeat(500)).1, 0);
+        assert_eq!(nesting(r"\frac{a}{b}\frac{c}{d}").bare, 1);
+        assert_eq!(nesting(r"\frac 12\frac 34").bare, 1);
+        assert_eq!(nesting(&r"\alpha+\beta\cdot x_1 ".repeat(500)).bare, 0);
         // Symbols nest nothing: any number of them in a row is no chain.
         let symbols = format!("{}x", r"\alpha ".repeat(500));
-        assert_eq!(nesting(&symbols).1, 0);
+        assert_eq!(nesting(&symbols).bare, 0);
         assert!(parse(&symbols).is_some(), "shown as math, not source");
-        // But an argument-taking command between them still links.
-        assert!(nesting(&r"\sqrt\alpha".repeat(200)).1 > MAX_BARE_CHAIN);
         assert_eq!(
-            nesting(&r"\hat a & \bar b \\ ".repeat(500)).1,
+            nesting(&r"\hat a & \bar b \\ ".repeat(500)).bare,
             1,
             "a matrix row break and a cell end a chain"
         );
+    }
+
+    /// A command that has its arguments is done, however many follow it:
+    /// what real formulas are made of is no chain, and renders.
+    #[test]
+    fn commands_with_their_arguments_are_no_chain() {
+        for (period, bare) in [
+            (r"\sqrt\alpha ", 1),
+            (r"\vec{a}\cdot\hat b+", 1),
+            (r"\frac{\partial f}{\partial x}\,\mathrm{d}x ", 1),
+            (
+                r"\sqrt[3]{x}\left(\frac ab\right)\big|\sum\limits_{i}^{n}",
+                1,
+            ),
+            (
+                r"\mathbf{x}_{\text{in}}^{\top}\overline{y}\overset{!}{=}",
+                1,
+            ),
+            (r"\frac\sqrt\hat a b ", 3),
+            (
+                "\\begin{pmatrix}\\hat a & \\frac12 \\\\[2pt] \\hline c & d\\end{pmatrix}",
+                1,
+            ),
+        ] {
+            let s = period.repeat(300);
+            assert_eq!(nesting(&s).bare, bare, "{period}");
+            assert!(parse(&s).is_some(), "{period} is shown as source");
+        }
+        // One the scan has no count for is held open to the end of its
+        // group; a command after it still closes on its own argument.
+        assert_eq!(nesting(r"\kern 3pt\hat a\hat b{\hat c}\hat d").bare, 2);
+        assert_eq!(nesting(&r"{\kern 3pt\kern 3pt}".repeat(70)).bare, 2);
+        assert_eq!(nesting(&r"\kern 3pt".repeat(70)).bare, 70);
+    }
+
+    /// What the parser reads as nothing, the scan reads as nothing: each of
+    /// these hid a chain from a scan that read bytes, and each chain is
+    /// counted now. (The parser itself is run on them, in a process of
+    /// their own, by `tests/math_stack.rs`.)
+    #[test]
+    fn a_chain_is_counted_through_what_the_parser_skips() {
+        let n = 3_000;
+        for link in [
+            "\\sqrt%c\n",
+            "\\sqrt\u{a0}",
+            "\\sqrt\u{2003}",
+            "\\sqrt\x0b",
+            r"\frac+",
+            r"\frac(",
+            r"\frac~",
+            r"\frac\frac a b",
+            r"\sqrt[ab]",
+            r"\sqrt[+]",
+            r"\sideset{}{}",
+            r"\sideset\left.",
+            r"\sideset}\right",
+            r"\genfrac{}{}{}{}1",
+            r"\overset+",
+            r"\xrightarrow[ab]",
+            r"\frac\left(a\right)",
+            r"\frac\begin{matrix}a\end{matrix}",
+            r"\frac\big(",
+            r"\relax ",
+        ] {
+            let s = format!("{}x", link.repeat(n));
+            assert!(nesting(&s).refused(), "{link:?}");
+            assert_eq!(parse(&s), None);
+        }
+        // A macro, a long run of comments, and the three shapes on which
+        // the parser's lexer panics are refused whatever else they hold.
+        for s in [
+            r"\def\a{x}\a",
+            r"\let\a=x \a",
+            r"\newcommand{\a}{x}\a",
+            r"\char`a",
+            r"\buildrel a\over b",
+            "\\kern 1pt\u{a0}x",
+            "\\begin{alignat}{\u{e9}}x\\end{alignat}",
+            &"%\n".repeat(65),
+        ] {
+            assert!(nesting(s).refused(), "{s:?}");
+        }
+        assert!(!nesting(&"%\n".repeat(64)).refused());
+        assert!(!nesting("a\u{a0}+ b \u{a0} 1\u{a0}c").refused());
+        assert!(parse("5\u{a0}\\text{kg}").is_some());
+        assert!(nesting("a & 1\u{a0}\\\\ b").refused());
     }
 
     #[test]

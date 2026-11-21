@@ -63,6 +63,25 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A bookmark that could not be saved says so.** With a state directory carrel cannot
   write to, `m` reported `bookmark 1 of 1` and the bookmark was gone at the next start.
   The status row now adds that it was not saved and why; it stays set until you quit.
+- **Math can no longer bring the reader down.** A long chain of commands each taking the
+  next as its argument was refused, but a `%` comment or a no-break space between them, an
+  argument such as `+` or `[n]`, or `\frac\frac a b` repeated hid the chain, and the
+  document, pipe or search that held it aborted. So did a no-break space after a length
+  (`\kern 1pt` and one), `\char` before an accented letter, and a long run of `\def`s. Such
+  math is shown as its source. A formula that defines a macro (`\def`, `\newcommand`,
+  `\let`) is now always shown as source; `\hat a\hat b…` and other long rows of commands
+  that have their arguments render however long they are.
+- **A diff keeps every line of a hunk.** A removed `-- comment` (written `--- comment`) or
+  an added `++ i;` was taken for a file header and dropped, and lines such as `---i;` were
+  left out of the `+N −M` counts. Hunks are now read by the line counts in their `@@`
+  header. A file heading shows its path as named: `my--file...x.sql`, not `my–file…x.sql`.
+- **`git log | carrel` shows what the message says.** `<sha>`, `Vec<String>` and
+  `/proc/<pid>/stat` are text, not HTML to strip (an autolink `<https://…>` is still a
+  link); headers, trailers, indented lines and `#` comments keep `a^b^c`, `...` and their
+  quotes as typed; an embed `![[my--notes]]` shows no backslash; a line holding only `+`
+  or `1.` is that text, not an empty list item; and a URL typed on into `[[…]]` keeps its
+  `--`. In any document, a bare URL with an entity in it keeps its hyphens even when the
+  paragraph has a dash typed elsewhere.
 - **A Ctrl or Alt chord carrel does not bind does nothing.** It used to act as its bare
   letter outside text inputs: Ctrl-D on the file list opened the folder browser, Ctrl-T
   in the reader switched the table view, Alt-Q closed the document. The chords carrel
