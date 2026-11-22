@@ -4,6 +4,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Coming back to a search no longer lists its hits again**: opening a hit from the file
+  list's search and returning added every hit another time, and the count with them.
+- **A folder typed into the folder browser is kept as an absolute path.** `sub/leaf/`
+  typed whole was saved as written, so Backspace stopped half-way up and the next start
+  from another directory said the saved folder was gone.
 - **An idle reader sends its hyperlinks once.** They were re-sent after every frame, ten
   times a second with nothing happening: a page of links wrote tens of kilobytes a second
   to the terminal, which over ssh is traffic for as long as the reader is open.

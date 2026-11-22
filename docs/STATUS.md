@@ -54,7 +54,7 @@ Last updated: 2026-11-21 (second adversarial hunt: eight hunters, three rounds o
   and two cold code reviewers. About ninety reproduced defects, each fixed test-first with
   the test break-checked; four rounds of review and three more fuzz runs found about
   forty more in the fixes themselves (regressions in every round), fixed the same way.
-  Gates: **1,868 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
+  Gates: **1,872 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
   1.95; parse 1.5 ms/MB, height pass 4.1 ms/MB ASCII and 12.8 ms/MB CJK, resize 4.6 ms and
   live reload 14 ms per MB (`cargo bench`, quiet machine).
   - *Crashes.* Math is scanned as pulldown-latex tokenizes it (`math::nesting`): `%`
@@ -636,7 +636,11 @@ For the owner (2026-11-21, not changed):
 - A mouse report with a zero coordinate panics inside crossterm 0.29 in a debug build
   (an overflow check; release wraps). No conforming terminal sends one.
 
-Known defects: none open. Two observations from the last black-box pass of 2026-11-21,
+Known defects, low, from the last pass over the file list (2026-11-21): in filter mode
+Enter on a file that cannot be opened does nothing and says nothing, and outside it the
+`cannot open` note is cut before the file's name; the filter ranks `e_x_a_c_t.md` above
+`exact.md` for `exact`; the file list's search stops at 1,000 files without saying so
+(the tags page and `L` say when they stop). Otherwise none open. Two observations from the last black-box pass of 2026-11-21,
 left as they are: an idle reader writes an empty synchronized frame about ten times a
 second (the loop paints every pass; each frame re-enables bracketed paste; about 500
 bytes a second — the hyperlink pass, which made it tens of kilobytes on a page of

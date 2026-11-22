@@ -2502,6 +2502,13 @@ impl Grep {
     }
 
     fn tick(&mut self, app: &mut App) {
+        // A document is open over the list: the search stands as it is. It
+        // used to be forgotten here and run again on the way back, onto the
+        // hits it already had — every round trip listed them once more.
+        // What a search still running sends waits in its channel.
+        if !app.is_home() {
+            return;
+        }
         match app.home() {
             Some(h) if h.mode == home::HomeMode::Search && !h.query.trim().is_empty() => {
                 let q = h.query.clone();
@@ -2873,7 +2880,8 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
         maybe_rescan(&mut app, &mut scan, &scan_root, &grep);
 
         // While a scan or search is live, wake often enough to stream.
-        let busy = scan.busy() || grep.busy() || tag_scan.busy() || preview.busy();
+        let busy =
+            scan.busy() || tag_scan.busy() || preview.busy() || (app.is_home() && grep.busy());
         let idle = if busy || backlinks.busy() { 16 } else { 100 };
         let timeout = resize
             .deadline
@@ -4213,6 +4221,51 @@ mod tests {
         // A forced redraw forgets what was sent.
         sent = None;
         assert!(hyperlinks_due(&mut sent, &a, (81, 24)));
+    }
+
+    /// A search's hits are listed once. Opening a hit and coming back ran
+    /// the same search again on top of the list it had: every round trip
+    /// added the hits another time, and the count with them.
+    #[test]
+    fn coming_back_to_a_search_does_not_list_its_hits_again() {
+        use carrel::action::{Action, SearchKey};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "# A\n\nzyzzyva here\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# B\n\nnothing\n").unwrap();
+        let (entries, _) = scan::walk_blocking(dir.path());
+        let mut app = App::new_home(dir.path().into(), entries, 80, 24);
+        update(&mut app, Action::HomeSearchMode);
+        for c in "zyzzyva".chars() {
+            update(&mut app, Action::HomeKey(SearchKey::Char(c)));
+        }
+        let mut grep = Grep::new();
+        let settle = |app: &mut App, grep: &mut Grep| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                grep.tick(app);
+                let done = app.home().is_some_and(|h| h.grep_done);
+                if (done && !grep.busy()) || Instant::now() > deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // And a while longer, for a search that should not have started.
+            for _ in 0..80 {
+                grep.tick(app);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        settle(&mut app, &mut grep);
+        assert_eq!(app.home().unwrap().hits.len(), 1);
+        for round in 0..3 {
+            update(&mut app, Action::HomeOpen);
+            assert!(!app.is_home(), "the hit opened");
+            grep.tick(&mut app);
+            update(&mut app, Action::CloseFile);
+            assert!(app.is_home());
+            settle(&mut app, &mut grep);
+            assert_eq!(app.home().unwrap().hits.len(), 1, "round {round}");
+        }
     }
 
     /// A piped document has no file, and "no file" was also the renderer's

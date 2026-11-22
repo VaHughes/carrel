@@ -4607,6 +4607,20 @@ fn settings_action(app: &mut App, action: Action) -> Option<Outcome> {
     None
 }
 
+/// A chosen folder as the path to keep: absolute and plainly spelled.
+///
+/// A path typed whole and relative (`sub/leaf/`) was kept as typed — as
+/// the list's root, where Backspace then stopped at `sub` for "the top
+/// folder", and in the config, where the next start from anywhere else
+/// read `saved directory is gone`.
+fn rooted(chosen: &Path, cwd: Option<&Path>) -> PathBuf {
+    let whole = match cwd {
+        Some(cwd) if chosen.is_relative() => cwd.join(chosen),
+        _ => chosen.to_path_buf(),
+    };
+    crate::wiki::fold_lexically(&whole)
+}
+
 /// The reading measure, stepped.
 ///
 /// A terminal's font belongs to the emulator, so carrel cannot zoom. What it
@@ -5788,6 +5802,7 @@ fn home_action(app: &mut App, action: Action) -> Outcome {
             }) else {
                 return Outcome::Idle;
             };
+            let root = rooted(&root, std::env::current_dir().ok().as_deref());
             if !root.is_dir() {
                 if let Some(h) = app.home_mut() {
                     h.note = Some(format!("not a folder: {}", root.display()));
@@ -8150,6 +8165,27 @@ mod tests {
     /// Carrel had nine config keys and named the file in no menu row, no
     /// help line and not in `--help` — only in the README, which is exactly
     /// where the reader this is for will never look.
+    /// A folder typed relative is kept absolute, with no trailing slash and
+    /// no `.` or `..` left in it.
+    #[test]
+    fn a_folder_typed_relative_is_kept_absolute() {
+        let cwd = Path::new("/home/ada/notes");
+        for (typed, kept) in [
+            ("sub/leaf/", "/home/ada/notes/sub/leaf"),
+            ("./x/", "/home/ada/notes/x"),
+            ("../x/", "/home/ada/x"),
+            ("/srv/docs/", "/srv/docs"),
+            ("/srv/./docs/../docs", "/srv/docs"),
+        ] {
+            assert_eq!(
+                rooted(Path::new(typed), Some(cwd)),
+                Path::new(kept),
+                "{typed}"
+            );
+        }
+        assert_eq!(rooted(Path::new("x"), None), Path::new("x"));
+    }
+
     /// Enter and a click only step the text width UP, so from the widest
     /// setting they went nowhere — and the pane names no key for narrower.
     /// One more step from the whole window starts over at the narrowest.
