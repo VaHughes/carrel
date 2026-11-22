@@ -74,7 +74,9 @@ fn flag_tail(rest: &str) -> usize {
 /// most other text rarely does. `false` is certain; `true` means look.
 #[must_use]
 pub fn may_hold(text: &str) -> bool {
-    text.bytes().any(|b| b == 0xEF || b == 0xF3)
+    // `is_ascii` first: it reads a word at a time, and most text is ASCII —
+    // without it this scan was a fifth of the whole parse.
+    !text.is_ascii() && text.bytes().any(|b| b == 0xEF || b == 0xF3)
 }
 
 /// The stretches of `text` that are shown, as byte ranges in order: what is
