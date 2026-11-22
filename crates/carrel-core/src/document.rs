@@ -308,7 +308,9 @@ fn unsmartened(url: &str) -> String {
 /// then the rest of the paragraph, then the link's `End`, then that rest a
 /// second time: `]] abc abc` on screen. Wrapped in emphasis it is worse —
 /// `*[[x|]]* now` puts the closing `*` inside the link as text and the
-/// emphasis runs on to the paragraph's end.
+/// emphasis runs on to the paragraph's end. (0.13.6 does not replay: it
+/// reads a link with no text, so `[[x|]]` shows nothing at all. What is
+/// below gives one reading under either, and nothing typed vanishes.)
 ///
 /// An event filter that dropped the replay got three things wrong in a
 /// cold review: a label that merely ENDS in `|` (`[[n|a|]]`, which the
@@ -318,8 +320,8 @@ fn unsmartened(url: &str) -> String {
 /// is read as if each empty-label wikilink were escaped (`\[\[x|\]\]`,
 /// which the parser reads right). Each one's `[[` and `]]` are masked with
 /// `%` — the same byte length, so every offset holds, and punctuation like
-/// the escape's backslash, so emphasis flanking reads it alike (one `)`
-/// for the smart-quote rule, see [`mask_empty_labels`]) — the masked
+/// the escape's backslash, so emphasis flanking reads it alike (an escaped
+/// `]` for the smart-quote rule, see [`mask_empty_labels`]) — the masked
 /// text is parsed instead, and every string that parse
 /// borrows is taken back from the real source at the same offsets, which
 /// puts the brackets back.
@@ -351,30 +353,73 @@ fn mask_empty_labels(src: &str) -> Option<String> {
         return None;
     }
     let mut masked: Option<String> = None;
+    // Where a closing mask is an escaped bracket (below), in order.
+    let mut escapes: Vec<usize> = Vec::new();
     for _ in 0..MASK_ROUNDS {
         let text = masked.as_deref().unwrap_or(src);
-        let found: Vec<Range<usize>> = Parser::new_ext(text, markdown_options())
-            .into_offset_iter()
-            .filter(|(ev, r)| is_empty_label(text, ev, r))
-            .map(|(_, r)| r)
+        let mut found: Vec<Range<usize>> = Vec::new();
+        let mut read = vec![false; escapes.len()];
+        for (ev, r) in Parser::new_ext(text, markdown_options()).into_offset_iter() {
+            if is_empty_label(text, &ev, &r) {
+                found.push(r);
+                continue;
+            }
+            // An escape is read as one where text opens with its bracket,
+            // and is harmless where the parse borrows it whole (code, HTML,
+            // math): the source is taken back at the same offsets.
+            let (opens, borrowed) = match &ev {
+                Event::Text(CowStr::Borrowed(_)) => (1, true),
+                Event::Code(CowStr::Borrowed(_))
+                | Event::Html(CowStr::Borrowed(_))
+                | Event::InlineHtml(CowStr::Borrowed(_))
+                | Event::InlineMath(CowStr::Borrowed(_))
+                | Event::DisplayMath(CowStr::Borrowed(_)) => (0, true),
+                _ => (0, false),
+            };
+            if !borrowed || escapes.is_empty() {
+                continue;
+            }
+            let from = escapes.partition_point(|at| at + opens < r.start);
+            let to = escapes.partition_point(|at| *at < r.end);
+            read[from..to.max(from)].fill(true);
+        }
+        // Anywhere else the parser unescaped it into a string of its own —
+        // a link's destination or title — which shows the mask and not the
+        // source. No quote is curled there, so the plain mask serves.
+        let unread: Vec<usize> = escapes
+            .iter()
+            .zip(&read)
+            .filter(|(_, read)| !**read)
+            .map(|(at, _)| *at)
             .collect();
-        if found.is_empty() {
+        if found.is_empty() && unread.is_empty() {
             break;
         }
         let m = masked.get_or_insert_with(|| src.to_owned());
+        for at in &unread {
+            m.replace_range(*at..*at + 2, "%%");
+        }
+        escapes.retain(|at| !unread.contains(at));
         for r in found {
             // ASCII for ASCII: char boundaries and offsets are untouched.
             // Smart punctuation never opens a `'` after `]` or `)`, so
-            // before one the closing mask ends in `)`: with `%`, the `'`
-            // in `[[x|]]'s` opened a quote and read `‘`.
+            // before one the closing mask ends in a bracket: with `%`, the
+            // `'` in `[[x|]]'s` opened a quote and read `‘`. An escaped
+            // bracket, which closes nothing — a `)` there closed any `](`
+            // before it, and the text between was a link's destination,
+            // gone from the page. [`body_events`] puts back the bracket
+            // the backslash stands in for.
             let close = if m.as_bytes().get(r.end) == Some(&b'\'') {
-                "%)"
+                escapes.push(r.end - 2);
+                "\\]"
             } else {
                 "%%"
             };
             m.replace_range(r.start..r.start + 2, "%%");
             m.replace_range(r.end - 2..r.end, close);
         }
+        escapes.sort_unstable();
+        escapes.dedup();
     }
     masked
 }
@@ -467,7 +512,21 @@ pub(crate) fn body_events(src: &str) -> Box<dyn Iterator<Item = (Event<'_>, Rang
         Some(masked) => Box::new(
             Parser::new_ext(&masked, markdown_options())
                 .into_offset_iter()
-                .map(|(ev, r)| (unmasked_event(ev, &masked, src), r))
+                .map(|(ev, r)| {
+                    // Text that opens with the `]` of a `\]` mask: the
+                    // parser took the backslash as an escape, and where it
+                    // stood the source has the other bracket.
+                    let escaped = r.start > 0
+                        && masked.as_bytes()[r.start - 1] == b'\\'
+                        && src.as_bytes()[r.start - 1] == b']';
+                    match unmasked_event(ev, &masked, src) {
+                        Event::Text(CowStr::Borrowed(t)) if escaped && t.starts_with(']') => {
+                            let r = r.start - 1..r.end;
+                            (Event::Text(CowStr::Borrowed(&src[r.clone()])), r)
+                        }
+                        ev => (ev, r),
+                    }
+                })
                 .collect::<Vec<_>>()
                 .into_iter(),
         ),
@@ -4702,7 +4761,7 @@ mod tests {
             ),
             (format!("H{h}~2~O and x{h}^2^ here\n"), "H2O and x2 here"),
             (format!("H~{h}2~O and x^2{h}^ here\n"), "H2O and x2 here"),
-            (format!("x^a\u{FFF9}b\u{FFFA}c\u{FFFB}d^\n"), "xabcd"),
+            ("x^a\u{FFF9}b\u{FFFA}c\u{FFFB}d^\n".to_string(), "xabcd"),
             // What is shown still decides: seventeen letters are too many,
             // nothing shown is no script, and a space ends one.
             (format!("x^abcdefghijklmnop{h}q^\n"), "x^abcdefghijklmnopq^"),

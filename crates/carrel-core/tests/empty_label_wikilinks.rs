@@ -23,16 +23,29 @@ fn styles(d: &Document) -> Vec<(u32, u32, u8, bool)> {
     out
 }
 
-/// `src` with every empty-label wikilink the parser reads escaped
-/// (`\[\[x|\]\]`), the form it reads correctly — found by parsing, so a
-/// `[[x|]]` in code, math or HTML, which is no link, is left as it is.
-/// Repeated, since escaping one can uncover another the replay hid.
+/// The reader's own parser options: the oracle must read as it does, or
+/// it misjudges what is a wikilink (without footnotes, `[^1]: [[…` is a
+/// link reference definition and holds no wikilink at all).
+fn options() -> pulldown_cmark::Options {
+    use pulldown_cmark::Options;
+    Options::ENABLE_TABLES
+        | Options::ENABLE_GFM
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION
+        | Options::ENABLE_WIKILINKS
+        | Options::ENABLE_MATH
+        | Options::ENABLE_DEFINITION_LIST
+        | Options::ENABLE_SUPERSCRIPT
+        | Options::ENABLE_SUBSCRIPT
+}
+
 /// Whether an escaped empty-label wikilink (`\[\[x|\]\]`) in `s` sits inside
 /// a wikilink the parser reads.
 fn inside_a_wikilink(s: &str) -> bool {
-    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
-    let options = Options::ENABLE_WIKILINKS | Options::ENABLE_GFM;
-    Parser::new_ext(s, options)
+    use pulldown_cmark::{Event, LinkType, Parser, Tag};
+    Parser::new_ext(s, options())
         .into_offset_iter()
         .any(|(ev, r)| {
             matches!(
@@ -45,19 +58,13 @@ fn inside_a_wikilink(s: &str) -> bool {
         })
 }
 
+/// `src` with every empty-label wikilink the parser reads escaped
+/// (`\[\[x|\]\]`), the form it reads correctly — found by parsing, so a
+/// `[[x|]]` in code, math or HTML, which is no link, is left as it is.
+/// Repeated, since escaping one can uncover another the replay hid.
 fn escaped(src: &str) -> String {
-    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_GFM
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_SMART_PUNCTUATION
-        | Options::ENABLE_WIKILINKS
-        | Options::ENABLE_MATH
-        | Options::ENABLE_DEFINITION_LIST
-        | Options::ENABLE_SUPERSCRIPT
-        | Options::ENABLE_SUBSCRIPT;
+    use pulldown_cmark::{Event, LinkType, Parser, Tag};
+    let options = options();
     let mut s = src.to_owned();
     for _ in 0..8 {
         let mut found: Vec<std::ops::Range<usize>> = Parser::new_ext(&s, options)
@@ -280,6 +287,56 @@ fn a_quote_after_it_reads_as_after_a_bracket() {
     assert_eq!(Document::parse("[[x|]]'s\n").text, "[[x|]]\u{2019}s\n");
 }
 
+/// Before a `'` the closing brackets were masked with a `)`, for the
+/// apostrophe's sake — and a `)` closes a link: with `](` anywhere before
+/// it, the text between went into a destination and was gone
+/// (`[[[x](|]]'` showed `[[x’`). The mask there is an escaped bracket,
+/// which closes nothing.
+#[test]
+fn a_quote_after_it_costs_no_text_before_it() {
+    for (src, text) in [
+        ("[[[](|]]'\n", "[[[](|]]\u{2019}\n"),
+        ("[[[x](|]]' more\n", "[[[x](|]]\u{2019} more\n"),
+        ("x [[[](|]]'s more\n", "x [[[](|]]\u{2019}s more\n"),
+        ("[[y[](|]]' more\n", "[[y[](|]]\u{2019} more\n"),
+        ("[t](u [[x|]]' z\n", "[t](u [[x|]]\u{2019} z\n"),
+        ("a (b [[x|]]'s c) d\n", "a (b [[x|]]\u{2019}s c) d\n"),
+        ("[[x|]]'[[y|]]'\n", "[[x|]]\u{2019}[[y|]]\u{2019}\n"),
+    ] {
+        let d = Document::parse(src);
+        assert_eq!(d.text, text, "{src:?}");
+        assert_eq!(d.text, Document::parse(&escaped(src)).text, "{src:?}");
+        assert_eq!(links(&d), Vec::<&str>::new(), "{src:?}");
+    }
+    // Around it, markup reads as around the escaped form: a link whose
+    // text holds it, a title, a table cell, a code span, emphasis.
+    for src in [
+        // In a destination the escape would be unescaped into a string
+        // of the parser's own, the mask with it: the plain mask is used.
+        "[[[x|]]]([[x|]]')\n",
+        "[t]([[x|]]' \"[[x|]]'\") z\n",
+        "![[[x|]]'](<[[x|]]'>) [[x|]]'s\n",
+        "[t [[x|]]'](u) z\n",
+        "[t [[x|]]'s](u) z\n",
+        "[a]: u (t [[x|]]'\n\n[a]\n",
+        "| a [[x|]]' |\n|---|\n| b [[x|]]'s |\n",
+        "`[[x|]]'` and `a` [[x|]]'`\n",
+        "*[[x|]]'* **[[x|]]'s** z\n",
+        "'a [[x|]]' b' [[x|]]'c' d'\n",
+        "[^[[x|]]' z\n",
+        "![i [[x|]]'](u.png) z\n",
+        "<a href=\"[[x|]]'\">[[x|]]'</a>\n",
+        "[[x|]]'\\\n",
+        "# [[x|]]'s\n\n- [[x|]]'\n> [[x|]]'\n",
+    ] {
+        let a = Document::parse(src);
+        let b = Document::parse(&escaped(src));
+        assert_eq!(a.text, b.text, "{src:?}");
+        assert_eq!(styles(&a), styles(&b), "{src:?}");
+        assert_eq!(links(&a), links(&b), "{src:?}");
+    }
+}
+
 #[test]
 fn search_finds_guarded_text_and_dash_urls() {
     for src in [
@@ -303,6 +360,7 @@ proptest::proptest! {
             "[t](u)", "![](i)", "[^1]", "\n\n[^1]: ", "https://a.b/c", "&amp;", "<b>", "~~",
             "`", "$m$", "$", "'", "\"", "--", "...", "<!--", "-->", "\\",
             "[[n|a|]]", "|", "^", "~", "[", "]", "| a |\n|---|\n",
+            "(", ")", "](", "[[[](|]]", "[[x|]]'",
         ][..]), 0..14)
     ) {
         let src = parts.concat();
@@ -311,9 +369,16 @@ proptest::proptest! {
         // over a run — a bare URL cut at its edge, a `~x~` or `^x^` script
         // — read a split word differently: the two differ for reasons of
         // their own. `a_word_typed_around_it_reads_as_one` covers those.
-        let glued = src
+        // (Judged on the oracle's text: a wikilink may run over a line
+        // break, and then the word it is glued to is not the one holding
+        // its `|]]`.)
+        let oracle = escaped(&src);
+        let glued = oracle
             .split(|c: char| c.is_whitespace() || c == '<')
-            .any(|w| w.contains("[[x|]]") && (w.contains("https://") || w.contains(['~', '^'])));
+            .any(|w| {
+                (w.contains("\\[\\[") || w.contains("\\]\\]"))
+                    && (w.contains("https://") || w.contains(['~', '^']))
+            });
         if glued {
             return Ok(());
         }
@@ -321,11 +386,11 @@ proptest::proptest! {
         // is raw, so the oracle's own escapes show there as backslashes
         // (CI drew `[[[[x|]]a]]`). Nested wikilinks are not markup anyone
         // writes on purpose; neither reading is promised.
-        if inside_a_wikilink(&escaped(&src)) {
+        if inside_a_wikilink(&oracle) {
             return Ok(());
         }
         let a = Document::parse(&src);
-        let b = Document::parse(&escaped(&src));
+        let b = Document::parse(&oracle);
         proptest::prop_assert_eq!(&a.text, &b.text, "src {:?}", src);
         proptest::prop_assert_eq!(styles(&a), styles(&b), "src {:?}", src);
         proptest::prop_assert_eq!(links(&a), links(&b), "src {:?}", src);
@@ -336,6 +401,8 @@ proptest::proptest! {
 #[test]
 fn the_oracle_skips_only_a_wikilink_inside_a_wikilink() {
     assert!(inside_a_wikilink(&escaped("[[[[x|]]a]]")));
+    // In a footnote's text too, which only the reader's options read.
+    assert!(inside_a_wikilink(&escaped("\n\n[^1]: [[[[x|]]'\\[[x|]]a")));
     assert!(!inside_a_wikilink(&escaped("see [[x|]] here [[y]]")));
     assert!(!inside_a_wikilink(&escaped("*[[x|]]* now")));
 }

@@ -11,6 +11,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **The text width setting is never a dead end**: from the whole window, Enter or a click
   starts over at the narrowest. The help sheet finds `backspace`, `width` and `image`.
   A config that begins with a byte-order mark keeps its first setting.
+- **`[[[x](|]]'` shows every character typed.** An empty-label wikilink followed by a `'`
+  could take the text between an earlier `](` and itself out of the page.
 - **Hidden characters inside `H~2~O` or `x^2^` no longer switch the script off**: a few
   tag characters within one, or before its `~` or `^`, left the delimiters showing.
 - **`git log --stat` keeps its diffstat as the block of aligned lines it is**, and so do
