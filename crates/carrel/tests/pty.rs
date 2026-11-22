@@ -2259,3 +2259,54 @@ fn a_dead_link_is_struck_in_a_file_named_bare() {
         sgr_before(&cap, "livelink")
     );
 }
+
+/// `--render` to a terminal makes a local link a hyperlink to the file; to a
+/// file or a pipe it does not. The address is the reader's absolute path —
+/// home directory, folder layout — and redirected output is what gets
+/// pasted into an issue or mailed to someone. A link with a scheme is the
+/// document's own and is a hyperlink either way.
+#[test]
+fn render_names_local_files_only_to_a_terminal() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("other.md"), "x\n").unwrap();
+    std::fs::write(
+        d.path().join("doc.md"),
+        "[local](other.md) [[other]] [web](https://example.com/p)\n",
+    )
+    .unwrap();
+
+    let on_a_terminal = pty_run("--render doc.md", "", d.path());
+    assert!(
+        on_a_terminal.contains("]8;;file:///") && on_a_terminal.contains("/other.md"),
+        "a terminal gets the file: {on_a_terminal:?}"
+    );
+    assert!(on_a_terminal.contains("]8;;https://example.com/p"));
+
+    let piped = Command::new(env!("CARGO_BIN_EXE_carrel"))
+        .args(["--render", "doc.md"])
+        .current_dir(d.path())
+        .env("HOME", d.path())
+        .env("XDG_CONFIG_HOME", d.path().join("cfg"))
+        .env("XDG_STATE_HOME", d.path().join("state"))
+        .env("XDG_CACHE_HOME", d.path().join("cache"))
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("carrel runs");
+    let piped = String::from_utf8(piped.stdout).unwrap();
+    assert!(
+        !piped.contains("file://"),
+        "no path leaves in a pipe: {piped:?}"
+    );
+    assert!(
+        !piped.contains(d.path().to_str().unwrap()),
+        "anywhere in it: {piped:?}"
+    );
+    assert!(
+        piped.contains("]8;;https://example.com/p"),
+        "the document's own address still does: {piped:?}"
+    );
+    assert!(
+        piped.contains("local") && piped.contains("other"),
+        "{piped:?}"
+    );
+}

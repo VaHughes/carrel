@@ -131,7 +131,11 @@ strike and OSC 8 hyperlinks, but never an SGR colour. Lines break where
 do, except that a run too long for the whole row is cut as the screen cuts it,
 and the hyphen or
 .B \[u21A9]
-added there is written faint. With NO_COLOR set it is exactly
+added there is written faint. A link to a file beside the document is a
+hyperlink to that file's full path only when the output is a terminal;
+redirected or piped, only web and other addresses the document wrote itself
+are hyperlinks, so the output carries no path of yours. With NO_COLOR set it
+is exactly
 .BR \-\-plain .
 .TP
 .B \-\-tutorial

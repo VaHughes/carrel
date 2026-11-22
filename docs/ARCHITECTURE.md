@@ -432,7 +432,9 @@ Key facts:
   `App::link_files` / `App::wiki`, both filled once per document — `find_dead_links` does the
   one look at the disk, under the folder rule, via `app::local_link`); and no hyperlink for
   `#fragment`, a dead link, or a path the folder rule did not look at. `--render` applies the
-  same rule in `ansi::link_targets`, with the document's own folder as the boundary.
+  same rule in `ansi::link_targets`, with the document's own folder as the boundary — and only
+  when stdout is a terminal: redirected output names no local file, since a `file://` URI is
+  the reader's absolute path (`main::print_ansi`).
 - **The folder rule is one type, `carrel_state::wiki::Bounds`**: a link's target is folded
   lexically and refused, with no `stat`, `read_dir` or `canonicalize` of it, when it is
   absolute or leaves the library root (the document's own folder when there is no root).

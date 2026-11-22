@@ -174,8 +174,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   is not there, a path that leaves the folder, a wikilink with no note. They used to go
   out as `gone.md`, `sub/x.md`, `#d` — and a wikilink in a document opened by a relative
   path (`carrel notes.md`) as `file://plain.md`, which names a host. `--render` follows
-  the same rule (it wrapped every wikilink in the bare note name), and from a pipe only
-  addresses are hyperlinks. Clicking and following links inside carrel is unchanged.
+  the same rule (it wrapped every wikilink in the bare note name) when it prints to a
+  terminal; redirected or piped, and for a document read from a pipe, only addresses the
+  document wrote are hyperlinks, so saved output never carries your own paths. Clicking and following links inside carrel is unchanged.
 - **A mermaid diagram can no longer exhaust memory or tie up a core.** A 49 KB sequence
   diagram with 3,000 participants made carrel ask for more than 4 GB and abort, leaving
   the terminal in the alternate screen; other shapes laid out for minutes. A diagram is

@@ -484,7 +484,14 @@ fn print_ansi(path: Option<&Path>, width: u16) -> ExitCode {
     match src {
         Ok((src, stopped)) => {
             let doc = carrel_core::Document::parse(&src);
-            emit_stdin(&carrel::ansi::render_file(&doc, width, path), stopped)
+            // A local link's hyperlink is the reader's absolute path: home
+            // directory, folder layout. On a terminal that is a link to
+            // click; in a file or a pipe it is text that gets pasted and
+            // mailed. So the file is named only to a terminal, and
+            // redirected output links nothing but the document's own
+            // addresses, as a piped document does.
+            let beside = path.filter(|_| std::io::stdout().is_terminal());
+            emit_stdin(&carrel::ansi::render_file(&doc, width, beside), stopped)
         }
         Err(e) => {
             match path {
