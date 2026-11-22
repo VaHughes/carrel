@@ -546,6 +546,35 @@ fn a_format_patch_mail_reads_as_git_log_shows_the_commit() {
     );
 }
 
+/// A commit message is not HTML: `&amp;` is those five characters, and an
+/// entity the reader would decode — named, decimal, hex — is shown as
+/// typed, in a subject, a body, a list item and a record line alike. Where
+/// nothing is decoded (a code span, a name that is no entity) no backslash
+/// is added.
+#[test]
+fn an_entity_in_a_message_is_shown_as_typed() {
+    let msg = "Math shows &nbsp; for a tie &amp; drops &lt;b&gt;\n\n\
+               Body with &amp; and &#35; and &#x23; and &copy;, but `&amp;` in code,\n\
+               &notanentity; and AT&T; and a lone & and R&D stay too.\n\n\
+               - an item &mdash; with one\n\n\
+               \x20   indented &amp; record\n\
+               Reviewed-by: R&amp;D <r@x.y>";
+    let t = shown(msg);
+    for want in [
+        "Math shows &nbsp; for a tie &amp; drops &lt;b&gt;",
+        "Body with &amp; and &#35; and &#x23; and &copy;, but &amp; in code, &notanentity; and AT&T; and a lone & and R&D stay too.",
+        "an item &mdash; with one",
+        "indented &amp; record",
+        "Reviewed-by: R&amp;D <r@x.y>",
+    ] {
+        assert!(t.contains(want), "{want:?} not in {t:?}");
+    }
+    assert!(!t.contains('\\'), "{t:?}");
+    // A file's name too.
+    let t = diff_shown("diff --git a/a&amp;b.md b/a&amp;b.md\n@@ -1 +1 @@\n-a\n+b\n");
+    assert!(t.starts_with("a&amp;b.md  +1 \u{2212}1"), "{t:?}");
+}
+
 /// A merge's combined diff (`git show` of a merge, `git diff --cc`) names
 /// its file on a `diff --cc` line: the file is a section like any other,
 /// with no counts beside it — a line there carries a sigil per parent, and

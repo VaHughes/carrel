@@ -153,7 +153,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   reference definition and shown nowhere.
 - **`git log | carrel` shows what the message says.** `<sha>`, `Vec<String>` and
   `/proc/<pid>/stat` are text, not HTML to strip (an autolink `<https://…>` is still a
-  link); headers, trailers, indented lines and `#` comments keep `a^b^c`, `...` and their
+  link); an entity is the characters typed (`&amp;`, `&nbsp;`, `&#35;` were shown decoded
+  as `&`, a space and `#`); headers, trailers, indented lines and `#` comments keep `a^b^c`, `...` and their
   quotes as typed; an embed `![[my--notes]]` shows no backslash; a line holding only `+`
   or `1.` is that text, not an empty list item; and a URL typed on into `[[…]]` keeps its
   `--`.

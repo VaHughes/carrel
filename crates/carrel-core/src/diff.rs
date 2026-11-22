@@ -569,7 +569,7 @@ impl Plan {
                 }
                 true
             }
-            Some(b'<' | b'$' | b'[') if self.esc.get(&pos) != Some(&Esc::Keep) => {
+            Some(b'<' | b'$' | b'[' | b'&') if self.esc.get(&pos) != Some(&Esc::Keep) => {
                 self.esc.insert(pos, Esc::Keep);
                 true
             }
@@ -590,6 +590,12 @@ struct Parsed {
     /// broken open too: a message is not HTML, and the reader strips a
     /// tag, so `Vec<String>` read as `Vec`.
     html: Vec<std::ops::Range<usize>>,
+    /// Where an entity was decoded, each range opening at its `&`. A
+    /// message is not HTML here either: `&amp;` is five characters, and
+    /// the reader showed one. Found as text that differs from its source,
+    /// so a `&…;` nothing decodes — in a code span, or no entity's name —
+    /// is left without a backslash.
+    entities: Vec<std::ops::Range<usize>>,
     breaks: std::collections::HashSet<usize>,
     /// The ranges flagged droppable, in order.
     droppable: Vec<std::ops::Range<usize>>,
@@ -607,6 +613,7 @@ impl Parsed {
             literal: Vec::new(),
             math: Vec::new(),
             html: Vec::new(),
+            entities: Vec::new(),
             breaks: std::collections::HashSet::new(),
             droppable: Vec::new(),
             linked: Vec::new(),
@@ -616,7 +623,21 @@ impl Parsed {
         let mut no_urls = 0usize;
         // The wikilink being read, and how many links are open inside it.
         let mut wiki: Option<(std::ops::Range<usize>, usize)> = None;
+        // The parser gives a decoded entity as a text event of its own.
+        let decoded = |shown: &str, r: &std::ops::Range<usize>| {
+            let typed = &text[r.clone()];
+            typed.starts_with('&') && typed.ends_with(';') && typed != shown
+        };
         while let Some((event, r)) = events.next() {
+            if let Event::Text(shown) = &event
+                && decoded(shown, &r)
+            {
+                // In a wikilink's label the range is not to be trusted
+                // (see below), and the wikilink is broken instead.
+                parsed
+                    .entities
+                    .push(wiki.as_ref().map_or_else(|| r.clone(), |(w, _)| w.clone()));
+            }
             if urls {
                 match &event {
                     Event::Start(Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_)) => {
@@ -633,6 +654,9 @@ impl Parsed {
                         while let Some((Event::Text(next), at)) = events.peek() {
                             if at.start != end {
                                 break;
+                            }
+                            if decoded(next, at) {
+                                parsed.entities.push(at.clone());
                             }
                             shown.push_str(next);
                             end = at.end;
@@ -796,11 +820,12 @@ fn settle(mut plan: Plan) -> String {
     let openers = plan
         .base
         .bytes()
-        .filter(|b| matches!(b, b'`' | b'<' | b'$' | b'['))
+        .filter(|b| matches!(b, b'`' | b'<' | b'$' | b'[' | b'&'))
         .count();
-    // With no escape planned there is still raw HTML to find, if any.
-    // or a link reference definition, whose text would be shown nowhere.
-    let unescaped = plan.esc.is_empty() && !plan.base.contains('<') && !plan.base.contains("]:");
+    // With no escape planned there may still be raw HTML to find, an
+    // entity decoded, or a link definition whose text is shown nowhere.
+    let unescaped =
+        plan.esc.is_empty() && !plan.base.contains(['<', '&']) && !plan.base.contains("]:");
     if plan.bare.is_empty() && (unescaped || (openers == 0 && breaks == 0)) {
         return plan.render(|_| true).0;
     }
@@ -817,20 +842,7 @@ fn settle(mut plan: Plan) -> String {
     let bare = plan.bare.len();
     for round in 0..=openers + breaks + bare + FALLBACK_ROUND {
         if round == FALLBACK_ROUND {
-            // Still unsettled: a paragraph built to cascade. Escape every
-            // opener there is, so no construct can form and only the
-            // breaks are left to settle — a bound on the work, at the cost
-            // of this paragraph's own code spans and links.
-            let b = plan.base.as_bytes();
-            let open: Vec<usize> = b
-                .iter()
-                .enumerate()
-                .filter(|&(i, c)| matches!(c, b'`' | b'<' | b'$' | b'[') && !plan.author_escapes(i))
-                .map(|(i, _)| i)
-                .collect();
-            for i in open {
-                plan.esc.insert(i, Esc::Keep);
-            }
+            plan.escape_every_opener();
         }
         let (text, at) = plan.render(|_| true);
         let parsed = Parsed::of(&text, false);
@@ -858,8 +870,8 @@ fn settle(mut plan: Plan) -> String {
             (text2, at2, parsed2)
         };
         let mut found = parsed2.showing(&at2, |_| true);
-        found.extend(parsed2.math.iter().cloned());
-        found.extend(parsed2.html.iter().cloned());
+        let (math, html, entities) = (&parsed2.math, &parsed2.html, &parsed2.entities);
+        found.extend(math.iter().chain(html).chain(entities).cloned());
         // A link reference definition is text the reader shows nowhere:
         // the worst loss, a silent one. Which lines are one is the
         // parser's to say — a label holds escapes and runs over lines —
@@ -913,6 +925,25 @@ fn settle(mut plan: Plan) -> String {
 }
 
 impl Plan {
+    /// For a paragraph still unsettled, one built to cascade: escape every
+    /// opener there is, so no construct can form and only the breaks are
+    /// left to settle — a bound on the work, at the cost of this
+    /// paragraph's own code spans and links.
+    fn escape_every_opener(&mut self) {
+        let open: Vec<usize> = self
+            .base
+            .bytes()
+            .enumerate()
+            .filter(|&(i, c)| {
+                matches!(c, b'`' | b'<' | b'$' | b'[' | b'&') && !self.author_escapes(i)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in open {
+            self.esc.insert(i, Esc::Keep);
+        }
+    }
+
     /// Escape each hyphen or `$` left bare for a URL the reader does not
     /// link after all — cut by markup, inside a link label, in a record
     /// line — like any other. `false` when every one is linked.
@@ -2072,6 +2103,14 @@ Author: B <b@example.com>
             "]:",
             "/u",
             "]: word",
+            "&amp;",
+            "&nbsp;",
+            "&lt;",
+            "&#x23;",
+            "&notanentity;",
+            "AT&T;",
+            "&",
+            ";",
             "!",
             "<sha>",
             "Vec<word>",
@@ -2271,7 +2310,7 @@ Author: B <b@example.com>
                 // hides its destination and a wikilink its target: the
                 // author's own markup, which stays in its paragraph.)
                 let hides = src.contains("](") || src.contains("[[");
-                for word in ["word", "sha"].into_iter().filter(|_| !hides) {
+                for word in ["word", "sha", "amp;", "nbsp;", "x23;"].into_iter().filter(|_| !hides) {
                     prop_assert_eq!(
                         doc.text.matches(word).count(),
                         src.matches(word).count(),
