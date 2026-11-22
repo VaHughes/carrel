@@ -227,10 +227,14 @@ impl Mail {
 }
 
 /// `Name: value` as a mail writes a header: a name of letters, digits and
-/// hyphens, then the colon.
+/// hyphens that begins with a capital, then the colon. The capital is what
+/// tells `Subject:` from a body line whose first word ends in a colon
+/// (`12:30 was when…`, `fix: x`, `https://…`), which was read as a header
+/// and flowed into the author's line.
 fn is_mail_header(l: &str) -> bool {
     l.split_once(':').is_some_and(|(name, _)| {
-        !name.is_empty() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
     })
 }
 
@@ -506,8 +510,9 @@ enum StatLine {
     File,
     /// `--summary`'s ` create mode 100644 path`, which only follows others.
     Extra,
-    /// `--name-only`'s bare path: any unindented run with no space in it,
-    /// so it counts only under an indented message.
+    /// `--name-only`'s bare path: an unindented run with no space in it, or
+    /// one with spaces that still reads as a path. It counts only under an
+    /// indented message.
     Name,
 }
 
@@ -534,7 +539,17 @@ fn stat_line(l: &str) -> Option<StatLine> {
             .then_some(StatLine::File);
     }
     let Some(rest) = l.strip_prefix(' ') else {
-        return (!l.is_empty() && !l.contains(char::is_whitespace)).then_some(StatLine::Name);
+        // With a space in it, only when it still reads as a path: a
+        // separator, or a name that ends in an extension. `some words
+        // here` at the margin is somebody's prose.
+        let pathlike = l.contains('/')
+            || l.rsplit_once('.').is_some_and(|(stem, ext)| {
+                !stem.is_empty()
+                    && (1..=8).contains(&ext.len())
+                    && ext.bytes().all(|c| c.is_ascii_alphanumeric())
+            });
+        return (!l.is_empty() && (!l.contains(char::is_whitespace) || pathlike))
+            .then_some(StatLine::Name);
     };
     if let Some((share, dir)) = rest.trim_start().split_once("% ")
         && let Some((whole, tenth)) = share.split_once('.')
@@ -590,8 +605,11 @@ fn stat_block<'a>(paras: &[&'a [&'a str]], body: usize) -> Option<(usize, &'a [&
     let count = |shape| shapes.iter().filter(|s| **s == shape).count();
     let files = count(StatLine::File);
     let named = count(StatLine::Name);
-    // Bare paths are not mixed into the other shapes.
-    if named > 0 && named < shapes.len() {
+    // Bare paths are not mixed into the other shapes. And a path with a
+    // space in it is one only beside a path with none: alone, `M src/f.txt`
+    // typed by a person reads the same.
+    if named > 0 && (named < shapes.len() || block.iter().all(|l| l.contains(char::is_whitespace)))
+    {
         return None;
     }
     let mut message = above.iter().copied().chain([&last[..at]]).flatten();

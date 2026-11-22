@@ -1060,6 +1060,15 @@ fn mail_headers_end_at_the_first_line_that_is_not_one() {
         )),
         "{t:?}"
     );
+    // A body line whose first word ends in a colon is not a header: a mail
+    // header's name begins with a capital letter.
+    for body in ["12:30 was when it broke", "fix: x", "https://example.com/x"] {
+        let t = diff_shown(&mail(&format!("Subject: [PATCH] the subject\n{body}\n\n")));
+        assert!(
+            t.starts_with(&format!("{MAIL_TOP}the subject\n{body}\n")),
+            "{body}: {t:?}"
+        );
+    }
     // A folded header is still one header, and a line shaped like a header
     // under the blank line is still the message.
     let t = diff_shown(&mail(
@@ -1134,6 +1143,12 @@ fn a_logs_diffstat_keeps_its_lines() {
         ),
         ("\nA\tsrc/f.txt\n", "A   src/f.txt\n"),
         ("\nsrc/f.txt\nMakefile\n", "src/f.txt\nMakefile\n"),
+        // `--name-only` with a space in a path: one such line un-fenced
+        // the whole block, and the names ran together as prose.
+        (
+            "\nmy file.md\nplain.md\né.md\n",
+            "my file.md\nplain.md\né.md\n",
+        ),
         (
             "\n:100644 100644 ffb6e80 911aaa9 M\tCHANGELOG.md\n  31.7% crates/carrel/src/\n",
             ":100644 100644 ffb6e80 911aaa9 M    CHANGELOG.md\n  31.7% crates/carrel/src/\n",

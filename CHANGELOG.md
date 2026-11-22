@@ -9,7 +9,7 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   nothing said why. With the settings, the info card, a list or a menu open the page no
   longer scrolls on behind it.
 - **The text width setting is never a dead end**: from the whole window, Enter or a click
-  starts over at the narrowest. The help sheet finds `backspace`, `width` and `image`.
+  starts over at the narrowest (`→` and `+` still stop there). The help sheet finds `backspace`, `width` and `image`.
   A config that begins with a byte-order mark keeps its first setting.
 - **`[[[x](|]]'` shows every character typed.** An empty-label wikilink followed by a `'`
   could take the text between an earlier `](` and itself out of the page.

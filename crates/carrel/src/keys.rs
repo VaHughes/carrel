@@ -576,9 +576,11 @@ impl Keys {
             KeyCode::Char('c') if ctrl => Some(Action::Quit),
             KeyCode::Char('j') | KeyCode::Down => Some(Action::SettingsMove(1)),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::SettingsMove(-1)),
-            KeyCode::Enter | KeyCode::Char(' ' | '+' | '=') | KeyCode::Right => {
-                Some(Action::SettingsAdjust(1))
-            }
+            // Enter is "change this" (and a click is the same): the next
+            // value, starting over after the last. The sign keys and the
+            // arrows are "more" and "less", and stop at the ends.
+            KeyCode::Enter | KeyCode::Char(' ') => Some(Action::SettingsAdjust(1)),
+            KeyCode::Char('+' | '=') | KeyCode::Right => Some(Action::SettingsAdjust(2)),
             KeyCode::Char('-' | '_') | KeyCode::Left => Some(Action::SettingsAdjust(-1)),
             KeyCode::Char(',' | 'q') | KeyCode::Esc => Some(Action::SettingsToggle),
             _ => None,

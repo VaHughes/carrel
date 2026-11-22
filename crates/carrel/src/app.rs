@@ -4524,7 +4524,7 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
         // Enter and a click only ever step UP, and the widest setting was
         // a dead end from the pane, whose keys for narrower it never
         // names: from the whole window, one more step starts over.
-        Setting::TextWidth if d > 0 && app.max_width == 0 => {
+        Setting::TextWidth if d == 1 && app.max_width == 0 => {
             app.max_width = crate::config::MIN_MEASURE - 5;
             step_measure(app, 1);
         }
@@ -7904,18 +7904,18 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
     }
     // A note outside the folder was never looked for; where its name leads
     // is asked about first, as for a markdown link out of the folder.
-    let Some(target) = app
-        .wiki
-        .get(&id)
-        .cloned()
-        .or_else(|| app.wiki_outside(bare))
-    else {
+    let placed = app.wiki.get(&id).cloned();
+    // Known to lead outside by its spelling alone, so asked about whether
+    // or not anything is there: answering "no such file" at once told a
+    // document what exists outside the folder.
+    let outside = placed.is_none();
+    let Some(target) = placed.or_else(|| app.wiki_outside(bare)) else {
         app.note = Some(format!("no document named '{bare}' in this folder"));
         return Outcome::Redraw;
     };
     // A wikilink's first resolution rule is `here_dir.join(name)`, so
     // `[[../../etc/passwd]]` escapes exactly as a markdown link does.
-    if app.escapes_library(&target) && !app.confirmed_open(id, &target) {
+    if (outside || app.escapes_library(&target)) && !app.confirmed_open(id, &target) {
         return app.ask_before_leaving(id, &target);
     }
     let anchor = Place::kept(&app.doc, DocByte(app.view.anchor));
@@ -8174,6 +8174,10 @@ mod tests {
             seen[whole + 2] > seen[whole + 1],
             "and climbs again: {seen:?}"
         );
+        // "Wider", by its own keys, stops at the whole window.
+        a.max_width = 0;
+        update(&mut a, Action::SettingsAdjust(2));
+        assert_eq!(a.max_width, 0);
         // Narrower, by its own key, still stops at the narrowest.
         a.max_width = crate::config::MIN_MEASURE;
         update(&mut a, Action::SettingsAdjust(-1));
@@ -10054,6 +10058,15 @@ mod tests {
         assert!(a.path.ends_with("links.md"), "nothing opened yet");
         update(&mut a, Action::LinkOpen(0));
         assert!(a.path.ends_with("secret.md"), "{}", a.path);
+        update(&mut a, Action::Back);
+        // One that is not there asks first all the same: "no such file" at
+        // once would say what exists outside the folder.
+        update(&mut a, Action::LinkOpen(1));
+        let note = a.note.clone().unwrap_or_default();
+        assert!(note.contains("outside this folder"), "{note}");
+        update(&mut a, Action::LinkOpen(1));
+        let note = a.note.clone().unwrap_or_default();
+        assert!(note.contains("cannot open"), "{note}");
 
         let mut a = App::new_home(d.clone(), vec![], 80, 24);
         a.open_path(&file).unwrap();
