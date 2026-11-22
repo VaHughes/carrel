@@ -53,9 +53,10 @@ Last updated: 2026-11-21 (second adversarial hunt: eight hunters, three rounds o
   tester, a security hunter, a performance hunter, a documentation-versus-behavior checker
   and two cold code reviewers. About ninety reproduced defects, each fixed test-first with
   the test break-checked; the reviews of the fixes found about twenty more in them (two
-  regressions in the first round), fixed the same way. Gates: **1,818 tests**,
+  regressions in the first round), fixed the same way. Gates: **1,854 tests**,
   zero-warning clippy on 1.97, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
-  1.95; parse 1.6 ms/MB, height pass 4.6 ms/MB ASCII and 14.3 ms/MB CJK.
+  1.95; parse 1.5 ms/MB, height pass 4.1 ms/MB ASCII and 12.8 ms/MB CJK, resize 4.6 ms and
+  live reload 14 ms per MB (`cargo bench`, quiet machine).
   - *Crashes.* Math is scanned as pulldown-latex tokenizes it (`math::nesting`): `%`
     comments, Unicode spaces, `\frac+`, `\sqrt[ab]`, `\sideset` and macro definitions
     all reached its recursion or its lexer and aborted; `\def`/`\let`/`\newcommand`,
@@ -591,10 +592,12 @@ planned:
   A long ROW of them (`\hat a\hat a …`) renders at any length. More than 64 unknown
   commands in one group, or 64 comments in a row, cost a formula its rendering too
   (`math::MAX_BARE_CHAIN`, `MAX_COMMENT_RUN`).
-- A mermaid diagram past its cost limits (2,000 items; for a flowchart 500 nodes, or a
-  shape whose widest rank would take seconds to lay out; 64 KiB of source outside
-  comments; a document's diagrams together 5 s of drawing) stays source, with a caption.
-  The worst shape that still draws takes about 1.5 s and 90 MB, off the UI thread.
+- A mermaid diagram past its cost limits (2,000 items; for a flowchart 400 nodes, or
+  nodes × edges over 160,000; for a class or ER diagram nodes² × relations over
+  30 million; 64 KiB of source outside comments; a document's diagrams together 5 s of
+  drawing) stays source, with a caption. The worst shape that still draws takes about a
+  second, off the UI thread. The class bound cannot tell a tree from a tangle, so a
+  cheap 400-class inheritance tree is refused too.
 - Display math (`$$…$$`) inside a table cell is not a cell's content: the row splits
   over three lines and leaves an empty math block above the table. Inline math in a
   cell is fine.
@@ -671,13 +674,25 @@ implement. The GTK4 GUI phase is not started and has no date.
   source sees, and the parser's recursion aborts the reader.
 - 2026-11-21: **printed output leaves out what the cells refuse**: a Hangul filler or a
   lone medial or final jamo takes no cell on screen and is not printed by `--plain` or
-  `--render` either. Tag characters and the interlinear annotation controls reach no
-  cell, no copy and no printed line (`carrel_core::hidden::strip`), except in a
-  well-formed flag; bidi marks stay in printed body text, which may be right-to-left.
+  `--render` either. Tag characters and the interlinear annotation controls never enter
+  the display text (the parser's `Builder::push` leaves them out, provenance kept), so
+  search, selection, copy and printing read what is shown; names and titles are
+  stripped where they leave (`carrel_core::hidden::strip`). Only the flags of England,
+  Scotland and Wales are kept. Bidi marks stay in printed body text, which may be
+  right-to-left.
 - 2026-11-21: **a hyperlink is an address a terminal can open, or is not sent**: a
   destination with a scheme as written; a local file that resolves, or a placed wikilink,
   as an absolute `file:///` URI; none for `#fragment` alone, a dead link, a path outside
   the folder, or anything on a pipe. The link selected with Tab is a hyperlink too.
+  `--render` names a local file only when its output is a terminal: redirected, it
+  would put the reader's home path in a file people share.
+- 2026-11-21: **a wikilink that leaves the folder is refused before the disk is asked**
+  (`wiki::Bounds`), as a markdown link always was: a document is untrusted, and a `stat`
+  of wherever it points is not its to order. With no library root the folder is the
+  document's own, so `[[../x]]` in a file opened bare does not resolve.
+- 2026-11-21: **a `git format-patch` mail reads as `git log -p` shows its commit**:
+  `Subject:` is the title, `From:` the author, the diffstat a plain fence. A hunk keeps
+  the sigil-led lines its header under-counted.
 - 2026-11-21: **a diagram is refused by what it would cost, not by how big it is**, and
   says so on its gap row (`too large to draw — shown as text`). The limits and the
   measurements behind them are in `diagrams.rs`'s module doc.
