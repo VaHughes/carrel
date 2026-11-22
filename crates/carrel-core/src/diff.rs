@@ -108,6 +108,111 @@ fn mail_commit(l: &str) -> Option<&str> {
     (matches!(sha.len(), 40 | 64) && sha.bytes().all(|c| c.is_ascii_hexdigit())).then_some(sha)
 }
 
+/// Is `line`, met straight after the lines a hunk's header counted, more
+/// of that hunk? A header can count short — a patch edited by hand — and a
+/// line that still opens with a sigil is then the hunk's, not prose: left
+/// to the message it was reflowed into a run-on paragraph, its `- ` a list.
+///
+/// Not when it is plainly something else: the `---`/`+++` pair opening the
+/// next file, or a patch's `-- ` signature, which has git's version or the
+/// end of the mail under it. `next` is the line after.
+fn is_past_the_count(line: &str, next: Option<&str>) -> bool {
+    if !line.starts_with([' ', '+', '-']) {
+        return false;
+    }
+    let next_file = line.starts_with("--- ") && next.is_some_and(|n| n.starts_with("+++ "));
+    let signature = matches!(line, "-- " | "--")
+        && next.is_none_or(|n| n.is_empty() || n.starts_with(|c: char| c.is_ascii_digit()));
+    !next_file && !signature
+}
+
+/// A `git format-patch` mail from its `From <sha>` line to its diff: mail
+/// headers, the message, and under a `---` line the diffstat.
+#[derive(Default)]
+struct Mail {
+    /// Each header unfolded onto one line.
+    headers: Vec<String>,
+    /// The blank line that ends the headers has been read.
+    in_message: bool,
+    message: Vec<String>,
+    /// From the `---` line on, as written.
+    stat: Option<String>,
+}
+
+impl Mail {
+    fn read(&mut self, line: &str) {
+        if let Some(stat) = &mut self.stat {
+            stat.push_str(line);
+            stat.push('\n');
+        } else if self.in_message {
+            if line == "---" {
+                self.stat = Some("---\n".to_string());
+            } else {
+                self.message.push(line.to_string());
+            }
+        } else if line.is_empty() {
+            self.in_message = true;
+        } else if let Some(last) = self
+            .headers
+            .last_mut()
+            .filter(|_| line.starts_with([' ', '\t']))
+        {
+            // A long header is folded onto lines that open with a space.
+            last.push(' ');
+            last.push_str(line.trim_start());
+        } else {
+            self.headers.push(line.to_string());
+        }
+    }
+
+    /// Written as `git log` writes the commit, so the two read alike and
+    /// the message goes through the same [`emit_message`]: `From:` is the
+    /// author, the other headers records under it, `Subject:` the title —
+    /// less the `[PATCH n/m]` the mail put before it — and the message
+    /// indented beneath. The headers were one paragraph of prose, since a
+    /// folded subject's second line is no header, and the diffstat another.
+    ///
+    /// The diffstat keeps its columns in a fence of its own; a `---` with
+    /// nothing under it but the diff says nothing, and goes.
+    fn flush(self, out: &mut String) {
+        let mut lines = Vec::with_capacity(self.headers.len() + self.message.len() + 3);
+        let mut subject = None;
+        for header in self.headers {
+            if let Some(who) = header.strip_prefix("From: ") {
+                lines.push(format!("Author: {who}"));
+            } else if let Some(title) = header.strip_prefix("Subject: ") {
+                let tagged = title
+                    .strip_prefix('[')
+                    .and_then(|rest| rest.split_once("] "))
+                    .filter(|(tag, _)| tag.contains("PATCH") && !tag.contains(']'));
+                subject = Some(tagged.map_or(title, |(_, title)| title).to_string());
+            } else {
+                lines.push(header);
+            }
+        }
+        lines.push(String::new());
+        let message = subject
+            .into_iter()
+            .chain([String::new()])
+            .chain(self.message);
+        for line in message {
+            lines.push(if line.is_empty() {
+                line
+            } else {
+                format!("    {line}")
+            });
+        }
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        emit_message(&lines, out);
+        let stat = self.stat.unwrap_or_default();
+        let stat = stat.trim_end_matches('\n');
+        if stat != "---" && !stat.is_empty() {
+            let fence = fence_for(stat);
+            let _ = write!(out, "{fence}\n{stat}\n{fence}\n\n");
+        }
+    }
+}
+
 /// A line other tools write between the files of one diff — `diff -ru`,
 /// Subversion, Mercurial — which keeps the diff going.
 fn is_between_files(l: &str) -> bool {
@@ -180,6 +285,9 @@ struct FileDiff {
     removed: usize,
     /// A hunk has been read, its lines counted off its header.
     walked: bool,
+    /// A merge's combined diff: a sigil per parent on every line, so no
+    /// one count of lines added and removed, and none is shown.
+    combined: bool,
 }
 
 impl FileDiff {
@@ -190,7 +298,7 @@ impl FileDiff {
         if !self.heading.is_empty() {
             out.push_str("## ");
             out.push_str(&escape_inline(&self.heading));
-            if self.added > 0 || self.removed > 0 {
+            if !self.combined && (self.added > 0 || self.removed > 0) {
                 let _ = write!(out, "  +{} −{}", self.added, self.removed);
             }
             out.push_str("\n\n");
@@ -691,7 +799,8 @@ fn settle(mut plan: Plan) -> String {
         .filter(|b| matches!(b, b'`' | b'<' | b'$' | b'['))
         .count();
     // With no escape planned there is still raw HTML to find, if any.
-    let unescaped = plan.esc.is_empty() && !plan.base.contains('<');
+    // or a link reference definition, whose text would be shown nowhere.
+    let unescaped = plan.esc.is_empty() && !plan.base.contains('<') && !plan.base.contains("]:");
     if plan.bare.is_empty() && (unescaped || (openers == 0 && breaks == 0)) {
         return plan.render(|_| true).0;
     }
@@ -751,6 +860,18 @@ fn settle(mut plan: Plan) -> String {
         let mut found = parsed2.showing(&at2, |_| true);
         found.extend(parsed2.math.iter().cloned());
         found.extend(parsed2.html.iter().cloned());
+        // A link reference definition is text the reader shows nowhere:
+        // the worst loss, a silent one. Which lines are one is the
+        // parser's to say — a label holds escapes and runs over lines —
+        // so each is found in the parse and its `[` escaped like any
+        // other opener. (A message that defines none pays for no parse.)
+        if text.contains("]:") {
+            found.extend(
+                crate::document::reference_definitions(&text)
+                    .into_iter()
+                    .map(|open| open..open + 1),
+            );
+        }
         if !found.is_empty() {
             if break_all(&mut plan, &found, &at2) {
                 continue;
@@ -1070,13 +1191,16 @@ pub fn to_markdown(src: &str) -> String {
     // is written `--- note`, which read as a file header and was dropped,
     // and `---i;` was left out of the counts.
     let mut hunk = (0usize, 0usize);
+    // The `git format-patch` mail being read, until its diff begins.
+    let mut mail: Option<Mail> = None;
 
     let flush_message = |message: &mut Vec<&str>, out: &mut String| {
         emit_message(message, out);
         message.clear();
     };
 
-    for line in src.lines() {
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
         if hunk != (0, 0) {
             let side = match line.as_bytes().first() {
                 // Context, which some tools write with its space trimmed.
@@ -1098,13 +1222,27 @@ pub fn to_markdown(src: &str) -> String {
             }
             hunk = (0, 0);
         }
+        // The header counted short: the hunk goes on while its lines do.
+        if file.walked && is_past_the_count(line, lines.peek().copied()) {
+            file.removed += usize::from(line.starts_with('-'));
+            file.added += usize::from(line.starts_with('+'));
+            file.body.push_str(line);
+            file.body.push('\n');
+            continue;
+        }
         // A commit opens a new section and closes whatever came before, and
         // so does a mail of `git format-patch`, which is a commit.
-        let mail = mail_commit(line);
-        if mail.is_some() || is_commit_line(line) {
+        let from = mail_commit(line);
+        if from.is_some() || is_commit_line(line) {
             std::mem::take(&mut file).flush(&mut out);
             flush_message(&mut message, &mut out);
-            let sha = mail.unwrap_or_else(|| {
+            if let Some(mail) = mail.take() {
+                mail.flush(&mut out);
+            }
+            if from.is_some() {
+                mail = Some(Mail::default());
+            }
+            let sha = from.unwrap_or_else(|| {
                 line.strip_prefix("commit ")
                     .unwrap_or("")
                     .split_whitespace()
@@ -1116,10 +1254,26 @@ pub fn to_markdown(src: &str) -> String {
             continue;
         }
 
-        if line.starts_with("diff --git ") {
+        // `diff --cc <path>` and `diff --combined <path>` name a merge's
+        // file, once and bare: it was a paragraph, and the file no section.
+        let combined = line
+            .strip_prefix("diff --cc ")
+            .or_else(|| line.strip_prefix("diff --combined "));
+        if combined.is_some() || line.starts_with("diff --git ") {
             std::mem::take(&mut file).flush(&mut out);
             flush_message(&mut message, &mut out);
-            file.heading = path_of(line).unwrap_or("(unknown file)").to_string();
+            if let Some(mail) = mail.take() {
+                mail.flush(&mut out);
+            }
+            file.heading = combined
+                .or_else(|| path_of(line))
+                .unwrap_or("(unknown file)")
+                .to_string();
+            file.combined = combined.is_some();
+            continue;
+        }
+        if let Some(mail) = &mut mail {
+            mail.read(line);
             continue;
         }
 
@@ -1137,7 +1291,10 @@ pub fn to_markdown(src: &str) -> String {
             std::mem::take(&mut file).flush(&mut out);
         }
         if !file.heading.is_empty() {
-            if !file.walked && (line.starts_with("--- ") || line.starts_with("+++ ")) {
+            // (In a merge's diff, only above its first `@@@`: under one,
+            // `--- item` is a line both parents had.)
+            let past_headers = file.walked || (file.combined && !file.body.is_empty());
+            if !past_headers && (line.starts_with("--- ") || line.starts_with("+++ ")) {
                 continue;
             }
             // `index abc..def 100644`, `new file mode`, `similarity index` —
@@ -1197,6 +1354,9 @@ pub fn to_markdown(src: &str) -> String {
 
     file.flush(&mut out);
     flush_message(&mut message, &mut out);
+    if let Some(mail) = mail {
+        mail.flush(&mut out);
+    }
     out
 }
 
@@ -1907,6 +2067,11 @@ Author: B <b@example.com>
             "\r",
             "[[x|]]",
             "![[",
+            "[word\\]",
+            "\\]",
+            "]:",
+            "/u",
+            "]: word",
             "!",
             "<sha>",
             "Vec<word>",

@@ -132,9 +132,17 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   header, and such a line is colored, and its changed words marked, as the removal or
   addition it is. A file's section ends where its hunks do: a `git format-patch` mail's
   `-- ` signature is no longer a removed line (`+1 −2` for a one-line change) and the next
-  mail no longer sits in the file's block; each mail is a commit section, and prose under
-  plain `diff -u` output is prose. A file heading shows its path as named:
-  `my--file...x.sql`, not `my–file…x.sql`.
+  mail no longer sits in the file's block, and prose under plain `diff -u` output is
+  prose. A hunk whose header counts too few lines keeps the rest of its lines. A file
+  heading shows its path as named: `my--file...x.sql`, not `my–file…x.sql`.
+- **A `git format-patch` mail reads as `git log` shows the commit**: each mail is a commit
+  section with its author and date on their own lines, the subject as the title (less its
+  `[PATCH n/m]`), the message and its trailers beneath, and the diffstat as the block of
+  aligned lines it is. The headers and the diffstat were each run together as a paragraph.
+  A merge's combined diff (`diff --cc`) now has a section for each file.
+- **A commit message never disappears into a link definition.** A paragraph opening with
+  `[`, holding an escaped `\]`, with `]: word` on a later line was read as a link
+  reference definition and shown nowhere.
 - **`git log | carrel` shows what the message says.** `<sha>`, `Vec<String>` and
   `/proc/<pid>/stat` are text, not HTML to strip (an autolink `<https://…>` is still a
   link); headers, trailers, indented lines and `#` comments keep `a^b^c`, `...` and their

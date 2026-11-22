@@ -452,6 +452,26 @@ pub(crate) fn body_events(src: &str) -> Box<dyn Iterator<Item = (Event<'_>, Rang
     }
 }
 
+/// Where the link reference definitions in `src` open, by the parser's
+/// own reading: each `[` whose label, however escaped and over however
+/// many lines, the parser took with its destination and showed nothing of.
+/// Read as [`body_events`] reads, for the same reason.
+pub(crate) fn reference_definitions(src: &str) -> Vec<usize> {
+    let masked = mask_empty_labels(src);
+    let text = masked.as_deref().unwrap_or(src);
+    let parser = Parser::new_ext(text, markdown_options());
+    let mut opens: Vec<usize> = parser
+        .reference_definitions()
+        .iter()
+        .filter_map(|(_, def)| {
+            let open = text.get(def.span.clone())?.find('[')?;
+            Some(def.span.start + open)
+        })
+        .collect();
+    opens.sort_unstable();
+    opens
+}
+
 /// GFM extended autolinks: bare `www.` runs and bare `http://` / `https://`
 /// URLs.
 ///

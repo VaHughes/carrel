@@ -327,21 +327,23 @@ diff --git a/g.txt b/g.txt\nindex 111..222 100644\n--- a/g.txt\n+++ b/g.txt\n\
             "g.txt  +1 \u{2212}1"
         ]
     );
+    // The diffstat is a block of its own, as written; a mail with none
+    // (`---` and then the diff) has no such block.
     assert_eq!(
         fences(src),
         [
+            "---\n f.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
             "@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n",
             "@@ -1 +1 @@\n-x\n+y\n"
         ]
     );
     let t = diff_shown(src);
-    // Nothing of a mail is lost: its headers, its message, its signature.
+    // A mail reads as the commit it is: who and when on their own lines,
+    // the subject as its title, then the message.
     for want in [
-        "From: A <a@x>\nDate: Mon, 1 Jan 2026 00:00:00 +0000\nSubject: [PATCH 1/2] first thing",
-        "Body text.",
-        "1 file changed, 1 insertion(+), 1 deletion(-)",
+        "commit 111111111111\nAuthor: A <a@x>\nDate: Mon, 1 Jan 2026 00:00:00 +0000\nfirst thing\nBody text.\n",
+        "commit 222222222222\nAuthor: A <a@x>\nsecond\n",
         "2.47.0",
-        "Subject: [PATCH 2/2] second",
     ] {
         assert!(t.contains(want), "{want:?} not in {t:?}");
     }
@@ -354,6 +356,310 @@ diff --git a/g.txt b/g.txt\nindex 111..222 100644\n--- a/g.txt\n+++ b/g.txt\n\
         headings("commit 1111111111111111111111111111111111111111\n\nFrom 2222222 we learned\n"),
         ["commit 111111111111"]
     );
+}
+
+/// Three commits as `git format-patch --stdout -3` writes them (the diffs
+/// cut to a hunk each): a subject folded over two lines with trailers under
+/// it, a body of paragraphs and a list, and a mail with no body at all.
+const MBOX: &str = "\
+From f674d5af35797e58b9588de27fac28762ea73ef7 Mon Sep 17 00:00:00 2001
+From: A U Thor <author@example.com>
+Date: Sat, 21 Nov 2026 18:07:26 -0500
+Subject: [PATCH 1/3] A wikilink's hyperlink is the note's absolute file URI,
+ on screen and in --render; an unresolved one gets none
+
+Co-Authored-By: Some One <someone@example.com>
+Claude-Session: https://example.com/session_01
+---
+ CHANGELOG.md                |  11 ++-
+ crates/carrel/src/ansi.rs   | 162 +++++++++++++++++++++++++++++++++---
+ crates/carrel/src/main.rs   |   2 +-
+ 3 files changed, 162 insertions(+), 13 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 6b95793..c1475e5 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,2 +1,2 @@
+ one
+-two
++TWO
+--
+2.56.0
+
+
+From 827ab3500000000000000000000000000000abcd Mon Sep 17 00:00:00 2001
+From: A U Thor <author@example.com>
+Date: Sat, 21 Nov 2026 18:20:01 -0500
+Subject: [PATCH 2/3] A double click keeps a word's combining marks
+
+Three from the third pass. A file named bare has the empty path for
+a folder, which resolves to nothing -- so `--force` did nothing.
+
+- the first <thing>
+- the second
+
+Signed-off-by: A U Thor <author@example.com>
+---
+ crates/carrel/src/app.rs | 199 +++++++++++++++++++++++++++++++++-------
+ 1 file changed, 190 insertions(+), 9 deletions(-)
+
+diff --git a/crates/carrel/src/app.rs b/crates/carrel/src/app.rs
+index 111..222 100644
+--- a/crates/carrel/src/app.rs
++++ b/crates/carrel/src/app.rs
+@@ -9 +9 @@
+-x
++y
+--
+2.56.0
+
+
+From fe660bd000000000000000000000000000001234 Mon Sep 17 00:00:00 2001
+From: A U Thor <author@example.com>
+Date: Sat, 21 Nov 2026 19:02:44 -0500
+Subject: [PATCH 3/3] STATUS: what is left
+
+---
+ docs/STATUS.md | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/docs/STATUS.md b/docs/STATUS.md
+index 111..222 100644
+--- a/docs/STATUS.md
++++ b/docs/STATUS.md
+@@ -1 +1,2 @@
+ a
++b
+--
+2.56.0
+
+";
+
+/// The same three as `git log -p -3` writes them.
+const LOG: &str = "\
+commit f674d5af35797e58b9588de27fac28762ea73ef7
+Author: A U Thor <author@example.com>
+Date:   Sat Nov 21 18:07:26 2026 -0500
+
+    A wikilink's hyperlink is the note's absolute file URI, on screen and in --render; an unresolved one gets none
+
+    Co-Authored-By: Some One <someone@example.com>
+    Claude-Session: https://example.com/session_01
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 6b95793..c1475e5 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,2 +1,2 @@
+ one
+-two
++TWO
+
+commit 827ab3500000000000000000000000000000abcd
+Author: A U Thor <author@example.com>
+Date:   Sat Nov 21 18:20:01 2026 -0500
+
+    A double click keeps a word's combining marks
+
+    Three from the third pass. A file named bare has the empty path for
+    a folder, which resolves to nothing -- so `--force` did nothing.
+
+    - the first <thing>
+    - the second
+
+    Signed-off-by: A U Thor <author@example.com>
+
+diff --git a/crates/carrel/src/app.rs b/crates/carrel/src/app.rs
+index 111..222 100644
+--- a/crates/carrel/src/app.rs
++++ b/crates/carrel/src/app.rs
+@@ -9 +9 @@
+-x
++y
+
+commit fe660bd000000000000000000000000000001234
+Author: A U Thor <author@example.com>
+Date:   Sat Nov 21 19:02:44 2026 -0500
+
+    STATUS: what is left
+
+diff --git a/docs/STATUS.md b/docs/STATUS.md
+index 111..222 100644
+--- a/docs/STATUS.md
++++ b/docs/STATUS.md
+@@ -1 +1,2 @@
+ a
++b
+";
+
+/// A mail of `git format-patch` reads as `git log -p` shows the same
+/// commit: the author and date each on a line, the subject as the title,
+/// the message under it with its trailers on their own lines. Its headers
+/// were one run-on paragraph with the diffstat another.
+#[test]
+fn a_format_patch_mail_reads_as_git_log_shows_the_commit() {
+    // What only one of the two holds: the date, which each writes its own
+    // way; the mail's diffstat and signature.
+    let comparable = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| !l.starts_with("Date:") && *l != "-- 2.56.0")
+            .map(str::to_string)
+            .collect()
+    };
+    let mail = Document::parse(&to_markdown(MBOX));
+    let mut mail_text = mail.text.clone();
+    let stats: Vec<String> = fences(MBOX)
+        .into_iter()
+        .filter(|f| f.starts_with("---\n"))
+        .collect();
+    assert_eq!(stats.len(), 3, "{stats:?}");
+    for stat in &stats {
+        mail_text = mail_text.replacen(&format!("{stat}\n"), "", 1);
+    }
+    let log = diff_shown(LOG);
+    assert_eq!(comparable(&mail_text), comparable(&log), "{}", mail.text);
+    assert_eq!(headings(MBOX), headings(LOG));
+    // The diffstat is as written, column for column.
+    assert_eq!(
+        stats[0],
+        "---\n CHANGELOG.md                |  11 ++-\n crates/carrel/src/ansi.rs   | 162 +++++++++++++++++++++++++++++++++---\n crates/carrel/src/main.rs   |   2 +-\n 3 files changed, 162 insertions(+), 13 deletions(-)\n"
+    );
+    // Each header is a line of its own, shown as written.
+    assert!(
+        mail.text.contains(
+            "commit f674d5af3579\nAuthor: A U Thor <author@example.com>\nDate: Sat, 21 Nov 2026 18:07:26 -0500\nA wikilink\u{2019}s hyperlink is the note\u{2019}s absolute file URI, on screen and in --render; an unresolved one gets none\nCo-Authored-By: Some One <someone@example.com>\nClaude-Session: https://example.com/session_01\n"
+        ),
+        "{:?}",
+        mail.text
+    );
+    // Headers git does not write in a log stay, each on its line.
+    let mime = MBOX.replacen(
+        "Subject: [PATCH 2/3] A double",
+        "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nSubject: [PATCH v2 2/3] A double",
+        1,
+    );
+    let t = diff_shown(&mime);
+    assert!(
+        t.contains("Date: Sat, 21 Nov 2026 18:20:01 -0500\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nA double click keeps"),
+        "{t:?}"
+    );
+}
+
+/// A merge's combined diff (`git show` of a merge, `git diff --cc`) names
+/// its file on a `diff --cc` line: the file is a section like any other,
+/// with no counts beside it — a line there carries a sigil per parent, and
+/// which of them is "added" is not one number.
+#[test]
+fn a_combined_diff_names_its_file() {
+    let src = "commit 1111111111111111111111111111111111111111\nMerge: 2222222 3333333\nAuthor: A <a@x>\n\n    Merge branch 'topic'\n\n\
+diff --cc src/lib.rs\nindex 1111111,2222222..3333333\n--- a/src/lib.rs\n+++ b/src/lib.rs\n\
+@@@ -1,3 -1,3 +1,4 @@@\n  one\n- two\n -deux\n++both\n +kept\n--- item\n\
+diff --combined docs/a b.md\nindex 1,2..3\n--- a/docs/a b.md\n+++ b/docs/a b.md\n@@@ -1 -1 +1 @@@\n++x\n\
+diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-p\n+q\n";
+    assert_eq!(
+        headings(src),
+        [
+            "commit 111111111111",
+            "src/lib.rs",
+            "docs/a b.md",
+            "g  +1 \u{2212}1"
+        ]
+    );
+    assert_eq!(
+        fences(src),
+        [
+            "@@@ -1,3 -1,3 +1,4 @@@\n  one\n- two\n -deux\n++both\n +kept\n--- item\n",
+            "@@@ -1 -1 +1 @@@\n++x\n",
+            "@@ -1 +1 @@\n-p\n+q\n"
+        ]
+    );
+}
+
+/// A link reference definition shows nothing, so message text that reads
+/// as one is gone without a trace. Which lines do is the parser's to say:
+/// a label may hold an escaped `\]` and run over lines, and a line-by-line
+/// guess that counted `\]` as the label's end let both lines through.
+#[test]
+fn message_text_never_vanishes_into_a_link_definition() {
+    for msg in [
+        "Subject line\n\n[skip\\] marker handling: the old code\ntreated the tag as closed (see notes]: fixed",
+        "[word\\]\nword]: /u",
+        "[word\\]\n]:\n/u",
+        "S\n\n[a\\]b\nc\nd]: <x y> 'title\nmore'",
+        "S\n\n- [a\\]\n  b]: /u\n- [c]: /v \"t\"",
+        "S\n\n[a]: /one\n[a]: /two\n[b\\]]: /three",
+        "S\n\n   [x\\]\n   y]:\n   /u 'w'\ntail",
+    ] {
+        let t = shown(msg);
+        let flat = |s: &str| {
+            s.replace('\\', "")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let (want, got) = (flat(&msg.replace("- ", "")), flat(&t));
+        let body = want.split_once(' ').map_or(want.as_str(), |(_, rest)| rest);
+        assert!(
+            got.replace(['\u{2018}', '\u{2019}'], "'")
+                .replace(['\u{201c}', '\u{201d}'], "\"")
+                .contains(body),
+            "{msg:?}: {t:?}"
+        );
+    }
+}
+
+/// A hunk whose header counts fewer lines than follow it keeps them: a
+/// line that still reads as hunk content belongs to the hunk above, and a
+/// count that lies must not turn code into a run-on paragraph. What ends
+/// it is what is plainly not content: a header, a signature, prose.
+#[test]
+fn lines_past_a_short_count_stay_in_their_hunk() {
+    let src = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n ctx1\n-old1\n+new1\n SURPLUS-CTX\n-SURPLUS-OLD\n+SURPLUS-NEW\n- # not a heading\n\\ No newline at end of file\ndiff --git a/g.txt b/g.txt\n--- a/g.txt\n+++ b/g.txt\n@@ -1 +1 @@\n-g old\n+g new\n";
+    assert_eq!(
+        headings(src),
+        ["f.txt  +2 \u{2212}3", "g.txt  +1 \u{2212}1"]
+    );
+    assert_eq!(
+        fences(src),
+        [
+            "@@ -1,2 +1,2 @@\n ctx1\n-old1\n+new1\n SURPLUS-CTX\n-SURPLUS-OLD\n+SURPLUS-NEW\n- # not a heading\n\\ No newline at end of file\n",
+            "@@ -1 +1 @@\n-g old\n+g new\n"
+        ]
+    );
+    // Still not content, short count or true: the signature, with the
+    // version under it or the mail's end; the next file's header pair; a
+    // line with no sigil.
+    for (after, kept) in [
+        ("-- \n2.47.0\n", ""),
+        ("-- \n", ""),
+        (
+            "-- \n\nFrom 2222222222222222222222222222222222222222 Mon Sep 17 00:00:00 2001\n",
+            "",
+        ),
+        ("--- a/h\n+++ b/h\n@@ -1 +1 @@\n-p\n+q\n", ""),
+        ("Prose.\n- and a list\n", ""),
+        ("\n-after a blank\n", ""),
+        // But a removed `-- ` with more of the hunk under it is content,
+        // and so is a removed `-- comment` (`--- comment`) with no `+++`.
+        ("-- \n-more\n", "-- \n-more\n"),
+        (
+            "--- old comment\n+-- new comment\n",
+            "--- old comment\n+-- new comment\n",
+        ),
+        ("+++i;\n", "+++i;\n"),
+    ] {
+        for header in ["@@ -1 +1 @@", "@@ -1,2 +1,2 @@"] {
+            let src =
+                format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{header}\n one\n-x\n+y\n{after}");
+            let first = fences(&src).remove(0);
+            assert_eq!(
+                first,
+                format!("{header}\n one\n-x\n+y\n{kept}"),
+                "{after:?} under {header}"
+            );
+        }
+    }
 }
 
 /// What follows a diff's last hunk is not the diff: a patch's signature,
@@ -494,6 +800,61 @@ mod hunks {
                     let old = lines.iter().filter(|(sigil, _)| *sigil != '+').count();
                     let new = lines.iter().filter(|(sigil, _)| *sigil != '-').count();
                     let _ = writeln!(body, "@@ -1,{old} +1,{new} @@");
+                    for (sigil, content) in lines {
+                        let _ = writeln!(body, "{sigil}{content}");
+                    }
+                    added += lines.len() - old;
+                    removed += lines.len() - new;
+                }
+                src.push_str(&body);
+                let _ = write!(want, "f{i}");
+                if added + removed > 0 {
+                    let _ = write!(want, "  +{added} \u{2212}{removed}");
+                }
+                let _ = write!(want, "\n{body}\n");
+            }
+            prop_assert_eq!(diff_shown(&src), want, "{}", src);
+        }
+
+        /// A header that counts too many lines or too few costs no line
+        /// and moves none out of its fence, and the counts beside the
+        /// file's name are still of the lines shown.
+        #[test]
+        fn a_lying_count_costs_no_line(
+            files in prop::collection::vec(
+                prop::collection::vec((hunk(), 0usize..=8, 0usize..=8), 1..3),
+                1..3,
+            ),
+            in_a_log in any::<bool>(),
+        ) {
+            let mut src = String::new();
+            let mut want = String::new();
+            if in_a_log {
+                src.push_str("commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A\n\n    Subject\n\n");
+                want.push_str("commit 0abcdef01234\nAuthor: A\nSubject\n");
+            }
+            for (i, hunks) in files.iter().enumerate() {
+                let _ = write!(src, "diff --git a/f{i} b/f{i}\n--- a/f{i}\n+++ b/f{i}\n");
+                let (mut added, mut removed) = (0, 0);
+                let mut body = String::new();
+                for (lines, old_off, new_off) in hunks {
+                    let old = lines.iter().filter(|(sigil, _)| *sigil != '+').count();
+                    let new = lines.iter().filter(|(sigil, _)| *sigil != '-').count();
+                    // Up to four lines over the truth, or four under.
+                    let said = |true_count: usize, off: usize| (true_count + off).saturating_sub(4);
+                    // A header that counts nothing is believed about
+                    // nothing, and is another test's.
+                    let (said_old, said_new) = match (said(old, *old_off), said(new, *new_off)) {
+                        (0, 0) => (old, new),
+                        said => said,
+                    };
+                    // Past a short count, `--- x` over `+++ y` reads as the
+                    // next file's header, as it must.
+                    prop_assume!(!lines.windows(2).any(|w| {
+                        w[0].0 == '-' && w[0].1.starts_with("-- ")
+                            && w[1].0 == '+' && w[1].1.starts_with("++ ")
+                    }));
+                    let _ = writeln!(body, "@@ -1,{said_old} +1,{said_new} @@");
                     for (sigil, content) in lines {
                         let _ = writeln!(body, "{sigil}{content}");
                     }
