@@ -4,6 +4,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **An idle reader sends its hyperlinks once.** They were re-sent after every frame, ten
+  times a second with nothing happening: a page of links wrote tens of kilobytes a second
+  to the terminal, which over ssh is traffic for as long as the reader is open.
 - **Auto-read says it is on, and waits under a pane.** The lamp reads `auto-reading` with
   `A stop` beside it for as long as the page moves by itself; before, once the note faded
   nothing said why. With the settings, the info card, a list or a menu open the page no

@@ -2213,7 +2213,7 @@ fn run_loop(
         diagrams.sync(&app);
         diagrams.drain(&mut app);
         if repaint && resize.pending.is_none() {
-            resize.clear_if_needed(&mut terminal)?;
+            resize.clear_if_needed(&mut terminal, &mut painted)?;
             paint(&mut terminal, &app, &mut painted, &mut images.protocols)?;
         }
         repaint = true; // only a motion burst turns this off, and only briefly
@@ -2853,7 +2853,7 @@ fn run_home(root: PathBuf, note: Option<String>, searches: RecentSearches) -> st
         diagrams.drain(&mut app);
         fill_titles(&mut app);
         if repaint && resize.pending.is_none() {
-            resize.clear_if_needed(&mut terminal)?;
+            resize.clear_if_needed(&mut terminal, &mut painted)?;
             paint(&mut terminal, &app, &mut painted, &mut images.protocols)?;
         }
         repaint = true; // only a motion burst turns this off, and only briefly
@@ -2960,10 +2960,17 @@ impl Resize {
 
     /// A shrink/grow burst can lose terminal cells even when its final size
     /// equals the last drawn size. Invalidate ratatui's retained buffer too.
-    fn clear_if_needed(&mut self, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
+    fn clear_if_needed(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        painted: &mut Painted,
+    ) -> std::io::Result<()> {
         if self.dirty {
             // Fullscreen resize clears without Terminal::clear's cursor query.
             terminal.resize(terminal.size()?.into())?;
+            // Every cell is about to be redrawn bare: the hyperlinks the
+            // terminal held go with them, and must be sent again.
+            painted.sent = None;
             self.dirty = false;
         }
         Ok(())
@@ -3836,7 +3843,11 @@ fn paint(
             render::draw_full(f, app, painted, images);
             render::declare_wide_cells(f);
         })?;
-        emit_osc8(&painted.links)
+        let size = terminal.size()?;
+        if hyperlinks_due(&mut painted.sent, &painted.links, (size.width, size.height)) {
+            emit_osc8(&painted.links)?;
+        }
+        Ok(())
     })
 }
 
@@ -3858,6 +3869,31 @@ fn synchronized<T>(paint: impl FnOnce() -> std::io::Result<T>) -> std::io::Resul
     let painted = paint();
     execute!(std::io::stdout(), EndSynchronizedUpdate)?;
     painted
+}
+
+/// Whether this frame's hyperlinks have to be sent: not when they are the
+/// ones the terminal already holds, at the same size.
+///
+/// The pass repaints each link's cells inside an OSC 8 wrapper, and ran
+/// after every frame — ten a second with nothing happening, so an idle
+/// page of links wrote tens of kilobytes a second. ratatui rewrites a cell
+/// only when it changes, and a span records its cells' text and style, so
+/// an unchanged list means untouched cells with their wrappers intact. A
+/// resize (ratatui clears and redraws at a new size) changes the size
+/// here; a forced redraw at the same size clears `sent` itself.
+fn hyperlinks_due(
+    sent: &mut Option<(Vec<OscLink>, (u16, u16))>,
+    links: &[OscLink],
+    size: (u16, u16),
+) -> bool {
+    if sent
+        .as_ref()
+        .is_some_and(|(held, at)| *at == size && held == links)
+    {
+        return false;
+    }
+    *sent = Some((links.to_vec(), size));
+    true
 }
 
 fn emit_osc8(links: &[OscLink]) -> std::io::Result<()> {
@@ -4145,6 +4181,38 @@ mod tests {
         app.open_path(&file).unwrap();
         assert!(app.diagram_art.is_empty(), "the art went with the document");
         assert!(drawn(&mut app, &mut diagrams), "and is drawn again");
+    }
+
+    /// The hyperlink pass is due when the links or the frame size changed,
+    /// or after the terminal was made to redraw every cell — and not
+    /// otherwise, which is every idle frame.
+    #[test]
+    fn hyperlinks_are_sent_when_they_change_and_not_again() {
+        let link = |x: u16, text: &str| OscLink {
+            x,
+            y: 2,
+            w: 4,
+            text: text.into(),
+            url: "https://example.com/".into(),
+            style: ratatui::style::Style::default(),
+        };
+        let mut sent = None;
+        let a = vec![link(3, "word")];
+        assert!(hyperlinks_due(&mut sent, &a, (80, 24)), "the first frame");
+        assert!(!hyperlinks_due(&mut sent, &a, (80, 24)), "an idle frame");
+        assert!(!hyperlinks_due(&mut sent, &a, (80, 24)));
+        // The same links at another size: ratatui redrew every cell.
+        assert!(hyperlinks_due(&mut sent, &a, (81, 24)));
+        // A link moved, restyled or reworded is another list.
+        assert!(hyperlinks_due(&mut sent, &[link(4, "word")], (81, 24)));
+        assert!(hyperlinks_due(&mut sent, &[link(4, "ward")], (81, 24)));
+        // None left, then back: both are changes.
+        assert!(hyperlinks_due(&mut sent, &[], (81, 24)));
+        assert!(!hyperlinks_due(&mut sent, &[], (81, 24)));
+        assert!(hyperlinks_due(&mut sent, &a, (81, 24)));
+        // A forced redraw forgets what was sent.
+        sent = None;
+        assert!(hyperlinks_due(&mut sent, &a, (81, 24)));
     }
 
     /// A piped document has no file, and "no file" was also the renderer's

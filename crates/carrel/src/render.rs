@@ -42,6 +42,11 @@ use crate::action::{Action, Targets, Zone};
 pub struct Painted {
     pub links: Vec<OscLink>,
     pub targets: Targets,
+    /// The hyperlinks the terminal already holds, and the frame size they
+    /// were sent at: the pass is skipped while a frame's links are these.
+    /// `None` after anything that makes the terminal redraw every cell,
+    /// which drops the wrappers. Not reset by a paint.
+    pub sent: Option<(Vec<OscLink>, (u16, u16))>,
 }
 
 /// Click-target layers. A pane painted over the document must take the click
@@ -71,7 +76,7 @@ use crate::app::{App, Mode, Pane, Screen};
 /// ratatui 0.30 has no hyperlink support, so after each frame the visible
 /// link text is re-emitted wrapped in `ESC ] 8`. Terminals without OSC 8
 /// ignore it — that is the graceful degradation.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OscLink {
     pub x: u16,
     pub y: u16,
@@ -610,7 +615,7 @@ fn paint_hover(frame: &mut Frame, app: &App, targets: &Targets) {
 ///    link could be shown reordered. The cells' symbols are the text now,
 ///    and there is no filter left to fall out of step.
 fn settle_links(frame: &mut Frame, painted: &mut Painted) {
-    let Painted { links, targets } = painted;
+    let Painted { links, targets, .. } = painted;
     links
         .retain(|l| !(l.x..l.x.saturating_add(l.w)).any(|x| targets.covered_at(x, l.y, Z_OVERLAY)));
     let buf = frame.buffer_mut();
@@ -2187,7 +2192,7 @@ fn paint_row(
     y: u16,
     painted: &mut Painted,
 ) {
-    let Painted { links, targets } = painted;
+    let Painted { links, targets, .. } = painted;
     let node = app.doc.node_for_block(block);
     let original_indent = row.indent;
     let clipped = app.visible_row(row);

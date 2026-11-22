@@ -2310,3 +2310,26 @@ fn render_names_local_files_only_to_a_terminal() {
         "{piped:?}"
     );
 }
+
+/// An idle reader sends its hyperlinks once. The pass that wraps link text
+/// in OSC 8 ran after every frame, and a frame is painted ten times a second
+/// with nothing happening: a page of links cost tens of kilobytes a second
+/// down an ssh connection, forever.
+#[test]
+fn an_idle_reader_does_not_resend_its_hyperlinks() {
+    if !script_available() {
+        eprintln!("skipping: script(1) not available");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("l.md"),
+        "A [linkword](https://example.com/unique-target) here.\n",
+    )
+    .unwrap();
+    // `pty_run` waits a second before its key: a second of idling.
+    let cap = pty_run("l.md", "q", dir.path());
+    let sent = cap.matches("example.com/unique-target").count();
+    assert!(sent >= 1, "the link is a hyperlink");
+    assert!(sent <= 3, "sent {sent} times in a second of idling");
+}

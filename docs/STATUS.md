@@ -638,7 +638,9 @@ For the owner (2026-11-21, not changed):
 
 Known defects: none open. Two observations from the last black-box pass of 2026-11-21,
 left as they are: an idle reader writes an empty synchronized frame about ten times a
-second (the loop paints every pass; each frame re-enables bracketed paste), and with
+second (the loop paints every pass; each frame re-enables bracketed paste; about 500
+bytes a second — the hyperlink pass, which made it tens of kilobytes on a page of
+links, is sent only when the links change, `main.rs::hyperlinks_due`), and with
 `NO_COLOR` the lightbox and info card still describe half-block images as `blocks of
 color`. Not fixed, older and narrow: a link destination or title that holds an
 empty-label wikilink's mask and a backslash escape of its own shows the mask. The last, stray backslashes in `git log | carrel`, is fixed
