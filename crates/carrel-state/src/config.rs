@@ -157,6 +157,9 @@ fn existing_text(path: &Path) -> std::io::Result<String> {
 /// newer version's file cannot break an older binary.
 fn parse_all(text: &str) -> Config {
     let mut c = Config::default();
+    // Some editors begin a file with a byte-order mark, which is not white
+    // space: it was read into the first key, and that setting was lost.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -539,6 +542,15 @@ pub fn save_max_width_in(dir: &Path, w: u16) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config saved by an editor that writes a byte-order mark: the mark
+    /// was read as part of the first key, and that setting silently lost.
+    #[test]
+    fn a_byte_order_mark_costs_no_setting() {
+        let c = parse_all("\u{feff}max_width = 50\ntheme = nord\n");
+        assert_eq!(c.max_width, Some(50));
+        assert_eq!(c.theme.as_deref(), Some("nord"));
+    }
 
     #[test]
     fn places_round_trip_newest_first_and_dedupe() {

@@ -805,9 +805,9 @@ pub struct App {
     /// a double-click, the fold is put back and the word under the FIRST
     /// press is selected. A double-click on a heading word used to collapse
     /// the section as well, because its first half is a completed click.
+    pub click_fold: Option<u32>,
     /// The last setting changed could not be written to the config.
     pub setting_unsaved: bool,
-    pub click_fold: Option<u32>,
     /// One-shot clipboard outbox: the state machine fills it, the event loop
     /// drains it into an OSC 52 escape. The state layer never does I/O.
     /// A [`Clip`], not a `String`, so no copy path can skip the cleaning.
@@ -4521,6 +4521,13 @@ fn adjust_setting(app: &mut App, d: i32) -> Outcome {
             // global `theme.rs` slot; `update` can only ask.
             app.theme_cycle = true;
         }
+        // Enter and a click only ever step UP, and the widest setting was
+        // a dead end from the pane, whose keys for narrower it never
+        // names: from the whole window, one more step starts over.
+        Setting::TextWidth if d > 0 && app.max_width == 0 => {
+            app.max_width = crate::config::MIN_MEASURE - 5;
+            step_measure(app, 1);
+        }
         Setting::TextWidth => step_measure(app, d),
         Setting::Hyphenate => {
             // No key, like the margin outline: it is a preference set once,
@@ -6817,6 +6824,12 @@ fn reader_update(app: &mut App, action: Action) -> Outcome {
             if !app.auto_read {
                 return Outcome::Idle;
             }
+            // Under a pane the page waits: it scrolled on behind the
+            // settings, the info card and a menu, and the reader came back
+            // to a place they had not read to.
+            if app.pane().is_some() {
+                return Outcome::Idle;
+            }
             let before = app.view.scroll_row;
             app.view.scroll_by(&app.doc, &app.layout, 1, h);
             if app.view.scroll_row == before {
@@ -8137,6 +8150,36 @@ mod tests {
     /// Carrel had nine config keys and named the file in no menu row, no
     /// help line and not in `--help` — only in the README, which is exactly
     /// where the reader this is for will never look.
+    /// Enter and a click only step the text width UP, so from the widest
+    /// setting they went nowhere — and the pane names no key for narrower.
+    /// One more step from the whole window starts over at the narrowest.
+    #[test]
+    fn the_text_width_setting_starts_over_from_the_whole_window() {
+        let mut a = App::new("t.md".into(), Document::parse("# T\n\nbody\n"), 100, 30);
+        update(&mut a, Action::SettingsToggle);
+        let at = settings_rows(&a)
+            .iter()
+            .position(|r| r.key == Setting::TextWidth)
+            .unwrap();
+        update(&mut a, Action::SettingsMove(i32::try_from(at).unwrap()));
+        let mut seen = vec![a.max_width];
+        for _ in 0..40 {
+            update(&mut a, Action::SettingsAdjust(1));
+            seen.push(a.max_width);
+        }
+        assert!(seen.contains(&0), "it reaches the whole window: {seen:?}");
+        let whole = seen.iter().position(|&w| w == 0).unwrap();
+        assert_eq!(seen[whole + 1], crate::config::MIN_MEASURE, "{seen:?}");
+        assert!(
+            seen[whole + 2] > seen[whole + 1],
+            "and climbs again: {seen:?}"
+        );
+        // Narrower, by its own key, still stops at the narrowest.
+        a.max_width = crate::config::MIN_MEASURE;
+        update(&mut a, Action::SettingsAdjust(-1));
+        assert_eq!(a.max_width, crate::config::MIN_MEASURE);
+    }
+
     #[test]
     fn the_settings_pane_shows_values_and_saves_what_it_changes() {
         let cfg = tempfile::tempdir().unwrap();

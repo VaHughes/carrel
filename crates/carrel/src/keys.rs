@@ -1523,6 +1523,7 @@ mod tests {
                 "j/k" => vec![k('j')],
                 "k" => vec![k('k')],
                 "F" => vec![k('F')],
+                "A" => vec![k('A')],
                 "y" => vec![k('y')],
                 "↑/↓" | "↓" => vec![code(KeyCode::Down)],
                 "↑" => vec![code(KeyCode::Up)],
@@ -1569,6 +1570,7 @@ mod tests {
             ("first-run", HINT_FIRST_RUN, reader(false)),
             ("streaming", HINT_STREAMING, reader(false)),
             ("following", HINT_FOLLOWING, reader(false)),
+            ("auto-reading", HINT_AUTO, reader(false)),
             ("search-typing", HINT_SEARCH_TYPING, reader(true)),
             ("matches", HINT_MATCHES, reader(false)),
             ("link", HINT_LINK, reader(false)),
@@ -1733,6 +1735,18 @@ mod tests {
 
     /// Every list pane closes on `q`, the way it closes on Esc: the man page
     /// promises it of each, and the bookmark list alone ignored it.
+    /// The help sheet answers the words a reader would type for the keys
+    /// the tutorial teaches: `backspace`, `width` and `image` found nothing.
+    #[test]
+    fn the_help_filter_finds_back_width_and_images() {
+        for word in ["backspace", "back", "width", "wider", "image", "+"] {
+            assert!(
+                !help_matching(READER_HELP, word).is_empty(),
+                "nothing in help for {word:?}"
+            );
+        }
+    }
+
     #[test]
     fn every_list_pane_closes_on_q() {
         let q = k('q');

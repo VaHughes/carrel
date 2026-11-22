@@ -4,6 +4,13 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Auto-read says it is on, and waits under a pane.** The lamp reads `auto-reading` with
+  `A stop` beside it for as long as the page moves by itself; before, once the note faded
+  nothing said why. With the settings, the info card, a list or a menu open the page no
+  longer scrolls on behind it.
+- **The text width setting is never a dead end**: from the whole window, Enter or a click
+  starts over at the narrowest. The help sheet finds `backspace`, `width` and `image`.
+  A config that begins with a byte-order mark keeps its first setting.
 - **Focus mode (`S`) no longer crashes on a wide window** when display math is written
   straight under a table's last row.
 - **Math keeps the spaces its author asked for**: `$v~\text{m/s}$` showed `v&nbsp;m/s`, and

@@ -86,6 +86,11 @@ pub fn of(app: &App) -> Footer {
     if app.following {
         return f('◉', "keeping up", keymap::HINT_FOLLOWING);
     }
+    // The page is moving by itself: say so for as long as it does, and
+    // name the key that stops it. The note that announced it fades.
+    if app.auto_read {
+        return f('◉', "auto-reading", keymap::HINT_AUTO);
+    }
     // Ambient, not a mode: every mode above outranks it, and the keys are
     // the ordinary reading set — only the lamp says content is arriving.
     if app.is_live_pipe() {
@@ -139,6 +144,32 @@ pub(crate) mod tests {
         // …and EOF hands the lamp back to reading.
         a.streaming = false;
         assert_eq!(of(&a).word, "reading");
+    }
+
+    /// Auto-read is a mode: while the text moves by itself the lamp says
+    /// so and names the key that stops it. The note that announced it
+    /// fades, and after that nothing on screen said why the page was moving.
+    #[test]
+    fn auto_read_has_a_lamp_and_waits_under_a_pane() {
+        let body = "word ".repeat(4000);
+        let mut a = App::new("t.md".into(), Document::parse(&body), 60, 12);
+        update(&mut a, Action::AutoToggle);
+        assert!(a.auto_read);
+        let f = of(&a);
+        assert_eq!((f.bulb, f.word), ('◉', "auto-reading"));
+        assert!(f.hints.iter().any(|h| h.key == "A"), "names its stop key");
+        let row = a.view.scroll_row;
+        update(&mut a, Action::AutoTick);
+        assert_eq!(a.view.scroll_row, row + 1, "it reads on");
+        // A pane up: the page waits under it, and goes on when it closes.
+        update(&mut a, Action::SettingsToggle);
+        let row = a.view.scroll_row;
+        update(&mut a, Action::AutoTick);
+        assert_eq!(a.view.scroll_row, row, "nothing moves behind a pane");
+        assert!(a.auto_read, "and auto-read is still on");
+        update(&mut a, Action::SettingsToggle);
+        update(&mut a, Action::AutoTick);
+        assert_eq!(a.view.scroll_row, row + 1);
     }
 
     #[test]

@@ -265,13 +265,18 @@ pub const READER_HELP: &[HelpRow] = &[
     ),
     (
         "Enter",
-        "follow the selected link",
+        "follow a link, open an image",
         Some(Action::LinkFollow),
     ),
     (
-        "Ctrl-O",
+        "Ctrl-O Backspace ←",
         "back to the previous document",
         Some(Action::Back),
+    ),
+    (
+        "+ -",
+        "text width: wider / narrower",
+        Some(Action::MeasureStep(1)),
     ),
     ("Esc", "clear selection and search", Some(Action::Dismiss)),
     ("§", "view", None),
@@ -537,6 +542,11 @@ pub const HINT_FOLLOWING: &[Hint] = &[
     hint("F", "stop", Action::FollowToggle),
     hint("↑", "step back", Action::Scroll(Span::Line, -1)),
     hint("y", "copy code", Action::YankBlock),
+    hint("h", "help", Action::HelpToggle),
+];
+pub const HINT_AUTO: &[Hint] = &[
+    hint("A", "stop", Action::AutoToggle),
+    hint("↑", "step back", Action::Scroll(Span::Line, -1)),
     hint("h", "help", Action::HelpToggle),
 ];
 pub const HINT_MATCHES: &[Hint] = &[

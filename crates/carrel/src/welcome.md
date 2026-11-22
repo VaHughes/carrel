@@ -19,7 +19,7 @@ rest of the motions you would expect.)
 | Move a line | ↑ or ↓, or the wheel |
 | Move a page | Space |
 | Jump somewhere | click the scrollbar, or drag it |
-| Go back to the last place you were | Backspace or ← |
+| Go back after following a link | Backspace or ← |
 
 That table is carrel rendering a markdown table. If the window is too narrow for
 it, it turns into one card per row rather than running off the edge.
