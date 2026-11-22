@@ -594,10 +594,9 @@ planned:
   (`math::MAX_BARE_CHAIN`, `MAX_COMMENT_RUN`).
 - A mermaid diagram past its cost limits (2,000 items; for a flowchart 400 nodes, or
   nodes × edges over 160,000; for a class or ER diagram nodes² × relations over
-  30 million; 64 KiB of source outside comments; a document's diagrams together 5 s of
-  drawing) stays source, with a caption. The worst shape that still draws takes about a
-  second, off the UI thread. The class bound cannot tell a tree from a tangle, so a
-  cheap 400-class inheritance tree is refused too.
+  20 million, a tree excepted; 64 KiB of source outside comments; a document's diagrams
+  together 5 s of drawing) stays source, with a caption. The worst shape that still
+  draws takes about a second, off the UI thread.
 - Display math (`$$…$$`) inside a table cell is not a cell's content: the row splits
   over three lines and leaves an empty math block above the table. Inline math in a
   cell is fine.
@@ -689,7 +688,8 @@ implement. The GTK4 GUI phase is not started and has no date.
 - 2026-11-21: **a wikilink that leaves the folder is refused before the disk is asked**
   (`wiki::Bounds`), as a markdown link always was: a document is untrusted, and a `stat`
   of wherever it points is not its to order. With no library root the folder is the
-  document's own, so `[[../x]]` in a file opened bare does not resolve.
+  document's own. Such a link is not known to be dead; following it asks first and
+  then opens it, as a markdown link out of the folder does.
 - 2026-11-21: **a `git format-patch` mail reads as `git log -p` shows its commit**:
   `Subject:` is the title, `From:` the author, the diffstat a plain fence. A hunk keeps
   the sigil-led lines its header under-counted.

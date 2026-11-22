@@ -10,9 +10,10 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **A `[[wikilink]]` cannot make carrel look outside the folder.** `[[../outside/secret]]`
   and `[[/etc/hostname]]` were looked up on disk as written, by the reader, the links
   pane, the backlinks search and `--render`, and a note that happened to be there became a
-  link out of the library. Such a link is now unresolved without the disk being asked, as
-  a markdown link out of the folder already was; the backlinks search applies the same
-  rule to the markdown links of every document it reads.
+  link out of the library. Such a link is no longer looked for; following it asks first
+  and then opens it, as a markdown link out of the folder does, and it gets no hyperlink.
+  The backlinks search applies the same rule to the markdown links of every document it
+  reads.
 - **A click on a footnote mark in a window too short for its box says so**, and that `%`
   goes to the footnote, instead of doing nothing. A mistyped option prints its reason
   after the usage, where it stays on screen.
@@ -36,8 +37,9 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **An indexed root reads the right way round**: `\sqrt[3]{x}` showed as `x√3`, and
   an index of more than one term (`\sqrt[n+1]{x}`) spilled out after the root. In a
   display block the index is drawn (a cube root looked like a square root). Inline, a
-  cube or fourth root has its own sign (`∛x`), another simple index is raised (`ⁿ√x`),
-  one of several terms is bracketed (`(n + 1)√x`), and empty brackets are no index.
+  cube or fourth root has its own sign (`∛x`), another simple index is raised (`ⁿ√x`)
+  and set apart from a coefficient (`2 ⁵√x`), one of several terms is bracketed
+  (`(n + 1)√x`), and empty brackets are no index.
 - **A config or state file of an absurd size is refused, not read**: a sparse `config`
   claiming 100 TB used to stop carrel before its first frame.
 - **A very large table takes about half the memory to open**: a 2,000 by 2,000 table of

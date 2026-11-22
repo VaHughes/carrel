@@ -32,7 +32,7 @@
 //! | [`MAX_ITEMS`] | 2,000 | entities + relationships, every family |
 //! | [`MAX_FLOW_NODES`] | 400 | a flowchart's widest possible rank |
 //! | [`MAX_FLOW_WORK`] | 160,000 | a flowchart's nodes × edges |
-//! | [`MAX_RELATION_WORK`] | 30,000,000 | a class or ER diagram's nodes² × edges |
+//! | [`MAX_RELATION_WORK`] | 20,000,000 | a class or ER diagram's nodes² × edges, a tree excepted |
 //! | [`MAX_FLOW_HUBS`] | 40,000 | the sum of its nodes' squared degrees |
 //! | [`MAX_SEQUENCE_CELLS`] | 2,000,000 | a sequence diagram's grid, estimated |
 //! | [`MAX_ART_CELLS`] | 1,000,000 | the art that comes back, and a grid |
@@ -185,18 +185,26 @@ pub const MAX_FLOW_HUBS: usize = 40_000;
 /// are laid out by a layout of their own, whose time on a tangled graph
 /// grows with the square of the classes and with the relations: measured,
 /// 17 to 50 ns for each node² × edge when the relations fall at random,
-/// and next to nothing for a tree or a hub. At this limit that is at most
-/// 1.1 s (200 classes, 750 relations); 300 classes with 1,600 relations,
-/// which every other limit passes, took 4 to 6.5 s. An ordinary large
-/// diagram — 100 classes, 150 relations — is a twentieth of it. A state
+/// and next to nothing for a tree or a hub. At this limit that is about a
+/// second at the worst rate (at 30,000,000, 170 classes with 1,030
+/// relations took 1.7 s); 300 classes with 1,600 relations, which every
+/// other limit passes, took 4 to 6.5 s. An ordinary large diagram — 100
+/// classes, 150 relations — is a thirteenth of it, and a tree, with fewer
+/// relations than classes, is not counted at all. A state
 /// diagram needs no such bound: at [`MAX_ITEMS`] it draws in 0.2 s whatever
 /// its shape.
-pub const MAX_RELATION_WORK: usize = 30_000_000;
+pub const MAX_RELATION_WORK: usize = 20_000_000;
 
 /// What a class or ER diagram is measured by against
 /// [`MAX_RELATION_WORK`].
 #[must_use]
 pub const fn relation_work(nodes: usize, edges: usize) -> usize {
+    // Fewer relations than nodes is a forest: nothing crosses, and an
+    // inheritance tree of hundreds of classes — what a UML export is —
+    // draws in hundredths of a second. The cost is in the tangle.
+    if edges < nodes {
+        return 0;
+    }
     nodes.saturating_mul(nodes).saturating_mul(edges)
 }
 
@@ -1182,17 +1190,17 @@ mod tests {
                 each(e, |i| format!(" E0 ||--o{{ E{} : has\n", 1 + i % (n - 1)))
             )
         };
-        // 200² × 750 is the limit exactly.
-        assert_eq!(200 * 200 * 750, MAX_RELATION_WORK);
+        // 200² × 500 is the limit exactly.
+        assert_eq!(200 * 200 * 500, MAX_RELATION_WORK);
         for diagram in [class, er] {
-            assert_eq!(relation_work(&diagram(200, 750)), Some(MAX_RELATION_WORK));
-            assert!(drawn(&diagram(200, 750)));
-            assert!(relation_work(&diagram(200, 751)) > Some(MAX_RELATION_WORK));
-            assert!(too_large(&diagram(200, 751)));
+            assert_eq!(relation_work(&diagram(200, 500)), Some(MAX_RELATION_WORK));
+            assert!(drawn(&diagram(200, 500)));
+            assert!(relation_work(&diagram(200, 501)) > Some(MAX_RELATION_WORK));
+            assert!(too_large(&diagram(200, 501)));
         }
         // The reported shapes: 300 classes or entities, 1,600 relations at
         // random. And an ordinary large one, a hundred classes with 150
-        // relations among them, is a twentieth of the limit.
+        // relations among them, is a thirteenth of the limit.
         let mut rng = Lcg(7);
         let mut pairs = |n: usize, e: usize, line: &dyn Fn(usize, usize) -> String| {
             each(e, |_| line(rng.below(n), rng.below(n)))
@@ -1208,8 +1216,16 @@ mod tests {
             pairs(300, 1600, &er_line)
         )));
         let ordinary = format!("classDiagram\n{}", pairs(100, 150, &class_line));
-        assert!(relation_work(&ordinary) < Some(MAX_RELATION_WORK / 20));
+        assert!(relation_work(&ordinary) < Some(MAX_RELATION_WORK / 13));
         assert!(drawn(&ordinary));
+        // A tree is no tangle: an inheritance chain of 400 classes — what a
+        // UML export looks like — draws, where its square would refuse it.
+        let tree = format!(
+            "classDiagram\n{}",
+            each(399, |i| format!(" C{} <|-- C{}\n", i / 2, i + 1))
+        );
+        assert_eq!(relation_work(&tree), Some(0));
+        assert!(drawn(&tree));
     }
 
     #[test]

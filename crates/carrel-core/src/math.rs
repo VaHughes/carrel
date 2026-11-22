@@ -988,7 +988,7 @@ fn parse_one(events: &[Event], cursor: &mut usize, depth: u32) -> Option<Step> {
         // grids; reaching one here means it was outside any grid.
         // …but a `\quad` is not kerning: it stands between two statements,
         // which ran together without it (`x = 1y = 2`).
-        Event::Space { width: Some(w), .. } if w.value >= 1.0 => Step::Node(MathExpr::Sym {
+        Event::Space { width: Some(w), .. } if ems(*w) >= 0.9 => Step::Node(MathExpr::Sym {
             text: " ".into(),
             class: MathClass::Ordinary,
         }),
@@ -997,6 +997,23 @@ fn parse_one(events: &[Event], cursor: &mut usize, depth: u32) -> Option<Step> {
         }
     };
     Some(out)
+}
+
+/// A width in ems, near enough to tell a word space from kerning: `\kern1pt`
+/// and `\mkern1mu` are a hair, and by their bare number read as a `\quad`.
+fn ems(w: pulldown_latex::event::Dimension) -> f32 {
+    use pulldown_latex::event::DimensionUnit as U;
+    match w.unit {
+        U::Em => w.value,
+        U::Mu => w.value / 18.0,
+        U::Ex => w.value / 2.0,
+        U::Pt | U::Bp | U::Dd => w.value / 10.0,
+        U::Pc | U::Cc => w.value * 1.2,
+        U::In => w.value * 7.2,
+        U::Cm => w.value * 2.8,
+        U::Mm => w.value * 0.28,
+        U::Sp => 0.0,
+    }
 }
 
 /// Parse a single operand: either one atom, or a whole `Begin`…`End` group.
@@ -1517,6 +1534,11 @@ mod tests {
         assert_eq!(text(r"\sqrt[4]{x}"), "∜x");
         assert_eq!(text(r"\sqrt[2]{x}"), "√x");
         assert_eq!(text(r"\sqrt[5]{x}"), "⁵√x");
+        // After a coefficient a raised index would read as its power.
+        assert_eq!(text(r"2\sqrt[5]{x}"), "2 ⁵√x");
+        assert_eq!(text(r"x\sqrt[n]{y}"), "x ⁿ√y");
+        assert_eq!(text(r"2\sqrt[k]{x}"), "2 k√x");
+        assert_eq!(text(r"a+\sqrt[5]{x}"), "a + ⁵√x");
         assert_eq!(text(r"\sqrt[n]{x}"), "ⁿ√x");
         assert_eq!(text(r"\sqrt[k]{x}"), "k√x");
         assert_eq!(text(r"\sqrt[n+1]{x}+z"), "(n + 1)√x + z");
@@ -1588,7 +1610,31 @@ pub fn inline_text(expr: &MathExpr) -> String {
                 text.to_string()
             }
         }
-        MathExpr::Row(parts) => parts.iter().map(inline_text).collect(),
+        MathExpr::Row(parts) => {
+            let mut out = String::new();
+            for (i, part) in parts.iter().enumerate() {
+                // A space the author asked for separates two things; at a
+                // row's edge it would only indent it.
+                let edge = i == 0 || i + 1 == parts.len();
+                if edge && matches!(part, MathExpr::Sym { text, .. } if &**text == " ") {
+                    continue;
+                }
+                // A raised index right after a coefficient reads as its
+                // power (`2⁵√x`): the root stands apart.
+                let indexed = matches!(part, MathExpr::Sqrt { index: Some(i), .. }
+                    if !matches!(&**i, MathExpr::Sym { text, .. } if matches!(text.trim(), "2" | "3" | "4")));
+                if indexed
+                    && out
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| !c.is_whitespace() && c != '(')
+                {
+                    out.push(' ');
+                }
+                out.push_str(&inline_text(part));
+            }
+            out
+        }
         MathExpr::Frac { num, den } => {
             format!("{}/{}", grouped(num), grouped(den))
         }
@@ -1728,9 +1774,15 @@ mod inline_tests {
         assert_eq!(text(r"a\ b"), "a b");
         assert_eq!(text(r"x = 1 \quad y = 2"), "x = 1 y = 2");
         assert_eq!(text(r"x = 1 \qquad y = 2"), "x = 1 y = 2");
-        // Kerning stays dropped.
+        // Kerning stays dropped, whatever unit it is written in.
         assert_eq!(text(r"a\,b"), "ab");
         assert_eq!(text(r"a\!b"), "ab");
+        assert_eq!(text(r"a\kern1pt b"), "ab");
+        assert_eq!(text(r"a\mkern1mu b"), "ab");
+        assert_eq!(text(r"a\hspace{1em}b"), "a b");
+        // And a space at an edge indents nothing.
+        assert_eq!(text(r"\quad x"), "x");
+        assert_eq!(text(r"x \quad"), "x");
     }
 
     #[test]

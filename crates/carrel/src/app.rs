@@ -2969,6 +2969,28 @@ impl App {
         }
     }
 
+    /// Where a wikilink's name leads when that is OUTSIDE the folder this
+    /// session reads within, found without touching the disk: the path a
+    /// follow asks about before opening. `None` for a name that stays
+    /// inside, whose file the resolver has already looked for.
+    fn wiki_outside(&self, bare: &str) -> Option<PathBuf> {
+        let dir = self.doc_dir();
+        let bounds = crate::wiki::Bounds::new(&dir, self.library_root());
+        let name = Path::new(bare);
+        if bounds.admit(name).is_some() {
+            return None;
+        }
+        let here = Some(dir)
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let here = here.canonicalize().unwrap_or(here);
+        let mut target = crate::wiki::fold_lexically(&here.join(name));
+        if target.extension().is_none() {
+            target.as_mut_os_string().push(".md");
+        }
+        Some(target)
+    }
+
     /// Which links lead nowhere, so the painter can say so before a click
     /// does. Asked once per document, like the wikilinks above — never per
     /// frame, because the answer is a `stat`.
@@ -3035,7 +3057,10 @@ impl App {
                         !fragment_lives(f) && !titles.contains(&f.trim().to_ascii_lowercase())
                     })
                 } else {
-                    !self.wiki.contains_key(&id)
+                    // One that leaves the folder was not looked for, so
+                    // nothing is known of it: not dead, like a markdown
+                    // link that leaves.
+                    !self.wiki.contains_key(&id) && self.wiki_outside(bare).is_none()
                 }
             } else if has_scheme(dest) {
                 false
@@ -7859,7 +7884,14 @@ fn wiki_follow(app: &mut App, id: LinkId, url: &str) -> Outcome {
         }
         return Outcome::Redraw;
     }
-    let Some(target) = app.wiki.get(&id).cloned() else {
+    // A note outside the folder was never looked for; where its name leads
+    // is asked about first, as for a markdown link out of the folder.
+    let Some(target) = app
+        .wiki
+        .get(&id)
+        .cloned()
+        .or_else(|| app.wiki_outside(bare))
+    else {
         app.note = Some(format!("no document named '{bare}' in this folder"));
         return Outcome::Redraw;
     };
@@ -9928,33 +9960,54 @@ mod tests {
         assert_eq!(rows, 8, "and the pane lists exactly those");
     }
 
-    /// A wikilink that leads out of the library is not looked for: it is
-    /// unresolved, a dead link, with no file to open and none to hand a
-    /// terminal — though the note is there. Rooted above it, it resolves.
+    /// A wikilink that leads out of the library is not looked for — and so
+    /// is not known to be dead, any more than a markdown link out of it is.
+    /// It is followed the way that one is: asked about first, then opened.
+    /// (For an afternoon it was struck through and said "no document named",
+    /// with the note sitting there.) Rooted above it, it resolves.
     #[test]
-    fn a_wikilink_out_of_the_library_is_dead_not_followed() {
+    fn a_wikilink_out_of_the_library_asks_before_it_is_opened() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(d.path().join("vault")).unwrap();
-        std::fs::create_dir_all(d.path().join("outside")).unwrap();
-        std::fs::write(d.path().join("outside/secret.md"), "x\n").unwrap();
-        std::fs::write(d.path().join("vault/in.md"), "x\n").unwrap();
-        let file = d.path().join("vault/links.md");
-        std::fs::write(&file, "[[../outside/secret]] [[/etc/hostname]] [[in]]\n").unwrap();
-        let ids = [LinkId(0), LinkId(1), LinkId(2)];
+        let d = d.path().canonicalize().unwrap();
+        std::fs::create_dir_all(d.join("vault")).unwrap();
+        std::fs::create_dir_all(d.join("outside")).unwrap();
+        std::fs::write(d.join("outside/secret.md"), "# Secret\n").unwrap();
+        std::fs::write(d.join("vault/in.md"), "x\n").unwrap();
+        let file = d.join("vault/links.md");
+        std::fs::write(
+            &file,
+            "[[../outside/secret]] [[/etc/hostname]] [[in]] [[gone]]\n",
+        )
+        .unwrap();
+        let ids = [LinkId(0), LinkId(1), LinkId(2), LinkId(3)];
 
-        let mut a = App::new_home(d.path().join("vault"), vec![], 80, 24);
+        let mut a = App::new_home(d.join("vault"), vec![], 80, 24);
         a.open_path(&file).unwrap();
         assert_eq!(a.wiki.keys().copied().collect::<Vec<_>>(), [ids[2]]);
-        assert!(a.dead_links.contains(&ids[0]) && a.dead_links.contains(&ids[1]));
+        assert!(!a.dead_links.contains(&ids[0]) && !a.dead_links.contains(&ids[1]));
+        assert!(
+            a.dead_links.contains(&ids[3]),
+            "a missing note inside IS dead"
+        );
         update(&mut a, Action::ForwardToggle);
         let rows = &a.forward.as_ref().unwrap().rows;
         assert_eq!(
             rows.iter().map(|r| r.target.is_some()).collect::<Vec<_>>(),
-            [false, false, true],
+            [false, false, true, false],
             "the links pane does not look either"
         );
+        update(&mut a, Action::ForwardToggle);
 
-        let mut a = App::new_home(d.path().to_path_buf(), vec![], 80, 24);
+        // The first follow asks, naming where it leads; the second opens.
+        update(&mut a, Action::LinkOpen(0));
+        let note = a.note.clone().unwrap_or_default();
+        assert!(note.contains("outside this folder"), "{note}");
+        assert!(note.contains("secret.md"), "{note}");
+        assert!(a.path.ends_with("links.md"), "nothing opened yet");
+        update(&mut a, Action::LinkOpen(0));
+        assert!(a.path.ends_with("secret.md"), "{}", a.path);
+
+        let mut a = App::new_home(d.clone(), vec![], 80, 24);
         a.open_path(&file).unwrap();
         assert!(
             a.wiki.contains_key(&ids[0]),
