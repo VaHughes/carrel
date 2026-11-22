@@ -199,7 +199,9 @@ Key facts that are easy to get wrong:
   patch's `-- ` signature, the next `git format-patch` mail, prose) ends the file's fence —
   unless it still opens with a sigil, when the header counted short and the hunk goes on.
   A format-patch mail is rewritten as the `git log` record of its commit (`diff::Mail`) so
-  one `emit_message` serves both. A link reference definition in a message is found in the
+  one `emit_message` serves both. The block `git log --stat` and its relatives write under
+  a message is taken off the message before it is measured, and fenced as written
+  (`diff::stat_block`): every line must have a diffstat's shape, so no prose is fenced. A link reference definition in a message is found in the
   parse (`document::reference_definitions`) and its `[` escaped by `settle`: text shown
   nowhere is the one loss no reader can notice.
 - **`math::parse` scans before `pulldown-latex` runs, and the scan reads what the parser

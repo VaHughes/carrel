@@ -11,6 +11,14 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **The text width setting is never a dead end**: from the whole window, Enter or a click
   starts over at the narrowest. The help sheet finds `backspace`, `width` and `image`.
   A config that begins with a byte-order mark keeps its first setting.
+- **`git log --stat` keeps its diffstat as the block of aligned lines it is**, and so do
+  `--shortstat`, `--numstat`, `--name-status`, `--name-only`, `--raw` and `-p --stat`. It
+  was run together with the message as a paragraph, the trailers above it lost their own
+  lines and a `<mail>` its brackets, and with an unindented block every line of the message
+  was shown unwrapped with its markup literal.
+- **A malformed patch mail loses nothing**: a header written twice (two `Subject:` lines)
+  shows both, where only the last was shown, and a message that starts straight under the
+  headers with no blank line is the message, not part of the author's paragraph.
 - **Focus mode (`S`) no longer crashes on a wide window** when display math is written
   straight under a table's last row.
 - **Math keeps the spaces its author asked for**: `$v~\text{m/s}$` showed `v&nbsp;m/s`, and

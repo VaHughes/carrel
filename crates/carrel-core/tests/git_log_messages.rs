@@ -1003,3 +1003,192 @@ fn angle_brackets_in_a_message_are_shown() {
     );
     assert!(d.text.contains("and <b>"), "{:?}", d.text);
 }
+
+/// A mail's headers and message around `between`, the lines from
+/// `Subject:` to the first line that is plainly the message.
+fn mail(between: &str) -> String {
+    format!(
+        "From 0123456789012345678901234567890123456789 Mon Sep 17 00:00:00 2001\n\
+         From: A Person <a@example.com>\n\
+         Date: Mon, 1 Jan 2026 00:00:00 +0000\n\
+         {between}\
+         Third line.\n---\n f | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\n\
+         diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n-- \n2.43.0\n\n"
+    )
+}
+
+const MAIL_TOP: &str =
+    "commit 012345678901\nAuthor: A Person <a@example.com>\nDate: Mon, 1 Jan 2026 00:00:00 +0000\n";
+
+/// A malformed mail loses nothing an author wrote. A header written twice
+/// keeps every occurrence — the first `Subject:` is the title, the next a
+/// line of its own under the author — where only the last was shown.
+#[test]
+fn a_repeated_mail_header_keeps_every_occurrence() {
+    let t = diff_shown(&mail(
+        "Subject: [PATCH] first subject\nSubject: [PATCH] second subject\n\n",
+    ));
+    assert!(
+        t.starts_with(&format!(
+            "{MAIL_TOP}Subject: [PATCH] second subject\nfirst subject\nThird line.\n"
+        )),
+        "{t:?}"
+    );
+    let t = diff_shown(&mail(
+        "From: B Person <b@example.com>\nSubject: one\nSubject: two\nSubject: three\n\n",
+    ));
+    assert!(
+        t.starts_with(&format!(
+            "{MAIL_TOP}From: B Person <b@example.com>\nSubject: two\nSubject: three\none\nThird line.\n"
+        )),
+        "{t:?}"
+    );
+}
+
+/// The header block ends at its blank line, or failing one at the first
+/// line that is neither a header nor the continuation of one: what is
+/// under it is the message. Read as headers, those lines were flowed into
+/// one paragraph with the author and date, above the subject.
+#[test]
+fn mail_headers_end_at_the_first_line_that_is_not_one() {
+    let t = diff_shown(&mail(
+        "Subject: [PATCH] the subject\nbody starts with no blank line\nsecond body line\n\n",
+    ));
+    assert!(
+        t.starts_with(&format!(
+            "{MAIL_TOP}the subject\nbody starts with no blank line second body line\nThird line.\n"
+        )),
+        "{t:?}"
+    );
+    // A folded header is still one header, and a line shaped like a header
+    // under the blank line is still the message.
+    let t = diff_shown(&mail(
+        "Subject: [PATCH] a subject\n folded onto a second line\n\nSubject: not a header\nFrom: nobody\n\n",
+    ));
+    assert!(
+        t.starts_with(&format!(
+            "{MAIL_TOP}a subject folded onto a second line\nSubject: not a header From: nobody\nThird line.\n"
+        )),
+        "{t:?}"
+    );
+    // A `---` straight under the headers still opens the diffstat.
+    let src = "From 0123456789012345678901234567890123456789 Mon Sep 17 00:00:00 2001\nFrom: A <a@example.com>\nSubject: s\nbody\n---\n f | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\ndiff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n";
+    assert_eq!(
+        fences(src)[0],
+        "---\n f | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+    );
+    let t = diff_shown(src);
+    assert!(
+        t.starts_with("commit 012345678901\nAuthor: A <a@example.com>\ns\nbody\n"),
+        "{t:?}"
+    );
+}
+
+/// One commit of `git log`, its message, and `tail` under it as git
+/// writes what follows a message.
+fn log_with(tail: &str) -> String {
+    format!(
+        "commit 0123456789012345678901234567890123456789\nAuthor: A Person <a@example.com>\nDate:   Mon Jan 1 00:00:00 2024 +0000\n\n    Fix the thing\n\n    A body of *two*\n    lines.\n\n    Signed-off-by: A Person <a@example.com>\n{tail}\ncommit 1123456789012345678901234567890123456789\nAuthor: A Person <a@example.com>\n\n    Second\n"
+    )
+}
+
+/// `git log --stat` and its relatives write a block under each message:
+/// it keeps its lines and columns in a fence, as a mail's diffstat does.
+/// It was the message's last paragraph — flowed into a run of words, the
+/// trailers above it no longer the message's closing lines, and (where the
+/// block is unindented) every line of the message a record.
+#[test]
+fn a_logs_diffstat_keeps_its_lines() {
+    let message = "Fix the thing\nA body of two lines.\nSigned-off-by: A Person <a@example.com>\n";
+    // (The reader shows a tab as the columns it reaches.)
+    for (tail, fence) in [
+        (
+            "\n src/f.txt    | 2 +-\n src/other.rs | 9 +++++----\n 2 files changed, 6 insertions(+), 5 deletions(-)\n",
+            " src/f.txt    | 2 +-\n src/other.rs | 9 +++++----\n 2 files changed, 6 insertions(+), 5 deletions(-)\n",
+        ),
+        // `-p --stat`: a `---` straight under the message, then the block.
+        (
+            "---\n src/f.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\ndiff --git a/src/f.txt b/src/f.txt\n--- a/src/f.txt\n+++ b/src/f.txt\n@@ -1 +1 @@\n-a\n+b\n",
+            "---\n src/f.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
+        ),
+        (
+            "\n 1 file changed, 1 insertion(+)\n",
+            " 1 file changed, 1 insertion(+)\n",
+        ),
+        (
+            "\n 3 files changed, 2 insertions(+), 1 deletion(-)\n create mode 100644 a b.txt\n rename x => y (100%)\n",
+            " 3 files changed, 2 insertions(+), 1 deletion(-)\n create mode 100644 a b.txt\n rename x => y (100%)\n",
+        ),
+        (
+            "\n img.png | Bin 0 -> 120 bytes\n s.txt   |   0\n",
+            " img.png | Bin 0 -> 120 bytes\n s.txt   |   0\n",
+        ),
+        (
+            "\n6\t5\tsrc/f.txt\n-\t-\timg.png\n",
+            "6   5   src/f.txt\n-   -   img.png\n",
+        ),
+        ("\n1\t1\tsrc/f.txt\n", "1   1   src/f.txt\n"),
+        (
+            "\nM\tsrc/f.txt\nR100\told name\tnew name\n",
+            "M   src/f.txt\nR100    old name    new name\n",
+        ),
+        ("\nA\tsrc/f.txt\n", "A   src/f.txt\n"),
+        ("\nsrc/f.txt\nMakefile\n", "src/f.txt\nMakefile\n"),
+        (
+            "\n:100644 100644 ffb6e80 911aaa9 M\tCHANGELOG.md\n  31.7% crates/carrel/src/\n",
+            ":100644 100644 ffb6e80 911aaa9 M    CHANGELOG.md\n  31.7% crates/carrel/src/\n",
+        ),
+    ] {
+        let src = log_with(tail);
+        let found = fences(&src);
+        assert_eq!(found.first().map(String::as_str), Some(fence), "{tail:?}");
+        let t = diff_shown(&src);
+        assert!(
+            t.starts_with(&format!(
+                "commit 012345678901\nAuthor: A Person <a@example.com>\nDate:   Mon Jan 1 00:00:00 2024 +0000\n{message}{fence}"
+            )),
+            "{tail:?}: {t:?}"
+        );
+        assert_eq!(headings(&src)[0], "commit 012345678901");
+        assert!(headings(&src).contains(&"commit 112345678901".to_string()));
+    }
+}
+
+/// Only a block git wrote is fenced: a message's own closing paragraph is
+/// prose whatever it holds, and so is text around a bare diff that is not
+/// every line a diffstat's.
+#[test]
+fn message_prose_is_never_a_diffstat() {
+    // In the message (indented as git indents it): a pasted stat, a table
+    // row, a status letter, a path.
+    for msg in [
+        "Subject\n\n f | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+        "Subject\n\nM\tsrc/f.txt\nA\tsrc/g.txt",
+        "Subject\n\n1\t2\tsrc/f.txt\n3\t4\tsrc/g.txt",
+        "Subject\n\nsrc/f.txt\nsrc/g.txt",
+        "Subject\n\nbody\n---\n f | 2 +-",
+    ] {
+        assert_eq!(fences(&commit(msg)), Vec::<String>::new(), "{msg:?}");
+    }
+    // Under the message, unindented, but not a stat block.
+    for tail in [
+        "\nsome words here\n",
+        "\n f | 2 +-\nand a sentence\n",
+        "\n a | b\n c | d\n",
+        "\n 2 files changed my mind\n",
+        "\nNotes:\n    a note\n",
+        "---\n",
+        "---\nnot a stat\n",
+        "\nM src/f.txt\n",
+    ] {
+        assert_eq!(fences(&log_with(tail)), Vec::<String>::new(), "{tail:?}");
+    }
+    // With no indented message above it, one shaped line is not enough.
+    for src in [
+        "commit 0123456789012345678901234567890123456789\nAuthor: A\n\nM\tf\n",
+        "commit 0123456789012345678901234567890123456789\nAuthor: A\n\nsrc/f.txt\nsrc/g.txt\n",
+        "commit 0123456789012345678901234567890123456789\nAuthor: A\n\n f | 2 +-\n",
+    ] {
+        assert_eq!(fences(src), Vec::<String>::new(), "{src:?}");
+    }
+}

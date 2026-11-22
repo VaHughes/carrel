@@ -160,8 +160,14 @@ impl Mail {
             // A long header is folded onto lines that open with a space.
             last.push(' ');
             last.push_str(line.trim_start());
-        } else {
+        } else if is_mail_header(line) {
             self.headers.push(line.to_string());
+        } else {
+            // No blank line ended the headers, and this is not one: the
+            // message has begun. Kept as a header it was flowed into a
+            // paragraph with the author and date, above the subject.
+            self.in_message = true;
+            self.read(line);
         }
     }
 
@@ -177,10 +183,17 @@ impl Mail {
     fn flush(self, out: &mut String) {
         let mut lines = Vec::with_capacity(self.headers.len() + self.message.len() + 3);
         let mut subject = None;
+        let mut author = false;
+        // A header written twice is shown twice: the first names the
+        // author or the title, and a later one stays a record as written.
         for header in self.headers {
-            if let Some(who) = header.strip_prefix("From: ") {
+            if let Some(who) = header.strip_prefix("From: ").filter(|_| !author) {
+                author = true;
                 lines.push(format!("Author: {who}"));
-            } else if let Some(title) = header.strip_prefix("Subject: ") {
+            } else if let Some(title) = header
+                .strip_prefix("Subject: ")
+                .filter(|_| subject.is_none())
+            {
                 let tagged = title
                     .strip_prefix('[')
                     .and_then(|rest| rest.split_once("] "))
@@ -211,6 +224,14 @@ impl Mail {
             let _ = write!(out, "{fence}\n{stat}\n{fence}\n\n");
         }
     }
+}
+
+/// `Name: value` as a mail writes a header: a name of letters, digits and
+/// hyphens, then the colon.
+fn is_mail_header(l: &str) -> bool {
+    l.split_once(':').is_some_and(|(name, _)| {
+        !name.is_empty() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    })
 }
 
 /// A line other tools write between the files of one diff — `diff -ru`,
@@ -388,6 +409,17 @@ fn emit_message(message: &[&str], out: &mut String) {
         .first()
         .is_some_and(|p| p.iter().all(|l| is_header_line(l)));
     let body = usize::from(header);
+    // What git wrote under the message is no part of it, and is taken off
+    // before the message is measured: left in, an unindented block made
+    // every indented message line a record, and the trailers above it
+    // were no longer the closing lines.
+    let stat = stat_block(&paras, body);
+    if let Some((at, _)) = stat {
+        let last = paras.pop().unwrap_or_default();
+        if at > 0 {
+            paras.push(&last[..at]);
+        }
+    }
     // The message's own indent — git's four columns, or none for prose
     // around a bare diff — from which a deeper line counts as indented.
     let base = paras[body.min(paras.len())..]
@@ -455,6 +487,122 @@ fn emit_message(message: &[&str], out: &mut String) {
         out.push_str(&settle(plan));
         out.push('\n');
     }
+    if let Some((_, lines)) = stat {
+        let block = lines.join("\n");
+        let fence = fence_for(&block);
+        let _ = write!(out, "{fence}\n{block}\n{fence}\n\n");
+    }
+}
+
+/// What a line of the block `git log --stat` and its relatives write
+/// under a message is, by its shape alone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatLine {
+    /// ` 2 files changed, 6 insertions(+), 5 deletions(-)`.
+    Summary,
+    /// A file's line: ` path | 2 +-`, `--numstat`'s `6\t5\tpath`,
+    /// `--name-status`'s `M\tpath`, `--raw`'s `:100644 …`, `--dirstat`'s
+    /// `  31.7% dir/`.
+    File,
+    /// `--summary`'s ` create mode 100644 path`, which only follows others.
+    Extra,
+    /// `--name-only`'s bare path: any unindented run with no space in it,
+    /// so it counts only under an indented message.
+    Name,
+}
+
+fn stat_line(l: &str) -> Option<StatLine> {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    let fields: Vec<&str> = l.split('\t').collect();
+    if let [status, path, ..] = fields[..] {
+        // `M`, `R100` and a merge's `MM`; then `--raw`, which ends in one.
+        let is_status = |s: &str| {
+            let letters = s.trim_end_matches(|c: char| c.is_ascii_digit());
+            (1..=3).contains(&letters.len())
+                && s.len() - letters.len() <= 3
+                && letters.bytes().all(|c| b"ACDMRTUXB".contains(&c))
+        };
+        let raw = status.strip_prefix(':').is_some_and(|rest| {
+            let mut words = rest.trim_start_matches(':').split(' ');
+            words
+                .next()
+                .is_some_and(|mode| mode.len() == 6 && digits(mode))
+                && words.next_back().is_some_and(is_status)
+        });
+        let numstat = fields.len() >= 3 && [status, path].iter().all(|n| *n == "-" || digits(n));
+        return (!path.is_empty() && (is_status(status) || raw || numstat))
+            .then_some(StatLine::File);
+    }
+    let Some(rest) = l.strip_prefix(' ') else {
+        return (!l.is_empty() && !l.contains(char::is_whitespace)).then_some(StatLine::Name);
+    };
+    if let Some((share, dir)) = rest.trim_start().split_once("% ")
+        && let Some((whole, tenth)) = share.split_once('.')
+    {
+        return (digits(whole) && digits(tenth) && !dir.is_empty()).then_some(StatLine::File);
+    }
+    if rest.starts_with(' ') {
+        return None;
+    }
+    if let Some((count, tail)) = rest.split_once(" file")
+        && digits(count)
+    {
+        let tail = tail.strip_prefix('s').unwrap_or(tail);
+        return (tail == " changed" || tail.starts_with(" changed, ")).then_some(StatLine::Summary);
+    }
+    if [
+        "create mode ",
+        "delete mode ",
+        "mode change ",
+        "rename ",
+        "copy ",
+        "rewrite ",
+    ]
+    .iter()
+    .any(|start| rest.starts_with(start))
+    {
+        return Some(StatLine::Extra);
+    }
+    let (_, count) = rest.rsplit_once(" | ")?;
+    let count = count.trim_start();
+    let (n, graph) = count.split_once(' ').unwrap_or((count, "+"));
+    let counted = digits(n) && !graph.is_empty() && graph.bytes().all(|c| matches!(c, b'+' | b'-'));
+    (counted || count == "Unmerged" || count == "Bin" || count.starts_with("Bin "))
+        .then_some(StatLine::File)
+}
+
+/// The diffstat closing a message, if git wrote one: the line of the last
+/// paragraph it starts on, and its lines as written.
+///
+/// Conservative, so that no prose is fenced. The block is the whole last
+/// paragraph under the message, or what follows the `---` that `-p --stat`
+/// writes straight under it, and every line of it has a diffstat's shape
+/// ([`stat_line`]). A message's own lines never have: git indents them
+/// four columns. Then one of: the `---`; the summary line; two file lines;
+/// or — under a commit's headers and an indented message, where only git
+/// writes at the margin — one file line, or bare paths.
+fn stat_block<'a>(paras: &[&'a [&'a str]], body: usize) -> Option<(usize, &'a [&'a str])> {
+    let (last, above) = paras.get(body..)?.split_last()?;
+    let rule = last.iter().position(|l| *l == "---");
+    let at = rule.unwrap_or(0);
+    let block = &last[at + usize::from(rule.is_some())..];
+    let shapes: Vec<StatLine> = block.iter().map(|l| stat_line(l)).collect::<Option<_>>()?;
+    let count = |shape| shapes.iter().filter(|s| **s == shape).count();
+    let files = count(StatLine::File);
+    let named = count(StatLine::Name);
+    // Bare paths are not mixed into the other shapes.
+    if named > 0 && named < shapes.len() {
+        return None;
+    }
+    let mut message = above.iter().copied().chain([&last[..at]]).flatten();
+    let under_message =
+        body == 1 && (at > 0 || !above.is_empty()) && message.all(|l| indent_cols(l) >= 4);
+    let is = if rule.is_some() {
+        files + count(StatLine::Summary) > 0
+    } else {
+        count(StatLine::Summary) == 1 || files >= 2 || (under_message && files + named > 0)
+    };
+    is.then_some((at, &last[at..]))
 }
 
 /// Who added a backslash, which decides what [`settle`] may do with it
@@ -2317,6 +2465,39 @@ Author: B <b@example.com>
                         "{:?}\n{}", doc.text, to_markdown(&src)
                     );
                 }
+            }
+
+            /// A diffstat under a message is fenced whole, changes nothing
+            /// of the message above it, and the commit after is a commit.
+            #[test]
+            fn a_diffstat_under_any_message_is_fenced_and_changes_nothing_else(
+                (lines, _) in commit(),
+                tail in prop::sample::select(vec![
+                    "\n f | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+                    "---\n f | 2 +-",
+                    "\n 2 files changed, 3 insertions(+)",
+                    "\n a.rs   | 1 +\n b c.rs | Bin 0 -> 9 bytes\n create mode 100644 b c.rs",
+                ]),
+            ) {
+                let mut src = String::from(
+                    "commit 0abcdef0123456789abcdef0123456789abcdef\nAuthor: A (a at example.com)\n\n",
+                );
+                for l in &lines {
+                    if l.trim().is_empty() {
+                        src.push('\n');
+                    } else {
+                        let _ = writeln!(src, "    {l}");
+                    }
+                }
+                let next = "commit 1abcdef0123456789abcdef0123456789abcdef\nAuthor: B\n\n    Second\n";
+                let block = tail.trim_start_matches('\n');
+                let with = to_markdown(&format!("{src}{tail}\n\n{next}"));
+                let without = to_markdown(&src);
+                let after = to_markdown(next);
+                prop_assert_eq!(&with, &format!("{without}```\n{block}\n```\n\n{after}"));
+                let (headings, structure) = stolen_structure(&format!("{src}{tail}\n\n{next}"));
+                prop_assert_eq!(headings, ["commit 0abcdef01234", "commit 1abcdef01234"], "{}", with);
+                prop_assert_eq!(structure, ["CodeBlock { lang: None }"], "{}", with);
             }
         }
     }
