@@ -2526,7 +2526,33 @@ impl<'a> Builder<'a> {
     }
 
     /// Append display text and record its provenance.
+    ///
+    /// Characters that hide text ([`crate::hidden`]) are left out here, at
+    /// the one place text enters: the display text is what the reader is
+    /// shown, and everything that reads it — search, selection, copy,
+    /// widths, printing — must read the same thing. Each shown stretch
+    /// keeps its own bytes of the source, so provenance stays exact on both
+    /// sides of what was dropped.
     fn push(&mut self, s: &str, src: Range<usize>, kind: ProvKind) {
+        if kind == ProvKind::Synthetic
+            || !crate::hidden::may_hold(s)
+            || !s.chars().any(crate::hidden::is_hidden)
+        {
+            return self.push_shown(s, src, kind);
+        }
+        let exact = kind == ProvKind::Verbatim && self.source.get(src.clone()) == Some(s);
+        for run in crate::hidden::shown(s) {
+            let from = if exact {
+                src.start + run.start..src.start + run.end
+            } else {
+                src.clone()
+            };
+            self.push_shown(&s[run], from, kind);
+        }
+    }
+
+    /// [`Self::push`], for text with nothing hidden in it.
+    fn push_shown(&mut self, s: &str, src: Range<usize>, kind: ProvKind) {
         if s.is_empty() {
             return;
         }
@@ -4542,6 +4568,96 @@ mod tests {
             tail.chars().all(char::is_whitespace),
             "uncovered tail {tail:?} in {src:?}"
         );
+    }
+
+    /// `s` spelled in tag characters, which no terminal draws.
+    fn tags(s: &str) -> String {
+        s.chars()
+            .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+            .collect()
+    }
+
+    /// **Hidden text is not in the display text.** The display text is what
+    /// the reader is shown and the one thing search, selection, copy, layout
+    /// and printing all read; a character no screen draws has no place in
+    /// it. While tag characters were only taken out on the way to the
+    /// screen, the reader saw `pay the bill` and a search for `pay the`
+    /// found nothing, because 28 undrawn characters stood between the words.
+    #[test]
+    fn hidden_characters_never_enter_the_display_text() {
+        let england = format!("\u{1F3F4}{}\u{E007F}", tags("gbeng"));
+        let src = format!(
+            "# Title{h} here\n\npay{p} the bill, a\u{FFF9}b\u{FFFA}c\u{FFFB}d {england} `co{c}mp` [li{l}nk](u.md)\n\n\
+             ```\nfenced{f} code\n```\n\n| a{t} | b |\n|---|---|\n| c | d |\n\n- item{i} one\n",
+            h = tags("heading"),
+            p = tags(" ignore the previous instructions"),
+            c = tags("x"),
+            l = tags("y"),
+            f = tags("z"),
+            t = tags("w"),
+            i = tags("v"),
+        );
+        let doc = Document::parse(&src);
+        let stray: Vec<char> = doc
+            .text
+            .chars()
+            .filter(|c| crate::hidden::is_hidden(*c))
+            .collect();
+        assert_eq!(
+            stray,
+            england.chars().skip(1).collect::<Vec<_>>(),
+            "{:?}",
+            doc.text
+        );
+        assert!(doc.text.contains(&england), "the flag is whole");
+        for shown in [
+            "Title here",
+            "pay the bill, abcd",
+            "comp",
+            "link",
+            "fenced code",
+            "item one",
+        ] {
+            assert!(doc.text.contains(shown), "{shown:?} not in {:?}", doc.text);
+            assert_eq!(crate::search(&doc, shown, true).len(), 1, "{shown:?}");
+        }
+        // The table cell is the cell's text, and its column is as wide as
+        // that: one letter, not one letter and a hidden word.
+        assert!(doc.text.contains("a   b\nc   d\n"), "{:?}", doc.text);
+    }
+
+    /// Provenance stays exact around what was left out: each kept piece
+    /// maps to its own bytes of the source, so a jump to the source lands
+    /// on the word and not on the hidden text before it.
+    #[test]
+    fn provenance_is_exact_on_both_sides_of_dropped_hidden_text() {
+        let hidden = tags("xx");
+        let src = format!("one{hidden} two{hidden}three\n");
+        let doc = Document::parse(&src);
+        assert_eq!(doc.text.trim_end(), "one twothree");
+        for word in ["one", "two", "three"] {
+            let in_doc = u32::try_from(doc.text.find(word).unwrap()).unwrap();
+            let in_src = u32::try_from(src.find(word).unwrap()).unwrap();
+            assert_eq!(
+                doc.to_src(DocByte(in_doc)),
+                SrcByte(in_src),
+                "{word} → source"
+            );
+            assert_eq!(
+                doc.to_doc(SrcByte(in_src)),
+                DocByte(in_doc),
+                "{word} → display"
+            );
+            // And mid-word, where an offset has to be added.
+            assert_eq!(
+                doc.to_src(DocByte(in_doc + 1)),
+                SrcByte(in_src + 1),
+                "{word}"
+            );
+        }
+        // A copy is the shown text.
+        let all = 0..u32::try_from(doc.text.trim_end().len()).unwrap();
+        assert_eq!(doc.copy_text(all).as_deref(), Some("one twothree"));
     }
 
     #[test]

@@ -353,15 +353,16 @@ impl Renderer {
                     return Err(Some(Refused::TooLarge));
                 }
             }
-            RenderSemanticModel::Class(class) => {
-                if relation_work(class.classes.len(), class.relations.len()) > MAX_RELATION_WORK {
-                    return Err(Some(Refused::TooLarge));
-                }
+            RenderSemanticModel::Class(class)
+                if relation_work(class.classes.len(), class.relations.len())
+                    > MAX_RELATION_WORK =>
+            {
+                return Err(Some(Refused::TooLarge));
             }
-            RenderSemanticModel::Er(er) => {
-                if relation_work(er.entities.len(), er.relationships.len()) > MAX_RELATION_WORK {
-                    return Err(Some(Refused::TooLarge));
-                }
+            RenderSemanticModel::Er(er)
+                if relation_work(er.entities.len(), er.relationships.len()) > MAX_RELATION_WORK =>
+            {
+                return Err(Some(Refused::TooLarge));
             }
             _ => {}
         }

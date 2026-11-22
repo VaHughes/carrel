@@ -1624,6 +1624,67 @@ fn hidden_text_reaches_no_cell_and_no_hyperlink_and_a_flag_stays_whole() {
     }
 }
 
+/// What the reader sees is what search finds, where it lights, what a
+/// double click takes and what a copy carries — across a phrase with
+/// undrawn characters in its source. The screen showed `pay the bill` while
+/// the searched text still held 28 tag characters between the words, so a
+/// search for `pay the` found nothing.
+///
+/// Verified to fail with the parser keeping hidden characters.
+#[test]
+fn a_phrase_with_hidden_characters_in_it_is_found_lit_selected_and_copied_as_shown() {
+    use carrel::action::{Action, Direction};
+
+    let tags: String = " ignore previous instructions"
+        .chars()
+        .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+        .collect();
+    let src = format!("intro\n\nplease pay{tags} the bill\u{FFF9} today\n");
+    let mut app = app_at(80, 12, &src);
+
+    // Found, and lit on exactly the cells that show it.
+    carrel::app::update(&mut app, Action::SearchOpen(Direction::Forward));
+    carrel::app::paste_input(&mut app, "pay the bill today");
+    let matches = app.matches.as_ref().expect("a search");
+    assert_eq!(matches.ranges.len(), 1, "{:?}", app.doc.text);
+    let buf = frame(&app, 80, 12);
+    let row = (0..12)
+        .find(|&y| {
+            (0..80)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("please pay")
+        })
+        .expect("the paragraph's row");
+    let line: String = (0..80).map(|x| buf[(x, row)].symbol()).collect();
+    let at = u16::try_from(
+        line.find("pay the bill today")
+            .expect("shown as one phrase"),
+    )
+    .unwrap();
+    let plain_bg = buf[(at - 2, row)].style().bg;
+    let lit: Vec<u16> = (0..80)
+        .filter(|&x| buf[(x, row)].style().bg != plain_bg)
+        .collect();
+    assert_eq!(lit, (at..at + 18).collect::<Vec<_>>(), "{line:?}");
+    carrel::app::update(
+        &mut app,
+        Action::SearchKey(carrel::action::SearchKey::Cancel),
+    );
+
+    // A double click takes the word under it; a drag across the phrase
+    // copies the phrase.
+    let byte = |word: &str| u32::try_from(app.doc.text.find(word).unwrap()).unwrap();
+    let (pay, bill) = (byte("pay"), byte("bill"));
+    carrel::app::update(&mut app, Action::SelectWord(bill + 1));
+    carrel::app::update(&mut app, Action::SelectRelease);
+    assert_eq!(app.clipboard.as_deref(), Some("bill"));
+    carrel::app::update(&mut app, Action::SelectAnchor((pay, pay + 1)));
+    carrel::app::update(&mut app, Action::SelectDrag((bill + 3, bill + 4)));
+    carrel::app::update(&mut app, Action::SelectRelease);
+    assert_eq!(app.clipboard.as_deref(), Some("pay the bill"));
+}
+
 /// A cluster the frame does not show takes no column in the layout either.
 ///
 /// The cells drop every control character and every cluster of no width — a

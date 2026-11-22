@@ -11,13 +11,17 @@
 //!   text a conforming renderer is to hide.
 //!
 //! One thing built of tag characters is legitimate: an **emoji tag
-//! sequence**, the flags of England, Scotland, Wales and other subdivisions
-//! — a waving black flag U+1F3F4, the region's code in tag letters, and
-//! CANCEL TAG U+E007F. It is one visible glyph, so it is kept whole.
+//! sequence**, the flags of England, Scotland and Wales — a waving black
+//! flag U+1F3F4, the region's code in tag letters, and CANCEL TAG U+E007F.
+//! It is one visible glyph, so it is kept whole; those three, and no other
+//! code, since any other is drawn as a bare flag with its letters unseen.
 //!
-//! Every way document text leaves carrel asks [`strip`]: the screen's
-//! cells, the clipboard, and printed output. One function, so the three
-//! cannot come to disagree about what a reader was shown.
+//! They never enter the display text: the parser leaves them out of
+//! `Document::text` ([`shown`]), so search, selection, copy, layout and
+//! printing all read what the reader is shown, by construction. And every
+//! way text leaves carrel asks [`strip`] as well — the screen's cells, the
+//! clipboard, printed output — because not all of it is a document's: a
+//! file name, a title, a path are text too.
 //!
 //! Not here, and deliberately: the bidi controls (dropped from the screen
 //! and the clipboard, kept in printed text, which may be right-to-left
@@ -30,10 +34,12 @@ use std::borrow::Cow;
 const FLAG: char = '\u{1F3F4}';
 /// CANCEL TAG, which ends a tag sequence.
 const CANCEL: char = '\u{E007F}';
-/// The longest region code a flag carries, in tag characters. `gbeng` is
-/// five; the longest subdivision codes are six. Anything longer is not a
-/// flag, it is a message with a flag in front of it.
-const MAX_REGION: usize = 7;
+/// The subdivision flags there are: England, Scotland, Wales — the three
+/// emoji tag sequences Unicode recommends and fonts draw. Any other code
+/// after a flag, however flag-shaped, is drawn as a bare black flag with
+/// the code unseen, which makes it a carrier: seven hidden characters a
+/// flag. So the list is the test, not the shape.
+const REGIONS: [&str; 3] = ["gbeng", "gbsct", "gbwls"];
 
 /// Is `c` a tag character (U+E0000–U+E007F)?
 #[must_use]
@@ -47,50 +53,65 @@ pub const fn is_hidden(c: char) -> bool {
     is_tag(c) || matches!(c, '\u{FFF9}'..='\u{FFFB}')
 }
 
-/// A tag letter or digit, as a region code is spelled: the tag forms of
-/// `a`–`z` and `0`–`9`.
-const fn is_region_tag(c: char) -> bool {
-    matches!(c, '\u{E0030}'..='\u{E0039}' | '\u{E0061}'..='\u{E007A}')
+/// How many bytes of `rest` (the text right after a [`FLAG`]) are the tag
+/// half of a real subdivision flag: one of [`REGIONS`] spelled in tag
+/// letters, and a cancel. Zero when it is not one.
+fn flag_tail(rest: &str) -> usize {
+    REGIONS
+        .iter()
+        .find_map(|region| {
+            let mut tail = rest.chars();
+            let spelled = region
+                .chars()
+                .all(|c| tail.next().map(u32::from) == Some(0xE0000 + u32::from(c)));
+            (spelled && tail.next() == Some(CANCEL)).then(|| (region.len() + 1) * CANCEL.len_utf8())
+        })
+        .unwrap_or(0)
 }
 
-/// How many bytes of `rest` (the text right after a [`FLAG`]) are the tag
-/// half of a well-formed emoji tag sequence: two to seven region tags and a
-/// cancel. Zero when it is not one.
-fn flag_tail(rest: &str) -> usize {
-    let mut letters = 0usize;
-    for (at, c) in rest.char_indices() {
-        if is_region_tag(c) && letters < MAX_REGION {
-            letters += 1;
-        } else if c == CANCEL && letters >= 2 {
-            return at + c.len_utf8();
+/// Could `text` hold a hidden character? A byte scan: every one of them
+/// is encoded with a lead byte of `EF` or `F3`, which ASCII never has and
+/// most other text rarely does. `false` is certain; `true` means look.
+#[must_use]
+pub fn may_hold(text: &str) -> bool {
+    text.bytes().any(|b| b == 0xEF || b == 0xF3)
+}
+
+/// The stretches of `text` that are shown, as byte ranges in order: what is
+/// left once every hidden character is taken out, a flag's own kept.
+#[must_use]
+pub fn shown(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut runs = Vec::new();
+    let mut start = 0usize;
+    let mut at = 0usize;
+    while let Some(c) = text[at..].chars().next() {
+        let next = at + c.len_utf8();
+        if c == FLAG {
+            at = next + flag_tail(&text[next..]);
+        } else if is_hidden(c) {
+            if start < at {
+                runs.push(start..at);
+            }
+            start = next;
+            at = next;
         } else {
-            return 0;
+            at = next;
         }
     }
-    0
+    if start < text.len() {
+        runs.push(start..text.len());
+    }
+    runs
 }
 
 /// `text` without its hidden characters; borrowed when it has none, which
 /// is nearly always.
 #[must_use]
 pub fn strip(text: &str) -> Cow<'_, str> {
-    if !text.chars().any(is_hidden) {
+    if !may_hold(text) || !text.chars().any(is_hidden) {
         return Cow::Borrowed(text);
     }
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(c) = rest.chars().next() {
-        rest = &rest[c.len_utf8()..];
-        if c == FLAG {
-            out.push(c);
-            let (tail, after) = rest.split_at(flag_tail(rest));
-            out.push_str(tail);
-            rest = after;
-        } else if !is_hidden(c) {
-            out.push(c);
-        }
-    }
-    Cow::Owned(out)
+    Cow::Owned(shown(text).into_iter().map(|r| &text[r]).collect())
 }
 
 #[cfg(test)]
@@ -120,7 +141,7 @@ mod tests {
     #[test]
     fn a_subdivision_flag_is_kept_whole_and_nothing_hides_behind_one() {
         let flag = |region: &str| format!("{FLAG}{}{CANCEL}", tags(region));
-        for region in ["gbeng", "gbsct", "gbwls", "usca", "us", "fr75c", "gbabcde"] {
+        for region in ["gbeng", "gbsct", "gbwls"] {
             let text = format!("a {} b", flag(region));
             assert_eq!(strip(&text), text, "{region}");
         }
@@ -136,6 +157,15 @@ mod tests {
         for (what, tail) in [
             ("no cancel", tags("gbeng")),
             ("one letter", format!("{}{CANCEL}", tags("g"))),
+            ("a code no flag has", format!("{}{CANCEL}", tags("usca"))),
+            (
+                "a word of the right length",
+                format!("{}{CANCEL}", tags("ignor")),
+            ),
+            (
+                "a flag's code and more",
+                format!("{}{CANCEL}", tags("gbengx")),
+            ),
             ("no letters", CANCEL.to_string()),
             ("too long", format!("{}{CANCEL}", tags("ignoreall"))),
             ("capitals", format!("{}{CANCEL}", tags("GBENG"))),

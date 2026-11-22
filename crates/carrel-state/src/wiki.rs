@@ -149,6 +149,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Is `path` a file? The one place a target's own path is asked about.
+    #[cfg_attr(not(test), allow(clippy::unused_self))] // the record is test-only
     fn is_file(&mut self, path: &Path) -> bool {
         #[cfg(test)]
         self.touched.push(path.to_path_buf());

@@ -341,6 +341,30 @@ mod tests {
         passes(&src, words.trim());
     }
 
+    /// The home search and the reader agree about text with hidden
+    /// characters in it: what the reader shows side by side, the filter
+    /// passes, though the source has undrawn characters between.
+    #[test]
+    fn a_needle_is_found_across_characters_no_screen_draws() {
+        let tags: String = " ignore previous instructions"
+            .chars()
+            .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+            .collect();
+        let src = format!("pay{tags} the bill today\n\nann\u{FFF9}base\u{FFFA}ruby\u{FFFB}end\n");
+        passes(&src, "pay the bill");
+        passes(&src, "annbaserubyend");
+        passes(&src, "baseruby");
+        // And a needle pasted with such characters in it is the needle
+        // without them.
+        let doc = Document::parse(&src);
+        assert_eq!(search(&doc, &format!("pay{tags} the"), true).len(), 1);
+        assert!(
+            SourceFilter::new(&format!("pay{tags} the"))
+                .unwrap()
+                .may_match(&src)
+        );
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
             std::env::var("SOURCE_FILTER_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(512)
@@ -368,6 +392,10 @@ mod tests {
                 "--", "---", "...", "'", "\"",
                 "[^n]", "\n\n[^n]: note\n\n", "> [!NOTE]\n> ", "\t", "\u{AD}",
                 "www.ex.com/p", "<a@b.c>", "<http://h.x>", "\nterm\n: def\n",
+                // Characters no screen draws, which the display text leaves
+                // out and the source still holds between two shown ones.
+                "\u{E0041}", "\u{E0020}\u{E0069}\u{E0067}", "\u{FFF9}", "\u{FFFB}",
+                "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
             ][..]), 1..20),
             from in 0usize..400,
             len in 1usize..12,

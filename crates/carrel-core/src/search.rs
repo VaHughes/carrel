@@ -140,6 +140,9 @@ pub fn content_pattern_soft(needle: &str, flexible_ws: bool) -> Option<Regex> {
 
 /// Build the literal (escaped) pattern. Returns `None` for an empty needle.
 fn build_pattern(needle: &str, flexible_ws: bool, soft: bool) -> Option<Regex> {
+    // A needle pasted with characters no screen draws is the needle
+    // without them: the display text holds none (`crate::hidden`).
+    let needle = &*crate::hidden::strip(needle);
     if needle.trim().is_empty() {
         return None;
     }

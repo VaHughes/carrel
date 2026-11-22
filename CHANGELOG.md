@@ -201,8 +201,11 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
   characters spell ASCII that no terminal draws, and a sentence of them could ride inside
   any word: onto the screen's byte stream, into a copy, into `--plain` and `--render`
   output. They are dropped from all three now, as are the interlinear annotation
-  controls; a file NAME holding one shows it escaped. A subdivision flag (🏴 England,
-  Scotland, Wales…) is built of tag characters and still draws.
+  controls; a file NAME holding one shows it escaped. They are left out of the text
+  itself, so a phrase reads, searches, selects and copies as it is shown: `pay the bill`
+  with hidden characters between the words is found by searching `pay the`, in the
+  reader and in the file list's search alike. The flags of England, Scotland and Wales
+  are built of tag characters and still draw; no other code after a flag is kept.
 - **Invisible characters no longer shift what follows them.** After a zero-width space, a
   bidi mark, a stray combining mark or a control character on a line, clicks, selections,
   search highlights and link underlines landed one column to the right of the text for

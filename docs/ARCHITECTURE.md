@@ -442,11 +442,16 @@ Key facts:
   (`App::resolve_wikilinks`, `forward_rows`, `links::links_to_within`, `--render`);
   `app::local_link` is the same rule for markdown links. The resolver records what it
   touches under `cfg(test)`, and the test asserts it touches nothing for an escaping target.
-- **Hidden text has one rule, `carrel_core::hidden::strip`**, asked by every exit: the
-  screen (`render::scrub_cells`, a pass over the finished buffer before `settle_links`, so no
-  painter can forget it), the clipboard (`clip`), and printed output (`plain::push_text`).
-  It removes tag characters (U+E0000–E007F) and the interlinear annotation controls
-  (U+FFF9–FFFB) and keeps a well-formed emoji tag sequence (a subdivision flag). Bidi
+- **Hidden text has one rule, `carrel_core::hidden`**: tag characters (U+E0000–E007F) and
+  the interlinear annotation controls (U+FFF9–FFFB) are removed; the three real subdivision
+  flags (England, Scotland, Wales) are kept whole. **They never enter `Document::text`** —
+  the parser's one text funnel (`Builder::push`) leaves them out, each shown stretch keeping
+  its own source bytes — so search, selection, copy, widths and printing read what the
+  reader is shown by construction, and the home search's `SourceFilter` agrees (its gap
+  already covers non-ASCII between two shown characters; the property test's fragments
+  include them). `strip` is asked again at every exit — the screen (`render::scrub_cells`,
+  a pass over the finished buffer before `settle_links`), the clipboard (`clip`), printed
+  output (`plain::push_text`) — for the text that is not a document's: names, titles, paths. Bidi
   controls are a different matter and stay as they were: gone from the screen (ratatui drops
   zero-width clusters) and the clipboard, kept in printed body text, escaped in names.
 - **A cluster measures what the cells hold** (`carrel_core::cluster_width`): zero for a control
