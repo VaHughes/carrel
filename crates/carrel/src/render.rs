@@ -2042,8 +2042,11 @@ fn paint_rows(
             let center = full.y + full.height / 2;
             if !(first_y..y).contains(&center) {
                 let buf = frame.buffer_mut();
-                for yy in first_y..y {
-                    for xx in area.x..area.right() {
+                // Never past the frame, whatever a block says its span is.
+                let (right, bottom) =
+                    (area.right().min(buf.area.right()), y.min(buf.area.bottom()));
+                for yy in first_y..bottom {
+                    for xx in area.x..right {
                         let cell = &mut buf[(xx, yy)];
                         let st = cell.style();
                         cell.set_style(st.add_modifier(Modifier::DIM));

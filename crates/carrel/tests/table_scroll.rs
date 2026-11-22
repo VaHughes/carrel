@@ -252,3 +252,25 @@ fn a_table_ending_in_an_empty_row_paints_in_both_views() {
         }
     }
 }
+
+/// Display math written straight under a table's last row becomes an empty
+/// table of its own. Its span ran past the right edge of a wide window, and
+/// focus mode (`S`), which dims every cell outside the block being read,
+/// indexed the frame there: a panic at 104 columns and wider.
+#[test]
+fn focus_mode_over_a_degenerate_table_stays_inside_the_frame() {
+    let src = "| m | n |\n|---|---|\n| y | z |\n$$x$$\n";
+    for width in [80u16, 102, 104, 120, 131, 300] {
+        let mut app = App::new("t.md".into(), Document::parse(src), width, 24);
+        for b in 0..app.doc.block_count() {
+            let (x, w) = app.block_span_x(BlockIdx(u32::try_from(b).unwrap()));
+            assert!(
+                u32::from(x) + u32::from(w) <= u32::from(width),
+                "{width}: {x}+{w}"
+            );
+        }
+        update(&mut app, Action::FocusToggle);
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        terminal.draw(|f| render::draw(f, &app)).unwrap();
+    }
+}

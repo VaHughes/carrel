@@ -54,7 +54,7 @@ Last updated: 2026-11-21 (second adversarial hunt: eight hunters, three rounds o
   and two cold code reviewers. About ninety reproduced defects, each fixed test-first with
   the test break-checked; four rounds of review and three more fuzz runs found about
   forty more in the fixes themselves (regressions in every round), fixed the same way.
-  Gates: **1,855 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
+  Gates: **1,856 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
   1.95; parse 1.5 ms/MB, height pass 4.1 ms/MB ASCII and 12.8 ms/MB CJK, resize 4.6 ms and
   live reload 14 ms per MB (`cargo bench`, quiet machine).
   - *Crashes.* Math is scanned as pulldown-latex tokenizes it (`math::nesting`): `%`
@@ -636,7 +636,14 @@ For the owner (2026-11-21, not changed):
 - A mouse report with a zero coordinate panics inside crossterm 0.29 in a debug build
   (an overflow check; release wraps). No conforming terminal sends one.
 
-Known defects: none open. The last, stray backslashes in `git log | carrel`, is fixed
+Known defects, all low, found by the last fuzz run of 2026-11-21 and left: a
+`git format-patch` mail with two `Subject:` headers shows only the last, and header lines
+with no blank line after them flow into the author's paragraph (malformed mail only);
+`Document::copy_text` of a range cut inside a kept flag returns loose tag characters (no
+input makes such a range: a flag is one cluster); hidden characters inside `H~sub~O`
+count toward the 16-byte limit and can switch the script off; `[[[x](|]]'` loses five
+characters (an empty-label wikilink whose target holds `](`, before a `'`); `git log
+--stat` flows its diffstat into a paragraph. Otherwise none open. The last, stray backslashes in `git log | carrel`, is fixed
 by planning every escape the message-to-markdown pass adds as data and settling it
 against the parse of the final text (`diff::settle`), instead of layering string passes
 that each planned on a parse the next one changed; `only_the_headings_it_wrote` now

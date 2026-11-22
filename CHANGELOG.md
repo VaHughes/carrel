@@ -4,6 +4,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
 ## Unreleased
 
+- **Focus mode (`S`) no longer crashes on a wide window** when display math is written
+  straight under a table's last row.
 - **Math keeps the spaces its author asked for**: `$v~\text{m/s}$` showed `v&nbsp;m/s`, and
   `\quad` between two statements was dropped, running them together. A `<br>` in a table
   cell is a space instead of joining the words either side of it.

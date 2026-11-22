@@ -3405,8 +3405,13 @@ impl App {
             return (x, budget.min(full_right - x));
         };
         if budget <= self.text_w() || cols.is_empty() {
-            // Bound to the measure: the fixed column.
-            return (prose_x, budget.min(full_w));
+            // Bound to the measure: the fixed column — and to the text
+            // area's right edge. A table with no columns (display math
+            // written straight under a table's last row makes one) has the
+            // whole bleed for a budget, and from the prose column that ran
+            // off a wide window, where focus mode indexed the frame.
+            let x = prose_x.min(full_right.saturating_sub(1));
+            return (x, budget.min(full_right - x));
         }
         // Centre a wide table by the width it actually occupies.
         let aligned = cols.iter().map(|&c| u32::from(c)).sum::<u32>()
