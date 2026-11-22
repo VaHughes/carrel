@@ -160,28 +160,50 @@ fn attached_scripts(text: &str) -> Vec<ScriptRun> {
         // a UTF-8 continuation byte is never alphanumeric ASCII, and a
         // multi-byte letter is not one we can cheaply classify here, so the
         // conservative answer is the right one.
-        if at == 0 || !bytes[at - 1].is_ascii_alphanumeric() {
+        //
+        // Hidden characters ([`crate::hidden`]) are not shown, so they
+        // neither detach the opener from its letter nor count toward the
+        // content's length: counted, four of them inside `H~sub~O` showed
+        // its tildes.
+        let before = text[..at]
+            .trim_end_matches(crate::hidden::is_hidden)
+            .as_bytes()
+            .last();
+        if !before.is_some_and(u8::is_ascii_alphanumeric) {
             at += 1;
             continue;
         }
         // Rules 2 and 3: scan for the closer.
         let start = at + 1;
         let mut scan = start;
+        let mut shown = 0usize;
         let closed = loop {
             match bytes.get(scan) {
                 None => break None,
                 Some(&c) if c == delim => break Some(scan),
                 // Whitespace, the other delimiter, or too far: not a script.
                 Some(&c) if c.is_ascii_whitespace() || c == b'^' || c == b'~' => break None,
-                Some(_) if scan - start >= MAX_SCRIPT => break None,
-                Some(_) => scan += 1,
+                // Every hidden character opens with one of these two bytes.
+                Some(0xEF | 0xF3)
+                    if text[scan..]
+                        .chars()
+                        .next()
+                        .is_some_and(crate::hidden::is_hidden) =>
+                {
+                    scan += text[scan..].chars().next().map_or(1, char::len_utf8);
+                }
+                Some(_) if shown >= MAX_SCRIPT => break None,
+                Some(_) => {
+                    shown += 1;
+                    scan += 1;
+                }
             }
         };
         let Some(close) = closed else {
             at += 1;
             continue;
         };
-        if close == start {
+        if shown == 0 {
             at += 1; // empty content
             continue;
         }
@@ -1373,6 +1395,12 @@ impl Document {
         // A soft hyphen (U+00AD) is a division point, invisible unless a
         // row ends at it; in a paste it would sit unseen inside the word.
         out.retain(|c| c != '\u{AD}');
+        // The text holds one kind of hidden character, a kept flag's tag
+        // letters, and a range may start or end inside one. Cut loose from
+        // their flag they are text nobody was shown.
+        if let Cow::Owned(shown) = crate::hidden::strip(&out) {
+            out = shown;
+        }
         Some(out)
     }
 
@@ -4624,6 +4652,82 @@ mod tests {
         // The table cell is the cell's text, and its column is as wide as
         // that: one letter, not one letter and a hidden word.
         assert!(doc.text.contains("a   b\nc   d\n"), "{:?}", doc.text);
+    }
+
+    /// A kept flag is the one place the display text holds tag characters,
+    /// so a range cut inside one handed them back loose: `copy_text` is
+    /// what a frontend puts on a clipboard, and gives no hidden character
+    /// whatever range it is asked for. A whole flag in the range stays.
+    #[test]
+    fn a_copy_cut_inside_a_flag_holds_no_loose_tag_characters() {
+        let wales = format!("\u{1F3F4}{}\u{E007F}", tags("gbwls"));
+        let doc = Document::parse(&format!("a {wales} b {wales}\n"));
+        let flag = u32::try_from(doc.text.find('\u{1F3F4}').unwrap()).unwrap();
+        let len = u32::try_from(wales.len()).unwrap();
+        for (r, want) in [
+            (flag..flag + len, wales.clone()),
+            (0..flag + len + 2, format!("a {wales} b")),
+            (flag + 8..flag + len + 2, " b".to_string()),
+            (flag + 4..flag + 24, String::new()),
+            // Cut short, a flag is the bare flag a terminal would draw.
+            (0..flag + 12, "a \u{1F3F4}".to_string()),
+            (flag + 8..flag + 2 * len + 3, format!(" b {wales}")),
+        ] {
+            let copied = doc.copy_text(r.clone()).unwrap();
+            assert_eq!(copied, want, "{r:?}");
+            assert_eq!(&*crate::hidden::strip(&copied), copied, "{r:?}");
+        }
+        // Every range there is, on a char boundary or not.
+        let end = u32::try_from(doc.text.len()).unwrap();
+        for s in 0..=end {
+            for e in s..=end {
+                if let Some(copied) = doc.copy_text(s..e) {
+                    assert_eq!(&*crate::hidden::strip(&copied), copied, "{s}..{e}");
+                }
+            }
+        }
+    }
+
+    /// A script's length is what it shows. Its sixteen-byte limit was
+    /// measured on the source, so four hidden characters inside `H~sub~O`
+    /// switched the script off and the tildes showed; and one before the
+    /// opener detached it from its letter.
+    #[test]
+    fn hidden_characters_do_not_switch_an_attached_script_off() {
+        let h = tags("ABCD");
+        for (src, want) in [
+            (
+                format!("H~su{h}b~O and x^su{h}p^ here\n"),
+                "HsubO and xsup here",
+            ),
+            (format!("H{h}~2~O and x{h}^2^ here\n"), "H2O and x2 here"),
+            (format!("H~{h}2~O and x^2{h}^ here\n"), "H2O and x2 here"),
+            (format!("x^a\u{FFF9}b\u{FFFA}c\u{FFFB}d^\n"), "xabcd"),
+            // What is shown still decides: seventeen letters are too many,
+            // nothing shown is no script, and a space ends one.
+            (format!("x^abcdefghijklmnop{h}q^\n"), "x^abcdefghijklmnopq^"),
+            (format!("x^abcdefghijklmno{h}p^\n"), "xabcdefghijklmnop"),
+            (format!("x^abcdefghijklmnop{h}^\n"), "xabcdefghijklmnop"),
+            (
+                format!("x^abcdefghijklmn\u{e9}{h}^\n"),
+                "xabcdefghijklmn\u{e9}",
+            ),
+            (
+                format!("x^abcdefghijklmno\u{e9}{h}^\n"),
+                "x^abcdefghijklmno\u{e9}^",
+            ),
+            (format!("x^{h}^ y\n"), "x^^ y"),
+            (format!("x^a{h} b^\n"), "x^a b^"),
+            (format!("{h}~2~O\n"), "~2~O"),
+        ] {
+            let doc = Document::parse(&src);
+            let clean: String = src
+                .chars()
+                .filter(|c| !crate::hidden::is_hidden(*c))
+                .collect();
+            assert_eq!(doc.text.trim_end(), want, "{src:?}");
+            assert_eq!(doc.text, Document::parse(&clean).text, "{src:?}");
+        }
     }
 
     /// Provenance stays exact around what was left out: each kept piece

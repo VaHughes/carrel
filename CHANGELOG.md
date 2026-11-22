@@ -11,6 +11,8 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **The text width setting is never a dead end**: from the whole window, Enter or a click
   starts over at the narrowest. The help sheet finds `backspace`, `width` and `image`.
   A config that begins with a byte-order mark keeps its first setting.
+- **Hidden characters inside `H~2~O` or `x^2^` no longer switch the script off**: a few
+  tag characters within one, or before its `~` or `^`, left the delimiters showing.
 - **`git log --stat` keeps its diffstat as the block of aligned lines it is**, and so do
   `--shortstat`, `--numstat`, `--name-status`, `--name-only`, `--raw` and `-p --stat`. It
   was run together with the message as a paragraph, the trailers above it lost their own
