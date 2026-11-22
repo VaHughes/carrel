@@ -595,6 +595,9 @@ planned:
   shape whose widest rank would take seconds to lay out; 64 KiB of source outside
   comments; a document's diagrams together 5 s of drawing) stays source, with a caption.
   The worst shape that still draws takes about 1.5 s and 90 MB, off the UI thread.
+- Display math (`$$…$$`) inside a table cell is not a cell's content: the row splits
+  over three lines and leaves an empty math block above the table. Inline math in a
+  cell is fine.
 - Only a document's first 2,000 links are judged dead or alive; past that a dead link
   looks like a live one (`App::find_dead_links`: each judgment is a `stat`).
 - In a note draft, Up and Down are unbound: the box wraps at paint time

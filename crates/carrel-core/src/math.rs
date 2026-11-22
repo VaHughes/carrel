@@ -129,10 +129,22 @@ const MAX_DEPTH: u32 = 256;
 /// out. See [`MathClass`] for what the atoms carry.
 #[must_use]
 pub fn parse(latex: &str) -> Option<MathExpr> {
-    let latex = brace_root_indexes(latex);
     let mut text = Vec::new();
-    if scan(&latex, &mut text).refused() {
+    if scan(latex, &mut text).refused() {
         return None;
+    }
+    // Braces added, so scanned again: for the limits, and for where the
+    // text arguments are now.
+    // In order and apart, for the search below: a group in a text
+    // argument is text all the way in, so only the outermost matter.
+    text.sort_unstable_by_key(|r| r.start);
+    text.dedup_by(|inner, outer| inner.start < outer.end);
+    let latex = brace_root_indexes(latex, &text);
+    if let std::borrow::Cow::Owned(braced) = &latex {
+        text.clear();
+        if scan(braced, &mut text).refused() {
+            return None;
+        }
     }
     let latex = &*plain_spaces(&latex, text);
     let storage = Storage::new();
@@ -159,8 +171,15 @@ pub fn parse(latex: &str) -> Option<MathExpr> {
 /// as one group. A formula with a comment in it is left as written — a `]`
 /// after a `%` is not the index's end — and so is an index already braced
 /// or never closed.
-fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
+fn brace_root_indexes<'a>(
+    latex: &'a str,
+    text: &[std::ops::Range<usize>],
+) -> std::borrow::Cow<'a, str> {
     const ROOT: &str = "\\sqrt";
+    /// The longest index looked for. Nobody writes one a tenth as long, and
+    /// an unclosed `\sqrt[` used to be searched to the end of the formula —
+    /// each of thousands of them, a megabyte of which took half a minute.
+    const LONGEST: usize = 256;
     if !latex.contains(ROOT) || latex.contains('%') {
         return latex.into();
     }
@@ -179,7 +198,11 @@ fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
             .count()
             % 2
             == 1;
-        if escaped || bytes.get(i).is_some_and(u8::is_ascii_alphabetic) {
+        // Inside `\text{…}` it is not a root but the letters of one, and
+        // braces added there would be shown.
+        let after = text.partition_point(|r| r.start <= at);
+        let in_text = after > 0 && text[after - 1].contains(&at);
+        if escaped || in_text || bytes.get(i).is_some_and(u8::is_ascii_alphabetic) {
             continue;
         }
         while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
@@ -194,7 +217,7 @@ fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
         let mut brackets = 0usize;
         let mut close = None;
         let mut j = open;
-        while j < bytes.len() {
+        while j < bytes.len().min(open + LONGEST) {
             match bytes[j] {
                 b'\\' => j += 1,
                 b'{' => depth += 1,
@@ -228,7 +251,8 @@ fn brace_root_indexes(latex: &str) -> std::borrow::Cow<'_, str> {
         }
         out.push_str(&latex[copied..open]);
         out.push('{');
-        out.push_str(index);
+        // A root in the index has an index to brace too.
+        out.push_str(&brace_root_indexes(index, &[]));
         out.push('}');
         copied = close;
         from = close;
@@ -962,6 +986,12 @@ fn parse_one(events: &[Event], cursor: &mut usize, depth: u32) -> Option<Step> {
         // deliberate simplification: a reader shows the expression, not the
         // author's kerning. `EnvironmentFlow` is consumed by `begin` for
         // grids; reaching one here means it was outside any grid.
+        // …but a `\quad` is not kerning: it stands between two statements,
+        // which ran together without it (`x = 1y = 2`).
+        Event::Space { width: Some(w), .. } if w.value >= 1.0 => Step::Node(MathExpr::Sym {
+            text: " ".into(),
+            class: MathClass::Ordinary,
+        }),
         Event::End | Event::Space { .. } | Event::StateChange(_) | Event::EnvironmentFlow(_) => {
             Step::Skip
         }
@@ -1067,6 +1097,8 @@ fn expect_end(events: &[Event], cursor: &mut usize) -> Option<()> {
 
 fn content(c: &Content) -> MathExpr {
     let (text, class) = match c {
+        // `~` and `\ `: the parser's word for a space, for an HTML page.
+        Content::Text("&nbsp;") => (" ".to_string(), MathClass::Ordinary),
         Content::Text(s) | Content::Function(s) => ((*s).to_string(), MathClass::Ordinary),
         Content::Number(s) => ((*s).to_string(), MathClass::Number),
         Content::Ordinary { content, .. } => (content.to_string(), MathClass::Ordinary),
@@ -1469,7 +1501,7 @@ mod tests {
             ("\\sqrt[n%]\n]{x}", "\\sqrt[n%]\n]{x}"),
             (r"\sqrt[é+1]{x}", r"\sqrt[{é+1}]{x}"),
         ] {
-            assert_eq!(brace_root_indexes(src), braced, "{src}");
+            assert_eq!(brace_root_indexes(src, &[]), braced, "{src}");
         }
         let Some(MathExpr::Row(items)) = parse(r"\sqrt[n+1]{x}+z") else {
             panic!("expected a row")
@@ -1490,6 +1522,26 @@ mod tests {
         assert_eq!(text(r"\sqrt[n+1]{x}+z"), "(n + 1)√x + z");
         // A root in the index: the outer index ends at ITS bracket.
         assert_eq!(text(r"\sqrt[\sqrt[3]{2}]{y}"), "∛2√y");
+        // A root in a root's index is braced as well.
+        assert_eq!(
+            brace_root_indexes(r"\sqrt[\sqrt[a+b]{c}+1]{x}", &[]),
+            r"\sqrt[{\sqrt[{a+b}]{c}+1}]{x}"
+        );
+        // In a text argument it is letters, and gains no braces to show.
+        assert_eq!(
+            text(r"\text{type \sqrt[3]{x} here}"),
+            r"type \sqrt[3]{x} here"
+        );
+        // Thousands of unclosed indexes are searched a little each, not to
+        // the end each: a megabyte of them took half a minute.
+        let unclosed = r"\sqrt[".repeat(40_000);
+        let started = std::time::Instant::now();
+        let _ = parse(&unclosed);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
         // Empty brackets are no index at all.
         assert_eq!(text(r"\sqrt[]{x}+1"), "√x + 1");
         assert_eq!(text(r"\sqrt[ ]{x}+1"), "√x + 1");
@@ -1664,6 +1716,22 @@ fn unicode_script(expr: &MathExpr, table: [(char, char); 14]) -> Option<String> 
 #[cfg(test)]
 mod inline_tests {
     use super::*;
+
+    /// A space the author asked for is a space. `~` and `\ ` arrive from
+    /// the parser as the text `&nbsp;`, which was shown as those six
+    /// characters, and `\quad` was dropped with the kerning, running two
+    /// statements together.
+    #[test]
+    fn an_explicit_space_is_a_space() {
+        let text = |src| inline_text(&parse(src).expect("it parses"));
+        assert_eq!(text(r"v~\text{m/s}"), "v m/s");
+        assert_eq!(text(r"a\ b"), "a b");
+        assert_eq!(text(r"x = 1 \quad y = 2"), "x = 1 y = 2");
+        assert_eq!(text(r"x = 1 \qquad y = 2"), "x = 1 y = 2");
+        // Kerning stays dropped.
+        assert_eq!(text(r"a\,b"), "ab");
+        assert_eq!(text(r"a\!b"), "ab");
+    }
 
     #[test]
     fn a_simple_script_becomes_its_unicode_form() {

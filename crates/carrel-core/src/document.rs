@@ -3405,6 +3405,11 @@ impl<'a> Builder<'a> {
                 Event::Html(t) | Event::InlineHtml(t) => {
                     let mut out = String::new();
                     self.html.strip(&t, &mut out);
+                    // A cell is one line: its `<br>` is a space, where a
+                    // break with nowhere to go joined the two words.
+                    if self.table.is_some() && out.contains('\n') {
+                        out = out.replace('\n', " ");
+                    }
                     let marks = std::mem::take(&mut self.html.completed);
                     // Blank-line hygiene: an HTML block's tag-only lines leave
                     // bare newlines behind; skip them at a block's start and
@@ -3425,6 +3430,7 @@ impl<'a> Builder<'a> {
                     // Whitespace alone at a block's start is no content
                     // either (`<p>   </p>`): it would mint a blank row.
                     if out.trim().is_empty()
+                        && self.table.is_none()
                         && self
                             .open
                             .as_ref()
@@ -3831,7 +3837,9 @@ fn advance_col(s: &str, col: &mut u16) {
         }
         None => s,
     };
-    if tail.is_ascii() {
+    // A control character takes no cell (`cluster_width`), so it is not a
+    // byte to count: the next tab's stop depended on which path a run took.
+    if tail.is_ascii() && !tail.bytes().any(|b| b.is_ascii_control()) {
         *col = col.saturating_add(tail.len() as u16);
     } else {
         for g in tail.graphemes(true) {
@@ -3865,6 +3873,34 @@ fn coalesce(mut v: Vec<Inline>) -> Vec<Inline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `<br>` in a table cell is a space: a cell is one line, and the break
+    /// was dropped, joining the words either side of it.
+    #[test]
+    fn a_break_in_a_table_cell_is_a_space() {
+        let doc = Document::parse("| a |\n|---|\n| first line<br>second line |\n| x<br/>y |\n");
+        assert!(
+            doc.text.contains("first line second line"),
+            "{:?}",
+            doc.text
+        );
+        assert!(doc.text.contains("x y"), "{:?}", doc.text);
+        // Outside a table it is still a line break.
+        let doc = Document::parse("first<br>second\n");
+        assert!(doc.text.contains("first\nsecond"), "{:?}", doc.text);
+    }
+
+    /// A column is counted the same whichever way a run is read: a control
+    /// character takes no cell, and the all-ASCII shortcut counted it as
+    /// one, so a tab after it stopped somewhere else.
+    #[test]
+    fn a_control_character_advances_no_column() {
+        for (text, cols) in [("ab", 2), ("a\u{1}b", 2), ("a\u{1}é", 2), ("x\ny\u{7f}", 1)] {
+            let mut col = 0;
+            advance_col(text, &mut col);
+            assert_eq!(col, cols, "{text:?}");
+        }
+    }
 
     /// A `<script>` body is skipped in time linear in its length.
     /// The closer check lowercased the whole body per character, so a 1 MB

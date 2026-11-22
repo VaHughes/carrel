@@ -970,15 +970,18 @@ pub fn cols_for_doc_ranges(
 /// it helps construct.
 #[must_use]
 pub fn cluster_at_col(row_text: &str, row_doc_start: u32, indent: u16, col: u16) -> (u32, u32) {
-    let mut at = indent;
+    // Counted in `u32`: one cluster can be 65,535 cells wide (a letter and
+    // that many halfwidth marks), and a pointer over its row overflowed.
+    let col = u32::from(col);
+    let mut at = u32::from(indent);
     for (off, g) in row_text.grapheme_indices(true) {
-        let w = cluster_width(g);
+        let w = u32::from(cluster_width(g));
         let start = row_doc_start + u32::try_from(off).unwrap_or(u32::MAX);
         let end = start + u32::try_from(g.len()).unwrap_or(u32::MAX);
-        if col < at + w {
+        if col < at.saturating_add(w) {
             return (start, end);
         }
-        at += w;
+        at = at.saturating_add(w);
     }
     let end = row_doc_start + u32::try_from(row_text.len()).unwrap_or(u32::MAX);
     (end, end)
@@ -987,6 +990,18 @@ pub fn cluster_at_col(row_text: &str, row_doc_start: u32, indent: u16, col: u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pointer over a row whose one cluster is wider than any terminal
+    /// lands on that cluster, and does not overflow finding it.
+    #[test]
+    fn a_cluster_wider_than_a_u16_is_hit_without_overflow() {
+        let row = format!("ab{}c", "\u{ff9e}".repeat(65_534));
+        let wide_end = 10 + u32::try_from(row.len()).unwrap() - 1;
+        assert_eq!(cluster_at_col(&row, 10, 3, 3), (10, 11));
+        assert_eq!(cluster_at_col(&row, 10, 3, 4), (11, wide_end));
+        // Its last cell is past the last column a pointer can report.
+        assert_eq!(cluster_at_col(&row, 10, 3, u16::MAX), (11, wide_end));
+    }
 
     fn rows_of(text: &str, width: u16) -> Vec<String> {
         let mut out = Vec::new();
