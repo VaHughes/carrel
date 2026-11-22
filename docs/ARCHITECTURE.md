@@ -433,6 +433,13 @@ Key facts:
   one look at the disk, under the folder rule, via `app::local_link`); and no hyperlink for
   `#fragment`, a dead link, or a path the folder rule did not look at. `--render` applies the
   same rule in `ansi::link_targets`, with the document's own folder as the boundary.
+- **The folder rule is one type, `carrel_state::wiki::Bounds`**: a link's target is folded
+  lexically and refused, with no `stat`, `read_dir` or `canonicalize` of it, when it is
+  absolute or leaves the library root (the document's own folder when there is no root).
+  `wiki::Resolver` asks it before step 1, so every wikilink caller is covered
+  (`App::resolve_wikilinks`, `forward_rows`, `links::links_to_within`, `--render`);
+  `app::local_link` is the same rule for markdown links. The resolver records what it
+  touches under `cfg(test)`, and the test asserts it touches nothing for an escaping target.
 - **Hidden text has one rule, `carrel_core::hidden::strip`**, asked by every exit: the
   screen (`render::scrub_cells`, a pass over the finished buffer before `settle_links`, so no
   painter can forget it), the clipboard (`clip`), and printed output (`plain::push_text`).

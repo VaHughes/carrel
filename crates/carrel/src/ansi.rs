@@ -640,6 +640,32 @@ mod tests {
         assert_eq!(targets(&render_with(&doc, 80, true)), ["https://e.com/x"]);
     }
 
+    /// A wikilink is under the folder rule like any other link: a note
+    /// outside the document's folder is not looked for, so it is not a
+    /// hyperlink — though it is there to be found.
+    #[test]
+    fn a_rendered_wikilink_out_of_the_folder_is_not_looked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("vault")).unwrap();
+        std::fs::write(dir.path().join("secret.md"), "x\n").unwrap();
+        std::fs::write(dir.path().join("vault/in.md"), "x\n").unwrap();
+        let file = dir.path().join("vault/links.md");
+        let secret = dir.path().join("secret");
+        let doc = Document::parse(&format!(
+            "[[../secret]] [[/etc/hostname]] [[{}]] [[sub/../../secret]] [[in]]\n",
+            secret.display()
+        ));
+        let out = render_for(&doc, 200, true, Some(&file));
+        let targets: Vec<&str> = out
+            .split("\u{1b}]8;;")
+            .skip(1)
+            .filter_map(|rest| rest.split("\u{1b}\\").next())
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(targets.len(), 1, "{targets:?}");
+        assert!(targets[0].ends_with("/vault/in.md"), "{targets:?}");
+    }
+
     /// `--render` follows the screen's rule for every link, not only for
     /// wikilinks: a file beside the document is its absolute address, and a
     /// link a terminal could do nothing with gets no hyperlink.

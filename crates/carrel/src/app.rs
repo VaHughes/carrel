@@ -2950,7 +2950,9 @@ impl App {
             .home_stash
             .as_deref()
             .map_or(&[][..], |h| h.entries.as_slice());
-        let mut pass = crate::wiki::Resolver::new(dir, index);
+        // The folder rule: a note outside the library is not looked for.
+        let root = self.library_root().map(Path::to_path_buf);
+        let mut pass = crate::wiki::Resolver::new(dir, index).within(root.as_deref());
         for i in 0..self.doc.links.len() {
             let id = LinkId(u32::try_from(i).unwrap_or(u32::MAX));
             if !self.doc.is_wikilink(id) {
@@ -4862,7 +4864,7 @@ pub fn paste_on_home(app: &mut App, text: &str) -> Outcome {
     } else {
         // Folded, so `..` names the parent rather than being carried in
         // the path: the row showed `docs / ..` and `↑` from there went down.
-        fold_lexically(&root.join(&pasted))
+        crate::wiki::fold_lexically(&root.join(&pasted))
             .to_string_lossy()
             .into_owned()
     };
@@ -7176,7 +7178,7 @@ fn forward_rows(app: &App) -> Vec<ForwardRow> {
         .map_or(&[][..], |h| h.entries.as_slice());
     // For a wikilink this document's own pass could not place: the folder
     // is listed once for all of them, not once each.
-    let mut pass = crate::wiki::Resolver::new(&dir, index);
+    let mut pass = crate::wiki::Resolver::new(&dir, index).within(app.library_root());
     // Each link's first visible run, found in one walk.
     let mut first_run: Vec<Option<std::ops::Range<u32>>> = vec![None; app.doc.links.len()];
     for inl in app.doc.nodes.iter().flat_map(|n| n.inlines.iter()) {
@@ -7906,7 +7908,7 @@ pub(crate) enum LocalLink {
 pub(crate) fn local_link(dir: &Path, root: Option<&Path>, bare: &str) -> LocalLink {
     let paths: Vec<PathBuf> = crate::links::candidates(bare)
         .iter()
-        .map(|n| fold_lexically(&dir.join(n)))
+        .map(|n| crate::wiki::fold_lexically(&dir.join(n)))
         .collect();
     if root.is_some_and(|root| !paths.iter().all(|n| n.starts_with(root))) {
         return LocalLink::Outside;
@@ -7915,22 +7917,6 @@ pub(crate) fn local_link(dir: &Path, root: Option<&Path>, bare: &str) -> LocalLi
         .into_iter()
         .find(|n| n.exists())
         .map_or(LocalLink::Missing, LocalLink::File)
-}
-
-/// A path with its `.` and `..` components resolved by hand. No disk: the
-/// point is to know where a path leads before deciding whether to look.
-fn fold_lexically(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// `[[Note#Some Heading]]` carries heading TEXT, not a slug (Obsidian's
@@ -9940,6 +9926,41 @@ mod tests {
         // [[nowhere]] names no file at all.
         assert_eq!(links, "4 local · 3 external · 1 unresolved");
         assert_eq!(rows, 8, "and the pane lists exactly those");
+    }
+
+    /// A wikilink that leads out of the library is not looked for: it is
+    /// unresolved, a dead link, with no file to open and none to hand a
+    /// terminal — though the note is there. Rooted above it, it resolves.
+    #[test]
+    fn a_wikilink_out_of_the_library_is_dead_not_followed() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("vault")).unwrap();
+        std::fs::create_dir_all(d.path().join("outside")).unwrap();
+        std::fs::write(d.path().join("outside/secret.md"), "x\n").unwrap();
+        std::fs::write(d.path().join("vault/in.md"), "x\n").unwrap();
+        let file = d.path().join("vault/links.md");
+        std::fs::write(&file, "[[../outside/secret]] [[/etc/hostname]] [[in]]\n").unwrap();
+        let ids = [LinkId(0), LinkId(1), LinkId(2)];
+
+        let mut a = App::new_home(d.path().join("vault"), vec![], 80, 24);
+        a.open_path(&file).unwrap();
+        assert_eq!(a.wiki.keys().copied().collect::<Vec<_>>(), [ids[2]]);
+        assert!(a.dead_links.contains(&ids[0]) && a.dead_links.contains(&ids[1]));
+        update(&mut a, Action::ForwardToggle);
+        let rows = &a.forward.as_ref().unwrap().rows;
+        assert_eq!(
+            rows.iter().map(|r| r.target.is_some()).collect::<Vec<_>>(),
+            [false, false, true],
+            "the links pane does not look either"
+        );
+
+        let mut a = App::new_home(d.path().to_path_buf(), vec![], 80, 24);
+        a.open_path(&file).unwrap();
+        assert!(
+            a.wiki.contains_key(&ids[0]),
+            "inside this library, it is a note"
+        );
+        assert!(!a.wiki.contains_key(&ids[1]), "an absolute path never is");
     }
 
     /// A reload under the open card counts the new document's links.

@@ -171,9 +171,28 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// every link the way the reader would, and compare.
 #[must_use]
 pub fn links_to(src: &str, from: &Path, target: &Path, index: &[Entry]) -> bool {
+    links_to_within(src, from, target, index, None)
+}
+
+/// [`links_to`], for a file in a library rooted at `root`.
+///
+/// `src` is some other document, as untrusted as the one being read: a
+/// link in it that leads out of the library (out of its own folder, with
+/// no `root`) is not followed to see where it goes — see
+/// [`crate::wiki::Bounds`]. Comparing it with `target` would mean asking
+/// the disk about a path that document chose.
+#[must_use]
+pub fn links_to_within(
+    src: &str,
+    from: &Path,
+    target: &Path,
+    index: &[Entry],
+    root: Option<&Path>,
+) -> bool {
     let doc = carrel_core::Document::parse(src);
     let dir = from.parent().unwrap_or(Path::new("."));
-    let mut wiki = crate::wiki::Resolver::new(dir, index);
+    let mut wiki = crate::wiki::Resolver::new(dir, index).within(root);
+    let mut bounds: Option<crate::wiki::Bounds> = None;
     for (i, link) in doc.links.iter().enumerate() {
         let id = carrel_core::LinkId(u32::try_from(i).unwrap_or(u32::MAX));
         let resolved = if doc.is_wikilink(id) {
@@ -185,7 +204,13 @@ pub fn links_to(src: &str, from: &Path, target: &Path, index: &[Entry]) -> bool 
                 None
             } else {
                 let bare = link.split(['#', '?']).next().unwrap_or(link);
-                (!bare.is_empty()).then(|| dir.join(bare))
+                (!bare.is_empty())
+                    .then(|| {
+                        bounds
+                            .get_or_insert_with(|| crate::wiki::Bounds::new(dir, root))
+                            .admit(Path::new(bare))
+                    })
+                    .flatten()
             }
         };
         if resolved.is_some_and(|p| same_file(&p, target)) {
@@ -247,7 +272,7 @@ pub fn spawn_under(near: PathBuf, root: PathBuf, target: PathBuf, generation: u6
             if skip.is_some_and(|near| e.path.starts_with(near)) {
                 return true;
             }
-            if let Some(hit) = backlink(&e.path, &target, &stem) {
+            if let Some(hit) = backlink(&e.path, &target, &stem, Some(&root)) {
                 if tx.send(Msg::Found(hit, generation)).is_err() {
                     return false;
                 }
@@ -287,7 +312,7 @@ pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<
                 let _ = tx.send(Msg::Capped(generation));
                 break;
             }
-            if let Some(hit) = backlink(&e.path, &target, &stem) {
+            if let Some(hit) = backlink(&e.path, &target, &stem, None) {
                 if tx.send(Msg::Found(hit, generation)).is_err() {
                     return; // the query was abandoned
                 }
@@ -300,7 +325,7 @@ pub fn spawn(entries: Vec<Entry>, target: PathBuf, generation: u64) -> Receiver<
 }
 
 /// `path` as a backlink to `target`, if it is one.
-fn backlink(path: &Path, target: &Path, stem: &str) -> Option<Backlink> {
+fn backlink(path: &Path, target: &Path, stem: &str, root: Option<&Path>) -> Option<Backlink> {
     // A document is not its own backlink.
     if same_file(path, target) {
         return None;
@@ -313,7 +338,7 @@ fn backlink(path: &Path, target: &Path, stem: &str) -> Option<Backlink> {
     }
     let src = std::io::read_to_string(std::io::Read::take(file, MAX_BYTES)).ok()?;
     // Stage 1: the cheap rejection. Stage 2: be sure.
-    if !src.contains(stem) || !links_to(&src, path, target, &[]) {
+    if !src.contains(stem) || !links_to_within(&src, path, target, &[], root) {
         return None;
     }
     Some(Backlink {
@@ -333,6 +358,48 @@ mod tests {
         }
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    /// A backlink scan reads every document in the library, and each is
+    /// as untrusted as the next: a link that leads out of the library is
+    /// not chased to find out whether it is a backlink.
+    #[test]
+    fn a_link_that_leaves_the_library_is_not_a_backlink_and_is_not_looked_at() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = write(d.path(), "outside/secret.md", "x\n");
+        for body in [
+            "[[../outside/secret]]\n",
+            "[out](../outside/secret.md)\n",
+            "[up](sub/../../outside/secret.md)\n",
+        ] {
+            let from = write(d.path(), "vault/links.md", body);
+            let vault = d.path().join("vault");
+            // Rooted at the vault, the link leaves it.
+            assert!(
+                !links_to_within(body, &from, &outside, &[], Some(&vault)),
+                "{body:?}"
+            );
+            assert!(!links_to(body, &from, &outside, &[]), "{body:?}");
+            // Rooted above both, it is a link like any other.
+            assert!(
+                links_to_within(body, &from, &outside, &[], Some(d.path())),
+                "{body:?}"
+            );
+        }
+        // An absolute path is never one, wherever the root is.
+        let body = format!(
+            "[abs]({}) [[{}]]\n",
+            outside.display(),
+            outside.with_extension("").display()
+        );
+        let from = write(d.path(), "vault/links.md", &body);
+        assert!(!links_to_within(
+            &body,
+            &from,
+            &outside,
+            &[],
+            Some(d.path())
+        ));
     }
 
     #[test]

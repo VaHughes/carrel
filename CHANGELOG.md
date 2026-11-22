@@ -7,6 +7,12 @@ Versions are calendar dates, `YYYY.M.D` (Eastern time).
 - **Math keeps the spaces its author asked for**: `$v~\text{m/s}$` showed `v&nbsp;m/s`, and
   `\quad` between two statements was dropped, running them together. A `<br>` in a table
   cell is a space instead of joining the words either side of it.
+- **A `[[wikilink]]` cannot make carrel look outside the folder.** `[[../outside/secret]]`
+  and `[[/etc/hostname]]` were looked up on disk as written, by the reader, the links
+  pane, the backlinks search and `--render`, and a note that happened to be there became a
+  link out of the library. Such a link is now unresolved without the disk being asked, as
+  a markdown link out of the folder already was; the backlinks search applies the same
+  rule to the markdown links of every document it reads.
 - **A click on a footnote mark in a window too short for its box says so**, and that `%`
   goes to the footnote, instead of doing nothing. A mistyped option prints its reason
   after the usage, where it stays on screen.

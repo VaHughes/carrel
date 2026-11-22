@@ -11,6 +11,74 @@ use std::path::{Path, PathBuf};
 
 use crate::scan::Entry;
 
+/// A path with its `.` and `..` components resolved by hand. No disk: the
+/// point is to know where a path leads before deciding whether to look.
+#[must_use]
+pub fn fold_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// How far a document's links may make a reader look: the folder rule.
+///
+/// A document is untrusted. A link in it that leads out of the library —
+/// `../outside/secret`, `/etc/hostname` — must not be looked at: a `stat`
+/// of wherever a document points (a network mount, another user's files)
+/// is a thing it should not be able to make a reader do by being opened or
+/// searched. So a link's target is folded WITHOUT touching the disk, and
+/// only one that stays inside is ever asked about.
+///
+/// "Inside" is the library root when there is one, and the document's own
+/// folder when there is not.
+#[derive(Debug, Clone)]
+pub struct Bounds {
+    here: PathBuf,
+    within: PathBuf,
+}
+
+impl Bounds {
+    /// For a document in `here`, in a library rooted at `root` (if any).
+    /// Both are places the reader is already in, so making them absolute —
+    /// which follows symlinks in THEM — asks nothing a document chose.
+    #[must_use]
+    pub fn new(here: &Path, root: Option<&Path>) -> Self {
+        let absolute = |dir: &Path| {
+            let dir = if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            };
+            dir.canonicalize()
+                .or_else(|_| std::path::absolute(dir))
+                .unwrap_or_else(|_| dir.to_path_buf())
+        };
+        let here = absolute(here);
+        let within = root.map_or_else(|| here.clone(), absolute);
+        Self { here, within }
+    }
+
+    /// Where `target` — a path as a link writes it, relative to the
+    /// document — leads, when that is inside; `None` when it is absolute
+    /// or leaves. No disk is touched either way.
+    #[must_use]
+    pub fn admit(&self, target: &Path) -> Option<PathBuf> {
+        if target.is_absolute() {
+            return None;
+        }
+        let folded = fold_lexically(&self.here.join(target));
+        folded.starts_with(&self.within).then_some(folded)
+    }
+}
+
 /// Resolve a wikilink target to a markdown file, or `None` — never an error.
 ///
 /// One target. A caller with a document's worth of them keeps a
@@ -33,6 +101,15 @@ pub fn resolve(target: &str, here_dir: &Path, index: &[Entry]) -> Option<PathBuf
 pub struct Resolver<'a> {
     here: &'a Path,
     index: &'a [Entry],
+    /// The library root, when the caller has one: see [`Bounds`].
+    root: Option<&'a Path>,
+    /// Made on the first target, not before: a pass with no wikilink in it
+    /// (most files a backlink scan reads) asks the disk nothing at all.
+    bounds: Option<Bounds>,
+    /// Every path this pass asked the disk about, for the tests of the
+    /// folder rule.
+    #[cfg(test)]
+    touched: Vec<PathBuf>,
     /// The folder's entries by lowercased name, each list sorted. `None`
     /// until a target needs it.
     siblings: Option<HashMap<String, Vec<PathBuf>>>,
@@ -50,11 +127,32 @@ impl<'a> Resolver<'a> {
         Self {
             here: here_dir,
             index,
+            root: None,
+            bounds: None,
+            #[cfg(test)]
+            touched: Vec::new(),
             siblings: None,
             indexed: None,
             answers: HashMap::new(),
             listings: 0,
         }
+    }
+
+    /// The same pass, in a library rooted at `root`: a target may then
+    /// lead anywhere inside the library, not only inside the document's
+    /// own folder.
+    #[must_use]
+    pub fn within(mut self, root: Option<&'a Path>) -> Self {
+        self.root = root;
+        self.bounds = None;
+        self
+    }
+
+    /// Is `path` a file? The one place a target's own path is asked about.
+    fn is_file(&mut self, path: &Path) -> bool {
+        #[cfg(test)]
+        self.touched.push(path.to_path_buf());
+        path.is_file()
     }
 
     /// How many times the folder has been listed: at most once.
@@ -76,9 +174,17 @@ impl<'a> Resolver<'a> {
     fn look_up(&mut self, target: &str) -> Option<PathBuf> {
         let want = format!("{target}.md");
 
+        // 0. The folder rule, before anything is asked of the disk: a
+        // target that is absolute or leads out of the library is not a
+        // note here, and is not looked at to find out.
+        let (here, root) = (self.here, self.root);
+        self.bounds
+            .get_or_insert_with(|| Bounds::new(here, root))
+            .admit(Path::new(&want))?;
+
         // 1. Exact sibling.
         let exact = self.here.join(&want);
-        if exact.is_file() {
+        if self.is_file(&exact) {
             return Some(exact);
         }
 
@@ -88,6 +194,10 @@ impl<'a> Resolver<'a> {
         let want_lower = want.to_lowercase();
         let here = self.here;
         let listings = &mut self.listings;
+        #[cfg(test)]
+        if self.siblings.is_none() {
+            self.touched.push(here.to_path_buf());
+        }
         let siblings = self.siblings.get_or_insert_with(|| {
             *listings += 1;
             let mut by_name: HashMap<String, Vec<PathBuf>> = HashMap::new();
@@ -136,6 +246,74 @@ impl<'a> Resolver<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A wikilink cannot make the reader look outside the folder.**
+    ///
+    /// `[[../outside/secret]]` and `[[/etc/hostname]]` were joined onto the
+    /// folder and `stat`ed as written, so a document chose which paths the
+    /// reader asked the disk about — and a note that happened to be there
+    /// became a link out of the library. A target is folded first, and one
+    /// that leaves is refused with nothing asked: the resolver records
+    /// every path it touches, and for these it records none.
+    #[test]
+    fn a_target_that_leaves_the_folder_is_refused_before_the_disk_is_asked() {
+        let d = tempfile::tempdir().unwrap();
+        let vault = d.path().join("vault");
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(vault.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // Really there, so a look would find them.
+        std::fs::write(outside.join("secret.md"), "x").unwrap();
+        std::fs::write(vault.join("inside.md"), "x").unwrap();
+        std::fs::write(vault.join("sub/deep.md"), "x").unwrap();
+        let absolute = outside.join("secret");
+        let absolute = absolute.to_str().unwrap();
+
+        let mut pass = Resolver::new(&vault, &[]);
+        for target in [
+            "../outside/secret",
+            "sub/../../outside/secret",
+            "../vault/../outside/secret",
+            "/etc/hostname",
+            absolute,
+            "../..",
+        ] {
+            assert_eq!(pass.resolve(target), None, "{target}");
+        }
+        assert_eq!(pass.touched, Vec::<PathBuf>::new(), "nothing was looked at");
+        assert_eq!(pass.listings(), 0, "not even the folder");
+
+        // Inside, in any spelling, it is looked for — and only inside.
+        assert_eq!(pass.resolve("inside"), Some(vault.join("inside.md")));
+        assert_eq!(pass.resolve("sub/deep"), Some(vault.join("sub/deep.md")));
+        assert_eq!(
+            pass.resolve("sub/../inside"),
+            Some(vault.join("sub/../inside.md"))
+        );
+        assert_eq!(
+            pass.resolve("../vault/inside"),
+            Some(vault.join("../vault/inside.md"))
+        );
+        assert_eq!(pass.resolve("gone"), None);
+        let vault_real = vault.canonicalize().unwrap();
+        for path in &pass.touched {
+            let seen = fold_lexically(&vault_real.join(path.strip_prefix(&vault).unwrap()));
+            assert!(seen.starts_with(&vault_real), "{path:?} was looked at");
+        }
+
+        // In a library rooted above, the neighbor folder is inside it; what
+        // leaves the LIBRARY is still not looked at.
+        let mut pass = Resolver::new(&vault, &[]).within(Some(d.path()));
+        assert_eq!(
+            pass.resolve("../outside/secret"),
+            Some(vault.join("../outside/secret.md"))
+        );
+        let looked = pass.touched.len();
+        for target in ["../../x", "/etc/hostname", absolute] {
+            assert_eq!(pass.resolve(target), None, "{target}");
+        }
+        assert_eq!(pass.touched.len(), looked, "nothing more was looked at");
+    }
 
     fn entry(p: &Path) -> Entry {
         Entry {
