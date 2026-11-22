@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-21 (second adversarial hunt: eight hunters, three rounds of review)
+Last updated: 2026-11-21 (second adversarial hunt: eight hunters, six rounds of review)
 
 ## Current state
 
@@ -48,11 +48,11 @@ Last updated: 2026-11-21 (second adversarial hunt: eight hunters, three rounds o
 ## Recently completed
 
 - Unreleased (2026-11-21) — **a second adversarial hunt: eight hunters, five fixers, then
-  four rounds of cold review of the fixes.** Hunters: cargo-fuzz over core with invariant
+  six rounds of cold review of the fixes.** Hunters: cargo-fuzz over core with invariant
   oracles, a random-sequence fuzzer over the real key and mouse dispatchers, a black-box pty
   tester, a security hunter, a performance hunter, a documentation-versus-behavior checker
   and two cold code reviewers. About ninety reproduced defects, each fixed test-first with
-  the test break-checked; four rounds of review and three more fuzz runs found about
+  the test break-checked; six rounds of review and three more fuzz runs found about
   forty more in the fixes themselves (regressions in every round), fixed the same way.
   Gates: **1,872 tests**, zero-warning clippy on 1.97, fmt, discipline, packaging, `cargo doc -D warnings`, MSRV
   1.95; parse 1.5 ms/MB, height pass 4.1 ms/MB ASCII and 12.8 ms/MB CJK, resize 4.6 ms and
