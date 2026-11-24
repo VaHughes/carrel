@@ -144,6 +144,15 @@ reflow layer and resize), and the automated pty smoke (`crates/carrel/tests/pty.
 - **Session and stream PTYs:** `session_pty.py` checks Home and search recall through
   direct file, tutorial and pipe entries. `stream_pty.py` feeds malformed UTF-8 and checks
   navigation and clean exit. Both use the same small screen reconstructor as resize tests.
+- **Distribution build roots have no `script`(1).** COPR's mock root lacks
+  `util-linux-script` and nix's sandbox has none, so every pty test checks
+  `script_available()` and skips loudly; `every_pty_test_skips_where_script_is_missing`
+  fails the build if one does not. CI's gate runs on the self-hosted runner, which has
+  `script`, so only a COPR or nix build shows the omission (2026.11.24 failed both).
+- **Read a reaped child's output before asserting on it.** The Python drivers call
+  `resize_pty.drain_after_exit` after `waitpid`: on a slow builder the reader writes its
+  last frame and exits between two reads, leaving the alternate-screen exit unread (Fedora
+  44 aarch64, 2026.11.24-2).
 - **Mixed-input properties:** `src/input_sequence_tests.rs` exercises the real key dispatcher,
   paste, pointer input, resizes, rewrites and Back/Forward across files and retained pages.
   `tests/reader_documents.rs` composes incomplete Markdown and Unicode across arbitrary sizes.
@@ -288,7 +297,10 @@ separate `ghost-ci-public` Ubuntu 24.04 VM on ghostmachine. Labels are
 this VM; its filesystem, credentials and network are separate from private CI
 and production. The runner has no host filesystem mounts or LAN access.
 
-Native macOS and ARM release builds remain on free GitHub-hosted runners.
+Native macOS and ARM release builds remain on free GitHub-hosted runners. dist picks
+their images; `aarch64-apple-darwin` is pinned to `macos-15` in `dist-workspace.toml`
+(`[dist.github-custom-runners]`) because GitHub retired the `macos-14` dist 0.32 chose,
+and a retired image fails the job in a second and skips the publish.
 External-fork PR jobs also use GitHub-hosted runners. Repository settings require
 approval for **all external contributors**, including returning contributors;
 this setting is essential because a fork can edit its own workflow routing.

@@ -555,6 +555,9 @@ decision — do not propose them):
 2. **AUR** — recipes prepared but not published. The AUR RPC returned no `carrel` or
    `carrel-bin` package on 2026-11-11. Account registration could not be verified through
    its browser challenge; do not treat the old registration-closure claim as current fact.
+   On 2026-11-24 the page was still behind its bot challenge, and other projects' issues
+   (latest 2026-11-21) report sign-ups "temporarily closed"; no Arch announcement of a
+   reopening was found.
 3. **Catalog listings** — drafts in the private notes. awesome-ratatui: ready to submit.
    Terminal Trove: still PNG and reproducible capture are now ready (`assets/screenshot.png`).
    awesome-tuis: not before 2027-02-12
