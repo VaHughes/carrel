@@ -2,7 +2,7 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
-## Unreleased
+## 2026.11.24
 
 - **Coming back to a search no longer lists its hits again**: opening a hit from the file
   list's search and returning added every hit another time, and the count with them.

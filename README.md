@@ -584,7 +584,7 @@ The module map, the decisions already made, and the pinned dependencies are in
       document on a wide window, and opens a pasted path
 - [x] A help sheet whose rows are buttons; collapsed sections remembered per document
 - [x] Packaging: `.deb` for Debian and Ubuntu, amd64 and arm64
-- [ ] Packaging, remaining: AUR (blocked on Arch), nixpkgs
+- [ ] Packaging, remaining: AUR and nixpkgs (recipes prepared, not yet submitted)
 - [ ] The GUI: GTK4 shell + WebKitGTK content view — **not started, no date**
 
 ## Contributing

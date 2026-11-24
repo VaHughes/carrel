@@ -1,6 +1,6 @@
 # Packaging templates
 
-**All five recipes are stamped for v2026.10.21**, and `scripts/check-packaging.sh` now
+**All five recipes are stamped for v2026.11.24**, and `scripts/check-packaging.sh` now
 asserts every one of them against `[workspace.package] version` in `Cargo.toml`.
 `carrel-package.nix` had not been touched since the commit that added it, and six stamp
 commits walked straight past it: the only version check here compared `.SRCINFO` to its own
@@ -28,7 +28,7 @@ workflow from Actions with the tag.
 `Cargo.lock`. `carrel-bin` (AUR, prebuilt) is no longer blocked: v2026.8.17 is the first
 release whose archives carry the man page and completions it installs. Note that **dist
 flattens `include` paths to the archive root**: `contrib/carrel.1` arrives as `carrel.1`.
-AUR publishing itself still waits on Arch reopening account registration.
+AUR publishing itself still waits on an AUR account for carrel.
 
 **`carrel-package.nix`** is the nixpkgs by-name package. `publish.yml` fills its two
 hashes after each release and builds it with them, so the copy on `main` is ready to drop

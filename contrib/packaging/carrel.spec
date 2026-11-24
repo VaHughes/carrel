@@ -2,7 +2,7 @@
 # .src.rpm and so needs rpmbuild locally. The exact command is in ../packaging/README.md.
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
-Version:        2026.10.21
+Version:        2026.11.24
 Release:        1%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 # Carrel's code, plus the hyphenation data carrel-core embeds: THIRD-PARTY-NOTICES.
@@ -61,6 +61,10 @@ cargo test --locked --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Tue Nov 24 2026 Joshua Hughes <hughes238@gmail.com> - 2026.11.24-1
+- Two adversarial bug hunts: about 200 defects fixed, crashes included
+- carrel-state: shared reader state split out for the coming GUI
+
 * Wed Oct 21 2026 Joshua Hughes <hughes238@gmail.com> - 2026.10.21-1
 - Inline #tags, hyphenation in ten languages, the whole footnote
 - Search through smart punctuation; Debian and Ubuntu packages

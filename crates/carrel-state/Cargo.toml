@@ -27,7 +27,7 @@ categories = ["text-processing"]
 # `Rect { width: u16 }` — so the shape half stays a script rule.
 # ---------------------------------------------------------------------------
 [dependencies]
-carrel-core = { path = "../carrel-core", version = "=2026.10.21" }
+carrel-core = { path = "../carrel-core", version = "=2026.11.24" }
 ignore.workspace = true
 
 # `O_NONBLOCK`, whose value differs by platform: `state::open_regular` opens

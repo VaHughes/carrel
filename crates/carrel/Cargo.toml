@@ -22,8 +22,8 @@ path = "src/main.rs"
 
 [dependencies]
 unicode-segmentation.workspace = true
-carrel-core = { path = "../carrel-core", version = "=2026.10.21" }
-carrel-state = { path = "../carrel-state", version = "=2026.10.21" }
+carrel-core = { path = "../carrel-core", version = "=2026.11.24" }
+carrel-state = { path = "../carrel-state", version = "=2026.11.24" }
 image.workspace         = true
 merman.workspace        = true
 merman-core.workspace   = true
