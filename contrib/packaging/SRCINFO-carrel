@@ -9,6 +9,6 @@ pkgbase = carrel
 	makedepends = cargo
 	depends = gcc-libs
 	source = carrel-2026.11.24.tar.gz::https://github.com/VaHughes/carrel/archive/v2026.11.24.tar.gz
-	sha256sums = c5bc277d5e387e5bd1624ac62525b1f7c61f7789cc2ab12d6fa6626882aa4564
+	sha256sums = be0d0fd10bfa5d8de6310e33cc70c6795ab14ea92aa926893fa07ebec60db481
 
 pkgname = carrel

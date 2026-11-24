@@ -10,7 +10,7 @@ license=('(MIT OR Apache-2.0) AND MIT AND BSD-3-Clause AND FSFAP-no-warranty-dis
 depends=('gcc-libs')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('c5bc277d5e387e5bd1624ac62525b1f7c61f7789cc2ab12d6fa6626882aa4564')
+sha256sums=('be0d0fd10bfa5d8de6310e33cc70c6795ab14ea92aa926893fa07ebec60db481')
 
 prepare() {
   cd "$pkgname-$pkgver"

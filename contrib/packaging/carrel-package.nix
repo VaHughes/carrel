@@ -27,10 +27,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     owner = "VaHughes";
     repo = "carrel";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-YUQ60NvN8/61u7ltgZ3SpfNQQ4BRc8Vr7OUCtuB9vs0=";
+    hash = "sha256-aunt7hllkV2HrwRzqAf7KGGVZNCRlhzdPGc6o85t7AM=";
   };
 
-  cargoHash = "sha256-ylAq440wa6Up336PVgjdkIybBxEJRirWP9R2V+W8+f4=";
+  cargoHash = "sha256-FrcYkL6kR3GzzrxAfkUyS0wsh4ImvvQNxM6JgUGze4I=";
 
   nativeBuildInputs = [ installShellFiles ];
 
