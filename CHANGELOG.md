@@ -2,6 +2,13 @@
 
 Versions are calendar dates, `YYYY.M.D` (Eastern time).
 
+## Unreleased
+
+- **The Fedora package builds again.** One test in 2026.11.24 ran `script`(1) without
+  checking that it was installed, and Fedora's build machines do not have it, so the COPR
+  build failed on every chroot. 2026.11.24-2 carries the fix as a patch; a new test fails
+  if any terminal test forgets the check again.
+
 ## 2026.11.24
 
 - **Coming back to a search no longer lists its hits again**: opening a hit from the file

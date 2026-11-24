@@ -3,7 +3,7 @@
 # rust2rpm-shaped but hand-trimmed: carrel vendors nothing and needs no C toolchain.
 Name:           carrel
 Version:        2026.11.24
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        A quiet place to read your markdown — a terminal markdown reader
 # Carrel's code, plus the hyphenation data carrel-core embeds: THIRD-PARTY-NOTICES.
 License:        (MIT OR Apache-2.0) AND MIT AND BSD-3-Clause AND FSFAP-no-warranty-disclaimer AND Knuth-CTAN
@@ -13,6 +13,10 @@ BuildRequires:  cargo
 BuildRequires:  rust >= 1.95
 # The live-resize pty test run by the check section is driven by a Python script.
 BuildRequires:  python3
+# The v2026.11.24 tag's %%check carries a pty test that ran `script`(1) without
+# checking for it; COPR's build root has no util-linux-script, so it failed only
+# here. Fixed on main — DROP THIS PATCH at the next release.
+Patch0:         carrel-2026.11.24-pty-script-guard.patch
 
 %description
 Carrel is a free and open-source terminal markdown reader: search that
@@ -61,6 +65,10 @@ cargo test --locked --workspace
 %doc README.md CHANGELOG.md
 
 %changelog
+* Tue Nov 24 2026 Joshua Hughes <hughes238@gmail.com> - 2026.11.24-2
+- Carry the pty test guard as a patch: the tag's %%check ran script(1),
+  which COPR's build root does not have
+
 * Tue Nov 24 2026 Joshua Hughes <hughes238@gmail.com> - 2026.11.24-1
 - Two adversarial bug hunts: about 200 defects fixed, crashes included
 - carrel-state: shared reader state split out for the coming GUI

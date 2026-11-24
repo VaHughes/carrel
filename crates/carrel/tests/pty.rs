@@ -2267,6 +2267,10 @@ fn a_dead_link_is_struck_in_a_file_named_bare() {
 /// document's own and is a hyperlink either way.
 #[test]
 fn render_names_local_files_only_to_a_terminal() {
+    if !script_available() {
+        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
+        return;
+    }
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("other.md"), "x\n").unwrap();
     std::fs::write(
@@ -2332,4 +2336,27 @@ fn an_idle_reader_does_not_resend_its_hyperlinks() {
     let sent = cap.matches("example.com/unique-target").count();
     assert!(sent >= 1, "the link is a hyperlink");
     assert!(sent <= 3, "sent {sent} times in a second of idling");
+}
+
+/// Every test here that runs `script`(1) checks for it first. Distribution
+/// build roots do not have it: Fedora ships it in `util-linux-script`, which
+/// COPR's mock root lacks, and nix's sandbox has none. One test without the
+/// check failed the 2026.11.24 COPR and nix builds on every chroot while
+/// passing everywhere `script` is installed — here and on CI's runner.
+#[test]
+fn every_pty_test_skips_where_script_is_missing() {
+    let src = std::fs::read_to_string("tests/pty.rs").expect("pty.rs");
+    // Spelled in pieces so this test does not match itself.
+    let uses = [concat!("pty_", "run"), concat!("script ", "-q")];
+    let check = concat!("script_", "available()");
+    let unguarded: Vec<&str> = src
+        .split("#[test]")
+        .skip(1)
+        .filter(|body| uses.iter().any(|u| body.contains(u)) && !body.contains(check))
+        .filter_map(|body| body.split("fn ").nth(1)?.split('(').next())
+        .collect();
+    assert!(
+        unguarded.is_empty(),
+        "these run `script` without checking for it: {unguarded:?}"
+    );
 }
