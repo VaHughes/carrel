@@ -55,3 +55,9 @@ install-path = "CARGO_HOME"
 # the Portuguese patterns' BSD-3-Clause requires their notice in the materials
 # shipped with every binary copy.
 include = ["contrib/carrel.desktop", "contrib/carrel.1", "contrib/completions/carrel.bash", "contrib/completions/carrel.zsh", "contrib/completions/carrel.fish", "THIRD-PARTY-NOTICES"]
+
+# GitHub retired the macos-14 image dist 0.32 picks for Apple Silicon: the
+# 2026.11.24 tag's job was refused in one second ("The configuration
+# 'macos-14-arm64-us-default' is not supported"). Pin a current image.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
