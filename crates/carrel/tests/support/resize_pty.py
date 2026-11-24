@@ -19,6 +19,26 @@ import unicodedata
 from pathlib import Path
 
 
+def drain_after_exit(fd, raw, screen):
+    """Read what the child wrote before it exited.
+
+    A reaped child's last writes (the alternate-screen exit among them) can
+    still be in the pty buffer: on a slow builder the child writes, exits and
+    is reaped between one read and the next. Reading until the master reports
+    EOF or EIO is the only way to know the bytes are all here; it failed the
+    Fedora 44 aarch64 COPR build of 2026.11.24-2 without this.
+    """
+    while select.select([fd], [], [], 1)[0]:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            return
+        if not data:
+            return
+        raw.extend(data)
+        screen.feed(data)
+
+
 class Screen:
     def __init__(self, cols=80, rows=24):
         self.resize(cols, rows)
@@ -246,6 +266,7 @@ def main(binary, scratch, from_home=False):
             child, status = os.waitpid(pid, os.WNOHANG)
             if child:
                 assert os.waitstatus_to_exitcode(status) == 0, bytes(raw).decode(errors="replace")
+                drain_after_exit(fd, raw, screen)
                 assert b"\x1b[?1049l" in raw, "terminal must be restored"
                 print("live resize: search, selection, notes, menus, terminal restoration passed")
                 return

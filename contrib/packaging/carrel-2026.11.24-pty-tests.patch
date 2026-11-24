@@ -1,0 +1,123 @@
+diff --git c/crates/carrel/tests/pty.rs w/crates/carrel/tests/pty.rs
+index c34b860..f66af83 100644
+--- c/crates/carrel/tests/pty.rs
++++ w/crates/carrel/tests/pty.rs
+@@ -2267,6 +2267,10 @@ fn a_dead_link_is_struck_in_a_file_named_bare() {
+ /// document's own and is a hyperlink either way.
+ #[test]
+ fn render_names_local_files_only_to_a_terminal() {
++    if !script_available() {
++        eprintln!("SKIP: `script`(1) not available — pty smoke not run");
++        return;
++    }
+     let d = tempfile::tempdir().unwrap();
+     std::fs::write(d.path().join("other.md"), "x\n").unwrap();
+     std::fs::write(
+@@ -2333,3 +2337,26 @@ fn an_idle_reader_does_not_resend_its_hyperlinks() {
+     assert!(sent >= 1, "the link is a hyperlink");
+     assert!(sent <= 3, "sent {sent} times in a second of idling");
+ }
++
++/// Every test here that runs `script`(1) checks for it first. Distribution
++/// build roots do not have it: Fedora ships it in `util-linux-script`, which
++/// COPR's mock root lacks, and nix's sandbox has none. One test without the
++/// check failed the 2026.11.24 COPR and nix builds on every chroot while
++/// passing everywhere `script` is installed — here and on CI's runner.
++#[test]
++fn every_pty_test_skips_where_script_is_missing() {
++    let src = std::fs::read_to_string("tests/pty.rs").expect("pty.rs");
++    // Spelled in pieces so this test does not match itself.
++    let uses = [concat!("pty_", "run"), concat!("script ", "-q")];
++    let check = concat!("script_", "available()");
++    let unguarded: Vec<&str> = src
++        .split("#[test]")
++        .skip(1)
++        .filter(|body| uses.iter().any(|u| body.contains(u)) && !body.contains(check))
++        .filter_map(|body| body.split("fn ").nth(1)?.split('(').next())
++        .collect();
++    assert!(
++        unguarded.is_empty(),
++        "these run `script` without checking for it: {unguarded:?}"
++    );
++}
+diff --git c/crates/carrel/tests/support/resize_pty.py w/crates/carrel/tests/support/resize_pty.py
+index 47c98d0..045161d 100644
+--- c/crates/carrel/tests/support/resize_pty.py
++++ w/crates/carrel/tests/support/resize_pty.py
+@@ -19,6 +19,26 @@ import unicodedata
+ from pathlib import Path
+ 
+ 
++def drain_after_exit(fd, raw, screen):
++    """Read what the child wrote before it exited.
++
++    A reaped child's last writes (the alternate-screen exit among them) can
++    still be in the pty buffer: on a slow builder the child writes, exits and
++    is reaped between one read and the next. Reading until the master reports
++    EOF or EIO is the only way to know the bytes are all here; it failed the
++    Fedora 44 aarch64 COPR build of 2026.11.24-2 without this.
++    """
++    while select.select([fd], [], [], 1)[0]:
++        try:
++            data = os.read(fd, 65536)
++        except OSError:
++            return
++        if not data:
++            return
++        raw.extend(data)
++        screen.feed(data)
++
++
+ class Screen:
+     def __init__(self, cols=80, rows=24):
+         self.resize(cols, rows)
+@@ -246,6 +266,7 @@ def main(binary, scratch, from_home=False):
+             child, status = os.waitpid(pid, os.WNOHANG)
+             if child:
+                 assert os.waitstatus_to_exitcode(status) == 0, bytes(raw).decode(errors="replace")
++                drain_after_exit(fd, raw, screen)
+                 assert b"\x1b[?1049l" in raw, "terminal must be restored"
+                 print("live resize: search, selection, notes, menus, terminal restoration passed")
+                 return
+diff --git c/crates/carrel/tests/support/session_pty.py w/crates/carrel/tests/support/session_pty.py
+index 90d0bed..6ed91dd 100644
+--- c/crates/carrel/tests/support/session_pty.py
++++ w/crates/carrel/tests/support/session_pty.py
+@@ -11,7 +11,7 @@ import time
+ from pathlib import Path
+ 
+ sys.dont_write_bytecode = True
+-from resize_pty import Screen
++from resize_pty import Screen, drain_after_exit
+ 
+ 
+ def main(binary, scratch, mode):
+@@ -86,6 +86,7 @@ def main(binary, scratch, mode):
+             child, status = os.waitpid(pid, os.WNOHANG)
+             if child:
+                 assert os.waitstatus_to_exitcode(status) == 0, f"child status {status}"
++                drain_after_exit(terminal, raw, screen)
+                 assert b"\x1b[?1049l" in raw, "terminal was not restored"
+                 print(f"{mode}: Home, file opening, session search recall, and clean exit passed")
+                 return
+diff --git c/crates/carrel/tests/support/stream_pty.py w/crates/carrel/tests/support/stream_pty.py
+index 1ba200a..5a420a8 100644
+--- c/crates/carrel/tests/support/stream_pty.py
++++ w/crates/carrel/tests/support/stream_pty.py
+@@ -12,7 +12,7 @@ import time
+ from pathlib import Path
+ 
+ sys.dont_write_bytecode = True
+-from resize_pty import Screen
++from resize_pty import Screen, drain_after_exit
+ 
+ 
+ def main(binary, scratch):
+@@ -78,6 +78,7 @@ def main(binary, scratch):
+             child, status = os.waitpid(pid, os.WNOHANG)
+             if child:
+                 assert os.waitstatus_to_exitcode(status) == 0, f"child status {status}: {raw[-2000:]!r}"
++                drain_after_exit(terminal, raw, screen)
+                 assert b"\x1b[?1049l" in raw, "terminal was not restored"
+                 print("stream PTY: malformed bytes, Unicode, ending, and clean exit passed")
+                 return

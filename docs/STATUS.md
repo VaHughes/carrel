@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-21 (second adversarial hunt: eight hunters, six rounds of review)
+Last updated: 2026-11-24 (v2026.11.24 released)
 
 ## Current state
 
@@ -9,18 +9,25 @@ Last updated: 2026-11-21 (second adversarial hunt: eight hunters, six rounds of 
   checkout's `target/` before building when it exceeds 4 GiB (`CARREL_BUILD_CACHE_MIB`
   overrides). Plain Cargo commands do not run cleanup.
 
-- **Latest release: v2026.10.21** (2026-10-21), the first published by
-  `.github/workflows/publish.yml`: crates.io (both crates), the Homebrew tap, COPR
-  (2026.10.21-1), the `.deb`s, and the checksum stamp with real nix hashes
-  (`38f19d0`). Its GitHub Release was created by hand from the run's verified
-  artifacts after `release.yml`'s `--target` hit a 403 (fixed on `main`, unproven until
-  the next tag). Its nix build fails one test that assumed `/tmp`; fixed on `main`, so
-  the nixpkgs PR should wait for the next release.
-- **Unreleased work (2026-10-31 through 2026-11-21):** the GUI-preparation work from
-  Q29/Q33, three known limits cleared, the reading-input and navigation fixes, and the
-  2026-11-14 and 2026-11-21 adversarial hunts' fixes below. The next release is the first with
-  three crates, so it is also the first test of `publish.yml` publishing `carrel-state`
-  (not yet on crates.io; the name was free on 2026-10-31).
+- **Latest release: v2026.11.24** (2026-11-24): the GUI preparation (`carrel-state`, the
+  third crate, on crates.io for the first time), three known limits cleared, and the
+  2026-11-14 and 2026-11-21 adversarial hunts. Published by `publish.yml` to crates.io
+  (all three crates), the Homebrew tap and the checksum stamp (`57365bd`); `deb.yml`
+  attached both `.deb`s. The Release run's `host` job proved the `--verify-tag` fix.
+  Verified by hand: the real musl archive against `check-packaging.sh`, the installer
+  under a scratch `HOME` (real dotfiles unchanged), `cargo install carrel` unlocked, and
+  every link on the crate page.
+  Two things went wrong and are fixed: GitHub retired the `macos-14` image dist 0.32
+  picks for `aarch64-apple-darwin` (refused in a second; pinned to `macos-15` in
+  `dist-workspace.toml`, `a76f1aa`, and the unpublished tag moved onto it); and COPR and
+  nix both failed `%check` on one pty test that ran `script`(1) without checking for it
+  (their build roots have none; it passed everywhere `script` is installed, CI's
+  self-hosted runner included). Fixed on `main` with a guard test (`e156186`). The -2
+  rebuild then failed Fedora 44 aarch64 alone: the three Python pty drivers asserted on
+  the terminal's restore sequence before reading the bytes left after the child exited
+  (`resize_pty::drain_after_exit` now reads them; break-checked by forcing the race).
+  COPR is **2026.11.24-3**, both fixes as `Patch0` — drop the patch at the next release. The nix job builds the tag and stays red until then, so
+  the nixpkgs PR waits for the next release again.
 - Previous: v2026.10.8 (2026-10-08) — the crash on closing the terminal fixed, and the
   reader-beside-an-agent slate.
 - Previous baseline: all five local gates passed on 2026-11-02: **1,412 tests**, zero-warning clippy,
@@ -552,16 +559,10 @@ decision — do not propose them):
    Terminal Trove: still PNG and reproducible capture are now ready (`assets/screenshot.png`).
    awesome-tuis: not before 2027-02-12
    (six-month minimum age). awesome-cli-apps: archived, skip.
-4. **Prove the `release.yml` `--verify-tag` fix** at the next release. Until it has run
-   once, do not push to `main` between a tag and its Release run's host job.
-5. **Before the next automated publication** (`.github/workflows/publish.yml`): the
-   existing repository secrets are `CARGO_REGISTRY_TOKEN`, `HOMEBREW_TAP_DEPLOY_KEY` and
-   `COPR_CONFIG`; the COPR token expires 2027-02-12.
-   **Before the next tag**, `CARGO_REGISTRY_TOKEN` must be allowed to publish a *new*
-   crate (`carrel-state`); a token scoped to the two existing crates publishes core and
-   then fails part-way through the release. Checked 2026-11-02: the secret dates from
-   2026-10-21, before `carrel-state` existed; crates.io shows a token's scopes only on its
-   website (the API refuses to list them); the name `carrel-state` is still free.
+4. **Before the next release:** drop `contrib/packaging/carrel-2026.11.24-pty-tests.patch`
+   and its `Patch0` line, and reset `Release:` to 1. Repository secrets
+   (`CARGO_REGISTRY_TOKEN`, `HOMEBREW_TAP_DEPLOY_KEY`, `COPR_CONFIG`) all worked at
+   2026.11.24; the COPR token expires 2027-02-12.
 
 Every feature line on the README roadmap is checked. Known limits, recorded rather than
 planned:

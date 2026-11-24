@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from resize_pty import Screen
+from resize_pty import Screen, drain_after_exit
 
 
 def main(binary, scratch, mode):
@@ -86,6 +86,7 @@ def main(binary, scratch, mode):
             child, status = os.waitpid(pid, os.WNOHANG)
             if child:
                 assert os.waitstatus_to_exitcode(status) == 0, f"child status {status}"
+                drain_after_exit(terminal, raw, screen)
                 assert b"\x1b[?1049l" in raw, "terminal was not restored"
                 print(f"{mode}: Home, file opening, session search recall, and clean exit passed")
                 return

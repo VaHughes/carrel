@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from resize_pty import Screen
+from resize_pty import Screen, drain_after_exit
 
 
 def main(binary, scratch):
@@ -78,6 +78,7 @@ def main(binary, scratch):
             child, status = os.waitpid(pid, os.WNOHANG)
             if child:
                 assert os.waitstatus_to_exitcode(status) == 0, f"child status {status}: {raw[-2000:]!r}"
+                drain_after_exit(terminal, raw, screen)
                 assert b"\x1b[?1049l" in raw, "terminal was not restored"
                 print("stream PTY: malformed bytes, Unicode, ending, and clean exit passed")
                 return
